@@ -80,6 +80,7 @@
 #include "Cooker/AsyncIODelete.h"
 #include "Serialization/BulkDataManifest.h"
 #include "Misc/PathViews.h"
+#include "String/Find.h"
 
 #include "AssetRegistryModule.h"
 #include "AssetRegistryState.h"
@@ -104,6 +105,7 @@
 // shader compiler processAsyncResults
 #include "ShaderCompiler.h"
 #include "ShaderCodeLibrary.h"
+#include "ShaderLibraryChunkDataGenerator.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/TextureLODSettings.h"
 #include "ProfilingDebugging/CookStats.h"
@@ -1064,6 +1066,16 @@ bool UCookOnTheFlyServer::HasRemainingWork() const
 
 bool UCookOnTheFlyServer::RequestPackage(const FName& StandardFileName, const TArrayView<const ITargetPlatform* const>& TargetPlatforms, const bool bForceFrontOfQueue)
 {
+	if (!IsCookByTheBookMode())
+	{
+		bCookOnTheFlyExternalRequests = true;
+		for (const ITargetPlatform* TargetPlatform : TargetPlatforms)
+		{
+			AddCookOnTheFlyPlatformFromGameThread(const_cast<ITargetPlatform*>(TargetPlatform));
+			PlatformManager->AddRefCookOnTheFlyPlatform(FName(*TargetPlatform->PlatformName()), *this);
+		}
+	}
+
 	ExternalRequests->EnqueueUnique(UE::Cook::FFilePlatformRequest(StandardFileName, TargetPlatforms), bForceFrontOfQueue);
 	return true;
 }
@@ -1802,7 +1814,7 @@ void UCookOnTheFlyServer::TickNetwork()
 	// It is not safe to call PruneUnreferencedSessionPlatforms in CookByTheBook because StartCookByTheBook does not AddRef its session platforms
 	if (IsCookOnTheFlyMode())
 	{
-		if (IsInSession())
+		if (IsInSession() && !bCookOnTheFlyExternalRequests)
 		{
 			PlatformManager->PruneUnreferencedSessionPlatforms(*this);
 		}
@@ -2387,7 +2399,7 @@ void UCookOnTheFlyServer::PumpSaves(UE::Cook::FTickStackData& StackData, uint32 
 					if (CookByTheBookOptions)
 					{
 						FAssetRegistryGenerator* Generator = PlatformManager->GetPlatformData(PlatformsForPackage[iResultIndex])->RegistryGenerator.Get();
-						UpdateAssetRegistryPackageData(Generator, Package->GetFName(), SavePackageResult);
+						UpdateAssetRegistryPackageData(Generator, *Package, SavePackageResult);
 					}
 				}
 				else
@@ -2414,6 +2426,13 @@ void UCookOnTheFlyServer::PumpSaves(UE::Cook::FTickStackData& StackData, uint32 
 					{
 						Obj->WillNeverCacheCookedPlatformDataAgain();
 					}
+				}
+
+				if (Package->LinkerLoad)
+				{
+					// Loaders and their handles can have large buffers held in process memory and in the system file cache from the
+					// data that was loaded.  Keeping this for the lifetime of the cook is costly, so we try and unload it here.
+					Package->LinkerLoad->FlushCache();
 				}
 			}
 		}
@@ -2468,11 +2487,15 @@ void UCookOnTheFlyServer::PumpSaves(UE::Cook::FTickStackData& StackData, uint32 
 	}
 }
 
-void UCookOnTheFlyServer::UpdateAssetRegistryPackageData(FAssetRegistryGenerator* Generator, const FName& PackageName, FSavePackageResultStruct& SavePackageResult)
+void UCookOnTheFlyServer::UpdateAssetRegistryPackageData(FAssetRegistryGenerator* Generator, const UPackage& Package, FSavePackageResultStruct& SavePackageResult)
 {
 	if (!Generator)
 		return;
 
+	// Ensure all assets in the package are recorded in the registry
+	Generator->CreateOrFindAssetDatas(Package);
+
+	const FName PackageName = Package.GetFName();
 	FAssetPackageData* AssetPackageData = Generator->GetAssetPackageData(PackageName);
 	AssetPackageData->DiskSize = SavePackageResult.TotalFileSize;
 	// If there is no hash (e.g.: when SavePackageResult == ESavePackageResult::ReplaceCompletely), don't attempt to setup a continuation to update
@@ -2645,7 +2668,10 @@ void UCookOnTheFlyServer::TickPrecacheObjectsForPlatforms(const float TimeSlice,
 			{
 				continue;
 			}
-			Texture->BeginCacheForCookedPlatformData(TargetPlatform);
+			if (!Texture->IsCachedCookedPlatformDataLoaded(TargetPlatform))
+			{
+				Texture->BeginCacheForCookedPlatformData(TargetPlatform);
+			}
 		}
 		if (Timer.IsTimeUp())
 		{
@@ -3298,7 +3324,7 @@ private:
 			if (FilterPackageName(InPackage, PackageFilter))
 			{
 				TArray<FString> AllObjects;
-				for (FObjectIterator It; It; ++It)
+				for (FThreadSafeObjectIterator It; It; ++It)
 				{
 					AllObjects.Add(*It->GetFullName());
 				}
@@ -3486,17 +3512,19 @@ void UCookOnTheFlyServer::SaveCookedPackage(UE::Cook::FPackageData& PackageData,
 
 					if (DiffModeHelper.IsRunningCookDiff())
 					{
+						FSavePackageContext* const SavePackageContext = (IsCookByTheBookMode() && SavePackageContexts.Num() > 0) ? SavePackageContexts[PlatformIndex] : nullptr;
+
 						DiffModeHelper.ProcessPackage(Package);
 
 						// When looking for deterministic cook issues, first serialize the package to memory and do a simple diff with the existing package
 						uint32 DiffSaveFlags = SaveFlags | SAVE_DiffOnly;
 						FArchiveDiffMap DiffMap;
-						Result = GEditor->Save(Package, World, FlagsToCook, *PlatFilename, GError, NULL, bSwap, false, DiffSaveFlags, Target, FDateTime::MinValue(), false, &DiffMap);
+						Result = GEditor->Save(Package, World, FlagsToCook, *PlatFilename, GError, NULL, bSwap, false, DiffSaveFlags, Target, FDateTime::MinValue(), false, &DiffMap, SavePackageContext);
 						if (Result == ESavePackageResult::DifferentContent)
 						{
 							// If the simple memory diff was not identical, collect callstacks for all Serialize calls and dump differences to log
 							DiffSaveFlags = SaveFlags | SAVE_DiffCallstack;
-							Result = GEditor->Save(Package, World, FlagsToCook, *PlatFilename, GError, NULL, bSwap, false, DiffSaveFlags, Target, FDateTime::MinValue(), false, &DiffMap);
+							Result = GEditor->Save(Package, World, FlagsToCook, *PlatFilename, GError, NULL, bSwap, false, DiffSaveFlags, Target, FDateTime::MinValue(), false, &DiffMap, SavePackageContext);
 						}
 					}
 					else
@@ -3929,7 +3957,7 @@ void GetVersionFormatNumbersForIniVersionStrings(TMap<FString, FString>& IniVers
 void GetAdditionalCurrentIniVersionStrings( const ITargetPlatform* TargetPlatform, TMap<FString, FString>& IniVersionMap )
 {
 	FConfigFile EngineSettings;
-	FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *TargetPlatform->PlatformName());
+	FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *TargetPlatform->IniPlatformName());
 
 	TArray<FString> VersionedRValues;
 	EngineSettings.GetArray(TEXT("/Script/UnrealEd.CookerSettings"), TEXT("VersionedIntRValues"), VersionedRValues);
@@ -4070,6 +4098,7 @@ bool UCookOnTheFlyServer::GetCurrentIniVersionStrings( const ITargetPlatform* Ta
 
 
 	// remove any which are filtered out
+	FString EditorPrefix(TEXT("Editor."));
 	for ( const FString& Filter : ConfigSettingBlacklist )
 	{
 		TArray<FString> FilterArray;
@@ -4095,7 +4124,11 @@ bool UCookOnTheFlyServer::GetCurrentIniVersionStrings( const ITargetPlatform* Ta
 		{
 			for ( auto ConfigFile = IniVersionStrings.CreateIterator(); ConfigFile; ++ConfigFile )
 			{
-				if ( ConfigFile.Key().ToString().MatchesWildcard(*ConfigFileName) )
+				// Some ConfigBlacklistSettings are written as *.Engine, and are intended to affect the platform-less Editor Engine.ini, which is just "Engine"
+				// To make *.Engine match the editor-only config files as well, we check whether the wildcard matches either Engine or Editor.Engine for the editor files
+				FString IniVersionStringFilename = ConfigFile.Key().ToString();
+				if (IniVersionStringFilename.MatchesWildcard(*ConfigFileName) ||
+					(!IniVersionStringFilename.Contains(TEXT(".")) && (EditorPrefix + IniVersionStringFilename).MatchesWildcard(*ConfigFileName)))
 				{
 					if ( SectionName )
 					{
@@ -4232,37 +4265,64 @@ void UCookOnTheFlyServer::OnFConfigDeleted(const FConfigFile* Config)
 	OpenConfigFiles.Remove(Config);
 }
 
-
 void UCookOnTheFlyServer::ProcessAccessedIniSettings(const FConfigFile* Config, FIniSettingContainer& OutAccessedIniStrings) const
 {	
 	if (Config->Name == NAME_None)
 	{
 		return;
 	}
-	// try figure out if this config file is for a specific platform 
-	ITargetPlatformManagerModule& TPM = GetTargetPlatformManagerRef();
-	const TArray<ITargetPlatform*>& Platforms = TPM.GetTargetPlatforms();
+
+	// try to figure out if this config file is for a specific platform 
 	FString PlatformName;
 	bool bFoundPlatformName = false;
-	for (const ITargetPlatform* Platform : Platforms )
+
+	if (!GConfig->ContainsConfigFile(Config)) // If the ConfigFile is in GConfig, then it is the editor's config and is not platform specific
 	{
-		FString CurrentPlatformName = Platform->IniPlatformName();
-		for ( const auto& SourceIni : Config->SourceIniHierarchy )
+		// For the config files not in GConfig, we assume they were loaded from LoadConfigFile, and we match these to a platform
+		// By looking for a platform-specific filepath in their SourceIniHierarchy.
+		// Examples:
+		// (1) ROOT\Engine\Config\Windows\WindowsEngine.ini
+		// (2) ROOT\Engine\Config\Android\DataDrivePlatformInfo.ini
+		// (3) ROOT\Engine\Config\Android\AndroidWindowsCompatability.ini
+		// 
+		// Note that for config files of form #3, we want them to be matched to Android rather than windows;
+		// we assume that an exact match on a directory component is more definitive than a substring match
+		ITargetPlatformManagerModule& TPM = GetTargetPlatformManagerRef();
+		const TArray<ITargetPlatform*>& Platforms = TPM.GetTargetPlatforms();
+		bool bFoundPlatformGuess = false;
+		for (const ITargetPlatform* Platform : Platforms )
 		{
-			if ( SourceIni.Value.Filename.Contains(CurrentPlatformName) )
+			const FString CurrentPlatformName = Platform->IniPlatformName();
+			if (CurrentPlatformName.IsEmpty())
 			{
-				PlatformName = MoveTemp(CurrentPlatformName);
-				bFoundPlatformName = true;
+				continue;
+			}
+			TStringBuilder<128> PlatformDirString;
+			PlatformDirString.Appendf(TEXT("/%s/"), *CurrentPlatformName);
+			for (const auto& SourceIni : Config->SourceIniHierarchy)
+			{
+				// Look for platform in the path, rating a full subdirectory name match (/Android/ or /Windows/) higher than a partial filename match (AndroidEngine.ini or WindowsEngine.ini)
+				bool bFoundPlatformDir = UE::String::FindFirst(SourceIni.Value.Filename, PlatformDirString, ESearchCase::IgnoreCase) != INDEX_NONE;
+				bool bFoundPlatformSubstring = UE::String::FindFirst(SourceIni.Value.Filename, CurrentPlatformName, ESearchCase::IgnoreCase) != INDEX_NONE;
+				if (bFoundPlatformDir)
+				{
+					PlatformName = CurrentPlatformName;
+					bFoundPlatformName = true;
+					break;
+				}
+				else if (!bFoundPlatformGuess && bFoundPlatformSubstring)
+				{
+					PlatformName = CurrentPlatformName;
+					bFoundPlatformGuess = true;
+				}
+			}
+			if (bFoundPlatformName)
+			{
 				break;
 			}
 		}
-		if ( bFoundPlatformName )
-		{
-			break;
-		}
+		bFoundPlatformName = bFoundPlatformName || bFoundPlatformGuess;
 	}
-
-	
 
 	TStringBuilder<128> ConfigName;
 	if (bFoundPlatformName)
@@ -4333,9 +4393,6 @@ void UCookOnTheFlyServer::ProcessAccessedIniSettings(const FConfigFile* Config, 
 	}
 }
 
-
-
-
 bool UCookOnTheFlyServer::IniSettingsOutOfDate(const ITargetPlatform* TargetPlatform) const
 {
 	FScopeAssign<bool> A = FScopeAssign<bool>(IniSettingRecurse, true);
@@ -4368,20 +4425,23 @@ bool UCookOnTheFlyServer::IniSettingsOutOfDate(const ITargetPlatform* TargetPlat
 		}
 	}
 
-	for ( const auto& OldIniFile : OldIniSettings )
+	for (const auto& OldIniFile : OldIniSettings)
 	{
-		const FName& ConfigNameKey = OldIniFile.Key;
+		FName ConfigNameKey = OldIniFile.Key;
 
 		TArray<FString> ConfigNameArray;
 		ConfigNameKey.ToString().ParseIntoArray(ConfigNameArray, TEXT("."));
 		FString Filename;
 		FString PlatformName;
+		// The input NameKey is of the form 
+		//   Platform.ConfigName:Section:Key:ArrayIndex=Value
+		// The Platform is optional and will not be present if the configfile was an editor config file rather than a platform-specific config file
 		bool bFoundPlatformName = false;
-		if ( ConfigNameArray.Num() <= 1 )
+		if (ConfigNameArray.Num() <= 1)
 		{
 			Filename = ConfigNameKey.ToString();
 		}
-		else if ( ConfigNameArray.Num() == 2 )
+		else if (ConfigNameArray.Num() == 2)
 		{
 			PlatformName = ConfigNameArray[0];
 			Filename = ConfigNameArray[1];
@@ -4389,24 +4449,29 @@ bool UCookOnTheFlyServer::IniSettingsOutOfDate(const ITargetPlatform* TargetPlat
 		}
 		else
 		{
-			UE_LOG( LogCook, Warning, TEXT("Found invalid file name in old ini settings file Filename %s settings file %s"), *ConfigNameKey.ToString(), *TargetPlatform->PlatformName() );
+			UE_LOG(LogCook, Warning, TEXT("Found invalid file name in old ini settings file Filename %s settings file %s"), *ConfigNameKey.ToString(), *TargetPlatform->PlatformName());
 			return true;
 		}
-		
+
 		const FConfigFile* ConfigFile = nullptr;
 		FConfigFile Temp;
-		if ( bFoundPlatformName)
+		if (bFoundPlatformName)
 		{
-			GConfig->LoadLocalIniFile(Temp, *Filename, true, *PlatformName );
+			// For the platform-specific old ini files, load them using LoadLocalIniFiles; this matches the assumption in SaveCurrentIniSettings
+			// that the platform-specific ini files were loaded by LoadLocalIniFiles
+			FConfigCacheIni::LoadLocalIniFile(Temp, *Filename, true, *PlatformName);
 			ConfigFile = &Temp;
 		}
 		else
 		{
-			ConfigFile = GConfig->Find(Filename, false);
+			// For the platform-agnostic old ini files, read them from GConfig; this matches where we loaded them from in SaveCurrentIniSettings
+			// The ini files may have been saved by fullpath or by shortname; search first for a fullpath match using FindConfigFile and
+			// if that fails search for the shortname match by iterating over all files in GConfig
+			ConfigFile = GConfig->FindConfigFile(Filename);
 		}
-		FName FileFName = FName(*Filename);
-		if ( !ConfigFile )
+		if (!ConfigFile)
 		{
+			FName FileFName = FName(*Filename);
 			for( const auto& File : *GConfig )
 			{
 				if (File.Value.Name == FileFName)
@@ -4415,7 +4480,7 @@ bool UCookOnTheFlyServer::IniSettingsOutOfDate(const ITargetPlatform* TargetPlat
 					break;
 				}
 			}
-			if ( !ConfigFile )
+			if (!ConfigFile)
 			{
 				UE_LOG(LogCook, Display, TEXT("Unable to find config file %s invalidating inisettings"), *FString::Printf(TEXT("%s %s"), *PlatformName, *Filename));
 				return true;
@@ -4423,15 +4488,14 @@ bool UCookOnTheFlyServer::IniSettingsOutOfDate(const ITargetPlatform* TargetPlat
 		}
 		for ( const auto& OldIniSection : OldIniFile.Value )
 		{
-			
 			const FName& SectionName = OldIniSection.Key;
 			const FConfigSection* IniSection = ConfigFile->Find( SectionName.ToString() );
-
-			const FString BlackListSetting = *FString::Printf(TEXT("%s.%s:%s"), *PlatformName, *Filename, *SectionName.ToString());
+			const FString BlackListSetting = FString::Printf(TEXT("%s%s%s:%s"), *PlatformName, bFoundPlatformName ? TEXT(".") : TEXT(""), *Filename, *SectionName.ToString());
 
 			if ( IniSection == nullptr )
 			{
-				UE_LOG(LogCook, Display, TEXT("Inisetting is different for %s, Current section doesn't exist"), *FString::Printf(TEXT("%s %s %s"), *PlatformName, *Filename, *SectionName.ToString()));
+				UE_LOG(LogCook, Display, TEXT("Inisetting is different for %s, Current section doesn't exist"), 
+					*FString::Printf(TEXT("%s %s %s"), *PlatformName, *Filename, *SectionName.ToString()));
 				UE_LOG(LogCook, Display, TEXT("To avoid this add blacklist setting to DefaultEditor.ini [CookSettings] %s"), *BlackListSetting);
 				return true;
 			}
@@ -4445,7 +4509,8 @@ bool UCookOnTheFlyServer::IniSettingsOutOfDate(const ITargetPlatform* TargetPlat
 
 				if ( CurrentValues.Num() != OldIniValue.Value.Num() )
 				{
-					UE_LOG(LogCook, Display, TEXT("Inisetting is different for %s, missmatched num array elements %d != %d "), *FString::Printf(TEXT("%s %s %s %s"), *PlatformName, *Filename, *SectionName.ToString(), *ValueName.ToString()), CurrentValues.Num(), OldIniValue.Value.Num());
+					UE_LOG(LogCook, Display, TEXT("Inisetting is different for %s, missmatched num array elements %d != %d "), *FString::Printf(TEXT("%s %s %s %s"),
+						*PlatformName, *Filename, *SectionName.ToString(), *ValueName.ToString()), CurrentValues.Num(), OldIniValue.Value.Num());
 					UE_LOG(LogCook, Display, TEXT("To avoid this add blacklist setting to DefaultEditor.ini [CookSettings] %s"), *BlackListSetting);
 					return true;
 				}
@@ -4454,12 +4519,13 @@ bool UCookOnTheFlyServer::IniSettingsOutOfDate(const ITargetPlatform* TargetPlat
 					const FString FilteredCurrentValue = CurrentValues[Index].GetSavedValue().Replace(TEXT(":"), TEXT(""));
 					if ( FilteredCurrentValue != OldIniValue.Value[Index] )
 					{
-						UE_LOG(LogCook, Display, TEXT("Inisetting is different for %s, value %s != %s invalidating cook"),  *FString::Printf(TEXT("%s %s %s %s %d"),*PlatformName, *Filename, *SectionName.ToString(), *ValueName.ToString(), Index), *CurrentValues[Index].GetSavedValue(), *OldIniValue.Value[Index] );
+						UE_LOG(LogCook, Display, TEXT("Inisetting is different for %s, value %s != %s invalidating cook"),
+							*FString::Printf(TEXT("%s %s %s %s %d"),*PlatformName, *Filename, *SectionName.ToString(), *ValueName.ToString(), Index),
+							*CurrentValues[Index].GetSavedValue(), *OldIniValue.Value[Index] );
 						UE_LOG(LogCook, Display, TEXT("To avoid this add blacklist setting to DefaultEditor.ini [CookSettings] %s"), *BlackListSetting);
 						return true;
 					}
 				}
-				
 			}
 		}
 	}
@@ -5513,6 +5579,7 @@ void UCookOnTheFlyServer::SaveGlobalShaderMapFiles(const TArrayView<const ITarge
 			RecompileData.ShaderPlatform == -1 ? SP_NumPlatforms : (EShaderPlatform)RecompileData.ShaderPlatform, //-V547
 			OutputDir, 
 			RecompileData.MaterialsToLoad, 
+			RecompileData.ShadersToRecompile,
 			RecompileData.MeshMaterialMaps, 
 			RecompileData.ModifiedFiles);
 	}
@@ -5612,7 +5679,7 @@ void UCookOnTheFlyServer::InitShaderCodeLibrary(void)
 	bool const bCacheShaderLibraries = IsUsingShaderCodeLibrary();
     if (bCacheShaderLibraries && PackagingSettings->bShareMaterialShaderCode)
     {
-        FShaderCodeLibrary::InitForCooking(PackagingSettings->bSharedMaterialNativeLibraries);
+		FShaderLibraryCooker::InitForCooking(PackagingSettings->bSharedMaterialNativeLibraries);
         
 		bool bAllPlatformsNeedStableKeys = false;
 		// support setting without Hungarian prefix for the compatibility, but allow newer one to override
@@ -5622,6 +5689,7 @@ void UCookOnTheFlyServer::InitShaderCodeLibrary(void)
         for (const ITargetPlatform* TargetPlatform : PlatformManager->GetSessionPlatforms())
         {
 			// Find out if this platform requires stable shader keys, by reading the platform setting file.
+			// Stable shader keys are needed if we are going to create a PSO cache.
 			bool bNeedShaderStableKeys = bAllPlatformsNeedStableKeys;
 			FConfigFile PlatformIniFile;
 			FConfigCacheIni::LoadLocalIniFile(PlatformIniFile, TEXT("Engine"), true, *TargetPlatform->IniPlatformName());
@@ -5635,10 +5703,10 @@ void UCookOnTheFlyServer::InitShaderCodeLibrary(void)
 
             TArray<FName> ShaderFormats;
             TargetPlatform->GetAllTargetedShaderFormats(ShaderFormats);
-			TArray<FShaderCodeLibrary::FShaderFormatDescriptor> ShaderFormatsWithStableKeys;
+			TArray<FShaderLibraryCooker::FShaderFormatDescriptor> ShaderFormatsWithStableKeys;
 			for (FName& Format : ShaderFormats)
 			{
-				FShaderCodeLibrary::FShaderFormatDescriptor NewDesc;
+				FShaderLibraryCooker::FShaderFormatDescriptor NewDesc;
 				NewDesc.ShaderFormat = Format;
 				NewDesc.bNeedsStableKeys = bNeedShaderStableKeys;
 				NewDesc.bNeedsDeterministicOrder = bNeedsDeterministicOrder;
@@ -5647,7 +5715,7 @@ void UCookOnTheFlyServer::InitShaderCodeLibrary(void)
 
             if (ShaderFormats.Num() > 0)
 			{
-				FShaderCodeLibrary::CookShaderFormats(ShaderFormatsWithStableKeys);
+				FShaderLibraryCooker::CookShaderFormats(ShaderFormatsWithStableKeys);
 			}
         }
     }
@@ -5669,7 +5737,7 @@ void UCookOnTheFlyServer::OpenGlobalShaderLibrary()
 		FString ActualName = GenerateShaderCodeLibraryName(GlobalShaderLibName, IsCookFlagSet(ECookInitializationFlags::IterateSharedBuild));
 
 		// The shader code library directory doesn't matter while cooking
-		FShaderCodeLibrary::OpenLibrary(ActualName, TEXT(""));
+		FShaderLibraryCooker::BeginCookingLibrary(ActualName);
 	}
 }
 
@@ -5682,7 +5750,7 @@ void UCookOnTheFlyServer::OpenShaderLibrary(FString const& Name)
 		FString ActualName = GenerateShaderCodeLibraryName(Name, IsCookFlagSet(ECookInitializationFlags::IterateSharedBuild));
 
 		// The shader code library directory doesn't matter while cooking
-		FShaderCodeLibrary::OpenLibrary(ActualName, TEXT(""));
+		FShaderLibraryCooker::BeginCookingLibrary(ActualName);
 	}
 }
 
@@ -5775,7 +5843,7 @@ void UCookOnTheFlyServer::CreatePipelineCache(const ITargetPlatform* TargetPlatf
 	}
 }
 
-void UCookOnTheFlyServer::SaveGlobalShaderLibrary()
+void UCookOnTheFlyServer::SaveAndCloseGlobalShaderLibrary()
 {
 	const TCHAR* GlobalShaderLibName = TEXT("Global");
 	FString ActualName = GenerateShaderCodeLibraryName(GlobalShaderLibName, IsCookFlagSet(ECookInitializationFlags::IterateSharedBuild));
@@ -5787,52 +5855,41 @@ void UCookOnTheFlyServer::SaveGlobalShaderLibrary()
 		// Save shader code map - cleaning directories is deliberately a separate loop here as we open the cache once per shader platform and we don't assume that they can't be shared across target platforms.
 		for (const ITargetPlatform* TargetPlatform : PlatformManager->GetSessionPlatforms())
 		{
-			SaveShaderLibrary(TargetPlatform, GlobalShaderLibName, nullptr);
+			SaveShaderLibrary(TargetPlatform, GlobalShaderLibName);
 		}
 
-		FShaderCodeLibrary::CloseLibrary(ActualName);
+		FShaderLibraryCooker::EndCookingLibrary(ActualName);
 	}
 }
 
-void UCookOnTheFlyServer::SaveShaderLibrary(const ITargetPlatform* TargetPlatform, FString const& Name, const TArray<TSet<FName>>* ChunkAssignments)
+void UCookOnTheFlyServer::SaveShaderLibrary(const ITargetPlatform* TargetPlatform, FString const& Name)
 {
-	FString ActualName = GenerateShaderCodeLibraryName(Name, IsCookFlagSet(ECookInitializationFlags::IterateSharedBuild));
-	FString BasePath = !IsCookingDLC() ? FPaths::ProjectContentDir() : GetContentDirectoryForDLC();
-
-	FString ShaderCodeDir = ConvertToFullSandboxPath(*BasePath, true, TargetPlatform->PlatformName());
-
-	const FString RootMetaDataPath = FPaths::ProjectDir() / TEXT("Metadata") / TEXT("PipelineCaches");
-	const FString MetaDataPathSB = ConvertToFullSandboxPath(*RootMetaDataPath, true);
-	const FString MetaDataPath = MetaDataPathSB.Replace(TEXT("[Platform]"), *TargetPlatform->PlatformName());
-
-	// note that shader formats can be shared across the target platforms
 	TArray<FName> ShaderFormats;
 	TargetPlatform->GetAllTargetedShaderFormats(ShaderFormats);
 	if (ShaderFormats.Num() > 0)
 	{
-		FString TargetPlatformName = TargetPlatform->PlatformName();
-		TArray<FString>& PlatformSCLCSVPaths = OutSCLCSVPaths.FindOrAdd(FName(TargetPlatformName));
-		bool bSaved = FShaderCodeLibrary::SaveShaderCode(ShaderCodeDir, MetaDataPath, ShaderFormats, PlatformSCLCSVPaths, ChunkAssignments);
+		FString ActualName = GenerateShaderCodeLibraryName(Name, IsCookFlagSet(ECookInitializationFlags::IterateSharedBuild));
+		FString BasePath = !IsCookingDLC() ? FPaths::ProjectContentDir() : GetContentDirectoryForDLC();
 
-		if (UNLIKELY(!bSaved))
+		FString ShaderCodeDir = ConvertToFullSandboxPath(*BasePath, true, TargetPlatform->PlatformName());
+
+		const FString RootMetaDataPath = FPaths::ProjectDir() / TEXT("Metadata") / TEXT("PipelineCaches");
+		const FString MetaDataPathSB = ConvertToFullSandboxPath(*RootMetaDataPath, true);
+		const FString MetaDataPath = MetaDataPathSB.Replace(TEXT("[Platform]"), *TargetPlatform->PlatformName());
+
+		TArray<FString>& PlatformSCLCSVPaths = OutSCLCSVPaths.FindOrAdd(FName(TargetPlatform->PlatformName()));
+		const UProjectPackagingSettings* const PackagingSettings = GetDefault<UProjectPackagingSettings>();
+		FString ErrorString;
+		if (!FShaderLibraryCooker::SaveShaderLibraryWithoutChunking(TargetPlatform, Name, ShaderCodeDir, MetaDataPath, PlatformSCLCSVPaths, ErrorString))
 		{
-			LogCookerMessage(FString::Printf(TEXT("Saving shared material shader code library failed for %s."), *TargetPlatformName), EMessageSeverity::Error);
+			// This is fatal - In this case we should cancel any launch on device operation or package write but we don't want to assert and crash the editor
+			LogCookerMessage(FString::Printf(TEXT("%s"), *ErrorString), EMessageSeverity::Error);
 		}
 		else
 		{
-			const UProjectPackagingSettings* const PackagingSettings = GetDefault<UProjectPackagingSettings>();
-			if (PackagingSettings->bSharedMaterialNativeLibraries)
-			{
-				bSaved = FShaderCodeLibrary::PackageNativeShaderLibrary(ShaderCodeDir, ShaderFormats);
-				if (!bSaved)
-				{
-					// This is fatal - In this case we should cancel any launch on device operation or package write but we don't want to assert and crash the editor
-					LogCookerMessage(FString::Printf(TEXT("Package Native Shader Library failed for %s."), *TargetPlatformName), EMessageSeverity::Error);
-				}
-			}
 			for (const FString& Item : PlatformSCLCSVPaths)
 			{
-				UE_LOG(LogCook, Display, TEXT("Saved scl.csv %s for platform %s, %d bytes"), *Item, *TargetPlatformName,
+				UE_LOG(LogCook, Display, TEXT("Saved scl.csv %s for platform %s, %d bytes"), *Item, *TargetPlatform->PlatformName(),
 					IFileManager::Get().FileSize(*Item));
 			}
 		}
@@ -5855,7 +5912,7 @@ void UCookOnTheFlyServer::CleanShaderCodeLibraries()
 			TargetPlatform->GetAllTargetedShaderFormats(ShaderFormats);
 			if (ShaderFormats.Num() > 0)
 			{
-				FShaderCodeLibrary::CleanDirectories(ShaderFormats);
+				FShaderLibraryCooker::CleanDirectories(ShaderFormats);
 			}
 		}
 	}
@@ -6013,7 +6070,7 @@ void UCookOnTheFlyServer::CookByTheBookFinished()
 					UE_SCOPED_HIERARCHICAL_COOKTIMER(WriteCookerOpenOrder);
 					if (!IsCookFlagSet(ECookInitializationFlags::Iterative))
 					{
-						Generator.WriteCookerOpenOrder();
+						Generator.WriteCookerOpenOrder(SandboxFile.Get());
 					}
 				}
 				// now that we have the asset registry and cooking open order, we have enough information to split the shader library
@@ -6023,9 +6080,7 @@ void UCookOnTheFlyServer::CookByTheBookFinished()
 					// Save shader code map
 					if (LibraryName.Len() > 0)
 					{
-						TArray<TSet<FName>> ChunkAssignments;
-						Generator.GetChunkAssignments(ChunkAssignments);
-						SaveShaderLibrary(TargetPlatform, LibraryName, &ChunkAssignments);
+						SaveShaderLibrary(TargetPlatform, LibraryName);
 
 						CreatePipelineCache(TargetPlatform, LibraryName);
 					}
@@ -6054,8 +6109,8 @@ void UCookOnTheFlyServer::CookByTheBookFinished()
 	}
 
 	FString ActualLibraryName = GenerateShaderCodeLibraryName(LibraryName, IsCookFlagSet(ECookInitializationFlags::IterateSharedBuild));
-	FShaderCodeLibrary::CloseLibrary(ActualLibraryName);
-	FShaderCodeLibrary::Shutdown();
+	FShaderLibraryCooker::EndCookingLibrary(ActualLibraryName);
+	FShaderLibraryCooker::Shutdown();
 
 	if (CookByTheBookOptions->bGenerateDependenciesForMaps)
 	{
@@ -6336,6 +6391,7 @@ void UCookOnTheFlyServer::InitializeSandbox(const TArrayView<const ITargetPlatfo
 			bIsInitializingSandbox = false;
 		};
 
+		TSet<const ITargetPlatform*> AlreadyInitializedPlatforms;
 		TArray<const ITargetPlatform*, TInlineAllocator<ExpectedMaxNumPlatforms>> RefreshPlatforms;
 		const bool bIsDiffOnly = FParse::Param(FCommandLine::Get(), TEXT("DIFFONLY"));
 		const bool bIsIterativeCook = IsCookFlagSet(ECookInitializationFlags::Iterative);
@@ -6387,11 +6443,19 @@ void UCookOnTheFlyServer::InitializeSandbox(const TArrayView<const ITargetPlatfo
 			else
 			{
 				RefreshPlatforms.Add(Target);
+				if (PlatformData->bIsSandboxInitialized)
+				{
+					AlreadyInitializedPlatforms.Add(Target);
+				}
 			}
 
 			PlatformData->bIsSandboxInitialized = true;
 		}
 
+		// Don't populate platforms that were already initialized; we already populated them when we first initialized them
+		RefreshPlatforms.RemoveAllSwap([&AlreadyInitializedPlatforms](const ITargetPlatform* TargetPlatform) {
+			return AlreadyInitializedPlatforms.Contains(TargetPlatform);
+			});
 		if (RefreshPlatforms.Num() != 0)
 		{
 			for (UE::Cook::FPackageData* PackageData : *PackageDatas.Get())
@@ -6426,6 +6490,8 @@ void UCookOnTheFlyServer::InitializePackageStore(const TArrayView<const ITargetP
 	const FString ProjectPath = FPaths::ProjectDir();
 	const FString ProjectPathSandbox = ConvertToFullSandboxPath(*ProjectPath, true);
 
+	const bool bIsDiffOnly = FParse::Param(FCommandLine::Get(), TEXT("DIFFONLY"));
+
 	SavePackageContexts.Reserve(TargetPlatforms.Num());
 
 	for (const ITargetPlatform* TargetPlatform: TargetPlatforms)
@@ -6435,7 +6501,7 @@ void UCookOnTheFlyServer::InitializePackageStore(const TArrayView<const ITargetP
 		const FString ResolvedRootPath = RootPathSandbox.Replace(TEXT("[Platform]"), *PlatformString);
 		const FString ResolvedProjectPath = ProjectPathSandbox.Replace(TEXT("[Platform]"), *PlatformString);
 
-		FPackageStoreBulkDataManifest* BulkDataManifest	= new FPackageStoreBulkDataManifest(ResolvedProjectPath);
+		FPackageStoreBulkDataManifest* BulkDataManifest	= bIsDiffOnly == false ? new FPackageStoreBulkDataManifest(ResolvedProjectPath) : nullptr;
 		FLooseFileWriter* LooseFileWriter				= IsUsingPackageStore() ? new FLooseFileWriter() : nullptr;
 
 		FConfigFile PlatformEngineIni;
@@ -6801,12 +6867,13 @@ void UCookOnTheFlyServer::StartCookByTheBook( const FCookByTheBookStartupOptions
 				}
 			}
 
-			check(bSucceeded);
+			checkf(bSucceeded, TEXT("Failed to load DevelopmentAssetRegistry for platform %s"), *InPlatformName);
 		};
 
 		TArray<FName> OverridePackageList;
 		FString DevelopmentAssetRegistryPlatformOverride;
-		if (FParse::Value(FCommandLine::Get(), TEXT("DevelopmentAssetRegistryPlatformOverride="), DevelopmentAssetRegistryPlatformOverride))
+		const bool bUsingDevRegistryOverride = FParse::Value(FCommandLine::Get(), TEXT("DevelopmentAssetRegistryPlatformOverride="), DevelopmentAssetRegistryPlatformOverride);
+		if (bUsingDevRegistryOverride)
 		{
 			// Read the contents of the asset registry for the overriden platform. We'll use this for all requested platforms so we can just keep one copy of it here
 			ReadDevelopmentAssetRegistry(OverridePackageList, *DevelopmentAssetRegistryPlatformOverride);
@@ -6819,7 +6886,7 @@ void UCookOnTheFlyServer::StartCookByTheBook( const FCookByTheBookStartupOptions
 			FString PlatformNameString = TargetPlatform->PlatformName();
 			FName PlatformName(*PlatformNameString);
 
-			if (OverridePackageList.Num() == 0)
+			if (!bUsingDevRegistryOverride)
 			{
 				ReadDevelopmentAssetRegistry(PackageList, PlatformNameString);
 			}
@@ -6855,6 +6922,16 @@ void UCookOnTheFlyServer::StartCookByTheBook( const FCookByTheBookStartupOptions
 		PackageNameCache.SetAssetRegistry(CacheAssetRegistry);
 	}
 	
+	// add shader library chunkers
+	if (PackagingSettings->bShareMaterialShaderCode)
+	{
+		for (const ITargetPlatform* TargetPlatform : TargetPlatforms)
+		{
+			FAssetRegistryGenerator* RegistryGenerator = PlatformManager->GetPlatformData(TargetPlatform)->RegistryGenerator.Get();
+			RegistryGenerator->RegisterChunkDataGenerator(MakeShared<FShaderLibraryChunkDataGenerator>(TargetPlatform));
+		}
+	}
+
 	// don't resave the global shader map files in dlc
 	if (!IsCookingDLC() && !(CookByTheBookStartupOptions.CookOptions & ECookByTheBookOptions::ForceDisableSaveGlobalShaders))
 	{
@@ -6862,7 +6939,7 @@ void UCookOnTheFlyServer::StartCookByTheBook( const FCookByTheBookStartupOptions
 
 		SaveGlobalShaderMapFiles(TargetPlatforms);
 
-		SaveGlobalShaderLibrary();
+		SaveAndCloseGlobalShaderLibrary();
 	}
 	
 	// Open the shader code library for the current project or the current DLC pack, depending on which we are cooking
@@ -7374,6 +7451,7 @@ void UCookOnTheFlyServer::HandleNetworkFileServerRecompileShaders(const FShaderR
 		RecompileData.ShaderPlatform == -1 ? SP_NumPlatforms : (EShaderPlatform)RecompileData.ShaderPlatform,
 		OutputDir, 
 		RecompileData.MaterialsToLoad, 
+		RecompileData.ShadersToRecompile,
 		RecompileData.MeshMaterialMaps, 
 		RecompileData.ModifiedFiles,
 		RecompileData.bCompileChangedShaders);
@@ -7393,38 +7471,50 @@ bool UCookOnTheFlyServer::GetAllPackageFilenamesFromAssetRegistry( const FString
 		check(OutPackageFilenames.Num() == 0);
 		OutPackageFilenames.SetNum(RegistryDataMap.Num());
 
-		TArray<FName> PackageNames;
-		PackageNames.Reserve(RegistryDataMap.Num());
+		TArray<const FAssetData*> Packages;
+		Packages.Reserve(RegistryDataMap.Num());
 
 		for (const TPair<FName, const FAssetData*>& RegistryData : RegistryDataMap)
 		{
-			int32 AddedIndex = PackageNames.Add(RegistryData.Value->PackageName);
-			if (GetPackageNameCache().ContainsPackageName(PackageNames.Last()))
+			int32 AddedIndex = Packages.Add(RegistryData.Value);
+			if (GetPackageNameCache().ContainsPackageName(Packages.Last()->PackageName))
 			{
-				OutPackageFilenames[AddedIndex] = GetPackageNameCache().GetCachedStandardFileName(PackageNames.Last());
+				OutPackageFilenames[AddedIndex] = GetPackageNameCache().GetCachedStandardFileName(Packages.Last()->PackageName);
 			}
 		}
 
 		TArray<TTuple<FName, FString>> PackageToStandardFileNames;
 		PackageToStandardFileNames.SetNum(RegistryDataMap.Num());
 
-		ParallelFor(PackageNames.Num(), [&AssetRegistryPath, &OutPackageFilenames, &PackageToStandardFileNames, &PackageNames, this, bVerifyPackagesExist](int32 AssetIndex)
+		ParallelFor(Packages.Num(), [&AssetRegistryPath, &OutPackageFilenames, &PackageToStandardFileNames, &Packages, this, bVerifyPackagesExist](int32 AssetIndex)
 			{
 				if (!OutPackageFilenames[AssetIndex].IsNone())
 				{
 					return;
 				}
 
-				const FName PackageName = PackageNames[AssetIndex];
+				const FName PackageName = Packages[AssetIndex]->PackageName;
 
 				FString StandardFilename;
-				FName StandardFileFName;
-				if (!GetPackageNameCache().CalculateCacheData(PackageName, StandardFilename, StandardFileFName) && bVerifyPackagesExist)
+				if (!GetPackageNameCache().CalculateCacheData(PackageName, StandardFilename, OutPackageFilenames[AssetIndex]))
 				{
-					UE_LOG(LogCook, Warning, TEXT("Could not resolve package %s from %s"), *PackageName.ToString(), *AssetRegistryPath);
-				}
+					if (bVerifyPackagesExist)
+					{
+						UE_LOG(LogCook, Warning, TEXT("Could not resolve package %s from %s"), *PackageName.ToString(), *AssetRegistryPath);
+					}
+					else
+					{
+						const bool bContainsMap = Packages[AssetIndex]->PackageFlags & PKG_ContainsMap;
+						FString PackageNameStr = PackageName.ToString();
 
-				OutPackageFilenames[AssetIndex] = StandardFileFName;
+						if (FPackageName::TryConvertLongPackageNameToFilename(PackageNameStr, StandardFilename, bContainsMap ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension()))
+						{
+							OutPackageFilenames[AssetIndex] = FPackageNameCache::GetStandardFileName(StandardFilename);
+							StandardFilename = OutPackageFilenames[AssetIndex].ToString();
+						}
+					}
+				}
+				
 				PackageToStandardFileNames[AssetIndex] = TTuple<FName, FString>(PackageName, MoveTemp(StandardFilename));
 			});
 
@@ -7883,7 +7973,9 @@ uint32 UCookOnTheFlyServer::FullLoadAndSave(uint32& CookedPackageCount)
 						}
 								
 						GIsCookerLoadingPackage = true;
-						FSavePackageResultStruct SaveResult = GEditor->Save(Package, World, FlagsToCook, *PlatFilename, GError, NULL, bSwap, false, SaveFlags, Target, FDateTime::MinValue(), false);
+						FSavePackageContext* const SavePackageContext = (IsCookByTheBookMode() && SavePackageContexts.Num() > 0) ? SavePackageContexts[PlatformIndex] : nullptr;
+						FSavePackageResultStruct SaveResult = GEditor->Save(Package, World, FlagsToCook, *PlatFilename, GError, NULL, bSwap, false, SaveFlags, Target, FDateTime::MinValue(), 
+																			false, /*DiffMap*/ nullptr,	SavePackageContext);
 						GIsCookerLoadingPackage = false;
 
 						if (SaveResult == ESavePackageResult::Success && UAssetManager::IsValid())
@@ -7897,8 +7989,11 @@ uint32 UCookOnTheFlyServer::FullLoadAndSave(uint32& CookedPackageCount)
 						const bool bSucceededSavePackage = (SaveResult == ESavePackageResult::Success || SaveResult == ESavePackageResult::GenerateStub || SaveResult == ESavePackageResult::ReplaceCompletely);
 						if (bSucceededSavePackage)
 						{
-							FAssetRegistryGenerator* Generator = PlatformManager->GetPlatformData(Target)->RegistryGenerator.Get();
-							UpdateAssetRegistryPackageData(Generator, Package->GetFName(), SaveResult);
+							{
+								UE::Cook::FPlatformManager::FReadScopeLock PlatformScopeLock(PlatformManager->ReadLockPlatforms());
+								FAssetRegistryGenerator* Generator = PlatformManager->GetPlatformData(Target)->RegistryGenerator.Get();
+								UpdateAssetRegistryPackageData(Generator, *Package, SaveResult);
+							}
 
 							FPlatformAtomics::InterlockedIncrement(&ParallelSavedPackages);
 						}

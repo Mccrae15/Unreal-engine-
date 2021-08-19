@@ -150,10 +150,10 @@ struct FSkelMeshSkinWeightInfo
 
 	/** Index of bones that influence this vertex */
 	UPROPERTY()
-	int32	Bones[MAX_TOTAL_INFLUENCES];
+	int32	Bones[MAX_TOTAL_INFLUENCES] = {};
 	/** Influence of each bone on this vertex */
 	UPROPERTY()
-	uint8	Weights[MAX_TOTAL_INFLUENCES];
+	uint8	Weights[MAX_TOTAL_INFLUENCES] = {};
 };
 
 /** LOD specific setup for the skeletal mesh component. */
@@ -443,6 +443,7 @@ public:
 	 *	Best LOD that was 'predicted' by UpdateSkelPose. 
 	 *	This is what bones were updated based on, so we do not allow rendering at a better LOD than this. 
 	 */
+	UE_DEPRECATED(4.27, "Direct access to PredictedLODLevel has been deprecated and will be removed in a future version. Please use Get/SetPredictedLODLevel() accessors.")
 	int32 PredictedLODLevel;
 
 	/**	High (best) DistanceFactor that was desired for rendering this USkeletalMesh last frame. Represents how big this mesh was in screen space   */
@@ -1120,6 +1121,27 @@ public:
 	 * @return true if LOD has been changed. false otherwise.
 	 */
 	virtual bool UpdateLODStatus();
+
+	/** Get predicted LOD level. This value is usually calculated in UpdateLODStatus, but can be modified by skeletal mesh streaming. */
+	int32 GetPredictedLODLevel() const
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return PredictedLODLevel;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+protected:
+	friend class FSkeletalMeshStreamOut;
+
+	/** Set predicted LOD level. */
+	virtual void SetPredictedLODLevel(int32 InPredictedLODLevel)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		PredictedLODLevel = InPredictedLODLevel;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+public:
 	virtual void UpdateVisualizeLODString(FString& DebugString) {}
 
 	/**
@@ -1627,6 +1649,7 @@ void GetTypedSkinnedTangentBasis(
 	const int32 VertIndex,
 	const TArray<FMatrix> & RefToLocals,
 	FVector& OutTangentX,
+	FVector& OutTangentY,
 	FVector& OutTangentZ
 );
 

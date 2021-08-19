@@ -7,7 +7,7 @@
 #include "Rendering/Texture2DResource.h"
 #include "DMXFixtureActorMatrix.generated.h"
 
-UCLASS(HideCategories = ("Rendering", "Variable", "Input", "Tags", "Activation", "Cooking", "Replication", "AssetUserData", "Collision", "LOD", "Actor", "HLOD"))
+UCLASS()
 class DMXFIXTURES_API ADMXFixtureActorMatrix : public ADMXFixtureActor
 {
 	GENERATED_BODY()
@@ -45,6 +45,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Matrix Fixture")
 	float MatrixDepth;
+
+	/** If set to true, ignores the distribution set in the patch (hence the distribution becomes visible when not left to right, top to bottom) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "DMX Matrix Fixture")
+	bool bIgnorePixelMappingDistributionOfFixturePatch = false;
 
 	void GenerateMatrixMesh();
 	void GenerateMatrixCells();

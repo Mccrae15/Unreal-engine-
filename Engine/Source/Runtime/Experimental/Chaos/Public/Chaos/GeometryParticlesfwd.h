@@ -2,9 +2,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Chaos/Real.h"
 
 namespace Chaos
 {
+	//Used for down casting when iterating over multiple SOAs.
+	enum class EParticleType : uint8
+	{
+		Static,
+		Kinematic,
+		Rigid,
+		Clustered,	//only applicable on physics thread side
+		StaticMesh,
+		SkeletalMesh,
+		GeometryCollection,
+		Unknown
+	};
+
 	enum class EGeometryParticlesSimType
 	{
 		RigidBodySim,
@@ -35,6 +49,8 @@ namespace Chaos
 	template <typename T, int d>
 	using TGeometryParticles = TGeometryParticlesImp<T, d, EGeometryParticlesSimType::RigidBodySim>;
 
+	using FGeometryParticles = TGeometryParticles<FReal, 3>;
+
 	template <typename T, int d>
 	using TGeometryClothParticles = TGeometryParticlesImp<T, d, EGeometryParticlesSimType::Other>;
 
@@ -45,6 +61,7 @@ namespace Chaos
 		uint16 InnerIdx : 13;
 
 		static constexpr uint16 MaxBucketEntries = 1 << 13;
+		static constexpr uint16 MaxBuckets = 1 << 3;
 
 		bool operator==(const FSpatialAccelerationIdx& Rhs) const
 		{

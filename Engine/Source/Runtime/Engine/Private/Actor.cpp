@@ -48,7 +48,6 @@
 
 DEFINE_LOG_CATEGORY(LogActor);
 
-DEFINE_STAT(STAT_GetComponentsTime);
 DECLARE_CYCLE_STAT(TEXT("PostActorConstruction"), STAT_PostActorConstruction, STATGROUP_Engine);
 
 #if UE_BUILD_SHIPPING
@@ -2113,31 +2112,34 @@ void AActor::SetNetDormancy(ENetDormancy NewDormancy)
 	}
 
 	UWorld* MyWorld = GetWorld();
-	UNetDriver* NetDriver = GEngine->FindNamedNetDriver(MyWorld, NetDriverName);
-	if (NetDriver)
+	if (MyWorld)
 	{
-		ENetDormancy OldDormancy = NetDormancy;
-		NetDormancy = NewDormancy;
-
-		// Tell driver about change
-		if (OldDormancy != NewDormancy)
+		UNetDriver* NetDriver = GEngine->FindNamedNetDriver(MyWorld, NetDriverName);
+		if (NetDriver)
 		{
-			NetDriver->NotifyActorDormancyChange(this, OldDormancy);
-		}
+			ENetDormancy OldDormancy = NetDormancy;
+			NetDormancy = NewDormancy;
 
-		// If not dormant, flush actor from NetDriver's dormant list
-		if (NewDormancy <= DORM_Awake)
-		{
-			// Since we are coming out of dormancy, make sure we are on the network actor list
-			MyWorld->AddNetworkActor( this );
-
-			NetDriver->FlushActorDormancy(this);
-
-			if (UDemoNetDriver* DemoNetDriver = MyWorld->GetDemoNetDriver())
+			// Tell driver about change
+			if (OldDormancy != NewDormancy)
 			{
-				if (DemoNetDriver != NetDriver)
+				NetDriver->NotifyActorDormancyChange(this, OldDormancy);
+			}
+
+			// If not dormant, flush actor from NetDriver's dormant list
+			if (NewDormancy <= DORM_Awake)
+			{
+				// Since we are coming out of dormancy, make sure we are on the network actor list
+				MyWorld->AddNetworkActor(this);
+
+				NetDriver->FlushActorDormancy(this);
+
+				if (UDemoNetDriver* DemoNetDriver = MyWorld->GetDemoNetDriver())
 				{
-					DemoNetDriver->FlushActorDormancy(this);
+					if (DemoNetDriver != NetDriver)
+					{
+						DemoNetDriver->FlushActorDormancy(this);
+					}
 				}
 			}
 		}
@@ -2987,11 +2989,11 @@ void AActor::DisableComponentsSimulatePhysics()
 
 void AActor::PreRegisterAllComponents()
 {
-	FNavigationSystem::OnActorRegistered(*this);
 }
 
 void AActor::PostRegisterAllComponents() 
 {
+	FNavigationSystem::OnActorRegistered(*this);
 }
 
 /** Util to call OnComponentCreated on components */
@@ -4952,6 +4954,11 @@ float AActor::GetSquaredDistanceTo(const AActor* OtherActor) const
 float AActor::GetHorizontalDistanceTo(const AActor* OtherActor) const
 {
 	return OtherActor ? (GetActorLocation() - OtherActor->GetActorLocation()).Size2D() : 0.f;
+}
+
+float AActor::GetSquaredHorizontalDistanceTo(const AActor* OtherActor) const
+{
+	return OtherActor ? (GetActorLocation() - OtherActor->GetActorLocation()).SizeSquared2D() : 0.f;
 }
 
 float AActor::GetVerticalDistanceTo(const AActor* OtherActor) const

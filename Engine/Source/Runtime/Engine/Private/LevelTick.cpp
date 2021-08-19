@@ -45,6 +45,9 @@
 #if ENABLE_COLLISION_ANALYZER
 #include "PhysicsEngine/CollisionAnalyzerCapture.h"
 #endif
+#if !UE_SERVER
+#include "IMediaModule.h"
+#endif
 
 //#include "SoundDefinitions.h"
 #include "FXSystem.h"
@@ -997,7 +1000,7 @@ void EndSendEndOfFrameUpdatesDrawEvent(FSendAllEndOfFrameUpdates* SendAllEndOfFr
 
 		#if RHI_RAYTRACING
 			SendAllEndOfFrameUpdates->GPUSkinCache->CommitRayTracingGeometryUpdates(RHICmdList);
-		#endif
+		#endif // RHI_RAYTRACING
 		}
 
 		delete SendAllEndOfFrameUpdates;
@@ -1012,6 +1015,9 @@ void UWorld::SendAllEndOfFrameUpdates()
 	SCOPE_CYCLE_COUNTER(STAT_PostTickComponentUpdate);
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EndOfFrameUpdates);
 	CSV_SCOPED_SET_WAIT_STAT(EndOfFrameUpdates);
+
+	// Allow systems to complete async work that could introduce additional components to end of frame updates
+	FWorldDelegates::OnWorldPreSendAllEndOfFrameUpdates.Broadcast(this);
 
 	if (!HasEndOfFrameUpdates())
 	{
@@ -1419,9 +1425,39 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 			SCOPE_CYCLE_COUNTER(STAT_TickTime);
 			FWorldDelegates::OnWorldPreActorTick.Broadcast(this, TickType, DeltaSeconds);
 		}
+	}
 
-		// Tick level sequence actors first
-		MovieSceneSequenceTick.Broadcast(DeltaSeconds);
+	// Tick level sequence actors first
+	MovieSceneSequenceTick.Broadcast(DeltaSeconds);
+
+#if !UE_SERVER
+	if (MovieSceneSequenceTick.IsBound())
+	{
+		// tick media framework pre-engine
+		// (needs to be delayed post movie scene tick delegates handling, sif they are used - otherwise is triggered elsewhere)
+		static const FName MediaModuleName(TEXT("Media"));
+		IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>(MediaModuleName);
+		if (MediaModule != nullptr)
+		{
+			MediaModule->TickPreEngine();
+		}
+	}
+#endif
+
+	// If only the DynamicLevel collection has entries, we can skip the validation and tick all levels.
+	bool bValidateLevelList = false;
+
+	for (const FLevelCollection& LevelCollection : LevelCollections)
+	{
+		if (LevelCollection.GetType() != ELevelCollectionType::DynamicSourceLevels)
+		{
+			const int32 NumLevels = LevelCollection.GetLevels().Num();
+			if (NumLevels != 0)
+			{
+				bValidateLevelList = true;
+				break;
+			}
+		}
 	}
 
 	for (int32 i = 0; i < LevelCollections.Num(); ++i)
@@ -1431,7 +1467,8 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 		TArray<ULevel*> LevelsToTick;
 		for (ULevel* CollectionLevel : LevelCollections[i].GetLevels())
 		{
-			if (Levels.Contains(CollectionLevel))
+			const bool bAddToTickList = (bValidateLevelList == false) || Levels.Contains(CollectionLevel);
+			if (bAddToTickList && CollectionLevel)
 			{
 				LevelsToTick.Add(CollectionLevel);
 			}
@@ -1449,10 +1486,10 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 			FTickTaskManagerInterface::Get().StartFrame(this, DeltaSeconds, TickType, LevelsToTick);
 
 			SCOPE_CYCLE_COUNTER(STAT_TickTime);
+			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(TickActors);
 			{
 				SCOPE_TIME_GUARD_MS(TEXT("UWorld::Tick - TG_PrePhysics"), 10);
 				SCOPE_CYCLE_COUNTER(STAT_TG_PrePhysics);
-				CSV_SCOPED_TIMING_STAT_EXCLUSIVE(PrePhysicsMisc);
 				CSV_SCOPED_SET_WAIT_STAT(PrePhysics);
 				RunTickGroup(TG_PrePhysics);
 			}
@@ -1462,14 +1499,12 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 			{
 				SCOPE_CYCLE_COUNTER(STAT_TG_StartPhysics);
 				SCOPE_TIME_GUARD_MS(TEXT("UWorld::Tick - TG_StartPhysics"), 10);
-				CSV_SCOPED_TIMING_STAT_EXCLUSIVE(StartPhysicsMisc);
 				CSV_SCOPED_SET_WAIT_STAT(StartPhysics);
 				RunTickGroup(TG_StartPhysics);
 			}
 			{
 				SCOPE_CYCLE_COUNTER(STAT_TG_DuringPhysics);
 				SCOPE_TIME_GUARD_MS(TEXT("UWorld::Tick - TG_DuringPhysics"), 10);
-				CSV_SCOPED_TIMING_STAT_EXCLUSIVE(DuringPhysicsMisc);
 				CSV_SCOPED_SET_WAIT_STAT(DuringPhysics);
 				RunTickGroup(TG_DuringPhysics, false); // No wait here, we should run until idle though. We don't care if all of the async ticks are done before we start running post-phys stuff
 			}
@@ -1477,14 +1512,12 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 			{
 				SCOPE_CYCLE_COUNTER(STAT_TG_EndPhysics);
 				SCOPE_TIME_GUARD_MS(TEXT("UWorld::Tick - TG_EndPhysics"), 10);
-				CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EndPhysicsMisc);
 				CSV_SCOPED_SET_WAIT_STAT(EndPhysics);
 				RunTickGroup(TG_EndPhysics);
 			}
 			{
 				SCOPE_CYCLE_COUNTER(STAT_TG_PostPhysics);
 				SCOPE_TIME_GUARD_MS(TEXT("UWorld::Tick - TG_PostPhysics"), 10);
-				CSV_SCOPED_TIMING_STAT_EXCLUSIVE(PostPhysicsMisc);
 				CSV_SCOPED_SET_WAIT_STAT(PostPhysics);
 				RunTickGroup(TG_PostPhysics);
 			}
@@ -1501,6 +1534,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 			// Process any remaining latent actions
 			if( !bIsPaused )
 			{
+				CSV_SCOPED_TIMING_STAT_EXCLUSIVE(FlushLatentActions);
 				// This will process any latent actions that have not been processed already
 				CurrentLatentActionManager.ProcessLatentActions(nullptr, DeltaSeconds);
 			}

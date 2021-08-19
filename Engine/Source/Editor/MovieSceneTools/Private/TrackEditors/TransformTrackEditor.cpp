@@ -572,7 +572,7 @@ void F3DTransformTrackEditor::OnLockCameraClicked(ECheckBoxState CheckBoxState, 
 			}
 
 			GetSequencer()->SetPerspectiveViewportCameraCutEnabled(false);
-			LevelVC->SetMatineeActorLock(nullptr);
+			LevelVC->SetCinematicActorLock(nullptr);
 			LevelVC->SetActorLock(CameraActor.Get());
 			LevelVC->bLockedCameraView = true;
 			LevelVC->UpdateViewForLockedActor();
@@ -594,7 +594,7 @@ void F3DTransformTrackEditor::ClearLockedCameras(AActor* LockedActor)
 		{
 			if (LevelVC->IsActorLocked(LockedActor))
 			{
-				LevelVC->SetMatineeActorLock(nullptr);
+				LevelVC->SetCinematicActorLock(nullptr);
 				LevelVC->SetActorLock(nullptr);
 				LevelVC->bLockedCameraView = false;
 				LevelVC->ViewFOV = LevelVC->FOVAngle;
@@ -655,6 +655,9 @@ FRotator UnwindRotator(const FRotator& InOld, const FRotator& InNew)
 
 void F3DTransformTrackEditor::GetTransformKeys( const TOptional<FTransformData>& LastTransform, const FTransformData& CurrentTransform, EMovieSceneTransformChannel ChannelsToKey, UObject* Object, UMovieSceneSection* Section, FGeneratedTrackKeys& OutGeneratedKeys)
 {
+	UMovieScene3DTransformSection* TransformSection = Cast<UMovieScene3DTransformSection>(Section);
+	EMovieSceneTransformChannel TransformMask = TransformSection->GetMask().GetChannels();
+
 	using namespace UE::MovieScene;
 
 	bool bLastVectorIsValid = LastTransform.IsSet();
@@ -688,6 +691,19 @@ void F3DTransformTrackEditor::GetTransformKeys( const TOptional<FTransformData>&
 			bKeyX = bKeyY = bKeyZ = true;
 		}
 
+		if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::TranslationX))
+		{
+			bKeyX = false;
+		}
+		if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::TranslationY))
+		{
+			bKeyY = false;
+		}
+		if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::TranslationZ))
+		{
+			bKeyZ = false;
+		}
+
 		FVector KeyVector = RecomposedTransform.Translation;
 
 		OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(0, KeyVector.X, bKeyX));
@@ -716,6 +732,19 @@ void F3DTransformTrackEditor::GetTransformKeys( const TOptional<FTransformData>&
 			bKeyX = bKeyY = bKeyZ = true;
 		}
 
+		if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::RotationX))
+		{
+			bKeyX = false;
+		}
+		if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::RotationY))
+		{
+			bKeyY = false;
+		}
+		if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::RotationZ))
+		{
+			bKeyZ = false;
+		}
+
 		// Do we need to unwind re-composed rotations?
 		KeyRotator = UnwindRotator(CurrentTransform.Rotation, RecomposedTransform.Rotation);
 		OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(3, KeyRotator.Roll, bKeyX));
@@ -740,6 +769,19 @@ void F3DTransformTrackEditor::GetTransformKeys( const TOptional<FTransformData>&
 		if (GetSequencer()->GetKeyGroupMode() == EKeyGroupMode::KeyGroup && (bKeyX || bKeyY || bKeyZ))
 		{
 			bKeyX = bKeyY = bKeyZ = true;
+		}
+
+		if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::ScaleX))
+		{
+			bKeyX = false;
+		}
+		if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::ScaleY))
+		{
+			bKeyY = false;
+		}
+		if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::ScaleZ))
+		{
+			bKeyZ = false;
 		}
 
 		FVector KeyVector = RecomposedTransform.Scale;
@@ -875,25 +917,33 @@ void F3DTransformTrackEditor::ProcessKeyOperation(UObject* ObjectToKey, TArrayVi
 
 	TGuardValue<FEntityManager*> DebugVizGuard(GEntityManagerForDebuggingVisualizers, &Interrogator.GetLinker()->EntityManager);
 
-	TSet<UMovieSceneTrack*> TracksToInterrogate;
+	TArray<FInterrogationChannel> InterrogationChannelsPerOperations;
 	for (const FKeySectionOperation& Operation : SectionsToKey)
 	{
-		if (UMovieSceneTrack* Track = Operation.Section->GetSectionObject()->GetTypedOuter<UMovieSceneTrack>())
+		if (UMovieScenePropertyTrack* Track = Operation.Section->GetSectionObject()->GetTypedOuter<UMovieScenePropertyTrack>())
 		{
-			TracksToInterrogate.Add(Track);
+			const FMovieScenePropertyBinding PropertyBinding = Track->GetPropertyBinding();
+			const FInterrogationChannel InterrogationChannel = Interrogator.AllocateChannel(Component, PropertyBinding);
+			InterrogationChannelsPerOperations.Add(InterrogationChannel);
+			Interrogator.ImportTrack(Track, InterrogationChannel);
+		}
+		else
+		{
+			InterrogationChannelsPerOperations.Add(FInterrogationChannel::Invalid());
 		}
 	}
 
-	// Don't care about the object binding ID for now
-	Interrogator.ImportTracks(TracksToInterrogate.Array(), FGuid(), FInterrogationChannel::Default());
 	Interrogator.AddInterrogation(KeyTime);
 
 	Interrogator.Update();
 
 	TArray<FMovieSceneEntityID> EntitiesPerSection, ValidEntities;
-	for (const FKeySectionOperation& Operation : SectionsToKey)
+	for (int32 Index = 0; Index < SectionsToKey.Num(); ++Index)
 	{
-		FMovieSceneEntityID EntityID = Interrogator.FindEntityFromOwner(FInterrogationKey::Default(), Operation.Section->GetSectionObject(), 0);
+		const FKeySectionOperation& Operation = SectionsToKey[Index];
+		const FInterrogationChannel InterrogationChannel = InterrogationChannelsPerOperations[Index];
+		const FInterrogationKey InterrogationKey(InterrogationChannel, 0);
+		FMovieSceneEntityID EntityID = Interrogator.FindEntityFromOwner(InterrogationKey, Operation.Section->GetSectionObject(), 0);
 
 		EntitiesPerSection.Add(EntityID);
 		if (EntityID)
@@ -912,7 +962,7 @@ void F3DTransformTrackEditor::ProcessKeyOperation(UObject* ObjectToKey, TArrayVi
 		Query.Object   = Component;
 
 		FIntermediate3DTransform CurrentValue(Component->GetRelativeLocation(), Component->GetRelativeRotation(), Component->GetRelativeScale3D());
-		TRecompositionResult<FIntermediate3DTransform> TransformData = System->RecomposeBlendFinal(FMovieSceneTracksComponentTypes::Get()->ComponentTransform, Query, CurrentValue);
+		TRecompositionResult<FIntermediate3DTransform> TransformData = System->RecomposeBlendOperational(FMovieSceneTracksComponentTypes::Get()->ComponentTransform, Query, CurrentValue);
 
 		for (int32 Index = 0; Index < SectionsToKey.Num(); ++Index)
 		{

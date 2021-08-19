@@ -23,6 +23,9 @@ FMovieSceneRootEvaluationTemplateInstance::FMovieSceneRootEvaluationTemplateInst
 	, EntitySystemLinker(nullptr)
 	, RootID(MovieSceneSequenceID::Root)
 {
+#if WITH_EDITOR
+	EmulatedNetworkMask = EMovieSceneServerClientMask::All;
+#endif
 }
 
 void FMovieSceneRootEvaluationTemplateInstance::BeginDestroy()
@@ -70,7 +73,30 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 	}
 	else
 	{
+#if WITH_EDITOR
+		EMovieSceneServerClientMask Mask = EmulatedNetworkMask;
+		if (Mask == EMovieSceneServerClientMask::All)
+		{
+			UObject* PlaybackContext = Player.GetPlaybackContext();
+			UWorld* World = PlaybackContext ? PlaybackContext->GetWorld() : nullptr;
+
+			if (World)
+			{
+				ENetMode NetMode = World->GetNetMode();
+				if (NetMode == ENetMode::NM_DedicatedServer)
+				{
+					Mask = EMovieSceneServerClientMask::Server;
+				}
+				else if (NetMode == ENetMode::NM_Client)
+				{
+					Mask = EMovieSceneServerClientMask::Client;
+				}
+			}
+		}
+		CompiledDataManager = UMovieSceneCompiledDataManager::GetPrecompiledData(Mask);
+#else
 		CompiledDataManager = UMovieSceneCompiledDataManager::GetPrecompiledData();
+#endif
 	}
 	bReinitialize |= (PreviousCompiledDataManager != CompiledDataManager);
 
@@ -105,6 +131,8 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 		EntitySystemLinker = ConstructEntityLinker(Player);
 		EntitySystemRunner.AttachToLinker(EntitySystemLinker);
 		RootInstanceHandle = EntitySystemLinker->GetInstanceRegistry()->AllocateRootInstance(&Player);
+
+		Player.PreAnimatedState.Initialize(EntitySystemLinker, RootInstanceHandle);
 	}
 }
 
@@ -128,6 +156,14 @@ void FMovieSceneRootEvaluationTemplateInstance::Finish(IMovieScenePlayer& Player
 	}
 
 	DirectorInstances.Reset();
+}
+
+void FMovieSceneRootEvaluationTemplateInstance::EnableGlobalPreAnimatedStateCapture()
+{
+	if (ensure(EntitySystemLinker))
+	{
+		EntitySystemLinker->GetInstanceRegistry()->MutateInstance(RootInstanceHandle).EnableGlobalPreAnimatedStateCapture(EntitySystemLinker);
+	}
 }
 
 UMovieSceneSequence* FMovieSceneRootEvaluationTemplateInstance::GetSequence(FMovieSceneSequenceIDRef SequenceID) const
@@ -202,8 +238,15 @@ void FMovieSceneRootEvaluationTemplateInstance::GetSequenceParentage(const UE::M
 	const FMovieSceneSequenceHierarchyNode* HierarchyNode = Hierarchy->FindNode(Instance.GetSequenceID());
 	while (HierarchyNode && HierarchyNode->ParentID.IsValid())
 	{
-		const FInstanceHandle ParentHandle = RootInstance.FindSubInstance(HierarchyNode->ParentID);
-		OutParentHandles.Add(ParentHandle);
+		if (HierarchyNode->ParentID != MovieSceneSequenceID::Root)
+		{
+			const FInstanceHandle ParentHandle = RootInstance.FindSubInstance(HierarchyNode->ParentID);
+			OutParentHandles.Add(ParentHandle);
+		}
+		else
+		{
+			OutParentHandles.Add(RootInstanceHandle);
+		}
 		HierarchyNode = Hierarchy->FindNode(HierarchyNode->ParentID);
 	}
 }
@@ -279,14 +322,14 @@ UObject* FMovieSceneRootEvaluationTemplateInstance::GetOrCreateDirectorInstance(
 	{
 		if (UMovieSceneSequence* Sequence = WeakRootSequence.Get())
 		{
-			NewDirectorInstance = Sequence->CreateDirectorInstance(Player);
+			NewDirectorInstance = Sequence->CreateDirectorInstance(Player, SequenceID);
 		}
 	}
 	else if (const FMovieSceneSequenceHierarchy* Hierarchy = CompiledDataManager->FindHierarchy(CompiledDataID))
 	{
 		const FMovieSceneSubSequenceData* SubData = Hierarchy->FindSubData(SequenceID);
 		check(SubData);
-		NewDirectorInstance = SubData->GetSequence()->CreateDirectorInstance(Player);
+		NewDirectorInstance = SubData->GetSequence()->CreateDirectorInstance(Player, SequenceID);
 	}
 
 	if (NewDirectorInstance)
@@ -299,11 +342,21 @@ UObject* FMovieSceneRootEvaluationTemplateInstance::GetOrCreateDirectorInstance(
 
 void FMovieSceneRootEvaluationTemplateInstance::PlaybackContextChanged(IMovieScenePlayer& Player)
 {
+	using namespace UE::MovieScene;
+
+	const bool bGlobalCapture = EntitySystemLinker
+		&& RootInstanceHandle.IsValid()
+		&& EntitySystemLinker->GetInstanceRegistry()->GetInstance(RootInstanceHandle).IsCapturingGlobalPreAnimatedState();
+
 	if (EntitySystemLinker && !EntitySystemLinker->IsPendingKillOrUnreachable() && !EntitySystemLinker->HasAnyFlags(RF_BeginDestroyed))
 	{
 		EntitySystemLinker->CleanupInvalidBoundObjects();
 
 		Finish(Player);
+		if (bGlobalCapture)
+		{
+			Player.RestorePreAnimatedState();
+		}
 		EntitySystemLinker->GetInstanceRegistry()->DestroyInstance(RootInstanceHandle);
 	}
 
@@ -316,6 +369,12 @@ void FMovieSceneRootEvaluationTemplateInstance::PlaybackContextChanged(IMovieSce
 
 	RootInstanceHandle = EntitySystemLinker->GetInstanceRegistry()->AllocateRootInstance(&Player);
 	DirectorInstances.Reset();
+
+	Player.PreAnimatedState.Initialize(EntitySystemLinker, RootInstanceHandle);
+	if (bGlobalCapture)
+	{
+		EnableGlobalPreAnimatedStateCapture();
+	}
 }
 
 
@@ -337,3 +396,15 @@ void FMovieSceneRootEvaluationTemplateInstance::CopyActuators(FMovieSceneBlendin
 		LegacyEvaluator->CopyActuators(Accumulator);
 	}
 }
+
+#if WITH_EDITOR
+void FMovieSceneRootEvaluationTemplateInstance::SetEmulatedNetworkMask(EMovieSceneServerClientMask InNewMask, IMovieScenePlayer& Player)
+{
+	check(InNewMask != EMovieSceneServerClientMask::None);
+	EmulatedNetworkMask = InNewMask;
+}
+EMovieSceneServerClientMask FMovieSceneRootEvaluationTemplateInstance::GetEmulatedNetworkMask() const
+{
+	return EmulatedNetworkMask;
+}
+#endif

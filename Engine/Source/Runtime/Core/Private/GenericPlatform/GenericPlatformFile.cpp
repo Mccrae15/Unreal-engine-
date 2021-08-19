@@ -197,6 +197,16 @@ void FGenericReadRequestWorker::DoWork()
 #define DISABLE_BUFFERING_ON_GENERIC_ASYNC_FILE_HANDLE 1
 #endif
 
+static int32 GCacheHandleForPakFilesOnly = 1;
+static FAutoConsoleVariableRef CVarCacheHandleForPakFilesOnly(
+	TEXT("AsyncReadFile.CacheHandleForPakFilesOnly"),
+	GCacheHandleForPakFilesOnly,
+	TEXT("Control how Async read handle caches the underlying platform handle for files.\n")
+	TEXT("0: Cache the underlying platform handles for all files.\n")
+	TEXT("1: Cache the underlying platform handle for .pak files only (default).\n"),
+	ECVF_Default
+);
+
 class FGenericAsyncReadFileHandle final : public IAsyncReadFileHandle
 {
 	IPlatformFile* LowerLevel;
@@ -216,7 +226,7 @@ public:
 		, bDisableHandleCaching(!!DISABLE_HANDLE_CACHING)
 	{
 #if !WITH_EDITOR
-		if (!Filename.EndsWith(TEXT(".pak")))
+		if (GCacheHandleForPakFilesOnly && !Filename.EndsWith(TEXT(".pak")))
 		{
 			bDisableHandleCaching = true; // Closing files can be slow, so we want to do that on the thread and not on the calling thread. Pak files are rarely, if ever, closed and that is where the handle caching saves.
 		}
@@ -270,6 +280,21 @@ public:
 			LiveRequests.Add(Result);
 		}
 		return Result;
+	}
+
+	virtual void ShrinkHandleBuffers() override
+	{
+		if (!bDisableHandleCaching)
+		{
+			FScopeLock Lock(&HandleCacheCritical);
+			for (int32 Index = 0; Index < MAX_CACHED_SYNC_FILE_HANDLES_PER_GENERIC_ASYNC_FILE_HANDLE; Index++)
+			{
+				if (HandleCache[Index])
+				{
+					HandleCache[Index]->ShrinkBuffers();
+				}
+			}
+		}
 	}
 
 	IFileHandle* GetHandle()

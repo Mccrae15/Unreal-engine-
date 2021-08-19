@@ -305,6 +305,24 @@ public:
 	 * @param VolumetricCloudSceneProxy - the sky atmosphere proxy
 	 */
 	virtual void RemoveVolumetricCloud(FVolumetricCloudSceneProxy* VolumetricCloudSceneProxy) = 0;
+
+	/**
+	 * Set the physics field scene proxy to the scene
+	 *
+	 * @param PhysicsFieldSceneProxy - the physics field scene proxy
+	 */
+	virtual void SetPhysicsField(class FPhysicsFieldSceneProxy* PhysicsFieldSceneProxy) = 0;
+
+	/**
+	 * Reset the physics field scene proxy
+	 */
+	virtual void ResetPhysicsField() = 0;
+
+	/**
+	 * Reset the physics field scene proxy
+	 */
+	virtual void UpdatePhysicsField(FRHICommandListImmediate& RHICmdList, FViewInfo& View) = 0;
+
 	/**
 	 * Returns the scene's unique info if it exists
 	 */
@@ -321,6 +339,11 @@ public:
 	 * @param WindComponent - The component to remove.
 	 */
 	virtual void RemoveWindSource(class UWindDirectionalSourceComponent* WindComponent) = 0;
+	/**
+	 * Update a wind source component from the scene.
+	 * @param WindComponent - The component to update.
+	 */
+	virtual void UpdateWindSource(class UWindDirectionalSourceComponent* WindComponent) = 0;
 	/**
 	 * Accesses the wind source list.  Must be called in the rendering thread.
 	 * @return The list of wind sources in the scene.

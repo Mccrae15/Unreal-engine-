@@ -8,6 +8,9 @@
 #include "EntitySystem/MovieSceneBoundObjectInstantiator.h"
 #include "EntitySystem/MovieSceneBoundSceneComponentInstantiator.h"
 
+#include "PreAnimatedState/MovieScenePreAnimatedComponentTransformStorage.h"
+#include "Evaluation/PreAnimatedState/MovieScenePreAnimatedStorageID.inl"
+
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "MovieSceneTracksComponentTypes.h"
 
@@ -23,52 +26,15 @@ namespace MovieScene
 {
 
 
-
-struct F3DAttachTokenProducer : IMovieScenePreAnimatedTokenProducer
-{
-	/** Cache the existing state of an object before moving it */
-	virtual IMovieScenePreAnimatedTokenPtr CacheExistingState(UObject& Object) const override
-	{
-		struct FToken : IMovieScenePreAnimatedToken
-		{
-			FTransform ComponentTransform;
-			FPreAnimAttachment Attachment;
-
-			virtual void RestoreState(UObject& InObject, IMovieScenePlayer& Player) override
-			{
-				USceneComponent* SceneComponent = CastChecked<USceneComponent>(&InObject);
-				Attachment.DetachParams.ApplyDetach(SceneComponent, Attachment.OldAttachParent.Get(), Attachment.OldAttachSocket);
-			}
-		};
-
-		USceneComponent* SceneComponent = CastChecked<USceneComponent>(&Object);
-
-		FToken Token;
-		Token.Attachment.OldAttachParent = SceneComponent->GetAttachParent();
-		Token.Attachment.OldAttachSocket = SceneComponent->GetAttachSocketName();
-		return Token;
-	}
-};
-
-
 struct FInitializeAttachParentsTask
 {
 	FInstanceRegistry* InstanceRegistry;
 
 	void ForEachEntity(UE::MovieScene::FInstanceHandle InstanceHandle, const FMovieSceneObjectBindingID& BindingID, const UE::MovieScene::FAttachmentComponent& AttachComponent, USceneComponent*& OutAttachedParent)
 	{
-		const FSequenceInstance* TargetInstance = &InstanceRegistry->GetInstance(InstanceHandle);
+		const FSequenceInstance& TargetInstance = InstanceRegistry->GetInstance(InstanceHandle);
 
-		IMovieScenePlayer* Player = TargetInstance->GetPlayer();
-
-		FMovieSceneSequenceID ResolvedSequenceID = BindingID.GetSequenceID();
-		if (!TargetInstance->IsRootSequence())
-		{
-			ResolvedSequenceID = BindingID.ResolveLocalToRoot(TargetInstance->GetSequenceID(), *Player).GetSequenceID();
-			TargetInstance = &InstanceRegistry->GetInstance(TargetInstance->GetRootInstanceHandle());
-		}
-
-		for (TWeakObjectPtr<> WeakObject : Player->FindBoundObjects(BindingID.GetGuid(), ResolvedSequenceID))
+		for (TWeakObjectPtr<> WeakObject : BindingID.ResolveBoundObjects(TargetInstance))
 		{
 			if (AActor* ParentActor = Cast<AActor>(WeakObject.Get()))
 			{
@@ -110,8 +76,8 @@ struct FAttachmentHandler
 
 		for (FMovieSceneEntityID Entity : Inputs)
 		{
-			TComponentPtr<USceneComponent* const>     AttachParentComponent = EntityManager->ReadComponent(Entity, TrackComponents->AttachParent);
-			TComponentPtr<const FAttachmentComponent> AttachmentComponent   = EntityManager->ReadComponent(Entity, TrackComponents->AttachComponent);
+			TOptionalComponentReader<USceneComponent*>     AttachParentComponent = EntityManager->ReadComponent(Entity, TrackComponents->AttachParent);
+			TOptionalComponentReader<FAttachmentComponent> AttachmentComponent   = EntityManager->ReadComponent(Entity, TrackComponents->AttachComponent);
 			if (AttachParentComponent && AttachmentComponent)
 			{
 				if (USceneComponent* AttachParent = *AttachParentComponent)
@@ -135,6 +101,37 @@ struct FAttachmentHandler
 		}
 	}
 };
+
+struct FComponentAttachmentPreAnimatedTraits
+{
+	using KeyType     = FObjectKey;
+	using StorageType = FPreAnimAttachment;
+
+	static void CachePreAnimatedValue(UObject* InObject, FPreAnimAttachment& OutCachedAttachment)
+	{
+		USceneComponent* SceneComponent = CastChecked<USceneComponent>(InObject);
+
+		OutCachedAttachment.OldAttachParent = SceneComponent->GetAttachParent();
+		OutCachedAttachment.OldAttachSocket = SceneComponent->GetAttachSocketName();
+	}
+	static void RestorePreAnimatedValue(const FObjectKey& InKey, FPreAnimAttachment& InOutCachedAttachment, const FRestoreStateParams& Params)
+	{
+		if (USceneComponent* SceneComponent = Cast<USceneComponent>(InKey.ResolveObjectPtr()))
+		{
+			InOutCachedAttachment.DetachParams.ApplyDetach(SceneComponent, InOutCachedAttachment.OldAttachParent.Get(), InOutCachedAttachment.OldAttachSocket);
+		}
+	}
+};
+
+struct FPreAnimatedComponentAttachmentStorage
+	: TPreAnimatedStateStorage_ObjectTraits<FComponentAttachmentPreAnimatedTraits>
+{
+	static TAutoRegisterPreAnimatedStorageID<FPreAnimatedComponentAttachmentStorage> StorageID;
+
+	FPreAnimatedStorageID GetStorageType() const override { return StorageID; }
+};
+
+TAutoRegisterPreAnimatedStorageID<FPreAnimatedComponentAttachmentStorage> FPreAnimatedComponentAttachmentStorage::StorageID;
 
 } // namespace MovieScene
 } // namespace UE
@@ -180,7 +177,6 @@ UMovieSceneComponentAttachmentSystem::UMovieSceneComponentAttachmentSystem(const
 		DefineImplicitPrerequisite(UMovieSceneCachePreAnimatedStateSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(UMovieSceneComponentMobilitySystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(GetClass(), UMovieSceneRestorePreAnimatedStateSystem::StaticClass());
-		DefineImplicitPrerequisite(GetClass(), UMovieScenePreAnimatedComponentTransformSystem::StaticClass());
 
 		DefineComponentConsumer(GetClass(), FBuiltInComponentTypes::Get()->BoundObject);
 		DefineComponentConsumer(GetClass(), FBuiltInComponentTypes::Get()->SymbolicTags.CreatesEntities);
@@ -241,44 +237,7 @@ void UMovieSceneComponentAttachmentSystem::OnRun(FSystemTaskPrerequisites& InPre
 	Filter.All({ TrackComponents->AttachComponent });
 
 	AttachmentTracker.Update(Linker, FBuiltInComponentTypes::Get()->BoundObject, Filter);
-
-	// ---------------------------------------------------------------------------------------------------------
-	// 4.26.2: FEntityOutputAggregate::bNeedsRestoration does not update correctly when transitioning from 
-	// restore state sections to keep state sections - this hack addresses the issue in a hotfix conformant manner
-	struct FHACK_UpdateRestoreState : TOverlappingEntityTracker_BoundObject<FPreAnimAttachment>
-	{
-		void UpdateInvalidatedRestoreStates(UMovieSceneEntitySystemLinker* InLinker)
-		{
-			FComponentTypeID RestoreStateTag = FBuiltInComponentTypes::Get()->Tags.RestoreState;
-
-			for (TConstSetBitIterator<> InvalidOutput(this->InvalidatedOutputs); InvalidOutput; ++InvalidOutput)
-			{
-				const uint16 OutputIndex = static_cast<uint16>(InvalidOutput.GetIndex());
-				RecomputeAggregateRestoreState(InLinker, OutputIndex, RestoreStateTag);
-			}
-		}
-		FORCEINLINE void RecomputeAggregateRestoreState(UMovieSceneEntitySystemLinker* InLinker, uint16 OutputIndex, FComponentTypeID RestoreStateTag)
-		{
-			auto Inputs = this->OutputToEntity.CreateConstKeyIterator(OutputIndex);
-			if (Inputs)
-			{
-				for ( ; Inputs; ++Inputs)
-				{
-					if (InLinker->EntityManager.HasComponent(Inputs.Value(), RestoreStateTag))
-					{
-						this->Outputs[OutputIndex].Aggregate.bNeedsRestoration = true;
-						return;
-					}
-				}
-
-				this->Outputs[OutputIndex].Aggregate.bNeedsRestoration = false;
-			}
-		}
-	};
-	static_cast<FHACK_UpdateRestoreState&>(AttachmentTracker).UpdateInvalidatedRestoreStates(Linker);
-	// ---------------------------------------------------------------------------------------------------------
-
-	AttachmentTracker.ProcessInvalidatedOutputs(FAttachmentHandler(this));
+	AttachmentTracker.ProcessInvalidatedOutputs(Linker, FAttachmentHandler(this));
 }
 
 void UMovieSceneComponentAttachmentSystem::AddPendingDetach(USceneComponent* SceneComponent, const UE::MovieScene::FPreAnimAttachment& Attachment)
@@ -286,38 +245,86 @@ void UMovieSceneComponentAttachmentSystem::AddPendingDetach(USceneComponent* Sce
 	PendingAttachmentsToRestore.Add(MakeTuple(SceneComponent, Attachment));
 }
 
-void UMovieSceneComponentAttachmentSystem::SaveGlobalPreAnimatedState(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents)
+void UMovieSceneComponentAttachmentSystem::SavePreAnimatedState(const FPreAnimationParameters& InParameters)
 {
 	using namespace UE::MovieScene;
 
-	FMovieSceneTracksComponentTypes* TrackComponents = FMovieSceneTracksComponentTypes::Get();
-	FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
-
-	static FMovieSceneAnimTypeID AnimType = FMovieSceneAnimTypeID::Unique();
-
-	F3DAttachTokenProducer Producer;
-
-	FInstanceRegistry* InstanceRegistry = Linker->GetInstanceRegistry();
-	auto IterNewObjects = [Producer, InstanceRegistry](FInstanceHandle InstanceHandle, UObject* InObject)
+	// Normal restore state attachments are tracked seprately due to the complexity of the detachment rules.
+	// We track the transform and pre-attached parent using traditional pre-animated state
+	if (!InParameters.CacheExtension->IsCapturingGlobalState())
 	{
-		IMovieScenePlayer* Player = InstanceRegistry->GetInstance(InstanceHandle).GetPlayer();
-		Player->SavePreAnimatedState(*InObject, AnimType, Producer);
-	};
+		return;
+	}
 
+	FMovieSceneTracksComponentTypes* TrackComponents   = FMovieSceneTracksComponentTypes::Get();
+	FBuiltInComponentTypes*          BuiltInComponents = FBuiltInComponentTypes::Get();
+
+	FComponentMask FilterMask({ TrackComponents->AttachParent });
+	if (!InParameters.CacheExtension->AreEntriesInvalidated())
+	{
+		FilterMask.Set(BuiltInComponents->Tags.NeedsLink);
+	}
+
+	// Attachments change transforms
+	FPreAnimatedEntityCaptureSource* EntityMetaData = InParameters.CacheExtension->GetOrCreateEntityMetaData();
+	TSharedPtr<FPreAnimatedComponentTransformStorage>  ComponentTransformStorage  = InParameters.CacheExtension->GetOrCreateStorage<FPreAnimatedComponentTransformStorage>();
+	TSharedPtr<FPreAnimatedComponentAttachmentStorage> ComponentAttachmentStorage = InParameters.CacheExtension->GetOrCreateStorage<FPreAnimatedComponentAttachmentStorage>();
+
+	// Start tracking all attachments to the component transform storage
 	FEntityTaskBuilder()
+	.ReadEntityIDs()
 	.Read(BuiltInComponents->InstanceHandle)
 	.Read(BuiltInComponents->BoundObject)
-	.FilterAll({ BuiltInComponents->Tags.NeedsLink, TrackComponents->AttachParent })
-	.Iterate_PerEntity(&Linker->EntityManager, IterNewObjects);
+	.FilterAll(FilterMask)
+	.Iterate_PerAllocation(&Linker->EntityManager,
+		[EntityMetaData, ComponentTransformStorage, ComponentAttachmentStorage](FEntityAllocationIteratorItem Item, TRead<FMovieSceneEntityID> EntityIDs, TRead<FInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects)
+		{
+			TArrayView<UObject* const> BoundObjectArray = BoundObjects.AsArray(Item.GetAllocation()->Num());
+
+			// Order is important here - always cache the transforms first so that they are restored last
+
+			// If we're capturing global state for an attached parent, we forcibly persist the transform so that it
+			// _always_ remains cached. This ensures that the transform definitely gets restored to the pre-animated
+			// state regardless of the detach rules used during normal playback.
+			FCachePreAnimatedValueParams ForcePersistParams;
+			ForcePersistParams.bForcePersist = true;
+			ComponentTransformStorage->CachePreAnimatedTransforms(ForcePersistParams, BoundObjectArray);
+
+			FPreAnimatedTrackerParams AttachmentParams(Item);
+			AttachmentParams.bWantsRestoreState = false;
+
+			ComponentAttachmentStorage->BeginTrackingEntities(AttachmentParams, EntityIDs, InstanceHandles, BoundObjects);
+			ComponentAttachmentStorage->CachePreAnimatedValues(FCachePreAnimatedValueParams(), BoundObjectArray);
+		}
+	);
 }
 
-void UMovieSceneComponentAttachmentSystem::RestorePreAnimatedState(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents)
+void UMovieSceneComponentAttachmentSystem::RestorePreAnimatedState(const FPreAnimationParameters& InParameters)
 {
 	using namespace UE::MovieScene;
 
+	FMovieSceneTracksComponentTypes* TrackComponents   = FMovieSceneTracksComponentTypes::Get();
+	FBuiltInComponentTypes*          BuiltInComponents = FBuiltInComponentTypes::Get();
+
+	// Apply detachments
 	for (TTuple<USceneComponent*, FPreAnimAttachment> Pair : PendingAttachmentsToRestore)
 	{
 		Pair.Value.DetachParams.ApplyDetach(Pair.Key, Pair.Value.OldAttachParent.Get(), Pair.Value.OldAttachSocket);
 	}
 	PendingAttachmentsToRestore.Empty();
+
+	FPreAnimatedEntityCaptureSource* EntityMetaData = InParameters.CacheExtension->GetEntityMetaData();
+	if (InParameters.CacheExtension->IsCapturingGlobalState() && EntityMetaData)
+	{
+		// Stop tracking the forcibly 'keep-state' entities that are tracking the attachment parent
+		FEntityTaskBuilder()
+		.ReadEntityIDs()
+		.FilterAll({ TrackComponents->AttachParent, BuiltInComponents->Tags.NeedsUnlink })
+		.Iterate_PerEntity(&Linker->EntityManager,
+			[EntityMetaData](FMovieSceneEntityID EntityID)
+			{
+				EntityMetaData->StopTrackingEntity(EntityID, FPreAnimatedComponentAttachmentStorage::StorageID);
+			}
+		);
+	}
 }

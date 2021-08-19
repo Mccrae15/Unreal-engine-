@@ -78,6 +78,7 @@
 #include "Materials/MaterialFunctionInstance.h"
 #include "Materials/MaterialParameterCollection.h"
 
+#include "MaterialGraphNode_Knot.h"
 #include "MaterialEditorActions.h"
 #include "MaterialExpressionClasses.h"
 #include "MaterialCompiler.h"
@@ -128,6 +129,8 @@
 #include "Settings/EditorExperimentalSettings.h"
 #include "Materials/MaterialExpressionBlendMaterialAttributes.h"
 #include "Materials/MaterialExpressionMaterialLayerOutput.h"
+#include "Materials/MaterialExpressionNamedReroute.h"
+#include "Materials/MaterialExpressionReroute.h"
 
 #include "MaterialStats.h"
 #include "Materials/MaterialExpression.h"
@@ -247,6 +250,7 @@ void FMatExpressionPreview::NotifyCompilationFinished()
 	{
 		CastChecked<UMaterialGraphNode>(Expression->GraphNode)->bPreviewNeedsUpdate = true;
 	}
+	FMaterialRenderProxy::CacheUniformExpressions_GameThread(true);
 }
 
 /////////////////////
@@ -819,9 +823,8 @@ FMaterialEditor::~FMaterialEditor()
 	MaterialDetailsView.Reset();
 
 	{
-		SCOPED_SUSPEND_RENDERING_THREAD(true);
-	
-		ExpressionPreviews.Empty();
+		//SCOPED_SUSPEND_RENDERING_THREAD(true);
+		FMaterial::DeferredDeleteArray(ExpressionPreviews);
 	}
 	
 	check( !ScopedTransaction );
@@ -2605,9 +2608,9 @@ void FMaterialEditor::AddReferencedObjects( FReferenceCollector& Collector )
 	Collector.AddReferencedObject(EmptyMaterial);
 	Collector.AddReferencedObject(MaterialEditorInstance);
 	Collector.AddReferencedObject(PreviewExpression);
-	for (FMatExpressionPreview& ExpressionPreview : ExpressionPreviews)
+	for (FMatExpressionPreview* ExpressionPreview : ExpressionPreviews)
 	{
-		ExpressionPreview.AddReferencedObjects(Collector);
+		ExpressionPreview->AddReferencedObjects(Collector);
 	}
 }
 
@@ -2693,6 +2696,22 @@ void FMaterialEditor::BindCommands()
 	ToolkitCommands->MapAction(
 		Commands.ConvertToConstant,
 		FExecuteAction::CreateSP(this, &FMaterialEditor::OnConvertObjects));
+
+	ToolkitCommands->MapAction(
+		Commands.SelectNamedRerouteDeclaration,
+		FExecuteAction::CreateSP(this, &FMaterialEditor::OnSelectNamedRerouteDeclaration));
+	
+	ToolkitCommands->MapAction(
+		Commands.SelectNamedRerouteUsages,
+		FExecuteAction::CreateSP(this, &FMaterialEditor::OnSelectNamedRerouteUsages));
+	
+	ToolkitCommands->MapAction(
+		Commands.ConvertRerouteToNamedReroute,
+		FExecuteAction::CreateSP(this, &FMaterialEditor::OnConvertRerouteToNamedReroute));
+	
+	ToolkitCommands->MapAction(
+		Commands.ConvertNamedRerouteToReroute,
+		FExecuteAction::CreateSP(this, &FMaterialEditor::OnConvertNamedRerouteToReroute));
 
 	ToolkitCommands->MapAction(
 		Commands.StopPreviewNode,
@@ -3337,6 +3356,211 @@ void FMaterialEditor::OnConvertTextures()
 		for ( TArray<UEdGraphNode*>::TConstIterator NodeIter(NodesToSelect); NodeIter; ++NodeIter )
 		{
 			GraphEditor->SetNodeSelection(*NodeIter, true);
+		}
+	}
+}
+
+void FMaterialEditor::OnSelectNamedRerouteDeclaration()
+{
+	const FGraphPanelSelectionSet SelectedNodes = GraphEditor->GetSelectedNodes();
+	if (SelectedNodes.Num() == 1)
+	{
+		GraphEditor->ClearSelectionSet();
+		for (FGraphPanelSelectionSet::TConstIterator NodeIt(SelectedNodes); NodeIt; ++NodeIt)
+		{
+			UMaterialGraphNode* GraphNode = Cast<UMaterialGraphNode>(*NodeIt);
+			if (GraphNode)
+			{
+				UMaterialExpression* CurrentSelectedExpression = GraphNode->MaterialExpression;
+				UMaterialExpressionNamedRerouteUsage* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(CurrentSelectedExpression);
+				if (Usage && Usage->Declaration)
+				{
+					UEdGraphNode* DeclarationGraphNode = Usage->Declaration->GraphNode;
+					if (DeclarationGraphNode)
+					{
+						GraphEditor->SetNodeSelection(DeclarationGraphNode, true);
+					}
+				}
+			}
+		}
+		GraphEditor->ZoomToFit(true);
+	}
+}
+
+void FMaterialEditor::OnSelectNamedRerouteUsages()
+{
+	const FGraphPanelSelectionSet SelectedNodes = GraphEditor->GetSelectedNodes();
+	if (SelectedNodes.Num() == 1)
+	{
+		GraphEditor->ClearSelectionSet();
+		for (FGraphPanelSelectionSet::TConstIterator NodeIt(SelectedNodes); NodeIt; ++NodeIt)
+		{
+			UMaterialGraphNode* GraphNode = Cast<UMaterialGraphNode>(*NodeIt);
+			if (GraphNode)
+			{
+				UMaterialExpression* CurrentSelectedExpression = GraphNode->MaterialExpression;
+				UMaterialExpressionNamedRerouteDeclaration* Declaration = Cast<UMaterialExpressionNamedRerouteDeclaration>(CurrentSelectedExpression);
+				for(UMaterialExpression* Expression : Material->Expressions)
+				{
+					auto* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(Expression);
+					if (Usage && Usage->Declaration == Declaration)
+					{
+						UEdGraphNode* UsageGraphNode = Usage->GraphNode;
+						if (UsageGraphNode)
+						{
+							GraphEditor->SetNodeSelection(UsageGraphNode, true);
+						}
+					}
+				}
+			}
+		}
+		GraphEditor->ZoomToFit(true);
+	}
+}
+
+void FMaterialEditor::OnConvertRerouteToNamedReroute()
+{
+	const FGraphPanelSelectionSet SelectedNodes = GraphEditor->GetSelectedNodes();
+	if (SelectedNodes.Num() == 1)
+	{
+		GraphEditor->ClearSelectionSet();
+		for (FGraphPanelSelectionSet::TConstIterator NodeIt(SelectedNodes); NodeIt; ++NodeIt)
+		{
+			UMaterialGraphNode_Knot* GraphNode = Cast<UMaterialGraphNode_Knot>(*NodeIt);
+			if (GraphNode)
+			{
+				UEdGraph* Graph = GraphNode->GetGraph();
+				const FScopedTransaction Transaction(LOCTEXT("ConvertRerouteToNamedReroute", "Convert reroute to named reroute"));
+				Graph->Modify();
+
+				auto* Declaration = Cast<UMaterialExpressionNamedRerouteDeclaration>(FMaterialEditorUtilities::CreateNewMaterialExpression(
+					Graph, 
+					UMaterialExpressionNamedRerouteDeclaration::StaticClass(), 
+					FVector2D(GraphNode->NodePosX - 50, GraphNode->NodePosY), 
+					false, 
+					true));
+				if (!Declaration)
+				{
+					return;
+				}
+
+				UEdGraphPin* DeclarationInputPin = nullptr;
+				for (auto* Pin : Declaration->GraphNode->GetAllPins())
+				{
+					if (Pin->Direction == EEdGraphPinDirection::EGPD_Input)
+					{
+						DeclarationInputPin = Pin;
+						break;
+					}
+				}
+				if (!ensure(DeclarationInputPin))
+				{
+					return;
+				}
+
+				for (auto* InputPin : GraphNode->GetInputPin()->LinkedTo)
+				{
+					InputPin->MakeLinkTo(DeclarationInputPin);
+				}
+
+				TArray<UEdGraphPin*> OutputPins = GraphNode->GetOutputPin()->LinkedTo;
+				OutputPins.Sort([](UEdGraphPin& A, UEdGraphPin& B) { return A.GetOwningNode()->NodePosY < B.GetOwningNode()->NodePosY; });
+
+				int Index = -OutputPins.Num() / 2;
+				for (auto* OutputPin : OutputPins)
+				{
+					auto* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(FMaterialEditorUtilities::CreateNewMaterialExpression(
+						Material->MaterialGraph,
+						UMaterialExpressionNamedRerouteUsage::StaticClass(),
+						FVector2D(GraphNode->NodePosX + 50, GraphNode->NodePosY + Index * 50),
+						false,
+						true));
+					if (Usage)
+					{
+						Usage->Declaration = Declaration;
+						Usage->DeclarationGuid = Declaration->VariableGuid;
+						Usage->GraphNode->GetAllPins()[0]->MakeLinkTo(OutputPin); // usage node has a single pin
+					}
+					Index++;
+				}
+				GraphNode->DestroyNode();
+				GraphEditor->SetNodeSelection(Declaration->GraphNode, true);
+			}
+		}
+	}
+}
+
+void FMaterialEditor::OnConvertNamedRerouteToReroute()
+{
+	const FGraphPanelSelectionSet SelectedNodes = GraphEditor->GetSelectedNodes();
+	if (SelectedNodes.Num() == 1)
+	{
+		for (FGraphPanelSelectionSet::TConstIterator NodeIt(SelectedNodes); NodeIt; ++NodeIt)
+		{
+			UMaterialGraphNode* GraphNode = Cast<UMaterialGraphNode>(*NodeIt);
+			if (GraphNode)
+			{
+				UEdGraph* Graph = GraphNode->GetGraph();
+				const FScopedTransaction Transaction(LOCTEXT("ConvertNamedRerouteToReroute", "Convert named reroute to reroute"));
+				Graph->Modify();
+
+				UMaterialExpression* CurrentSelectedExpression = GraphNode->MaterialExpression;
+				UMaterialExpressionNamedRerouteDeclaration* Declaration = Cast<UMaterialExpressionNamedRerouteDeclaration>(CurrentSelectedExpression);
+				if (!Declaration)
+				{
+					UMaterialExpressionNamedRerouteUsage* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(CurrentSelectedExpression);
+					if (Usage)
+					{
+						Declaration = Usage->Declaration;
+					}
+				}
+				if (!Declaration)
+				{
+					return;
+				}
+				UEdGraphNode* DeclarationGraphNode = Declaration->GraphNode;
+				FVector2D KnotPosition(DeclarationGraphNode->NodePosX + 50, DeclarationGraphNode->NodePosY);
+
+				UMaterialExpression* Reroute = FMaterialEditorUtilities::CreateNewMaterialExpression(Graph, UMaterialExpressionReroute::StaticClass(), KnotPosition, false, true);
+				auto* KnotGraphNode = CastChecked<UMaterialGraphNode_Knot>(Reroute->GraphNode);
+
+				for (UEdGraphPin* Pin : DeclarationGraphNode->GetAllPins())
+				{
+					if (Pin->Direction == EEdGraphPinDirection::EGPD_Input)
+					{
+						for (UEdGraphPin* InputPin : Pin->LinkedTo)
+						{
+							KnotGraphNode->GetInputPin()->MakeLinkTo(InputPin);
+						}
+					}
+					if (Pin->Direction == EEdGraphPinDirection::EGPD_Output)
+					{
+						for (UEdGraphPin* OutputPin : Pin->LinkedTo)
+						{
+							KnotGraphNode->GetOutputPin()->MakeLinkTo(OutputPin);
+						}
+					}
+				}
+				DeclarationGraphNode->DestroyNode();
+
+				for(UMaterialExpression* Expression : Material->Expressions)
+				{
+					auto* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(Expression);
+					if (Usage && Usage->Declaration == Declaration)
+					{
+						UEdGraphNode* UsageGraphNode = Usage->GraphNode;
+						if (UsageGraphNode)
+						{
+							UEdGraphPin* Pin = Usage->GraphNode->GetAllPins()[0]; // usage node has a single pin
+							for (UEdGraphPin* OutputPin : Pin->LinkedTo)
+							{
+								KnotGraphNode->GetOutputPin()->MakeLinkTo(OutputPin);
+							}
+							UsageGraphNode->DestroyNode();
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -4315,11 +4539,14 @@ void FMaterialEditor::DeleteNodes(const TArray<UEdGraphNode*>& NodesToDelete)
 							bPreviewExpressionDeleted = true;
 						}
 
-						MaterialExpression->Modify();
-						Material->Expressions.Remove( MaterialExpression );
-						Material->RemoveExpressionParameter(MaterialExpression);
-						// Make sure the deleted expression is caught by gc
-						MaterialExpression->MarkPendingKill();
+						if (MaterialExpression)
+						{
+							MaterialExpression->Modify();
+							Material->Expressions.Remove(MaterialExpression);
+							Material->RemoveExpressionParameter(MaterialExpression);
+							// Make sure the deleted expression is caught by gc
+							MaterialExpression->MarkPendingKill();
+						}
 					}
 					else if (UMaterialGraphNode_Comment* CommentNode = Cast<UMaterialGraphNode_Comment>(NodesToDelete[Index]))
 					{
@@ -4497,6 +4724,7 @@ void FMaterialEditor::PasteNodesHere(const FVector2D& Location)
 		AvgNodePosition.Y *= InvNumNodes;
 	}
 
+	TArray<UMaterialExpression*> NewMaterialExpressions;
 	for (TSet<UEdGraphNode*>::TIterator It(PastedNodes); It; ++It)
 	{
 		UEdGraphNode* Node = *It;
@@ -4517,6 +4745,7 @@ void FMaterialEditor::PasteNodesHere(const FVector2D& Location)
 				NewExpression->ValidateParameterName();
 			}
 
+			NewMaterialExpressions.Add(NewExpression);
 			Material->Expressions.Add(NewExpression);
 
 			// There can be only one default mesh paint texture.
@@ -4583,6 +4812,12 @@ void FMaterialEditor::PasteNodesHere(const FVector2D& Location)
 
 		// Give new node a different Guid from the old one
 		Node->CreateNewGuid();
+	}
+
+	for (auto* NewExpression : NewMaterialExpressions)
+	{
+		// For named reroute fixup: once all nodes are added to Material->Expressions, and that all their Material property are valid
+		NewExpression->PostCopyNode(NewMaterialExpressions);
 	}
 
 	UpdateMaterialAfterGraphChange();
@@ -4951,10 +5186,10 @@ void FMaterialEditor::RefreshExpressionPreviews(bool bForceRefreshAll /*= false*
 	if ( bAlwaysRefreshAllPreviews || bForceRefreshAll)
 	{
 		// we need to make sure the rendering thread isn't drawing these tiles
-		SCOPED_SUSPEND_RENDERING_THREAD(true);
+		//SCOPED_SUSPEND_RENDERING_THREAD(true);
 
 		// Refresh all expression previews.
-		ExpressionPreviews.Empty();
+		FMaterial::DeferredDeleteArray(ExpressionPreviews);
 
 		for (int32 ExpressionIndex = 0; ExpressionIndex < Material->Expressions.Num(); ++ExpressionIndex)
 		{
@@ -5002,12 +5237,14 @@ void FMaterialEditor::RefreshExpressionPreview(UMaterialExpression* MaterialExpr
 	{
 		for( int32 PreviewIndex = 0 ; PreviewIndex < ExpressionPreviews.Num() ; ++PreviewIndex )
 		{
-			FMatExpressionPreview& ExpressionPreview = ExpressionPreviews[PreviewIndex];
-			if( ExpressionPreview.GetExpression() == MaterialExpression )
+			FMatExpressionPreview* ExpressionPreview = ExpressionPreviews[PreviewIndex];
+			if( ExpressionPreview->GetExpression() == MaterialExpression )
 			{
-				// we need to make sure the rendering thread isn't drawing this tile
-				SCOPED_SUSPEND_RENDERING_THREAD(true);
-				ExpressionPreviews.RemoveAt( PreviewIndex );
+				// We need to make sure we don't hold any other references before queuing the deferred delete as it may execute immediately (e.g. -onethread, or just very fast RT).
+				// There's no danger in releasing the last reference to FMaterial as this doesn't delete it anyway, it needs to be deleted manually via DeferredDelete.
+				ExpressionPreviews.RemoveAt(PreviewIndex);
+				FMaterial::DeferredDelete(ExpressionPreview);
+				ExpressionPreview = nullptr;
 				MaterialExpression->bNeedToUpdatePreview = false;
 
 				if (bRecompile)
@@ -5033,13 +5270,13 @@ FMatExpressionPreview* FMaterialEditor::GetExpressionPreview(UMaterialExpression
 	bNewlyCreated = false;
 	if (!MaterialExpression->bHidePreviewWindow && !MaterialExpression->bCollapsed)
 	{
-		FMatExpressionPreview*	Preview = NULL;
+		FMatExpressionPreview* Preview = NULL;
 		for( int32 PreviewIndex = 0 ; PreviewIndex < ExpressionPreviews.Num() ; ++PreviewIndex )
 		{
-			FMatExpressionPreview& ExpressionPreview = ExpressionPreviews[PreviewIndex];
-			if( ExpressionPreview.GetExpression() == MaterialExpression )
+			FMatExpressionPreview* ExpressionPreview = ExpressionPreviews[PreviewIndex];
+			if( ExpressionPreview->GetExpression() == MaterialExpression )
 			{
-				Preview = &ExpressionPreviews[PreviewIndex];
+				Preview = ExpressionPreviews[PreviewIndex];
 				break;
 			}
 		}
@@ -5049,7 +5286,7 @@ FMatExpressionPreview* FMaterialEditor::GetExpressionPreview(UMaterialExpression
 			bNewlyCreated = true;
 			Preview = new FMatExpressionPreview(MaterialExpression);
 			ExpressionPreviews.Add(Preview);
-			Preview->CacheShaders(GMaxRHIShaderPlatform);
+			Preview->CacheShaders(GMaxRHIShaderPlatform, EMaterialShaderPrecompileMode::None);
 		}
 		return Preview;
 	}
@@ -5154,6 +5391,22 @@ TSharedRef<SGraphEditor> FMaterialEditor::CreateGraphEditorWidget()
 
 		GraphEditorCommands->MapAction( FMaterialEditorCommands::Get().ConvertToConstant,
 			FExecuteAction::CreateSP(this, &FMaterialEditor::OnConvertObjects)
+			);
+
+		GraphEditorCommands->MapAction( FMaterialEditorCommands::Get().SelectNamedRerouteDeclaration,
+			FExecuteAction::CreateSP(this, &FMaterialEditor::OnSelectNamedRerouteDeclaration)
+			);
+
+		GraphEditorCommands->MapAction( FMaterialEditorCommands::Get().SelectNamedRerouteUsages,
+			FExecuteAction::CreateSP(this, &FMaterialEditor::OnSelectNamedRerouteUsages)
+			);
+
+		GraphEditorCommands->MapAction( FMaterialEditorCommands::Get().ConvertRerouteToNamedReroute,
+			FExecuteAction::CreateSP(this, &FMaterialEditor::OnConvertRerouteToNamedReroute)
+			);
+
+		GraphEditorCommands->MapAction( FMaterialEditorCommands::Get().ConvertNamedRerouteToReroute,
+			FExecuteAction::CreateSP(this, &FMaterialEditor::OnConvertNamedRerouteToReroute)
 			);
 
 		GraphEditorCommands->MapAction( FMaterialEditorCommands::Get().StopPreviewNode,
@@ -5471,7 +5724,7 @@ void FMaterialEditor::OnNodeDoubleClicked(class UEdGraphNode* Node)
 {
 	UMaterialGraphNode* GraphNode = Cast<UMaterialGraphNode>(Node);
 
-	if (GraphNode)
+	if (GraphNode && GraphNode->MaterialExpression)
 	{
 		UMaterialExpressionConstant3Vector* Constant3Expression = Cast<UMaterialExpressionConstant3Vector>(GraphNode->MaterialExpression);
 		UMaterialExpressionConstant4Vector* Constant4Expression = Cast<UMaterialExpressionConstant4Vector>(GraphNode->MaterialExpression);
@@ -5569,6 +5822,16 @@ void FMaterialEditor::OnNodeDoubleClicked(class UEdGraphNode* Node)
 		{
 			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ObjectToEdit);
 		}
+
+		// Double click actions for named reroute nodes
+		if (GraphNode->MaterialExpression->IsA<UMaterialExpressionNamedRerouteDeclaration>())
+		{
+			OnSelectNamedRerouteUsages();
+		}
+		else if (GraphNode->MaterialExpression->IsA<UMaterialExpressionNamedRerouteUsage>())
+		{
+			OnSelectNamedRerouteDeclaration();
+		}
 	}
 }
 
@@ -5591,7 +5854,7 @@ bool FMaterialEditor::OnVerifyNodeTextCommit(const FText& NewText, UEdGraphNode*
 	UMaterialGraphNode* MaterialNode = Cast<UMaterialGraphNode>(NodeBeingChanged);
 	if( MaterialNode && MaterialNode->MaterialExpression && MaterialNode->MaterialExpression->IsA<UMaterialExpressionParameter>() )
 	{
-		if( NewText.ToString().Len() > NAME_SIZE )
+		if( NewText.ToString().Len() >= NAME_SIZE )
 		{
 			OutErrorMessage = FText::Format( LOCTEXT("MaterialEditorExpressionError_NameTooLong", "Parameter names must be less than {0} characters"), FText::AsNumber(NAME_SIZE));
 			bValid = false;

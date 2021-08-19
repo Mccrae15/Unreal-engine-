@@ -34,7 +34,7 @@ struct FRemoteControlRoute
 	/** Relative path (ie. /remote/object) */
 	FHttpPath Path;
 	/** The desired HTTP verb (ie. GET, PUT..) */
-	EHttpServerRequestVerbs Verb;
+	EHttpServerRequestVerbs Verb = EHttpServerRequestVerbs::VERB_GET;
 	/** The handler called when the route is accessed. */
 	FRequestHandlerDelegate Handler;
 
@@ -93,7 +93,7 @@ struct FRemoteControlRouteDescription
 	FString Path;
 
 	UPROPERTY()
-	ERemoteControlHttpVerbs Verb;
+	ERemoteControlHttpVerbs Verb = ERemoteControlHttpVerbs::None;
 
 	UPROPERTY()
 	FString Description;

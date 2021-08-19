@@ -19,7 +19,14 @@
 #include "NiagaraComponentPool.h"
 #include "NiagaraComponent.h"
 #include "NiagaraEffectType.h"
+#include "NiagaraDebugHud.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "Particles/FXBudget.h"
+
+#if WITH_EDITORONLY_DATA
+#include "EditorViewportClient.h"
+#include "LevelEditorViewport.h"
+#endif
 
 DECLARE_CYCLE_STAT(TEXT("Niagara Manager Update Scalability Managers [GT]"), STAT_UpdateScalabilityManagers, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Niagara Manager Tick [GT]"), STAT_NiagaraWorldManTick, STATGROUP_Niagara);
@@ -39,14 +46,6 @@ static FAutoConsoleVariableRef CVarNiagaraWaitOnPreGC(
 	TEXT("fx.Niagara.WaitOnPreGC"),
 	GNiagaraWaitOnPreGC,
 	TEXT("Toggles whether Niagara will wait for all async tasks to complete before any GC calls."),
-	ECVF_Default
-);
-
-static int GNiagaraUsePostActorMark = 1;
-static FAutoConsoleVariableRef CVarNiagaraUsePostActorMark(
-	TEXT("fx.Niagara.WorldManager.UsePostActorMark"),
-	GNiagaraUsePostActorMark,
-	TEXT("Should we use the post actor mark list to reduce the set we iterate over (default enabled)."),
 	ECVF_Default
 );
 
@@ -89,7 +88,6 @@ FAutoConsoleCommandWithWorld DumpNiagaraWorldManagerCommand(
 	)
 );
 
-
 static int GEnableNiagaraVisCulling = 1;
 static FAutoConsoleVariableRef CVarEnableNiagaraVisCulling(
 	TEXT("fx.Niagara.Scalability.VisibilityCulling"),
@@ -114,11 +112,76 @@ static FAutoConsoleVariableRef CVarEnableNiagaraInstanceCountCulling(
 	ECVF_Default
 );
 
+static int GEnableNiagaraGlobalBudgetCulling = 1;
+static FAutoConsoleVariableRef CVarEnableNiagaraGlobalBudgetCulling(
+	TEXT("fx.Niagara.Scalability.GlobalBudgetCulling"),
+	GEnableNiagaraGlobalBudgetCulling,
+	TEXT("When non-zero, high level scalability culling based on global time budget is enabled."),
+	ECVF_Default
+);
+
+float GWorldLoopTime = 0.0f;
+static FAutoConsoleVariableRef CVarWorldLoopTime(
+	TEXT("fx.Niagara.Debug.GlobalLoopTime"),
+	GWorldLoopTime,
+	TEXT("If > 0 all Niagara FX will reset every N seconds. \n"),
+	ECVF_Default
+);
+
+FAutoConsoleCommandWithWorldAndArgs GCmdNiagaraPlaybackMode(
+	TEXT("fx.Niagara.Debug.PlaybackMode"),
+	TEXT("Set playback mode\n")
+	TEXT("0 - Play\n")
+	TEXT("1 - Paused\n")
+	TEXT("2 - Step\n"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			if ( FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World) )
+			{
+				if (Args.Num() != 1)
+				{
+					UE_LOG(LogNiagara, Log, TEXT("fx.Niagara.Debug.PlaybackMode %d"), (int32)WorldManager->GetDebugPlaybackMode());
+				}
+				else
+				{
+					const ENiagaraDebugPlaybackMode PlaybackMode = FMath::Clamp((ENiagaraDebugPlaybackMode)FCString::Atoi(*Args[0]), ENiagaraDebugPlaybackMode::Play, ENiagaraDebugPlaybackMode::Step);
+					WorldManager->SetDebugPlaybackMode(PlaybackMode);
+				}
+			}
+		}
+	)
+);
+
+FAutoConsoleCommandWithWorldAndArgs GCmdNiagaraPlaybackRate(
+	TEXT("fx.Niagara.Debug.PlaybackRate"),
+	TEXT("Set playback rate\n"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			if ( FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World) )
+			{
+				if (Args.Num() != 1)
+				{
+					UE_LOG(LogNiagara, Log, TEXT("fx.Niagara.Debug.PlaybackRate %5.2f"), (int32)WorldManager->GetDebugPlaybackRate());
+				}
+				else
+				{
+					const float PlaybackRate = FCString::Atof(*Args[0]);
+					WorldManager->SetDebugPlaybackRate(PlaybackRate);
+				}
+			}
+		}
+	)
+);
+
 FDelegateHandle FNiagaraWorldManager::OnWorldInitHandle;
 FDelegateHandle FNiagaraWorldManager::OnWorldCleanupHandle;
+FDelegateHandle FNiagaraWorldManager::OnPostWorldCleanupHandle;
 FDelegateHandle FNiagaraWorldManager::OnPreWorldFinishDestroyHandle;
 FDelegateHandle FNiagaraWorldManager::OnWorldBeginTearDownHandle;
 FDelegateHandle FNiagaraWorldManager::TickWorldHandle;
+FDelegateHandle FNiagaraWorldManager::OnWorldPreSendAllEndOfFrameUpdatesHandle;
 FDelegateHandle FNiagaraWorldManager::PreGCHandle;
 FDelegateHandle FNiagaraWorldManager::PostReachabilityAnalysisHandle;
 FDelegateHandle FNiagaraWorldManager::PostGCHandle;
@@ -201,7 +264,6 @@ FNiagaraWorldManager::FNiagaraWorldManager()
 	, CachedEffectsQuality(INDEX_NONE)
 	, bAppHasFocus(true)
 {
-
 }
 
 void FNiagaraWorldManager::Init(UWorld* InWorld)
@@ -225,6 +287,10 @@ void FNiagaraWorldManager::Init(UWorld* InWorld)
 	//Ideally we'd do this here but it's too early in the init process and the world does not have a Scene yet.
 	//Possibly a later hook we can use.
 	//PrimePoolForAllSystems();
+
+#if !UE_BUILD_SHIPPING
+	NiagaraDebugHud.Reset(new FNiagaraDebugHud(World));
+#endif
 }
 
 FNiagaraWorldManager::~FNiagaraWorldManager()
@@ -249,9 +315,19 @@ void FNiagaraWorldManager::OnStartup()
 {
 	OnWorldInitHandle = FWorldDelegates::OnPreWorldInitialization.AddStatic(&FNiagaraWorldManager::OnWorldInit);
 	OnWorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddStatic(&FNiagaraWorldManager::OnWorldCleanup);
+	OnPostWorldCleanupHandle = FWorldDelegates::OnPostWorldCleanup.AddStatic(&FNiagaraWorldManager::OnPostWorldCleanup);
 	OnPreWorldFinishDestroyHandle = FWorldDelegates::OnPreWorldFinishDestroy.AddStatic(&FNiagaraWorldManager::OnPreWorldFinishDestroy);
 	OnWorldBeginTearDownHandle = FWorldDelegates::OnWorldBeginTearDown.AddStatic(&FNiagaraWorldManager::OnWorldBeginTearDown);
 	TickWorldHandle = FWorldDelegates::OnWorldPostActorTick.AddStatic(&FNiagaraWorldManager::TickWorld);
+	OnWorldPreSendAllEndOfFrameUpdatesHandle = FWorldDelegates::OnWorldPreSendAllEndOfFrameUpdates.AddLambda(
+		[](UWorld* InWorld)
+		{
+			if ( FNiagaraWorldManager* FoundManager = WorldManagers.FindRef(InWorld) )
+			{
+				FoundManager->PreSendAllEndOfFrameUpdates();
+			}
+		}
+	);
 
 	PreGCHandle = FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddStatic(&FNiagaraWorldManager::OnPreGarbageCollect);
 	PostReachabilityAnalysisHandle = FCoreUObjectDelegates::PostReachabilityAnalysis.AddStatic(&FNiagaraWorldManager::OnPostReachabilityAnalysis);
@@ -263,9 +339,11 @@ void FNiagaraWorldManager::OnShutdown()
 {
 	FWorldDelegates::OnPreWorldInitialization.Remove(OnWorldInitHandle);
 	FWorldDelegates::OnWorldCleanup.Remove(OnWorldCleanupHandle);
+	FWorldDelegates::OnPostWorldCleanup.Remove(OnPostWorldCleanupHandle);
 	FWorldDelegates::OnPreWorldFinishDestroy.Remove(OnPreWorldFinishDestroyHandle);
 	FWorldDelegates::OnWorldBeginTearDown.Remove(OnWorldBeginTearDownHandle);
 	FWorldDelegates::OnWorldPostActorTick.Remove(TickWorldHandle);
+	FWorldDelegates::OnWorldPreSendAllEndOfFrameUpdates.Remove(OnWorldPreSendAllEndOfFrameUpdatesHandle);
 
 	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().Remove(PreGCHandle);
 	FCoreUObjectDelegates::PostReachabilityAnalysis.Remove(PostReachabilityAnalysisHandle);
@@ -394,7 +472,7 @@ void FNiagaraWorldManager::OnBatcherDestroyed_Internal(NiagaraEmitterInstanceBat
 
 void FNiagaraWorldManager::OnWorldCleanup(bool bSessionEnded, bool bCleanupResources)
 {
-	ComponentPool->Cleanup();
+	ComponentPool->Cleanup(World);
 
 	for (int TG = 0; TG < NiagaraNumTickGroups; ++TG)
 	{
@@ -409,6 +487,11 @@ void FNiagaraWorldManager::OnWorldCleanup(bool bSessionEnded, bool bCleanupResou
 	DeferredDeletionQueue.Empty();
 
 	ScalabilityManagers.Empty();
+}
+
+void FNiagaraWorldManager::OnPostWorldCleanup(bool bSessionEnded, bool bCleanupResources)
+{
+	ComponentPool->Cleanup(World);
 }
 
 void FNiagaraWorldManager::PreGarbageCollect()
@@ -472,6 +555,16 @@ void FNiagaraWorldManager::OnWorldCleanup(UWorld* World, bool bSessionEnded, boo
 	if (Manager)
 	{
 		(*Manager)->OnWorldCleanup(bSessionEnded, bCleanupResources);
+	}
+}
+
+void FNiagaraWorldManager::OnPostWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
+{
+	//Cleanup world manager contents but not the manager itself.
+	FNiagaraWorldManager** Manager = WorldManagers.Find(World);
+	if (Manager)
+	{
+		(*Manager)->OnPostWorldCleanup(bSessionEnded, bCleanupResources);
 	}
 }
 
@@ -561,91 +654,49 @@ void FNiagaraWorldManager::PostActorTick(float DeltaSeconds)
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_GT);
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_NiagaraPostActorTick_GT);
 
-	if (GNiagaraUsePostActorMark)
+	DeltaSeconds *= DebugPlaybackRate;
+
+	// Update any systems with post actor work
+	// - Instances that need to move to a higher tick group
+	// - Instances that are pending spawn
+	// - Instances that were spawned and we need to ensure the async tick is complete
+	if (SimulationsWithPostActorWork.Num() > 0)
 	{
-		// Update any systems with post actor work
-		// - Instances that need to move to a higher tick group
-		// - Instances that are pending spawn
-		// - Instances that were spawned and we need to ensure the async tick is complete
-		if (SimulationsWithPostActorWork.Num() > 0)
+		for (int32 i=0; i < SimulationsWithPostActorWork.Num(); ++i )
 		{
-			for (int32 i=0; i < SimulationsWithPostActorWork.Num(); ++i )
+			if (!SimulationsWithPostActorWork[i]->IsValid())
 			{
-				if (!SimulationsWithPostActorWork[i]->IsValid())
-				{
-					SimulationsWithPostActorWork.RemoveAtSwap(i, 1, false);
-					--i;
-				}
-				else
-				{
-					SimulationsWithPostActorWork[i]->WaitForSystemTickComplete();
-				}
+				SimulationsWithPostActorWork.RemoveAtSwap(i, 1, false);
+				--i;
 			}
-
-			for (int32 i=0; i < SimulationsWithPostActorWork.Num(); ++i)
+			else
 			{
-				if (!SimulationsWithPostActorWork[i]->IsValid())
-				{
-					SimulationsWithPostActorWork.RemoveAtSwap(i, 1, false);
-					--i;
-				}
-				else
-				{
-					SimulationsWithPostActorWork[i]->UpdateTickGroups_GameThread();
-				}
+				SimulationsWithPostActorWork[i]->WaitForInstancesTickComplete();
 			}
-
-			for (const auto& Simulation : SimulationsWithPostActorWork)
-			{
-				if (Simulation->IsValid())
-				{
-					Simulation->Spawn_GameThread(DeltaSeconds, true);
-				}
-			}
-
-			SimulationsWithPostActorWork.Reset();
 		}
-	}
-	else
-	{
+
+		for (int32 i=0; i < SimulationsWithPostActorWork.Num(); ++i)
+		{
+			if (!SimulationsWithPostActorWork[i]->IsValid())
+			{
+				SimulationsWithPostActorWork.RemoveAtSwap(i, 1, false);
+				--i;
+			}
+			else
+			{
+				SimulationsWithPostActorWork[i]->UpdateTickGroups_GameThread();
+			}
+		}
+
+		for (const auto& Simulation : SimulationsWithPostActorWork)
+		{
+			if (Simulation->IsValid())
+			{
+				Simulation->Spawn_GameThread(DeltaSeconds, true);
+			}
+		}
+
 		SimulationsWithPostActorWork.Reset();
-
-		// Resolve tick groups for pending spawn instances
-		for (int TG = 0; TG < NiagaraNumTickGroups; ++TG)
-		{
-			for (TPair<UNiagaraSystem*, TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>>& SystemSim : SystemSimulations[TG])
-			{
-				FNiagaraSystemSimulation* Sim = &SystemSim.Value.Get();
-				if (Sim->IsValid())
-				{
-					Sim->WaitForSystemTickComplete();
-				}
-			}
-		}
-
-		for (int TG=0; TG < NiagaraNumTickGroups; ++TG)
-		{
-			for (TPair<UNiagaraSystem*, TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>>& SystemSim : SystemSimulations[TG])
-			{
-				FNiagaraSystemSimulation* Sim = &SystemSim.Value.Get();
-				if ( Sim->IsValid() )
-				{
-					Sim->UpdateTickGroups_GameThread();
-				}
-			}
-		}
-
-		for (int TG = 0; TG < NiagaraNumTickGroups; ++TG)
-		{
-			for (TPair<UNiagaraSystem*, TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>>& SystemSim : SystemSimulations[TG])
-			{
-				FNiagaraSystemSimulation* Sim = &SystemSim.Value.Get();
-				if (Sim->IsValid())
-				{
-					Sim->Spawn_GameThread(DeltaSeconds, true);
-				}
-			}
-		}
 	}
 
 	// Clear cached player view location list, it should never be used outside of the world tick
@@ -661,6 +712,30 @@ void FNiagaraWorldManager::PostActorTick(float DeltaSeconds)
 	{
 		TickFunc.EndTickGroup = GNiagaraAllowAsyncWorkToEndOfFrame ? TG_LastDemotable : (ETickingGroup)TickFunc.TickGroup;
 	}
+
+	// Tick debug HUD for the world
+	if (NiagaraDebugHud != nullptr)
+	{
+		NiagaraDebugHud->GatherSystemInfo();
+	}
+
+	if ( DebugPlaybackMode == ENiagaraDebugPlaybackMode::Step )
+	{
+		RequestedDebugPlaybackMode = ENiagaraDebugPlaybackMode::Paused;
+		DebugPlaybackMode = ENiagaraDebugPlaybackMode::Paused;
+	}
+}
+
+void FNiagaraWorldManager::PreSendAllEndOfFrameUpdates()
+{
+	for (const auto& Simulation : SimulationsWithPostActorWork)
+	{
+		if (Simulation->IsValid())
+		{
+			Simulation->WaitForInstancesTickComplete();
+		}
+	}
+	SimulationsWithPostActorWork.Reset();
 }
 
 void FNiagaraWorldManager::MarkSimulationForPostActorWork(FNiagaraSystemSimulation* SystemSimulation)
@@ -681,9 +756,34 @@ void FNiagaraWorldManager::Tick(ETickingGroup TickGroup, float DeltaSeconds, ELe
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraWorldManTick);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_GT);
 
+	DeltaSeconds *= DebugPlaybackRate;
+
 	// We do book keeping in the first tick group
 	if ( TickGroup == NiagaraFirstTickGroup )
-	{
+	{		
+		// Update playback mode
+		DebugPlaybackMode = RequestedDebugPlaybackMode;
+
+		// Utility loop feature to trigger all systems to loop on a timer.
+		if (GWorldLoopTime > 0.0f)
+		{
+			if (WorldLoopTime <= 0.0f)
+			{
+				WorldLoopTime = GWorldLoopTime;
+				for (TObjectIterator<UNiagaraComponent> It; It; ++It)
+				{
+					if (UNiagaraComponent* Comp = *It)
+					{
+						if(Comp->GetWorld() == GetWorld())
+						{
+							Comp->ResetSystem();
+						}
+					}
+				}
+			}
+			WorldLoopTime -= DeltaSeconds;
+		}
+
 		//Ensure the pools have been primed.
 		//WorldInit is too early.
 		if(!bPoolIsPrimed)
@@ -702,6 +802,12 @@ void FNiagaraWorldManager::Tick(ETickingGroup TickGroup, float DeltaSeconds, ELe
 #else
 		bAppHasFocus = true;
 #endif
+
+		// If we are in paused don't do anything
+		if (DebugPlaybackMode == ENiagaraDebugPlaybackMode::Paused)
+		{
+			return;
+		}
 
 		// Cache player view locations for all system instances to access
 		//-TODO: Do we need to do this per tick group?
@@ -724,7 +830,15 @@ void FNiagaraWorldManager::Tick(ETickingGroup TickGroup, float DeltaSeconds, ELe
 			CachedPlayerViewLocations.Append(World->ViewLocationsRenderedLastFrame);
 		}
 
-		UpdateScalabilityManagers(false);
+#if WITH_EDITORONLY_DATA
+		if (GCurrentLevelEditingViewportClient && (GCurrentLevelEditingViewportClient->GetWorld() == World))
+		{
+			const FViewportCameraTransform& ViewTransform = GCurrentLevelEditingViewportClient->GetViewTransform();
+			CachedPlayerViewLocations.Add(ViewTransform.GetLocation());
+		}
+#endif
+
+		UpdateScalabilityManagers(DeltaSeconds, false);
 
 		//Tick our collections to push any changes to bound stores.
 		//-TODO: Do we need to do this per tick group?
@@ -735,8 +849,17 @@ void FNiagaraWorldManager::Tick(ETickingGroup TickGroup, float DeltaSeconds, ELe
 		}
 	}
 
-	// Tick skeletal mesh data
-	SkeletalMeshGeneratedData.TickGeneratedData(TickGroup, DeltaSeconds);
+	// If we are in paused don't do anything
+	if ( DebugPlaybackMode == ENiagaraDebugPlaybackMode::Paused )
+	{
+		return;
+	}
+
+	// Tick generated data
+	for (auto& GeneratedData : DIGeneratedData)
+	{
+		GeneratedData.Value->Tick(TickGroup, DeltaSeconds);
+	}
 
 	// Now tick all system instances. 
 	const int ActualTickGroup = FNiagaraUtilities::GetNiagaraTickGroup(TickGroup);
@@ -765,7 +888,7 @@ void FNiagaraWorldManager::Tick(ETickingGroup TickGroup, float DeltaSeconds, ELe
 	if (GNiagaraSpawnPerTickGroup && (SimulationsWithPostActorWork.Num() > 0))
 	{
 		//We update scalability managers here so that any new systems can be culled or setup with other scalability based parameters correctly for their spawn.
-		UpdateScalabilityManagers(true);
+		UpdateScalabilityManagers(DeltaSeconds, true);
 
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_NiagaraSpawnPerTickGroup_GT);
 		for (int32 i = 0; i < SimulationsWithPostActorWork.Num(); ++i)
@@ -815,7 +938,7 @@ UWorld* FNiagaraWorldManager::GetWorld()
 
 //////////////////////////////////////////////////////////////////////////
 
-void FNiagaraWorldManager::UpdateScalabilityManagers(bool bNewSpawnsOnly)
+void FNiagaraWorldManager::UpdateScalabilityManagers(float DeltaSeconds, bool bNewSpawnsOnly)
 {
 	SCOPE_CYCLE_COUNTER(STAT_UpdateScalabilityManagers);
 
@@ -827,16 +950,11 @@ void FNiagaraWorldManager::UpdateScalabilityManagers(bool bNewSpawnsOnly)
 
 		if (bNewSpawnsOnly)
 		{
-			ScalabilityMan.Update(this, true);
+			ScalabilityMan.Update(this, DeltaSeconds, true);
 		}
 		else
 		{
-			EffectType->ProcessLastFrameCycleCounts();
-
-			//TODO: Work out how best to budget each effect type.
-			//EffectType->ApplyDynamicBudget(DynamicBudget_GT, DynamicBudget_GT_CNC, DynamicBudget_RT);
-
-			ScalabilityMan.Update(this, false);
+			ScalabilityMan.Update(this, DeltaSeconds, false);
 		}
 	}
 }
@@ -886,7 +1004,7 @@ bool FNiagaraWorldManager::ShouldPreCull(UNiagaraSystem* System, UNiagaraCompone
 			{
 				FNiagaraScalabilityState State;
 				const FNiagaraSystemScalabilitySettings& ScalabilitySettings = System->GetScalabilitySettings();
-				CalculateScalabilityState(System, ScalabilitySettings, EffectType, Component, true, State);
+				CalculateScalabilityState(System, ScalabilitySettings, EffectType, Component, true, FFXBudget::GetWorstAdjustedUsage(), State);
 				return State.bCulled;
 			}
 		}
@@ -904,7 +1022,8 @@ bool FNiagaraWorldManager::ShouldPreCull(UNiagaraSystem* System, FVector Locatio
 			{
 				FNiagaraScalabilityState State;
 				const FNiagaraSystemScalabilitySettings& ScalabilitySettings = System->GetScalabilitySettings();
-				CalculateScalabilityState(System, ScalabilitySettings, EffectType, Location, true, State);
+				CalculateScalabilityState(System, ScalabilitySettings, EffectType, Location, true, FFXBudget::GetWorstAdjustedUsage(), State);
+				//TODO: Tell the debugger about recently PreCulled systems.
 				return State.bCulled;
 			}
 		}
@@ -912,9 +1031,9 @@ bool FNiagaraWorldManager::ShouldPreCull(UNiagaraSystem* System, FVector Locatio
 	return false;
 }
 
-void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraEffectType* EffectType, FVector Location, bool bIsPreCull, FNiagaraScalabilityState& OutState)
+void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraEffectType* EffectType, FVector Location, bool bIsPreCull, float WorstGlobalBudgetUse, FNiagaraScalabilityState& OutState)
 {
-	bool bOldCulled = OutState.bCulled;
+	OutState.bCulled = false;
 
 	DistanceCull(EffectType, ScalabilitySettings, Location, OutState);
 
@@ -924,14 +1043,17 @@ void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, con
 		InstanceCountCull(EffectType, System, ScalabilitySettings, OutState);
 	}
 
-	OutState.bDirty = OutState.bCulled != bOldCulled;
+	//Cull if any of our budgets are exceeded.
+ 	if (FFXBudget::Enabled() && INiagaraModule::UseGlobalFXBudget() && GEnableNiagaraGlobalBudgetCulling && ScalabilitySettings.bCullByGlobalBudget)
+ 	{
+ 		GlobalBudgetCull(ScalabilitySettings, WorstGlobalBudgetUse, OutState);
+ 	}
 
 	//TODO: More progressive scalability options?
 }
 
-void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraEffectType* EffectType, UNiagaraComponent* Component, bool bIsPreCull, FNiagaraScalabilityState& OutState)
+void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraEffectType* EffectType, UNiagaraComponent* Component, bool bIsPreCull, float WorstGlobalBudgetUse, FNiagaraScalabilityState& OutState)
 {
-	bool bOldCulled = OutState.bCulled;
 	OutState.bCulled = false;
 
 	DistanceCull(EffectType, ScalabilitySettings, Component, OutState);
@@ -947,9 +1069,19 @@ void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, con
 		InstanceCountCull(EffectType, System, ScalabilitySettings, OutState);
 	}
 
-	OutState.bDirty = OutState.bCulled != bOldCulled;
+ 	if (FFXBudget::Enabled() && INiagaraModule::UseGlobalFXBudget() && GEnableNiagaraGlobalBudgetCulling && ScalabilitySettings.bCullByGlobalBudget)
+	{
+ 		GlobalBudgetCull(ScalabilitySettings, WorstGlobalBudgetUse, OutState);
+ 	}
 
 	//TODO: More progressive scalability options?
+
+#if WITH_NIAGARA_DEBUGGER
+	//Tell the debugger about our scalability state.
+	//Unfortunately cannot have the debugger just read the manager state data as components are removed.
+	//To avoid extra copy in future we can have the manager keep another list of recently removed component states which is cleaned up on component destruction.
+	Component->DebugCachedScalabilityState = OutState;
+#endif
 }
 
 bool FNiagaraWorldManager::CanPreCull(UNiagaraEffectType* EffectType)
@@ -1063,6 +1195,38 @@ void FNiagaraWorldManager::DistanceCull(UNiagaraEffectType* EffectType, const FN
 	}
 }
 
+void FNiagaraWorldManager::GlobalBudgetCull(const FNiagaraSystemScalabilitySettings& ScalabilitySettings, float WorstGlobalBudgetUse, FNiagaraScalabilityState& OutState)
+{
+ 	bool bCull = WorstGlobalBudgetUse >= ScalabilitySettings.MaxGlobalBudgetUsage;
+ 	OutState.bCulled |= bCull;
+#if DEBUG_SCALABILITY_STATE
+	OutState.bCulledByGlobalBudget = bCull;
+#endif
+}
+
+bool FNiagaraWorldManager::GetScalabilityState(UNiagaraComponent* Component, FNiagaraScalabilityState& OutState) const
+{
+	if ( Component )
+	{
+		const int32 ScalabilityHandle = Component->GetScalabilityManagerHandle();
+		if (ScalabilityHandle != INDEX_NONE)
+		{
+			if (UNiagaraSystem* System = Component->GetAsset())
+			{
+				if (UNiagaraEffectType* EffectType = System->GetEffectType())
+				{
+					if (const FNiagaraScalabilityManager* ScalabilityManager = ScalabilityManagers.Find(EffectType))
+					{
+						OutState = ScalabilityManager->State[ScalabilityHandle];
+						return true;
+					}
+				}
+			}
+		}
+	}
+	return false;
+}
+
 void FNiagaraWorldManager::PrimePoolForAllWorlds(UNiagaraSystem* System)
 {
 	if (GNigaraAllowPrimedPools)
@@ -1079,7 +1243,7 @@ void FNiagaraWorldManager::PrimePoolForAllWorlds(UNiagaraSystem* System)
 
 void FNiagaraWorldManager::PrimePoolForAllSystems()
 {
-	if (GNigaraAllowPrimedPools && World && World->IsGameWorld())
+	if (GNigaraAllowPrimedPools && World && World->IsGameWorld() && !World->bIsTearingDown)
 	{
 		//Prime the pool for all currently loaded systems.
 		for (TObjectIterator<UNiagaraSystem> It; It; ++It)
@@ -1094,7 +1258,7 @@ void FNiagaraWorldManager::PrimePoolForAllSystems()
 
 void FNiagaraWorldManager::PrimePool(UNiagaraSystem* System)
 {
-	if (GNigaraAllowPrimedPools && World && World->IsGameWorld())
+	if (GNigaraAllowPrimedPools && World && World->IsGameWorld() && !World->bIsTearingDown)
 	{
 		ComponentPool->PrimePool(System, World);
 	}

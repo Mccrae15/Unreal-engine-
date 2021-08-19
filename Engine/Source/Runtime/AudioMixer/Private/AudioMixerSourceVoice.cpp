@@ -45,7 +45,9 @@ namespace Audio
 		bIsPaused = false;
 		bIsActive = false;
 		bIsBus = false;
-		bOutputToBusOnly = false;
+		bEnableBusSends = false;
+		bEnableBaseSubmix = false;
+		bEnableSubmixSends = false;
 		bStopFadedOut = false;
 
 		PitchModBase = TNumericLimits<float>::Max();
@@ -65,7 +67,10 @@ namespace Audio
 			AUDIO_MIXER_CHECK(InitParams.SourceListener != nullptr);
 			AUDIO_MIXER_CHECK(InitParams.NumInputChannels > 0);
 
-			bOutputToBusOnly = InitParams.bOutputToBusOnly;
+			bEnableBusSends = InitParams.bEnableBusSends;
+			bEnableBaseSubmix = InitParams.bEnableBaseSubmix;
+			bEnableSubmixSends = InitParams.bEnableSubmixSends;
+
 			bIsBus = InitParams.AudioBusId != INDEX_NONE;
 
 			for (int32 i = 0; i < InitParams.SubmixSends.Num(); ++i)
@@ -303,18 +308,21 @@ namespace Audio
 	{
 		AUDIO_MIXER_CHECK_AUDIO_PLAT_THREAD(MixerDevice);
 
-		check(!bOutputToBusOnly);
-
-		return SourceManager->MixOutputBuffers(SourceId, InNumOutputChannels, SendLevel, InSubmixSendStage, OutWetBuffer);
+		if (IsRenderingToSubmixes())
+		{
+			SourceManager->MixOutputBuffers(SourceId, InNumOutputChannels, SendLevel, InSubmixSendStage, OutWetBuffer);
+		}
 	}
 
 	const ISoundfieldAudioPacket* FMixerSourceVoice::GetEncodedOutput(const FSoundfieldEncodingKey& InKey) const
 	{
 		AUDIO_MIXER_CHECK_AUDIO_PLAT_THREAD(MixerDevice);
 
-		check(!bOutputToBusOnly);
-
-		return SourceManager->GetEncodedOutput(SourceId, InKey);
+		if (IsRenderingToSubmixes())
+		{
+			return SourceManager->GetEncodedOutput(SourceId, InKey);
+		}
+		return nullptr;
 	}
 
 	const FQuat FMixerSourceVoice::GetListenerRotationForVoice() const
@@ -326,27 +334,24 @@ namespace Audio
 	{
 		AUDIO_MIXER_CHECK_GAME_THREAD(MixerDevice);
 
-		if (!bOutputToBusOnly)
+		FMixerSubmixPtr SubmixPtr = Submix.Pin();
+		if (SubmixPtr.IsValid())
 		{
-			FMixerSubmixPtr SubmixPtr = Submix.Pin();
-			if (SubmixPtr.IsValid())
-			{
-				FMixerSourceSubmixSend* SubmixSend = SubmixSends.Find(SubmixPtr->GetId());
+			FMixerSourceSubmixSend* SubmixSend = SubmixSends.Find(SubmixPtr->GetId());
 
-				if (!SubmixSend)
-				{
-					FMixerSourceSubmixSend NewSubmixSend;
-					NewSubmixSend.Submix = Submix;
-					NewSubmixSend.SendLevel = SendLevel;
-					NewSubmixSend.bIsMainSend = false;
-					SubmixSends.Add(SubmixPtr->GetId(), NewSubmixSend);
-					SourceManager->SetSubmixSendInfo(SourceId, NewSubmixSend);
-				}
-				else if (!FMath::IsNearlyEqual(SubmixSend->SendLevel, SendLevel))
-				{
-					SubmixSend->SendLevel = SendLevel;
-					SourceManager->SetSubmixSendInfo(SourceId, *SubmixSend);
-				}
+			if (!SubmixSend)
+			{
+				FMixerSourceSubmixSend NewSubmixSend;
+				NewSubmixSend.Submix = Submix;
+				NewSubmixSend.SendLevel = SendLevel;
+				NewSubmixSend.bIsMainSend = false;
+				SubmixSends.Add(SubmixPtr->GetId(), NewSubmixSend);
+				SourceManager->SetSubmixSendInfo(SourceId, NewSubmixSend);
+			}
+			else if (!FMath::IsNearlyEqual(SubmixSend->SendLevel, SendLevel))
+			{
+				SubmixSend->SendLevel = SendLevel;
+				SourceManager->SetSubmixSendInfo(SourceId, *SubmixSend);
 			}
 		}
 	}
@@ -355,26 +360,52 @@ namespace Audio
 	{
 		AUDIO_MIXER_CHECK_GAME_THREAD(MixerDevice);
 
-		if (!bOutputToBusOnly)
+		FMixerSubmixPtr SubmixPtr = Submix.Pin();
+		if (SubmixPtr.IsValid())
 		{
-			FMixerSubmixPtr SubmixPtr = Submix.Pin();
-			if (SubmixPtr.IsValid())
+			FMixerSourceSubmixSend* SubmixSend = SubmixSends.Find(SubmixPtr->GetId());
+			if (SubmixSend)
 			{
-				FMixerSourceSubmixSend* SubmixSend = SubmixSends.Find(SubmixPtr->GetId());
-				if (SubmixSend)
-				{
-					SourceManager->ClearSubmixSendInfo(SourceId, *SubmixSend);
-					SubmixSends.Remove(SubmixPtr->GetId());
-				}
+				SourceManager->ClearSubmixSendInfo(SourceId, *SubmixSend);
+				SubmixSends.Remove(SubmixPtr->GetId());
 			}
 		}
 	}
+
+	void FMixerSourceVoice::SetOutputToBusOnly(bool bInOutputToBusOnly)
+	{
+		if (bInOutputToBusOnly)
+		{
+			bEnableBusSends = true;
+		}
+
+		bEnableBaseSubmix = !bInOutputToBusOnly;
+		bEnableSubmixSends = !bInOutputToBusOnly;
+	}
+
+	void FMixerSourceVoice::SetEnablement(bool bInEnableBusSendRouting, bool bInEnableMainSubmixOutput, bool bInEnableSubmixSendRouting)
+	{
+		bEnableBusSends = bInEnableBusSendRouting;
+		bEnableBaseSubmix = bInEnableMainSubmixOutput;
+		bEnableSubmixSends = bInEnableSubmixSendRouting;
+	}
+
 
 	void FMixerSourceVoice::SetAudioBusSendInfo(EBusSendType InBusSendType, uint32 AudioBusId, float BusSendLevel)
 	{
 		AUDIO_MIXER_CHECK_GAME_THREAD(MixerDevice);
 
+		if (!bEnableBusSends)
+		{
+			BusSendLevel = 0.0f;
+		}
+
 		SourceManager->SetBusSendInfo(SourceId, InBusSendType, AudioBusId, BusSendLevel);
+	}
+
+	bool FMixerSourceVoice::IsRenderingToSubmixes() const
+	{
+		return bEnableBaseSubmix || bEnableSubmixSends;
 	}
 
 	void FMixerSourceVoice::OnMixBus(FMixerSourceVoiceBuffer* OutMixerSourceBuffer)

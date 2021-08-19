@@ -25,6 +25,7 @@
 #include "MoviePipelineQueue.h"
 #include "MoviePipelineAntiAliasingSetting.h"
 #include "MoviePipelineOutputSetting.h"
+#include "MoviePipelineBlueprintLibrary.h"
 #include "MovieRenderPipelineCoreModule.h"
 #include "Components/PrimitiveComponent.h"
 #include "EngineUtils.h"
@@ -40,6 +41,10 @@ namespace MoviePipeline
 	static void AccumulateSample_TaskThread(TUniquePtr<FImagePixelData>&& InPixelData, const MoviePipeline::FImageSampleAccumulationArgs& InParams);
 }
 
+FString UMoviePipelineDeferredPassBase::StencilLayerMaterialAsset = TEXT("/MovieRenderPipeline/Materials/MoviePipeline_StencilCutout.MoviePipeline_StencilCutout");
+FString UMoviePipelineDeferredPassBase::DefaultDepthAsset = TEXT("/MovieRenderPipeline/Materials/MovieRenderQueue_WorldDepth.MovieRenderQueue_WorldDepth");
+FString UMoviePipelineDeferredPassBase::DefaultMotionVectorsAsset = TEXT("/MovieRenderPipeline/Materials/MovieRenderQueue_MotionVectors.MovieRenderQueue_MotionVectors");
+
 UMoviePipelineDeferredPassBase::UMoviePipelineDeferredPassBase() 
 	: UMoviePipelineImagePassBase()
 {
@@ -47,8 +52,8 @@ UMoviePipelineDeferredPassBase::UMoviePipelineDeferredPassBase()
 
 	// To help user knowledge we pre-seed the additional post processing materials with an array of potentially common passes.
 	TArray<FString> DefaultPostProcessMaterials;
-	DefaultPostProcessMaterials.Add(TEXT("/MovieRenderPipeline/Materials/MovieRenderQueue_WorldDepth.MovieRenderQueue_WorldDepth"));
-	DefaultPostProcessMaterials.Add(TEXT("/MovieRenderPipeline/Materials/MovieRenderQueue_MotionVectors.MovieRenderQueue_MotionVectors"));
+	DefaultPostProcessMaterials.Add(DefaultDepthAsset);
+	DefaultPostProcessMaterials.Add(DefaultMotionVectorsAsset);
 
 	for (FString& MaterialPath : DefaultPostProcessMaterials)
 	{
@@ -56,7 +61,7 @@ UMoviePipelineDeferredPassBase::UMoviePipelineDeferredPassBase()
 		NewPass.Material = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(MaterialPath));
 		NewPass.bEnabled = false;
 	}
-
+	bUse32BitPostProcessMaterials = false;
 	CurrentLayerIndex = INDEX_NONE;
 }
 
@@ -102,7 +107,7 @@ void UMoviePipelineDeferredPassBase::SetupImpl(const MoviePipeline::FMoviePipeli
 	}
 
 	{
-		TSoftObjectPtr<UMaterialInterface> StencilMatRef = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/MovieRenderPipeline/Materials/MoviePipeline_StencilCutout.MoviePipeline_StencilCutout")));
+		TSoftObjectPtr<UMaterialInterface> StencilMatRef = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(StencilLayerMaterialAsset));
 		StencilLayerMaterial = StencilMatRef.LoadSynchronous();
 		if (!StencilLayerMaterial)
 		{
@@ -148,6 +153,8 @@ void UMoviePipelineDeferredPassBase::SetupImpl(const MoviePipeline::FMoviePipeli
 	AccumulatorPool = MakeShared<TAccumulatorPool<FImageOverlappedAccumulator>, ESPMode::ThreadSafe>(PoolSize);
 	
 	PreviousCustomDepthValue.Reset();
+	PreviousDumpFramesValue.Reset();
+	PreviousColorFormatValue.Reset();
 
 	// This scene view extension will be released automatically as soon as Render Sequence is torn down.
 	// One Extension per sequence, since each sequence has its own OCIO settings.
@@ -168,6 +175,23 @@ void UMoviePipelineDeferredPassBase::SetupImpl(const MoviePipeline::FMoviePipeli
 				// during their current session but it's less likely than changing the project settings.
 				CVar->Set(CustomDepthWithStencil, EConsoleVariableFlags::ECVF_SetByProjectSetting);
 			}
+		}
+	}
+	
+	if (bUse32BitPostProcessMaterials)
+	{
+		IConsoleVariable* DumpFramesCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.BufferVisualizationDumpFramesAsHDR"));
+		if (DumpFramesCVar)
+		{
+			PreviousDumpFramesValue = DumpFramesCVar->GetInt();
+			DumpFramesCVar->Set(1, EConsoleVariableFlags::ECVF_SetByConsole);
+		}
+		
+		IConsoleVariable* ColorFormatCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.PostProcessingColorFormat"));
+		if (ColorFormatCVar)
+		{
+			PreviousColorFormatValue = ColorFormatCVar->GetInt();
+			ColorFormatCVar->Set(1, EConsoleVariableFlags::ECVF_SetByConsole);
 		}
 	}
 }
@@ -214,6 +238,21 @@ void UMoviePipelineDeferredPassBase::TeardownImpl()
 				UE_LOG(LogMovieRenderPipeline, Log, TEXT("Restoring custom depth/stencil value to: %d"), PreviousCustomDepthValue.GetValue());
 				CVar->Set(PreviousCustomDepthValue.GetValue(), EConsoleVariableFlags::ECVF_SetByProjectSetting);
 			}
+		}
+	}
+	
+	if (PreviousDumpFramesValue.IsSet())
+	{
+		IConsoleVariable* DumpFramesCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.BufferVisualizationDumpFramesAsHDR"));
+		if (DumpFramesCVar)
+		{
+			DumpFramesCVar->Set(PreviousDumpFramesValue.GetValue(),  EConsoleVariableFlags::ECVF_SetByConsole);
+		}
+		
+		IConsoleVariable* ColorFormatCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.PostProcessingColorFormat"));
+		if (ColorFormatCVar)
+		{
+			ColorFormatCVar->Set(PreviousColorFormatValue.GetValue(), EConsoleVariableFlags::ECVF_SetByConsole);
 		}
 	}
 
@@ -594,7 +633,9 @@ void UMoviePipelineDeferredPassBase::PostRendererSubmission(const FMoviePipeline
 		UMoviePipelineOutputSetting* OutputSettings = GetPipeline()->GetPipelineMasterConfig()->FindSetting<UMoviePipelineOutputSetting>();
 		check(OutputSettings);
 		
-		const FIntPoint FullOutputSize = OutputSettings->OutputResolution;
+		// Taking overscan into account.
+		FIntPoint FullOutputSize = UMoviePipelineBlueprintLibrary::GetEffectiveOutputResolution(GetPipeline()->GetPipelineMasterConfig(), GetPipeline()->GetActiveShotList()[GetPipeline()->GetCurrentShotIndex()]);
+
 		const FIntPoint ConstrainedFullSize = CameraCache.AspectRatio > 1.0f ?
 			FIntPoint(FullOutputSize.X, FMath::CeilToInt((double)FullOutputSize.X / (double)CameraCache.AspectRatio)) :
 			FIntPoint(FMath::CeilToInt(CameraCache.AspectRatio * FullOutputSize.Y), FullOutputSize.Y);
@@ -701,6 +742,16 @@ void UMoviePipelineDeferredPassBase::PostRendererSubmission(const FMoviePipeline
 
 }
 
+#if WITH_EDITOR
+FText UMoviePipelineDeferredPass_PathTracer::GetFooterText(UMoviePipelineExecutorJob* InJob) const {
+	return NSLOCTEXT(
+		"MovieRenderPipeline",
+		"DeferredBasePassSetting_FooterText_PathTracer",
+		"Samples per Pixel for the Path Tracer are controlled by the Spatial Sample Count from the Anti-Aliasing settings.\n"
+		"All other Path Tracer settings are taken from the Post Process settings as usual.");
+}
+#endif
+
 namespace MoviePipeline
 {
 	static void AccumulateSample_TaskThread(TUniquePtr<FImagePixelData>&& InPixelData, const MoviePipeline::FImageSampleAccumulationArgs& InParams)
@@ -763,8 +814,9 @@ namespace MoviePipeline
 			return;
 		}
 
-		// For the first sample in a new output, we allocate memory
-		if (NewPayload->IsFirstTile() && NewPayload->IsFirstTemporalSample())
+		// Allocate memory if the ImageAccumulator has not been initialized yet for this output
+		// This usually happens on the first sample (regular case), or on the last spatial sample of the first temporal sample (path tracer)
+		if (InParams.ImageAccumulator->NumChannels == 0)
 		{
 			int32 ChannelCount = InParams.bAccumulateAlpha ? 4 : 3;
 			InParams.ImageAccumulator->InitMemory(FIntPoint(NewPayload->SampleState.TileSize.X * NewPayload->SampleState.TileCounts.X, NewPayload->SampleState.TileSize.Y * NewPayload->SampleState.TileCounts.Y), ChannelCount);

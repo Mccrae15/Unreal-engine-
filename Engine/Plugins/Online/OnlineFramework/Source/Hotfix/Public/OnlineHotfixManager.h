@@ -13,7 +13,7 @@
 #include "Interfaces/OnlineTitleFileInterface.h"
 #include "OnlineHotfixManager.generated.h"
 
-HOTFIX_API DECLARE_LOG_CATEGORY_EXTERN(LogHotfixManager, Verbose, All);
+HOTFIX_API DECLARE_LOG_CATEGORY_EXTERN(LogHotfixManager, Display, All);
 
 UENUM()
 enum class EHotfixResult : uint8
@@ -168,9 +168,11 @@ protected:
 	 * because there's no simple undo for objects that were loaded and possibly rooted
 	 */
 	uint32 ChangedOrRemovedPakCount;
+	/** Our passed-in World */
+	TWeakObjectPtr<UWorld> OwnerWorld;
 
-	void Init();
-	void Cleanup();
+	virtual void Init();
+	virtual void Cleanup();
 	/** Looks at each file returned via the hotfix and processes them */
 	void ApplyHotfix();
 	/** Cleans up and fires the delegate indicating it's done */
@@ -203,7 +205,7 @@ protected:
 	/** @return the config file name with full path info */
 	FString GetConfigFileNamePath(const FString& IniName);
 	/** @return the config file name after stripping any extra info (platform, debug prefix, etc.) */
-	FString GetStrippedConfigFileName(const FString& IniName);
+	virtual FString GetStrippedConfigFileName(const FString& IniName);
 
 	/** @return the human readable name of the file */
 	const FString GetFriendlyNameFromDLName(const FString& DLName) const;
@@ -211,6 +213,9 @@ protected:
 	virtual void PostInitProperties() override;
 
 	bool IsMapLoaded(const FString& MapName);
+
+	/** @return our current world */
+	UWorld* GetWorld() const override;
 
 protected:
 	/**

@@ -33,7 +33,7 @@ namespace Electra
 		}
 
 		//! Clears everything
-		void Clear(void)
+		void Clear()
 		{
 			FMediaCriticalSection::ScopedLock lock(CriticalSection);
 			SimpleMovingAverage.Clear();
@@ -67,21 +67,23 @@ namespace Electra
 		T GetLastSample() const
 		{
 			FMediaCriticalSection::ScopedLock lock(CriticalSection);
-			return(LastSample);
+			return LastSample;
 		}
 
 		//! Returns the simple moving average from all the collected history samples.
-		T GetSMA(void) const
+		T GetSMA() const
 		{
 			FMediaCriticalSection::ScopedLock lock(CriticalSection);
 			if (SimpleMovingAverage.Num())
 			{
 				T sum = 0;
-				for (SIZE_T i = 0; i < SimpleMovingAverage.Num(); ++i)
+				for(SIZE_T i=0; i<SimpleMovingAverage.Num(); ++i)
+				{
 					sum += SimpleMovingAverage[i];
-				return(T(sum / SimpleMovingAverage.Num()));
+				}
+				return T(sum / SimpleMovingAverage.Num());
 			}
-			return(T(0));
+			return T(0);
 		}
 
 	private:
@@ -122,7 +124,7 @@ namespace Electra
 		virtual ~FAdaptiveStreamSelector();
 		virtual void SetPresentationType(EMediaPresentationType PresentationType) override;
 		virtual void SetCanSwitchToAlternateStreams(bool bCanSwitch) override;
-		virtual void SetCurrentPlaybackPeriod(TSharedPtrTS<IManifest::IPlayPeriod> InCurrentPlayPeriod) override;
+		virtual void SetCurrentPlaybackPeriod(EStreamType InStreamType, TSharedPtrTS<IManifest::IPlayPeriod> InCurrentPlayPeriod) override;
 		virtual void SetBandwidth(int64 bitsPerSecond) override;
 		virtual void SetForcedNextBandwidth(int64 bitsPerSecond) override;
 		virtual void MarkStreamAsUnavailable(const FBlacklistedStream& BlacklistedStream) override;
@@ -139,13 +141,12 @@ namespace Electra
 
 		virtual FABRDownloadProgressDecision ReportDownloadProgress(const Metrics::FSegmentDownloadStats& SegmentDownloadStats) override;
 		virtual void ReportDownloadEnd(const Metrics::FSegmentDownloadStats& SegmentDownloadStats) override;
-
-
 		virtual void ReportBufferingStart(Metrics::EBufferingReason BufferingReason) override;
 		virtual void ReportBufferingEnd(Metrics::EBufferingReason BufferingReason) override;
 		virtual void ReportOpenSource(const FString& URL) override {}
 		virtual void ReportReceivedMasterPlaylist(const FString& EffectiveURL) override {}
 		virtual void ReportReceivedPlaylists() override {}
+		virtual void ReportTracksChanged() override {}
 		virtual void ReportPlaylistDownload(const Metrics::FPlaylistDownloadStats& PlaylistDownloadStats) override {}
 		virtual void ReportBandwidth(int64 EffectiveBps, int64 ThroughputBps, double LatencyInSeconds) override {}
 		virtual void ReportBufferUtilization(const Metrics::FBufferStats& BufferStats) override {}
@@ -186,12 +187,8 @@ namespace Electra
 				Metrics::FSegmentDownloadStats					LastDownloadStats;
 			};
 
-			TSharedPtrTS<IPlaybackAssetAdaptationSet>		AdaptationSet;
-			TSharedPtrTS<IPlaybackAssetRepresentation>		Representation;
-
 			FString											AdaptationSetUniqueID;
 			FString											RepresentationUniqueID;
-			FString											CDN;
 
 			FStreamHealth									Health;
 			// Set for convenience.
@@ -213,18 +210,18 @@ namespace Electra
 		void SimulateDownload(FSimulationResult& sim, const TArray<IManifest::IPlayPeriod::FSegmentInformation>& NextSegments, double secondsToSimulate, int64 atBPS);
 
 
-		IPlayerSessionServices* PlayerSessionServices;
+		IPlayerSessionServices*								PlayerSessionServices;
 		FConfiguration										Config;
 
 		FMediaCriticalSection								AccessMutex;
 		EMediaPresentationType								PresentationType;
-		TSharedPtrTS<IManifest::IPlayPeriod>				CurrentPlayPeriod;
+		TSharedPtrTS<IManifest::IPlayPeriod>				CurrentPlayPeriodVideo;
+		TSharedPtrTS<IManifest::IPlayPeriod>				CurrentPlayPeriodAudio;
 		bool												bPlayerIsBuffering;
 		bool												bCanSwitchToAlternateStreams;
 
 		TArray<TSharedPtrTS<FStreamInformation>>			StreamInformationVideo;
 		TArray<TSharedPtrTS<FStreamInformation>>			StreamInformationAudio;
-		FString												CurrentMediaAssetID;
 		FString												CurrentVideoAdaptationSetID;
 		FString												CurrentAudioAdaptationSetID;
 
@@ -356,93 +353,105 @@ namespace Electra
 	/**
 	 * Sets the playback period from which to select streams now.
 	 *
+	 * @param InStreamType
 	 * @param CurrentPlayPeriod
 	 */
-	void FAdaptiveStreamSelector::SetCurrentPlaybackPeriod(TSharedPtrTS<IManifest::IPlayPeriod> InCurrentPlayPeriod)
+	void FAdaptiveStreamSelector::SetCurrentPlaybackPeriod(EStreamType InStreamType, TSharedPtrTS<IManifest::IPlayPeriod> InCurrentPlayPeriod)
 	{
 		FMediaCriticalSection::ScopedLock lock(AccessMutex);
-		CurrentPlayPeriod = InCurrentPlayPeriod;
-		if (CurrentPlayPeriod.IsValid())
+		if (InStreamType == EStreamType::Video)
 		{
-			TSharedPtrTS<ITimelineMediaAsset> Asset = CurrentPlayPeriod->GetMediaAsset();
-			if (Asset.IsValid() && CurrentMediaAssetID != Asset->GetUniqueIdentifier())
+			CurrentPlayPeriodVideo = InCurrentPlayPeriod;
+			if (CurrentPlayPeriodVideo.IsValid())
 			{
-				CurrentMediaAssetID.Empty();
-				CurrentVideoAdaptationSetID.Empty();
-				CurrentAudioAdaptationSetID.Empty();
-				StreamInformationVideo.Empty();
-				StreamInformationAudio.Empty();
-				// Get video stream information
-				if (Asset->GetNumberOfAdaptationSets(EStreamType::Video) > 0)
+				TSharedPtrTS<ITimelineMediaAsset> Asset = CurrentPlayPeriodVideo->GetMediaAsset();
+				if (Asset.IsValid())
 				{
-					TSharedPtrTS<IPlaybackAssetAdaptationSet> Adapt = Asset->GetAdaptationSetByTypeAndIndex(EStreamType::Video, 0);
-					if (Adapt.IsValid())
+					CurrentVideoAdaptationSetID = InCurrentPlayPeriod->GetSelectedAdaptationSetID(InStreamType);
+					StreamInformationVideo.Empty();
+					// Get video stream information
+					if (!CurrentVideoAdaptationSetID.IsEmpty())
 					{
-						CurrentMediaAssetID = Asset->GetUniqueIdentifier();
-						CurrentVideoAdaptationSetID = Adapt->GetUniqueIdentifier();
-						for (int32 i = 0, iMax = Adapt->GetNumberOfRepresentations(); i < iMax; ++i)
+						for(int32 nA=0, maxA=Asset->GetNumberOfAdaptationSets(InStreamType); nA<maxA; ++nA)
 						{
-							TSharedPtrTS<FStreamInformation> si = MakeSharedTS<FStreamInformation>();
-							si->AdaptationSet = Adapt;
-							si->Representation = Adapt->GetRepresentationByIndex(i);
-							si->AdaptationSetUniqueID = si->AdaptationSet->GetUniqueIdentifier();
-							si->RepresentationUniqueID = si->Representation->GetUniqueIdentifier();
-							si->CDN = si->Representation->GetCDN();
-							si->Bitrate = si->Representation->GetBitrate();
-							if (si->Representation->GetCodecInformation().IsVideoCodec())
+							TSharedPtrTS<IPlaybackAssetAdaptationSet> Adapt = Asset->GetAdaptationSetByTypeAndIndex(InStreamType, nA);
+							if (CurrentVideoAdaptationSetID.Equals(Adapt->GetUniqueIdentifier()))
 							{
-								si->Resolution = si->Representation->GetCodecInformation().GetResolution();
+								for(int32 i=0, iMax=Adapt->GetNumberOfRepresentations(); i<iMax; ++i)
+								{
+									TSharedPtrTS<IPlaybackAssetRepresentation> Repr = Adapt->GetRepresentationByIndex(i);
+									TSharedPtrTS<FStreamInformation> si = MakeSharedTS<FStreamInformation>();
+									si->AdaptationSetUniqueID = Adapt->GetUniqueIdentifier();
+									si->RepresentationUniqueID = Repr->GetUniqueIdentifier();
+									si->Bitrate = Repr->GetBitrate();
+									if (Repr->GetCodecInformation().IsVideoCodec())
+									{
+										si->Resolution = Repr->GetCodecInformation().GetResolution();
+									}
+									StreamInformationVideo.Push(si);
+								}
+								// Sort the representations by ascending bitrate
+								StreamInformationVideo.Sort([](const TSharedPtrTS<FStreamInformation>& a, const TSharedPtrTS<FStreamInformation>& b)
+								{
+									return a->Bitrate < b->Bitrate;
+								});
+									
+								break;
 							}
-							StreamInformationVideo.Push(si);
 						}
-						// Sort the representations by ascending bitrate
-						StreamInformationVideo.Sort([](const TSharedPtrTS<FStreamInformation>& a, const TSharedPtrTS<FStreamInformation>& b)
-						{
-							return a->Representation->GetBitrate() < b->Representation->GetBitrate();
-						});
-					}
-				}
-				// Get audio stream information
-				if (Asset->GetNumberOfAdaptationSets(EStreamType::Audio) > 0)
-				{
-					TSharedPtrTS<IPlaybackAssetAdaptationSet> Adapt = Asset->GetAdaptationSetByTypeAndIndex(EStreamType::Audio, 0);
-					if (Adapt.IsValid())
-					{
-						CurrentMediaAssetID = Asset->GetUniqueIdentifier();
-						CurrentAudioAdaptationSetID = Adapt->GetUniqueIdentifier();
-						for (int32 i = 0, iMax = Adapt->GetNumberOfRepresentations(); i < iMax; ++i)
-						{
-							TSharedPtrTS<FStreamInformation> si = MakeSharedTS<FStreamInformation>();
-							si->AdaptationSet = Adapt;
-							si->Representation = Adapt->GetRepresentationByIndex(i);
-							si->AdaptationSetUniqueID = si->AdaptationSet->GetUniqueIdentifier();
-							si->RepresentationUniqueID = si->Representation->GetUniqueIdentifier();
-							si->CDN = si->Representation->GetCDN();
-							si->Bitrate = si->Representation->GetBitrate();
-							/*
-							if (si->Representation->GetCodecInformation().IsAudioCodec())
-							{
-								// ...
-							}
-							*/
-							StreamInformationAudio.Push(si);
-						}
-						// Sort the representations by ascending bitrate
-						StreamInformationAudio.Sort([](const TSharedPtrTS<FStreamInformation>& a, const TSharedPtrTS<FStreamInformation>& b)
-						{
-							return a->Representation->GetBitrate() > b->Representation->GetBitrate();
-						});
 					}
 				}
 			}
+			else
+			{
+				CurrentVideoAdaptationSetID.Empty();
+				StreamInformationVideo.Empty();
+			}
 		}
-		else
+		else if (InStreamType == EStreamType::Audio)
 		{
-			CurrentMediaAssetID.Empty();
-			CurrentVideoAdaptationSetID.Empty();
-			CurrentAudioAdaptationSetID.Empty();
-			StreamInformationVideo.Empty();
-			StreamInformationAudio.Empty();
+			CurrentPlayPeriodAudio = InCurrentPlayPeriod;
+			if (CurrentPlayPeriodAudio.IsValid())
+			{
+				TSharedPtrTS<ITimelineMediaAsset> Asset = CurrentPlayPeriodAudio->GetMediaAsset();
+				if (Asset.IsValid())
+				{
+					CurrentAudioAdaptationSetID = InCurrentPlayPeriod->GetSelectedAdaptationSetID(InStreamType);
+					StreamInformationAudio.Empty();
+					// Get audio stream information
+					if (!CurrentAudioAdaptationSetID.IsEmpty())
+					{
+						for(int32 nA=0, maxA=Asset->GetNumberOfAdaptationSets(InStreamType); nA<maxA; ++nA)
+						{
+							TSharedPtrTS<IPlaybackAssetAdaptationSet> Adapt = Asset->GetAdaptationSetByTypeAndIndex(InStreamType, nA);
+							if (CurrentAudioAdaptationSetID.Equals(Adapt->GetUniqueIdentifier()))
+							{
+								for(int32 i=0, iMax=Adapt->GetNumberOfRepresentations(); i<iMax; ++i)
+								{
+									TSharedPtrTS<IPlaybackAssetRepresentation> Repr = Adapt->GetRepresentationByIndex(i);
+									TSharedPtrTS<FStreamInformation> si = MakeSharedTS<FStreamInformation>();
+									si->AdaptationSetUniqueID = Adapt->GetUniqueIdentifier();
+									si->RepresentationUniqueID = Repr->GetUniqueIdentifier();
+									si->Bitrate = Repr->GetBitrate();
+									StreamInformationAudio.Push(si);
+								}
+								// Sort the representations by ascending bitrate
+								StreamInformationAudio.Sort([](const TSharedPtrTS<FStreamInformation>& a, const TSharedPtrTS<FStreamInformation>& b)
+								{
+									return a->Bitrate > b->Bitrate;
+								});
+
+								break;
+							}
+						}
+					}
+				}
+			}
+			else
+			{
+				CurrentAudioAdaptationSetID.Empty();
+				StreamInformationAudio.Empty();
+			}
 		}
 	}
 
@@ -513,7 +522,7 @@ namespace Electra
 	{
 		FMediaCriticalSection::ScopedLock lock(AccessMutex);
 		double lastBandwidth = AverageBandwidth.GetLastSample();
-		return((int64)lastBandwidth);
+		return (int64)lastBandwidth;
 	}
 
 
@@ -527,7 +536,7 @@ namespace Electra
 	{
 		FMediaCriticalSection::ScopedLock lock(AccessMutex);
 		const double averageBandwidth = AverageBandwidth.GetSMA();
-		return((int64)averageBandwidth);
+		return (int64)averageBandwidth;
 	}
 
 	//-----------------------------------------------------------------------------
@@ -734,7 +743,7 @@ namespace Electra
 		}
 		if (StreamInfos)
 		{
-			for (int32 i = 0, iMax = (int32)StreamInfos->Num(); i < iMax; ++i)
+			for(int32 i=0, iMax=StreamInfos->Num(); i<iMax; ++i)
 			{
 				if (FromDownloadStats.AdaptationSetID == (*StreamInfos)[i]->AdaptationSetUniqueID &&
 					FromDownloadStats.RepresentationID == (*StreamInfos)[i]->RepresentationUniqueID &&
@@ -807,22 +816,18 @@ namespace Electra
 	IAdaptiveStreamSelector::ESegmentAction FAdaptiveStreamSelector::SelectSuitableStreams(FTimeValue& OutDelay, TSharedPtrTS<const IStreamSegment> CurrentSegment)
 	{
 		OutDelay.SetToZero();
-		if (!CurrentPlayPeriod.IsValid())
-		{
-			return ESegmentAction::FetchNext;
-		}
 
 		FTimeValue TimeNow = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
 		// Make all streams available again if their blacklist time has expired
 		AccessMutex.Lock();
-		for (int32 i = 0, iMax = StreamInformationVideo.Num(); i < iMax; ++i)
+		for(int32 i=0, iMax=StreamInformationVideo.Num(); i<iMax; ++i)
 		{
 			if (StreamInformationVideo[i]->Health.BecomesAvailableAgainAtUTC <= TimeNow)
 			{
 				StreamInformationVideo[i]->Health.BecomesAvailableAgainAtUTC.SetToZero();
 			}
 		}
-		for (int32 i = 0, iMax = StreamInformationAudio.Num(); i < iMax; ++i)
+		for(int32 i=0, iMax=StreamInformationAudio.Num(); i<iMax; ++i)
 		{
 			if (StreamInformationAudio[i]->Health.BecomesAvailableAgainAtUTC <= TimeNow)
 			{
@@ -833,6 +838,21 @@ namespace Electra
 
 
 		EStreamType StreamType = CurrentSegment.IsValid() ? CurrentSegment->GetType() : StreamInformationVideo.Num() ? EStreamType::Video : EStreamType::Audio;
+		
+		TSharedPtrTS<IManifest::IPlayPeriod> CurrentPlayPeriod;
+		if (StreamType == EStreamType::Video)
+		{
+			CurrentPlayPeriod = CurrentPlayPeriodVideo;
+		}
+		else if (StreamType == EStreamType::Audio)
+		{
+			CurrentPlayPeriod = CurrentPlayPeriodAudio;
+		}
+		if (!CurrentPlayPeriod.IsValid())
+		{
+			return ESegmentAction::FetchNext;
+		}
+
 		// Was the previous segment download in error?
 		bool bRetryIfPossible = false;
 		bool bSkipWithFiller = false;
@@ -840,44 +860,24 @@ namespace Electra
 		{
 			Metrics::FSegmentDownloadStats Stats;
 			CurrentSegment->GetDownloadStats(Stats);
+			// Try to get the stream information for the current downloaded segment. We may not find it on a period transition where the
+			// segment is the last of the previous period.
 			TSharedPtrTS<FAdaptiveStreamSelector::FStreamInformation> CurrentStreamInfo = GetStreamInformation(Stats);
-			check(CurrentStreamInfo.IsValid());
 			if (CurrentStreamInfo.IsValid())
 			{
 				if (!Stats.bWasSuccessful)
 				{
 					// Was not successful. Figure out what to do now.
-
-					/*
-							EStreamType		StreamType;						//!< Type of stream
-							ESegmentType	SegmentType;					//!< Type of segment (init or media)
-							FString	URL;							//!< Effective URL used to download from
-							FString	CDN;							//!< CDN
-							FString	MediaAssetID;
-							FString	AdaptationSetID;
-							FString	RepresentationID;
-							double			PresentationTime;				//!< Presentation time on media timeline
-							double			Duration;						//!< Duration of segment as specified in manifest
-							int32			Bitrate;						//!< Stream bitrate as specified in manifest
-							int32			RetryNumber;
-							bool			bIsMissingSegment;				//!< true if the segment was not actually downloaded because it is missing on the timeline.
-
-							// Outputs from stream reader
-							FString	FailureReason;					//!< Human readable failure reason. Only for display purposes.
-							double			DurationDownloaded;				//!< Duration of content successfully downloaded. May be less than Duration in case of errors.
-							double			DurationDelivered;				//!< Duration of content delivered to buffer. If larger than DurationDownloaded indicates dummy data was inserted into buffer.
-							double			TimeToFirstByte;				//!< Time in seconds until first data byte was received
-							double			TimeToDownload;					//!< Total time in seconds for entire download
-							int64			ByteSize;						//!< Content-Length, may be -1 if unknown (either on error or chunked transfer)
-							int64			NumBytesDownloaded;				//!< Number of bytes successfully downloaded.
-							int64			ThroughputBps;					//!< Estimated throughput in bits per second
-							int32			HTTPStatusCode;					//!< HTTP status code (0 if not connected to server yet)
-							bool			bWasSuccessful;					//!< true if download was successful, false if not
-							bool			bWasAborted;					//!< true if download was aborted by ABR (not by playback!)
-							bool			bDidTimeout;					//!< true if a timeout occurred. Only set if timeouts are enabled. Usually the ABR will monitor and abort.
-							bool			bParseFailure;					//!< true if the segment could not be parsed
-							bool			bInsertedFillerData;
-					*/
+					// In the case where the segment had an availability window set the stream reader was waiting for
+					// to be entered and we got a 404 back, the server did not manage to publish the new segment in time.
+					// We try this again after a slight delay.
+					if (Stats.AvailibilityDelay && Utils::AbsoluteValue(Stats.AvailibilityDelay) < 0.5)
+					{
+						//LogMessage(IInfoLog::ELevel::Warning, FString::Printf(TEXT("Segment not available at announced time. Trying again.")));
+						CurrentPlayPeriod->IncreaseSegmentFetchDelay(FTimeValue(FTimeValue::MillisecondsToHNS(100)));
+						OutDelay.SetFromMilliseconds(500);
+						return ESegmentAction::Retry;
+					}
 
 					// Too many failures already? It's unlikely that there is a way that would magically fix itself now.
 					if (Stats.RetryNumber >= 3)
@@ -1018,10 +1018,10 @@ namespace Electra
 			{
 				PossibleRepresentations.Push(StreamInformationVideo[0]);
 			}
-			for (int32 nStr = 1; nStr < StreamInformationVideo.Num(); ++nStr)
+			for(int32 nStr=1; nStr<StreamInformationVideo.Num(); ++nStr)
 			{
 				// Check if bitrate and resolution are acceptable
-				if (StreamInformationVideo[nStr]->Representation->GetBitrate() <= BandwidthCeiling &&
+				if (StreamInformationVideo[nStr]->Bitrate <= BandwidthCeiling &&
 					!StreamInformationVideo[nStr]->Resolution.ExceedsLimit(MaxStreamResolution))
 				{
 					FSimulationResult sim;
@@ -1029,7 +1029,7 @@ namespace Electra
 					// Get information on the next segments.
 					TArray<IManifest::IPlayPeriod::FSegmentInformation> NextSegments;
 					FTimeValue AverageSegmentDuration;
-					CurrentPlayPeriod->GetSegmentInformation(NextSegments, AverageSegmentDuration, CurrentSegment, FTimeValue().SetFromSeconds(simulationDuration), StreamInformationVideo[nStr]->AdaptationSet, StreamInformationVideo[nStr]->Representation);
+					CurrentPlayPeriod->GetSegmentInformation(NextSegments, AverageSegmentDuration, CurrentSegment, FTimeValue().SetFromSeconds(simulationDuration), StreamInformationVideo[nStr]->AdaptationSetUniqueID, StreamInformationVideo[nStr]->RepresentationUniqueID);
 
 					// Long term prediction: Simulate download (at a user-scaled bandwidth factor)
 					SimulateDownload(sim, NextSegments, simulationDuration, simulationBandwidthLongterm);
@@ -1057,7 +1057,7 @@ namespace Electra
 					bool bIsFeasible = (bCond1 || bCond2) && bCond3;
 
 					// If there is an enforced initial bitrate then any stream that is within that bitrate is feasible by default.
-					if (ForcedInitialBandwidth && StreamInformationVideo[nStr]->Representation->GetBitrate() <= ForcedInitialBandwidth)
+					if (ForcedInitialBandwidth && StreamInformationVideo[nStr]->Bitrate <= ForcedInitialBandwidth)
 					{
 						bIsFeasible = true;
 					}
@@ -1076,7 +1076,7 @@ namespace Electra
 		//else if (StreamType == EStreamType::Audio)
 		else
 		{
-			for (int32 nStr = 0; nStr < StreamInformationAudio.Num(); ++nStr)
+			for(int32 nStr=0; nStr<StreamInformationAudio.Num(); ++nStr)
 			{
 				PossibleRepresentations.Push(StreamInformationAudio[nStr]);
 			}
@@ -1090,13 +1090,13 @@ namespace Electra
 			if (BlacklistedExternally.Num())
 			{
 				TArray<TSharedPtrTS<FStreamInformation>> RemainingCandidates;
-				for (int32 j = 0, jMax = PossibleRepresentations.Num(); j < jMax; ++j)
+				for(int32 j=0, jMax=PossibleRepresentations.Num(); j<jMax; ++j)
 				{
 					bool bStillGood = true;
-					for (int32 i = 0, iMax = BlacklistedExternally.Num(); i < iMax; ++i)
+					for(int32 i=0, iMax=BlacklistedExternally.Num(); i<iMax; ++i)
 					{
-						if (PossibleRepresentations[j]->AdaptationSet->GetUniqueIdentifier() == BlacklistedExternally[i].AdaptationSetUniqueID &&
-							PossibleRepresentations[j]->Representation->GetUniqueIdentifier() == BlacklistedExternally[i].RepresentationUniqueID)
+						if (PossibleRepresentations[j]->AdaptationSetUniqueID == BlacklistedExternally[i].AdaptationSetUniqueID &&
+							PossibleRepresentations[j]->RepresentationUniqueID == BlacklistedExternally[i].RepresentationUniqueID)
 						{
 							bStillGood = false;
 							break;
@@ -1114,7 +1114,7 @@ namespace Electra
 			//if (1)
 			{
 				TArray<TSharedPtrTS<FStreamInformation>> RemainingCandidates;
-				for (int32 j = 0, jMax = PossibleRepresentations.Num(); j < jMax; ++j)
+				for(int32 j=0, jMax=PossibleRepresentations.Num(); j<jMax; ++j)
 				{
 					bool bStillGood = PossibleRepresentations[j]->Health.BecomesAvailableAgainAtUTC <= TimeNow;
 					if (bStillGood)
@@ -1129,7 +1129,7 @@ namespace Electra
 			if (PossibleRepresentations.Num())
 			{
 				const TSharedPtrTS<FStreamInformation>& Candidate = PossibleRepresentations.Top();
-				CurrentPlayPeriod->SelectStream(Candidate->AdaptationSet, Candidate->Representation, Candidate->Representation->GetCDN());
+				CurrentPlayPeriod->SelectStream(Candidate->AdaptationSetUniqueID, Candidate->RepresentationUniqueID);
 
 				if (bRetryIfPossible)
 				{

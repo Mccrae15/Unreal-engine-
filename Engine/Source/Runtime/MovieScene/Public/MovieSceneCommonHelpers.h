@@ -46,10 +46,22 @@ public:
 	 * @param Sections All the sections
 	 * @param Section The section that was modified 
 	 * @param bDelete Was this a deletion?
+	 * @param bCleanUp Should we cleanup any invalid sections?
+	 * @return Whether the list of sections was modified as part of the clean-up
 	 */
-	static void FixupConsecutiveSections(TArray<UMovieSceneSection*>& Sections, UMovieSceneSection& Section, bool bDelete);
+	static bool FixupConsecutiveSections(TArray<UMovieSceneSection*>& Sections, UMovieSceneSection& Section, bool bDelete, bool bCleanUp = false);
 
-	static void FixupConsecutiveBlendingSections(TArray<UMovieSceneSection*>& Sections, UMovieSceneSection& Section, bool bDelete);
+	/**
+	 * Fix up consecutive sections so that there are no gaps, but there can be overlaps, in which case the sections
+	 * blend together.
+	 *
+	 * @param Sections All the sections
+	 * @param Section The section that was modified 
+	 * @param bDelete Was this a deletion?
+	 * @param bCleanUp Should we cleanup any invalid sections?
+	 * @return Whether the list of sections was modified as part of the clean-up
+	 */
+	static bool FixupConsecutiveBlendingSections(TArray<UMovieSceneSection*>& Sections, UMovieSceneSection& Section, bool bDelete, bool bCleanUp = false);
 
 	/*
  	 * Sort consecutive sections so that they are in order based on start time
@@ -137,6 +149,15 @@ public:
 	 * @return The unique name
 	 */
 	static FString MakeUniqueSpawnableName(UMovieScene* InMovieScene, const FString& InName);
+
+	/**
+	 * Return a copy of the source object, suitable for use as a spawnable template.
+	 * @param InSourceObject The source object to convert into a spawnable template
+	 * @param InMovieScene The movie scene the spawnable template will be associated with
+	 * @param InName The name to use for the spawnable template
+	 * @return The spawnable template
+	 */
+	static UObject* MakeSpawnableTemplateFromInstance(UObject& InSourceObject, UMovieScene* InMovieScene, FName InName);
 };
 
 /**
@@ -245,7 +266,7 @@ public:
 	{
 		checkf(Object, TEXT("No object specified"));
 
-		FPropertyAddress Address = FindProperty(*Object, InPropertyPath);
+		FPropertyAddress Address = FindPropertyAddress(*Object, InPropertyPath);
 
 		ValueType Value;
 		if (ResolvePropertyValue<ValueType>(Address, Value))
@@ -297,6 +318,8 @@ public:
 	{
 		return PropertyName;
 	}
+
+	static FProperty* FindProperty(const UObject* Object, const FString& InPropertyPath);
 
 private:
 
@@ -366,8 +389,10 @@ private:
 		return false;
 	}
 
-	static FPropertyAddress FindPropertyRecursive(void* BasePointer, UStruct* InStruct, TArray<FString>& InPropertyNames, uint32 Index);
-	static FPropertyAddress FindProperty(const UObject& Object, const FString& InPropertyPath);
+	static FPropertyAddress FindPropertyAddressRecursive(void* BasePointer, UStruct* InStruct, TArray<FString>& InPropertyNames, uint32 Index);
+	static FPropertyAddress FindPropertyAddress(const UObject& Object, const FString& InPropertyPath);
+
+	static FProperty* FindPropertyRecursive(UStruct* InStruct, TArray<FString>& InPropertyNames, uint32 Index);
 
 	/** Find or add the FPropertyAndFunction for the specified object */
 	FPropertyAndFunction FindOrAdd(const UObject& InObject)

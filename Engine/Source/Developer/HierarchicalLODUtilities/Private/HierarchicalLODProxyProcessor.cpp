@@ -57,7 +57,7 @@ bool FHierarchicalLODProxyProcessor::Tick(float DeltaTime)
 		check(MainMesh != nullptr);
 
 		// Force lightmap coordinate to 0 for proxy meshes
-		MainMesh->LightMapCoordinateIndex = 0;
+		MainMesh->SetLightMapCoordinateIndex(0);
 		// Trigger post edit change, simulating we made a change in the Static mesh editor (could only call Build, but this is for possible future changes)
 		MainMesh->PostEditChange();
 
@@ -73,7 +73,7 @@ bool FHierarchicalLODProxyProcessor::Tick(float DeltaTime)
 		FProjectStatus ProjectStatus;
 		if (IProjectManager::Get().QueryStatusForCurrentProject(ProjectStatus) && (ProjectStatus.IsTargetPlatformSupported(TEXT("Android")) || ProjectStatus.IsTargetPlatformSupported(TEXT("IOS"))))
 		{
-			if (MainMesh->RenderData.IsValid() && MainMesh->RenderData->LODResources.Num() && MainMesh->RenderData->LODResources[0].IndexBuffer.Is32Bit())
+			if (MainMesh->GetRenderData() && MainMesh->GetRenderData()->LODResources.Num() && MainMesh->GetRenderData()->LODResources[0].IndexBuffer.Is32Bit())
 			{
 				FMessageLog("HLODResults").Warning()
 					->AddToken(FUObjectToken::Create(Data->LODActor))

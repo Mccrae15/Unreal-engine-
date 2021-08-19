@@ -10,6 +10,7 @@
 
 class AActor;
 class IDataprepProgressReporter;
+class UDataprepAssetInterface;
 class UStaticMesh;
 class UWorld;
 
@@ -57,7 +58,7 @@ namespace DataprepCorePrivateUtils
 	const FString& GetRootTemporaryDir();
 
 	/** Returns content folder where to create temporary assets when running Dataprep asset */
-	const FString& GetRootPackagePath();
+	DATAPREPCORE_API const FString& GetRootPackagePath();
 
 	/**
 	 * Logs messages in output log and message panel using "Dataprep Core" label
@@ -80,5 +81,18 @@ namespace DataprepCorePrivateUtils
 	 * Ensures the material is ready for rendering
 	 * @remark This is only to be shared with the Dataprep editor
 	 */
-	void DATAPREPCORE_API CompileMaterial(UMaterialInterface* MaterialInterface);
+	DATAPREPCORE_API void CompileMaterial(UMaterialInterface* MaterialInterface);
+
+	/**
+	 * Dataprep analytics utils
+	 */
+	namespace Analytics
+	{
+		DATAPREPCORE_API void RecipeExecuted( UDataprepAssetInterface* InDataprepAsset );
+		DATAPREPCORE_API void DataprepAssetCreated( UDataprepAssetInterface* InDataprepAsset );
+		DATAPREPCORE_API void DataprepEditorOpened( UDataprepAssetInterface* InDataprepAsset );
+		DATAPREPCORE_API void ExecuteTriggered( UDataprepAssetInterface* InDataprepAsset );
+		DATAPREPCORE_API void ImportTriggered( UDataprepAssetInterface* InDataprepAsset );
+		DATAPREPCORE_API void CommitTriggered( UDataprepAssetInterface* InDataprepAsset );
+	}
 }

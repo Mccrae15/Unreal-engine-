@@ -12,6 +12,7 @@ class USceneComponent;
 class UDisplayClusterCameraComponent;
 class UDisplayClusterSceneComponent;
 class UDisplayClusterScreenComponent;
+class UDisplayClusterConfigurationData;
 
 
 /**
@@ -30,7 +31,7 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	virtual bool Init(EDisplayClusterOperationMode OperationMode) override;
 	virtual void Release() override;
-	virtual bool StartSession(const UDisplayClusterConfigurationData* InConfigData, const FString& InNodeId) override;
+	virtual bool StartSession(UDisplayClusterConfigurationData* InConfigData, const FString& InNodeId) override;
 	virtual void EndSession() override;
 	virtual bool StartScene(UWorld* World) override;
 	virtual void EndScene() override;
@@ -52,11 +53,21 @@ public:
 	{ return CurrentOperationMode != EDisplayClusterOperationMode::Disabled; }
 
 private:
-	ADisplayClusterRootActor* FindDisplayClusterRootActor(UWorld* InWorld);
+	// The main function to look for a proper DCRA in a level and its sublevels
+	ADisplayClusterRootActor* FindRootActor(UWorld* World, UDisplayClusterConfigurationData* ConfigData);
+
+	// Auxiliary function that looks up for all DCRA instances in a level
+	void FindRootActorsInWorld(UWorld* World, TArray<ADisplayClusterRootActor*>& OutActors);
+
+	// Checks if a DCRA instance corresponds to a specified asset
+	bool DoesRootActorMatchTheAsset(ADisplayClusterRootActor* RootActorconst, const FString& AssetReference);
 
 private:
 	// Active DisplayCluster root
 	FDisplayClusterActorRef DisplayClusterRootActorRef;
+
+	// Actual config data
+	UDisplayClusterConfigurationData* ConfigData;
 
 	EDisplayClusterOperationMode CurrentOperationMode;
 	FString ClusterNodeId;

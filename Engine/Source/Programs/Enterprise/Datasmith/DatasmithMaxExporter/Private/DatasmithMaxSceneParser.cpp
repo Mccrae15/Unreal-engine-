@@ -60,10 +60,14 @@ private:
 
 //***************************************************************************
 // IInstanceMgr::GetInstanceMgr()->GetInstances() functions is finding
-// any object references this function returns actual instances :)
+// any object references. This function collects actual instances :)
+// returns whether multiple instances are found
 //***************************************************************************
-bool FDatasmithMaxSceneParser::GetActualInstances(INode *pINode, INodeTab* OnlyInstance)
+bool FDatasmithMaxSceneParser::GetActualInstances(INode* pINode, INodeTab* OnlyInstance)
 {
+	check(pINode);
+	check(OnlyInstance);
+
 	Object* Obj = pINode->GetObjOrWSMRef();
 	INodeTab InstanceAndRef;
 	if (IInstanceMgr::GetInstanceMgr()->GetInstances(*pINode, InstanceAndRef) < 2)
@@ -71,7 +75,6 @@ bool FDatasmithMaxSceneParser::GetActualInstances(INode *pINode, INodeTab* OnlyI
 		OnlyInstance->AppendNode(pINode);
 		return false;
 	}
-
 
 	for (int k = 0; k < InstanceAndRef.Count(); k++)
 	{
@@ -81,14 +84,7 @@ bool FDatasmithMaxSceneParser::GetActualInstances(INode *pINode, INodeTab* OnlyI
 		}
 	}
 
-	if (OnlyInstance->Count() < 2)
-	{
-		return false;
-	}
-	else
-	{
-		return true;
-	}
+	return OnlyInstance->Count() >= 2;
 }
 
 EMaxLightClass FDatasmithMaxSceneParser::GetLightClass(INode* Node)
@@ -588,12 +584,17 @@ void FDatasmithMaxSceneParser::NodeEnum(INode* Node, bool bSelectedOnly, TShared
 	if (ObjState.obj == NULL)
 	{
 		int NumChildren = Node->NumberOfChildren();
+		int LastDisplayedProgress = -1;
 		for (int ChildIndex = 0; ChildIndex < NumChildren; ++ChildIndex)
 		{
-			int Progress = ChildIndex / float(NumChildren);
-			FString Msg = FString::Printf(TEXT("%d%%"), Progress * 100).Left(255);
-			// Show progress bar without the Cancel button
-			ProgressManager->ProgressEvent(Progress, *Msg);
+			int Progress = (ChildIndex * 100) / NumChildren;
+			if (Progress != LastDisplayedProgress)
+			{
+				LastDisplayedProgress = Progress;
+				FString Msg = FString::Printf(TEXT("%d%%"), Progress).Left(255);
+				// Show progress bar without the Cancel button
+				ProgressManager->ProgressEvent(Progress * 0.01f, *Msg);
+			}
 
 			NodeEnum(Node->GetChildNode(ChildIndex), bSelectedOnly, ProgressManager);
 		}
@@ -752,7 +753,8 @@ void FDatasmithMaxSceneParser::NodeEnumInstanceClean()
 				{
 					if (RenderableNode.Instances.Contains(RenderableNodes[h].Node))
 					{
-						RenderableNodes.RemoveAtSwap(h);
+						bool bAllowShrink = false; // As we keep references on elements of this array, we cannot allow a realloc.
+						RenderableNodes.RemoveAtSwap(h, 1, bAllowShrink);
 					}
 				}
 			}
@@ -826,6 +828,11 @@ void FDatasmithMaxSceneParser::ParseForestNode(INode* ForestNode)
 
 void FDatasmithMaxSceneParser::ParseRailcloneNode(INode* RailCloneNode)
 {
+	if (RailCloneNode == nullptr)
+	{
+		return;
+	}
+
 	TimeValue CurrentTime = GetCOREInterface()->GetTime();
 
 	IRCStaticInterface* RCStaticInterface = GetRCStaticInterface();
@@ -843,47 +850,35 @@ void FDatasmithMaxSceneParser::ParseRailcloneNode(INode* RailCloneNode)
 
 	RCInterface->IRCRenderBegin(CurrentTime);
 
-	ulong RailCloneHandle = RailCloneNode->GetHandle();
-	FString RailCloneName = RailCloneNode->GetName();
-	Matrix3 RailCloneMatrix = RailCloneNode->GetNodeTM(CurrentTime);
-
-	TMap<Mesh*, int>  MeshesIndex;
-
 	int NumInstances;
 	TRCInstance* RCInstance = (TRCInstance *)RCInterface->IRCGetInstances(NumInstances);
 
 	if (RCInstance && NumInstances > 0)
 	{
 		MaterialEnum(RailCloneNode->GetMtl(), true);
-		TArray<FMaxRendereableNode*> SourceNodes;
+		int32 NextMeshIndex = 0;
+		TMap<Mesh*, int32> RenderableNodeIndicesMap;
 		for (int j = 0; j < NumInstances; j++, RCInstance++)
 		{
 			if (RCInstance && RCInstance->mesh)
 			{
-				int* VirtualIndexPtr = MeshesIndex.Find(RCInstance->mesh);
-				int VirtualIndex = VirtualIndexPtr ? *VirtualIndexPtr : -1;
-
-				if (VirtualIndex < 0)
+				if (int32* RenderableNodeIndexPtr = RenderableNodeIndicesMap.Find(RCInstance->mesh))
 				{
-					VirtualIndex = (int)MeshesIndex.Num();
-					MeshesIndex.Add(RCInstance->mesh, VirtualIndex);
-
-					RenderableNodes.Emplace(RailCloneNode, EMaxEntityType::Geometry);
-					RenderableNodes.Last().Instancemode = EMaxExporterInstanceMode::UnrealHISM;
-					RenderableNodes.Last().bIsReadyToExport = true;
-					RenderableNodes.Last().MaxMesh = MakeUnique<Mesh>(*RCInstance->mesh);
-					RenderableNodes.Last().MeshIndex = VirtualIndex;
-					RenderableNodes.Last().InstancesTransformPtr = MakeUnique<TArray<Matrix3>>();
-					SourceNodes.Emplace(&RenderableNodes.Last());
+					RenderableNodes[*RenderableNodeIndexPtr].InstancesTransformPtr->Emplace(RCInstance->tm);
 				}
-				if (VirtualIndex >= 0)
+				else
 				{
-					SourceNodes[VirtualIndex]->InstancesTransformPtr->Emplace(RCInstance->tm);
+					RenderableNodeIndicesMap.Add(RCInstance->mesh, RenderableNodes.Num());
+					FMaxRendereableNode& RenderableNode = RenderableNodes.Emplace_GetRef(RailCloneNode, EMaxEntityType::Geometry);
+					RenderableNode.Instancemode = EMaxExporterInstanceMode::UnrealHISM;
+					RenderableNode.bIsReadyToExport = true;
+					RenderableNode.MaxMesh = MakeUnique<Mesh>(*RCInstance->mesh);
+					RenderableNode.MeshIndex = NextMeshIndex++;
+					RenderableNode.InstancesTransformPtr = MakeUnique<TArray<Matrix3>>();
 				}
 			}
 		}
 	}
-
 
 	RCInterface->IRCClearInstances();
 	RCInterface->IRCClearMeshes();

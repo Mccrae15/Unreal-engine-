@@ -15,7 +15,7 @@ namespace Chaos
 
 	FJointConstraint::FTransformPair FJointConstraint::GetJointTransforms() { return JointTransforms; }
 
-	void FJointConstraint::SetKinematicEndPoint(TGeometryParticle<FReal, 3>* InDummyParticle, FPBDRigidsSolver* Solver)
+	void FJointConstraint::SetKinematicEndPoint(FSingleParticlePhysicsProxy* InDummyParticle, FPBDRigidsSolver* Solver)
 	{
 		ensure(KinematicEndPoint == nullptr);
 		KinematicEndPoint = InDummyParticle;
@@ -44,6 +44,14 @@ namespace Chaos
 		SetLinearVelocityDriveZEnabled(Enabled.Z);
 	}
 
+	void FJointConstraint::ReleaseKinematicEndPoint(FPBDRigidsSolver* Solver)
+	{
+		if (KinematicEndPoint)
+		{
+			Solver->UnregisterObject(KinematicEndPoint);
+			KinematicEndPoint = nullptr;
+		}
+	}
 
 
 } // Chaos

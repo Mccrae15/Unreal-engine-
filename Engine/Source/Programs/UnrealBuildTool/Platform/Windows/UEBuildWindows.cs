@@ -53,6 +53,11 @@ namespace UnrealBuildTool
 		/// Visual Studio 2019 (Visual C++ 16.0)
 		/// </summary>
 		VisualStudio2019,
+
+		/// <summary>
+		/// Visual Studio 2022 (Visual C++ 17.0)
+		/// </summary>
+		VisualStudio2022,
 	}
 
 	/// <summary>
@@ -117,6 +122,8 @@ namespace UnrealBuildTool
 		[CommandLine("-2015", Value = "VisualStudio2015")]
 		[CommandLine("-2017", Value = "VisualStudio2017")]
 		[CommandLine("-2019", Value = "VisualStudio2019")]
+		[CommandLine("-2022", Value = nameof(WindowsCompiler.VisualStudio2022))]
+		[CommandLine("-Compiler=")]
 		public WindowsCompiler Compiler = WindowsCompiler.Default;
 
 		/// <summary>
@@ -223,7 +230,7 @@ namespace UnrealBuildTool
 		/// Microsoft provides legacy_stdio_definitions library to enable building with VS2015 until they fix everything up.
 		public bool bNeedsLegacyStdioDefinitionsLib
 		{
-			get { return Compiler == WindowsCompiler.VisualStudio2015_DEPRECATED || Compiler == WindowsCompiler.VisualStudio2017 || Compiler == WindowsCompiler.VisualStudio2019 || Compiler == WindowsCompiler.Clang; }
+			get { return Compiler == WindowsCompiler.VisualStudio2015_DEPRECATED || Compiler == WindowsCompiler.VisualStudio2017 || Compiler == WindowsCompiler.VisualStudio2019 || Compiler == WindowsCompiler.VisualStudio2022 || Compiler == WindowsCompiler.Clang; }
 		}
 
 		/// <summary>
@@ -367,6 +374,7 @@ namespace UnrealBuildTool
 				case WindowsCompiler.VisualStudio2015_DEPRECATED:
 				case WindowsCompiler.VisualStudio2017:
 				case WindowsCompiler.VisualStudio2019:
+				case WindowsCompiler.VisualStudio2022:
 					return "2015"; // VS2017 is backwards compatible with VS2015 compiler
 
 				default:
@@ -677,8 +685,8 @@ namespace UnrealBuildTool
 		{
 			VersionNumber.Parse("14.24.28315"), // VS2019 v16.4.3 (installed to 14.24.28314 folder)
 			VersionNumber.Parse("14.22.27905"), // VS2019 v16.2.3
-			VersionNumber.Parse("14.16.27023.2"), // VS2017 v15.9.15
-			VersionNumber.Parse("14.16.27023"), // fallback to VS2017 15.9 toolchain, microsoft updates these in places so for local installs only this version number is present
+//			VersionNumber.Parse("14.16.27023.2"), // VS2017 v15.9.15
+//			VersionNumber.Parse("14.16.27023"), // fallback to VS2017 15.9 toolchain, microsoft updates these in places so for local installs only this version number is present
 		};
 
 		/// <summary>
@@ -964,6 +972,8 @@ namespace UnrealBuildTool
 					return "Visual Studio 2017";
 				case WindowsCompiler.VisualStudio2019:
 					return "Visual Studio 2019";
+				case WindowsCompiler.VisualStudio2022:
+					return "Visual Studio 2022";
 				default:
 					return Compiler.ToString();
 			}
@@ -1020,7 +1030,7 @@ namespace UnrealBuildTool
 						    Installations.Add(new VisualStudioInstallation(InstallDir));
 					    }
 				    }
-				    else if(Compiler == WindowsCompiler.VisualStudio2017 || Compiler == WindowsCompiler.VisualStudio2019)
+				    else if(Compiler == WindowsCompiler.VisualStudio2017 || Compiler == WindowsCompiler.VisualStudio2019 || Compiler == WindowsCompiler.VisualStudio2022)
 				    {
 						try
 						{
@@ -1047,7 +1057,12 @@ namespace UnrealBuildTool
 									if (VersionNumber.TryParse(VersionString, out Version))
 									{
 										VersionNumber Version2019 = new VersionNumber(16);
-										if(Compiler == WindowsCompiler.VisualStudio2019 && Version < Version2019)
+										VersionNumber Version2022 = new VersionNumber(17);
+										if (Compiler == WindowsCompiler.VisualStudio2022 && Version < Version2022)
+										{
+											continue;
+										}
+										else if (Compiler == WindowsCompiler.VisualStudio2019 && Version < Version2019)
 										{
 											continue;
 										}
@@ -1181,7 +1196,7 @@ namespace UnrealBuildTool
 							}
 					    }
 				    }
-				    else if(Compiler == WindowsCompiler.VisualStudio2017 || Compiler == WindowsCompiler.VisualStudio2019)
+				    else if(Compiler == WindowsCompiler.VisualStudio2017 || Compiler == WindowsCompiler.VisualStudio2019 || Compiler == WindowsCompiler.VisualStudio2022)
 				    {
 						// Enumerate all the manually installed toolchains
 						List<VisualStudioInstallation> Installations = FindVisualStudioInstallations(Compiler);
@@ -1195,11 +1210,22 @@ namespace UnrealBuildTool
 						DirectoryReference PlatformDir;
 						if (UEBuildPlatformSDK.TryGetHostPlatformAutoSDKDir(out PlatformDir))
 						{
-							DirectoryReference ReleaseBaseDir = DirectoryReference.Combine(PlatformDir, "Win64", (Compiler == WindowsCompiler.VisualStudio2019) ? "VS2019" : "VS2017");
-							FindVisualStudioToolChains(ReleaseBaseDir, false, ToolChainInstallations);
+							string VSDir = string.Empty;
+							switch (Compiler)
+							{
+								case WindowsCompiler.VisualStudio2017: VSDir = "VS2017"; break;
+								case WindowsCompiler.VisualStudio2019: VSDir = "VS2019"; break;
+								case WindowsCompiler.VisualStudio2022: VSDir = "VS2022"; break;
+							}
 
-							DirectoryReference PreviewBaseDir = DirectoryReference.Combine(PlatformDir, "Win64", (Compiler == WindowsCompiler.VisualStudio2019) ? "VS2019-Preview" : "VS2017-Preview");
-							FindVisualStudioToolChains(PreviewBaseDir, true, ToolChainInstallations);
+							if (!string.IsNullOrEmpty(VSDir))
+							{
+								DirectoryReference ReleaseBaseDir = DirectoryReference.Combine(PlatformDir, "Win64", VSDir);
+								FindVisualStudioToolChains(ReleaseBaseDir, false, ToolChainInstallations);
+
+								DirectoryReference PreviewBaseDir = DirectoryReference.Combine(PlatformDir, "Win64", $"{VSDir}-Preview");
+								FindVisualStudioToolChains(PreviewBaseDir, true, ToolChainInstallations);
+							}
 						}
 					}
 					else
@@ -1227,11 +1253,22 @@ namespace UnrealBuildTool
 					VersionNumber Version;
 					if (IsValidToolChainDir2017or2019(ToolChainDir, out Version))
 					{
+						
 						Log.TraceLog("Found Visual Studio toolchain: {0} (Version={1})", ToolChainDir, Version);
 						if (!ToolChainInstallations.ContainsKey(Version))
 						{
+							//Add VS installation based on cl.exe internal Product Version
 							ToolChainInstallations[Version] = new ToolChainInstallation(ToolChainDir, bPreview);
 						}
+
+						VersionNumber VersionFolder;
+						if ( (VersionNumber.TryParse(ToolChainDir.GetDirectoryName(), out VersionFolder)) && (VersionFolder != Version) && (!ToolChainInstallations.ContainsKey(VersionFolder)))
+						{
+							//Add VS installation based on the version number in the installation path
+							Log.TraceLog("Found Visual Studio toolchain: {0} (Version={1})", ToolChainDir, VersionFolder);
+							ToolChainInstallations[VersionFolder] = new ToolChainInstallation(ToolChainDir, bPreview);
+						}
+
 					}
 				}
 			}
@@ -1660,10 +1697,21 @@ namespace UnrealBuildTool
 				DirectoryReference PlatformDir;
 				if(UEBuildPlatformSDK.TryGetHostPlatformAutoSDKDir(out PlatformDir))
 				{
-					DirectoryReference DiaSdkDir = DirectoryReference.Combine(PlatformDir, "Win64", "DIA SDK", (Compiler == WindowsCompiler.VisualStudio2019)? "VS2019" : "VS2017");
-					if(IsValidDiaSdkDir(DiaSdkDir))
+					string VSDir = string.Empty;
+					switch (Compiler)
 					{
-						DiaSdkDirs.Add(DiaSdkDir);
+						case WindowsCompiler.VisualStudio2017: VSDir = "VS2017"; break;
+						case WindowsCompiler.VisualStudio2019: VSDir = "VS2019"; break;
+						case WindowsCompiler.VisualStudio2022: VSDir = "VS2022"; break;
+					}
+
+					if (!string.IsNullOrEmpty(VSDir))
+					{
+						DirectoryReference DiaSdkDir = DirectoryReference.Combine(PlatformDir, "Win64", "DIA SDK", VSDir);
+						if (IsValidDiaSdkDir(DiaSdkDir))
+						{
+							DiaSdkDirs.Add(DiaSdkDir);
+						}
 					}
 				}
 
@@ -1929,6 +1977,14 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// If this platform can be compiled with FASTBuild
+		/// </summary>
+		public override bool CanUseFASTBuild()
+		{
+			return true;
+		}
+
+		/// <summary>
 		/// Determines if the given name is a build product for a target.
 		/// </summary>
 		/// <param name="FileName">The name to check</param>
@@ -2020,7 +2076,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ProjectFile">The project file</param>
 		/// <returns>The icon to use for this project</returns>
-		public static FileReference GetApplicationIcon(FileReference ProjectFile)
+		public static FileReference GetWindowsApplicationIcon(FileReference ProjectFile)
 		{
 			// Check if there's a custom icon
 			if(ProjectFile != null)
@@ -2035,6 +2091,17 @@ namespace UnrealBuildTool
 			// Otherwise use the default
 			return FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Windows", "Resources", "Default.ico");
 		}
+
+		/// <summary>
+		/// Gets the application icon for a given project
+		/// </summary>
+		/// <param name="ProjectFile">The project file</param>
+		/// <returns>The icon to use for this project</returns>
+		public virtual FileReference GetApplicationIcon(FileReference ProjectFile)
+		{
+			return GetWindowsApplicationIcon(ProjectFile);
+		}
+
 
 		/// <summary>
 		/// Modify the rules for a newly created module, in a target that's being built for this platform.
@@ -2246,6 +2313,19 @@ namespace UnrealBuildTool
 			LinkEnvironment.DefaultStackSizeCommit = Target.WindowsPlatform.DefaultStackSizeCommit;
 
 			LinkEnvironment.ModuleDefinitionFile = Target.WindowsPlatform.ModuleDefinitionFile;
+
+			if (Target.bPGOOptimize || Target.bPGOProfile)
+			{
+				// LTCG is required for PGO
+				//CompileEnvironment.bAllowLTCG = true;
+				//LinkEnvironment.bAllowLTCG = true;
+
+				CompileEnvironment.PGODirectory = Path.Combine(DirectoryReference.FromFile(Target.ProjectFile).FullName, "Platforms", "Windows", "Build", "PGO");
+				CompileEnvironment.PGOFilenamePrefix = string.Format("{0}-{1}-{2}", Target.Name, Target.Platform, Target.Configuration);
+
+				LinkEnvironment.PGODirectory = CompileEnvironment.PGODirectory;
+				LinkEnvironment.PGOFilenamePrefix = CompileEnvironment.PGOFilenamePrefix;
+			}
 		}
 
 		/// <summary>

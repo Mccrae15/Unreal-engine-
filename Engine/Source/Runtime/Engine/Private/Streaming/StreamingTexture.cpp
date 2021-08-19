@@ -12,6 +12,15 @@ StreamingTexture.cpp: Definitions of classes used for texture.
 #include "Engine/SkeletalMesh.h"
 #include "LandscapeComponent.h"
 
+#if PLATFORM_DESKTOP
+ENGINE_API int32 GUseMobileLODBiasOnDesktopES31 = 1;
+static FAutoConsoleVariableRef CVarUseMobileLODBiasOnDesktopES31(
+	TEXT("r.Streaming.UseMobileLODBiasOnDesktopES31"),
+	GUseMobileLODBiasOnDesktopES31,
+	TEXT("If set apply mobile Min LOD bias on desktop platforms when running in ES31 mode")
+);
+#endif
+
 FStreamingRenderAsset::FStreamingRenderAsset(
 	UStreamableRenderAsset* InRenderAsset,
 	const int32* NumStreamedMips,
@@ -23,7 +32,10 @@ FStreamingRenderAsset::FStreamingRenderAsset(
 	UpdateStaticData(Settings);
 	UpdateDynamicData(NumStreamedMips, NumLODGroups, Settings, false);
 
-	InstanceRemovedTimestamp = FApp::GetCurrentTime();
+	// In the editor, some paths can recreate the FStreamingRenderAsset, which could potentiallly trigger the unkown ref heuristic.
+	// To prevent this, we consider that the asset bindings where reset when creating the FStreamingRenderAsset.
+	// In game, we set it to FLT_MAX so that unkown ref heurisitic can kick in immeditaly (otherwise it incurs a 5 sec penalty on async loading)
+	InstanceRemovedTimestamp = GIsEditor ? FApp::GetCurrentTime() : -FLT_MAX;
 	DynamicBoostFactor = 1.f;
 
 	bHasUpdatePending = InRenderAsset && InRenderAsset->bHasStreamingUpdatePending;
@@ -55,10 +67,15 @@ void FStreamingRenderAsset::UpdateStaticData(const FRenderAssetStreamingSettings
 
 		if (IsTexture())
 		{
+			if (!ensureMsgf(FMath::IsWithin<int32>(LODGroup, 0, TEXTUREGROUP_MAX), TEXT("Invalid LODGroup %d for %s"), LODGroup, *RenderAsset->GetName()))
+			{
+				LODGroup = 0;
+			}
+
 			check(ResourceState.MaxNumLODs <= UE_ARRAY_COUNT(CumulativeLODSizes));
 			const TextureGroup TextureLODGroup = static_cast<TextureGroup>(LODGroup);
 			BoostFactor = GetExtraBoost(TextureLODGroup, Settings);
-			bIsCharacterTexture = (TextureLODGroup == TEXTUREGROUP_Character || TextureLODGroup == TEXTUREGROUP_CharacterSpecular || TextureLODGroup == TEXTUREGROUP_CharacterNormalMap);
+			bLoadWithHigherPriority = Settings.HighPriorityLoad_Texture[LODGroup];
 			bIsTerrainTexture = (TextureLODGroup == TEXTUREGROUP_Terrain_Heightmap || TextureLODGroup == TEXTUREGROUP_Terrain_Weightmap);
 		}
 		else
@@ -68,7 +85,7 @@ void FStreamingRenderAsset::UpdateStaticData(const FRenderAssetStreamingSettings
 
 			// Default boost value .71 is too small for meshes
 			BoostFactor = 1.f;
-			bIsCharacterTexture = false;
+			bLoadWithHigherPriority = false;
 			bIsTerrainTexture = false;
 			if (RenderAssetType == EStreamableRenderAssetType::StaticMesh)
 			{
@@ -79,7 +96,7 @@ void FStreamingRenderAsset::UpdateStaticData(const FRenderAssetStreamingSettings
 					// Screen sizes stored on assets are 2R/D where R is the radius of bounding spheres and D is the
 					// distance from view origins to bounds origins. The factor calculated by the streamer, however,
 					// is R/D so multiply 0.5 here
-					LODScreenSizes[ResourceState.MaxNumLODs - LODIndex - 1] = StaticMesh->RenderData->ScreenSize[LODIndex + ResourceState.AssetLODBias].GetValue() * 0.5f;
+					LODScreenSizes[ResourceState.MaxNumLODs - LODIndex - 1] = StaticMesh->GetRenderData()->ScreenSize[LODIndex + ResourceState.AssetLODBias].GetValue() * 0.5f;
 				}
 			}
 			else if (RenderAssetType == EStreamableRenderAssetType::SkeletalMesh)
@@ -129,7 +146,7 @@ void FStreamingRenderAsset::UpdateStaticData(const FRenderAssetStreamingSettings
 		OptionalMipsState = EOptionalMipsState::OMS_NoOptionalMips;
 		OptionalFileHash = INVALID_IO_FILENAME_HASH;
 
-		bIsCharacterTexture = false;
+		bLoadWithHigherPriority = false;
 		bIsTerrainTexture = false;
 	}
 }
@@ -183,6 +200,13 @@ void FStreamingRenderAsset::UpdateDynamicData(const int32* NumStreamedMips, int3
 			}
 
 			LODBias += BudgetMipBias;
+
+#if PLATFORM_DESKTOP
+			if (GUseMobileLODBiasOnDesktopES31 != 0 && GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1)
+			{
+				LODBias += ResourceState.LODBiasModifier;
+			}
+#endif
 		}
 
 		// If the optional mips are not available, or if we shouldn't load them now, clamp the possible mips requested. 
@@ -356,7 +380,7 @@ int64 FStreamingRenderAsset::UpdateRetentionPriority_Async(bool bPrioritizeMesh)
 		if (bShouldKeep)						RetentionPriority += 2048; // Keep forced fully load as much as possible.
 		if (bIsVisible)							RetentionPriority += 1024; // Keep visible things as much as possible.
 		if (!bIsHuge)							RetentionPriority += 512; // Drop high resolution which usually target ultra close range quality.
-		if (bIsCharacterTexture || bIsSmall)	RetentionPriority += 256; // Try to keep character of small texture as they don't pay off.
+		if (bLoadWithHigherPriority || bIsSmall)	RetentionPriority += 256; // Try to keep character of small texture as they don't pay off.
 		if (!bIsVisible)						RetentionPriority += FMath::Clamp<int32>(255 - (int32)LastRenderTime, 1, 255); // Keep last visible first.
 
 		return GetSize(BudgetedMips);
@@ -464,7 +488,7 @@ bool FStreamingRenderAsset::UpdateLoadOrderPriority_Async(int32 MinMipForSplitRe
 	if (RenderAsset && WantedMips != RequestedMips)
 	{
 		const bool bIsVisible			= ResidentMips < VisibleWantedMips; // Otherwise it means we are loading mips that are only useful for non visible primitives.
-		const bool bMustLoadFirst		= bForceFullyLoadHeuristic || bIsTerrainTexture || bIsCharacterTexture;
+		const bool bMustLoadFirst		= bForceFullyLoadHeuristic || bIsTerrainTexture || bLoadWithHigherPriority;
 		const bool bMipIsImportant		= WantedMips - ResidentMips > (bLooksLowRes ? 1 : 2);
 
 		if (bIsVisible)				LoadOrderPriority += 1024;
@@ -532,7 +556,7 @@ void FStreamingRenderAsset::StreamWantedMips_Internal(FRenderAssetStreamingManag
 			}
 			else // WantedMips > ResidentMips
 			{
-				const bool bShouldPrioritizeAsyncIORequest = (bLocalForceFullyLoadHeuristic || bIsTerrainTexture || bIsCharacterTexture) && LocalWantedMips <= LocalVisibleWantedMips;
+				const bool bShouldPrioritizeAsyncIORequest = (bLocalForceFullyLoadHeuristic || bIsTerrainTexture || bLoadWithHigherPriority) && LocalWantedMips <= LocalVisibleWantedMips;
 				RenderAsset->StreamIn(LocalWantedMips, bShouldPrioritizeAsyncIORequest);
 			}
 			UpdateStreamingStatus(false);

@@ -345,6 +345,11 @@ void FRDGUserValidation::ValidateAddPass(const FRDGPass* Pass, bool bSkipPassAcc
 		const auto& RenderTargets = RenderTargetBindingSlots->Output;
 
 		{
+			if (FRDGTextureRef Texture = RenderTargetBindingSlots->ShadingRateTexture)
+			{
+				MarkAsConsumed(Texture);
+			}
+
 			const auto& DepthStencil = RenderTargetBindingSlots->DepthStencil;
 
 			const auto CheckDepthStencil = [&](FRDGTextureRef Texture)
@@ -379,7 +384,7 @@ void FRDGUserValidation::ValidateAddPass(const FRDGPass* Pass, bool bSkipPassAcc
 
 		{
 			/** Tracks the number of contiguous, non-null textures in the render target output array. */
-			uint32 ValidRenderTargetCount = 0;
+			uint32 ValidRenderTargetCount = RenderTargetCount;
 
 			for (uint32 RenderTargetIndex = 0; RenderTargetIndex < RenderTargetCount; ++RenderTargetIndex)
 			{
@@ -417,30 +422,6 @@ void FRDGUserValidation::ValidateAddPass(const FRDGPass* Pass, bool bSkipPassAcc
 						checkf(
 							!bIsLoadActionInvalid,
 							TEXT("Pass '%s' attempted to bind texture '%s' as a render target with the 'Load' action specified, but the texture has not been produced yet. The render target must use either 'Clear' or 'NoAction' action instead."),
-							PassName,
-							Texture->Name);
-					}
-
-					/** Validate that any previously produced texture contents are loaded. This occurs if the user failed to specify a load action
-					 *  on a texture that was produced by a previous pass, effectively losing that data. This can also happen if the user 're-uses'
-					 *  a texture for some other purpose. The latter is considered bad practice, since it increases memory pressure on the render
-					 *  target pool. Instead, the user should create a new texture instance. An exception to this rule are untracked render targets,
-					 *  which are not actually managed by the render target pool and likely represent the frame buffer.
-					 */
-					{
-						// Ignore external textures which are always marked as produced. We don't need to enforce this warning on them.
-						const bool bHasBeenProduced = Texture->ParentDebugData.bHasBeenProduced && !Texture->bExternal;
-
-						// We only validate single-mip textures since we don't track production at the subresource level.
-						const bool bFailedToLoadProducedContent = !bIsLoadAction && bHasBeenProduced && Texture->Desc.NumMips == 1;
-
-						// Untracked render targets aren't actually managed by the render target pool.
-						const bool bIsUntrackedRenderTarget = Texture->PooledRenderTarget && !Texture->PooledRenderTarget->IsTracked();
-
-						// In multi-gpu, when running with "r.EnableMultiGPUForkAndJoin", it's possible for each GPU to clear the same RT in turn.
-						// When this happens, they are not actually working on the same resource, see for example the implementation of FD3D12MultiNodeGPUObject.
-						ensureMsgf((!bFailedToLoadProducedContent || bIsUntrackedRenderTarget) || (GNumExplicitGPUsForRendering > 1 && RenderTarget.GetLoadAction() == ERenderTargetLoadAction::EClear),
-							TEXT("Pass '%s' attempted to bind texture '%s' as a render target without the 'Load' action specified, despite a prior pass having produced it. It's invalid to completely clobber the contents of a resource. Create a new texture instance instead."),
 							PassName,
 							Texture->Name);
 					}
@@ -596,6 +577,11 @@ void FRDGUserValidation::ValidateExecutePassBegin(const FRDGPass* Pass)
 					Texture->TextureDebugData.bHasBeenBoundAsRenderTarget = true;
 					Texture->MarkResourceAsUsed();
 				}
+
+				if (FRDGTextureRef Texture = RenderTargets.ShadingRateTexture)
+				{
+					Texture->MarkResourceAsUsed();
+				}
 			}
 			break;
 			}
@@ -690,6 +676,11 @@ void FRDGUserValidation::SetAllowRHIAccess(const FRDGPass* Pass, bool bAllowAcce
 			});
 
 			if (FRDGTextureRef Texture = RenderTargets.DepthStencil.GetTexture())
+			{
+				Texture->DebugData.bAllowRHIAccess = bAllowAccess;
+			}
+
+			if (FRDGTexture* Texture = RenderTargets.ShadingRateTexture)
 			{
 				Texture->DebugData.bAllowRHIAccess = bAllowAccess;
 			}

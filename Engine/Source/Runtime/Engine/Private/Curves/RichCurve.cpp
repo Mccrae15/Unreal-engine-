@@ -3,8 +3,6 @@
 #include "Curves/RichCurve.h"
 #include "Templates/Function.h"
 
-DECLARE_CYCLE_STAT(TEXT("RichCurve Eval"), STAT_RichCurve_Eval, STATGROUP_Engine);
-
 // Broken - do not turn on! 
 #define MIXEDKEY_STRIPS_TANGENTS 0
 
@@ -631,49 +629,47 @@ void FRichCurve::AutoSetTangents(float Tension)
 		float ArriveTangent = Key.ArriveTangent;
 		float LeaveTangent  = Key.LeaveTangent;
 
-		if (KeyIndex == 0)
+		// Variables for computing tangent.
+		bool bNeedsComputeTangent = false;
+		const FRichCurveKey* PrevKey = &Key;
+		const FRichCurveKey* CurrentKey = &Key;
+		const FRichCurveKey* NextKey = &Key;
+
+		if (KeyIndex == 0) // Start point
 		{
-			if (KeyIndex < Keys.Num()-1) // Start point
+			// If first section is not a curve, or is a curve and first point has manual tangent setting.
+			if (KeyIndex < (Keys.Num() - 1) && Key.TangentMode == RCTM_Auto)
 			{
-				// If first section is not a curve, or is a curve and first point has manual tangent setting.
-				if (Key.TangentMode == RCTM_Auto)
+				LeaveTangent = 0.0f;
+
+				if (Key.InterpMode == RCIM_Cubic)
 				{
-					LeaveTangent = 0.0f;
+					// Since we are the first key and ComputeCurveTangent() only compute the arriving tangent, we use the Arriving tangent of the next key as our leaving key.
+					NextKey = &Keys[KeyIndex + 1];
+					CurrentKey = NextKey; 
+					bNeedsComputeTangent = true;
 				}
 			}
 		}
 		else
 		{
-			
 			if (KeyIndex < Keys.Num() - 1) // Inner point
 			{
-				FRichCurveKey& PrevKey =  Keys[KeyIndex-1];
+				PrevKey = &Keys[KeyIndex-1];
 
 				if (Key.InterpMode == RCIM_Cubic && (Key.TangentMode == RCTM_Auto))
 				{
-						FRichCurveKey& NextKey =  Keys[KeyIndex+1];
-						ComputeCurveTangent(
-							Keys[ KeyIndex - 1 ].Time,		// Previous time
-							Keys[ KeyIndex - 1 ].Value,	// Previous point
-							Keys[ KeyIndex ].Time,			// Current time
-							Keys[ KeyIndex ].Value,		// Current point
-							Keys[ KeyIndex + 1 ].Time,		// Next time
-							Keys[ KeyIndex + 1 ].Value,	// Next point
-							Tension,							// Tension
-							false,						// Want clamping?
-							ArriveTangent );					// Out
-
-						// In 'auto' mode, arrive and leave tangents are always the same
-						LeaveTangent = ArriveTangent;
+					NextKey = &Keys[KeyIndex+1];
+					bNeedsComputeTangent = true;
 				}
-				else if ((PrevKey.InterpMode == RCIM_Constant) || (Key.InterpMode == RCIM_Constant))
+				else if ((PrevKey->InterpMode == RCIM_Constant) || (Key.InterpMode == RCIM_Constant))
 				{
-					if (Keys[ KeyIndex - 1 ].InterpMode != RCIM_Cubic)
+					LeaveTangent  = 0.0f;
+
+					if (PrevKey->InterpMode != RCIM_Cubic)
 					{
 						ArriveTangent = 0.0f;
 					}
-
-					LeaveTangent  = 0.0f;
 				}
 				
 			}
@@ -683,8 +679,30 @@ void FRichCurve::AutoSetTangents(float Tension)
 				if (Key.InterpMode == RCIM_Cubic && Key.TangentMode == RCTM_Auto)
 				{
 					ArriveTangent = 0.0f;
+					if (Keys.Num() > 1)
+					{
+						PrevKey = &Keys[KeyIndex - 1];
+						bNeedsComputeTangent = true;
+					}
 				}
 			}
+		}
+
+		if (bNeedsComputeTangent)
+		{
+			ComputeCurveTangent(
+				PrevKey->Time,		// Previous time
+				PrevKey->Value,		// Previous point
+				CurrentKey->Time,	// Current time
+				CurrentKey->Value,	// Current point
+				NextKey->Time,		// Next time
+				NextKey->Value,		// Next point
+				Tension,			// Tension
+				false,				// Want clamping?
+				ArriveTangent);		// Out
+
+			// In 'auto' mode, arrive and leave tangents are always the same
+			LeaveTangent = ArriveTangent;
 		}
 
 		Key.ArriveTangent = ArriveTangent;
@@ -1299,8 +1317,6 @@ void FRichCurve::RemapTimeValue(float& InTime, float& CycleValueOffset) const
 
 float FRichCurve::Eval(float InTime, float InDefaultValue) const
 {
-	SCOPE_CYCLE_COUNTER(STAT_RichCurve_Eval);
-
 	// Remap time if extrapolation is present and compute offset value to use if cycling 
 	float CycleValueOffset = 0;
 	RemapTimeValue(InTime, CycleValueOffset);
@@ -2352,8 +2368,6 @@ static TFunction<float(ERichCurveExtrapolation PreInfinityExtrap, ERichCurveExtr
 
 float FCompressedRichCurve::Eval(float InTime, float InDefaultValue) const
 {
-	SCOPE_CYCLE_COUNTER(STAT_RichCurve_Eval);
-
 	// Dynamic dispatch into a template optimized code path
 	const float Value = InterpEvalMap[CompressionFormat][KeyTimeCompressionFormat](PreInfinityExtrap, PostInfinityExtrap, ConstantValueNumKeys, CompressedKeys.GetData(), InTime, InDefaultValue);
 	return Value;
@@ -2361,8 +2375,6 @@ float FCompressedRichCurve::Eval(float InTime, float InDefaultValue) const
 
 float FCompressedRichCurve::StaticEval(ERichCurveCompressionFormat CompressionFormat, ERichCurveKeyTimeCompressionFormat KeyTimeCompressionFormat, ERichCurveExtrapolation PreInfinityExtrap, ERichCurveExtrapolation PostInfinityExtrap, FCompressedRichCurve::TConstantValueNumKeys ConstantValueNumKeys, const uint8* CompressedKeys, float InTime, float InDefaultValue)
 {
-	SCOPE_CYCLE_COUNTER(STAT_RichCurve_Eval);
-
 	// Dynamic dispatch into a template optimized code path
 	const float Value = InterpEvalMap[CompressionFormat][KeyTimeCompressionFormat](PreInfinityExtrap, PostInfinityExtrap, ConstantValueNumKeys, CompressedKeys, InTime, InDefaultValue);
 	return Value;

@@ -44,6 +44,7 @@
 #include <libproc.h>
 #include <notify.h>
 #include <uuid/uuid.h>
+#include <spawn.h>
 #include "Apple/PostAppleSystemHeaders.h"
 
 extern CORE_API bool GIsGPUCrashed;
@@ -545,7 +546,11 @@ void FMacPlatformMisc::PlatformInit()
 	UE_LOG(LogInit, Log, TEXT("macOS %s (%s)"), *GMacAppInfo.OSVersion, *GMacAppInfo.OSBuild);
 	UE_LOG(LogInit, Log, TEXT("Model: %s"), *GMacAppInfo.MachineModel);
 	UE_LOG(LogInit, Log, TEXT("CPU: %s"), UTF8_TO_TCHAR(GMacAppInfo.MachineCPUString));
-	
+
+	// At the point, the log system is booted and the log file is likely created and the actual pathname used set. (Until the file is opened for writing, the name is subject to change)
+	FString LogPath = FGenericPlatformOutputDevices::GetAbsoluteLogFilename();
+	FCStringAnsi::Strcpy(GMacAppInfo.AppLogPath, PATH_MAX + 1, TCHAR_TO_UTF8(*LogPath));
+
 	const FPlatformMemoryConstants& MemoryConstants = FPlatformMemory::GetConstants();
 	UE_LOG(LogInit, Log, TEXT("CPU Page size=%i, Cores=%i, HT=%i"), MemoryConstants.PageSize, FPlatformMisc::NumberOfCores(), FPlatformMisc::NumberOfCoresIncludingHyperthreads() );
 
@@ -1753,6 +1758,86 @@ bool FMacPlatformMisc::IsSupportedXcodeVersionInstalled()
 	return GMacAppInfo.XcodeVersion.majorVersion > 9 || (GMacAppInfo.XcodeVersion.majorVersion == 9 && GMacAppInfo.XcodeVersion.minorVersion >= 4);
 }
 
+#if WITH_EDITOR
+struct FMacModel
+{
+	NSString*	Name;
+	uint32		Major;
+	uint32		Minor;
+	bool		bIsLowPower;
+};
+
+bool FMacPlatformMisc::IsRunningOnRecommendedMinSpecHardware()
+{
+	const TArray<FMacModel> MinSupportedMacModels(
+	{
+		{ @"MacPro",		6,	1,	false },	// Mac Pro (Late 2013) [AMD FirePro D300] { Pitcairn XT GL (GFX6) }
+		{ @"Macmini",		7,	1,	false },	// Mac mini (Late 2014) [Intel HD Graphics 5000] { Haswell GT3 }
+		{ @"MacBookPro",	11,	4,	false },	// MacBook Pro (Retina, 15-inch, Mid 2015) [Intel Iris Pro 5200] { Haswell GT3e }
+		{ @"MacBookAir",	6,	1,	true  },	// MacBook Air (11-inch, Mid 2013) [Intel HD Graphics 5000] { Haswell GT3 }
+		{ @"MacBook",		8,	1,	true  },	// MacBook (Retina, 12-inch, Early 2015) [Intel HD Graphics 5300] { Broadwell GT2 }
+		{ @"iMacPro",		1,	1,	false },	// iMac Pro (Retina 5K, 27-inch, 2017) [AMD Radeon Pro Vega 56/64/64X] { GFX9 }
+		{ @"iMac",			14,	4,	false },	// iMac (21.5-inch, Mid 2014) [Intel HD Graphics 5000] { Haswell GT3 }
+	});
+
+	constexpr int64 MinSupportedMemsize = 8ll * (1024 * 1024 * 1024);
+
+	int64	SystemMemsize		= 0;
+	SIZE_T	SystemMemsizeLen	= sizeof(SystemMemsize);
+
+	// Fetch memsize
+	sysctlbyname("hw.memsize", &SystemMemsize, &SystemMemsizeLen, NULL, 0);
+
+	// Check memsize first
+	bool bSupported = (SystemMemsize >= MinSupportedMemsize);
+	if (bSupported)
+	{
+		// Fetch model
+		ANSICHAR	SystemModel[20]		= { '\0' };
+		SIZE_T		SystemModelLen		= sizeof(SystemModel);
+		ANSICHAR	SystemModelName[20]	= { '\0' };
+		uint32		SystemModelMajor	= 0;
+		uint32		SystemModelMinor	= 0;
+
+		sysctlbyname("hw.model", SystemModel, &SystemModelLen, NULL, 0);
+		sscanf(SystemModel, "%[^0-9]%u,%u", SystemModelName, &SystemModelMajor, &SystemModelMinor);
+
+		NSString* ModelName = [[NSString alloc] initWithBytesNoCopy:(void*)SystemModelName
+															 length:strlen(SystemModelName)
+														   encoding:NSUTF8StringEncoding
+													   freeWhenDone:NO];
+
+		// Check model next, assume unknown models are OK.
+		int32 Index = MinSupportedMacModels.IndexOfByPredicate([ModelName](const FMacModel& Other){ return (NSOrderedSame == [ModelName caseInsensitiveCompare:Other.Name]); });
+		if (INDEX_NONE != Index)
+		{
+			const FMacModel& Model = MinSupportedMacModels[Index];
+
+			if ( (SystemModelMajor <  Model.Major) ||
+				((SystemModelMajor == Model.Major) && (SystemModelMinor < Model.Minor)))
+			{
+				bSupported = false;
+			}
+
+			// MacBook and MacBookAir are not high-powered machines, but Apple
+			// Silicon is sufficient for running the editor.
+			if (bSupported && Model.bIsLowPower)
+			{
+				int32	SystemArm64		= 0;
+				SIZE_T	SystemArm64Len	= sizeof(SystemArm64);
+				sysctlbyname("hw.optional.arm64", &SystemArm64, &SystemArm64Len, NULL, 0);
+
+				bSupported = (SystemArm64 != 0);
+			}
+		}
+
+		[ModelName release];
+	}
+
+	return bSupported;
+}
+#endif // WITH_EDITOR
+
 CGDisplayModeRef FMacPlatformMisc::GetSupportedDisplayMode(CGDirectDisplayID DisplayID, uint32 Width, uint32 Height)
 {
 	CGDisplayModeRef BestMatchingMode = nullptr;
@@ -2215,54 +2300,62 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 	if(bCanRunCrashReportClient)
 	{
 		// create a crash-specific directory
-		char CrashInfoFolder[PATH_MAX] = {};
-		FCStringAnsi::Strncpy(CrashInfoFolder, GMacAppInfo.CrashReportPath, PATH_MAX);
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, "/CrashReport-UE4-");
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, GMacAppInfo.AppNameUTF8);
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, "-pid-");
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(getpid(), 10));
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, "-");
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(GMacAppInfo.RunUUID.A, 16));
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(GMacAppInfo.RunUUID.B, 16));
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(GMacAppInfo.RunUUID.C, 16));
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(GMacAppInfo.RunUUID.D, 16));
-		
-		GenerateInfoInFolder(CrashInfoFolder);
+		FString CrashInfoFolder = FString::Printf(TEXT("%s/CrashReport-UE4-%s-pid-%d-%s"), UTF8_TO_TCHAR(GMacAppInfo.CrashReportPath), UTF8_TO_TCHAR(GMacAppInfo.AppNameUTF8), (int32)getpid(), *GMacAppInfo.RunUUID.ToString());
 
-		// try launching the tool and wait for its exit, if at all
-		// Use vfork() & execl() as they are async-signal safe, CreateProc can fail in Cocoa
-		int32 ReturnCode = 0;
-		FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, "/");
-		pid_t ForkPID = vfork();
-		if(ForkPID == 0)
+		GenerateInfoInFolder(TCHAR_TO_UTF8(*CrashInfoFolder));
+
+		CrashInfoFolder += TEXT("/");
+
+		pid_t		CrcPID;
+		int32		Status		= -1;
+		const char *Argv[16]	= { NULL };
+		int32		Argc		= 0;
+
+		Argv[Argc++] = "CrashReportClient";
+		Argv[Argc++] = TCHAR_TO_UTF8(*CrashInfoFolder);
+
+		if (bImplicitSend)
 		{
-			// Child
-			if (bImplicitSend)
+			Argv[Argc++] = "-Unattended";
+			Argv[Argc++] = "-ImplicitSend";
+		}
+		else if (GMacAppInfo.bIsUnattended)
+		{
+			Argv[Argc++] ="-Unattended";
+		}
+		else
+		{
+			if (!bSendUsageData)
 			{
-				execl(GMacAppInfo.CrashReportClient, "CrashReportClient", CrashInfoFolder, "-Unattended", "-ImplicitSend", NULL);
-			}
-			else if(GMacAppInfo.bIsUnattended)
-			{
-				execl(GMacAppInfo.CrashReportClient, "CrashReportClient", CrashInfoFolder, "-Unattended", NULL);
-			}
-			else
-			{
-				if (bSendUsageData)
-				{
-					execl(GMacAppInfo.CrashReportClient, "CrashReportClient", CrashInfoFolder, NULL);
-				}
-				// If the editor setting has been disabled to not send analytics extend this to the CRC
-				else
-				{
-					execl(GMacAppInfo.CrashReportClient, "CrashReportClient", CrashInfoFolder, "-NoAnalytics", NULL);
-				}
+				Argv[Argc++] = "-NoAnalytics";
 			}
 		}
 
-		// We no longer wait here because on return the OS will scribble & crash again due to the behaviour of the XPC function
-		// macOS uses internally to launch/wait on the CrashReportClient. It is simpler, easier & safer to just die here like a good little Mac.app.
+		posix_spawn_file_actions_t FileActions;
+		posix_spawn_file_actions_init(&FileActions);
+
+		posix_spawnattr_t SpawnAttr;
+		posix_spawnattr_init(&SpawnAttr);
+
+		{
+			uint32 SpawnFlags = POSIX_SPAWN_SETPGROUP;
+			posix_spawnattr_setflags(&SpawnAttr, SpawnFlags);
+		}
+
+		extern char **environ; // provided by libc
+
+		// Use posix_spawn() as it is async-signal safe, CreateProc can fail in Cocoa.
+		Status = posix_spawn(&CrcPID, GMacAppInfo.CrashReportClient, &FileActions, &SpawnAttr, (char *const *)Argv, environ);
+
+		posix_spawn_file_actions_destroy(&FileActions);
+		posix_spawnattr_destroy(&SpawnAttr);
+
+		if (Status != 0)
+		{
+			UE_LOG(LogHAL, Fatal, TEXT("FMacPlatformMisc::GenerateCrashInfoAndLaunchReporter: posix_spawn() failed (%d, %s)"), Status, UTF8_TO_TCHAR(strerror(Status)));
+		}
 	}
-	
+
 	// Sandboxed applications re-raise the signal to trampoline into the system crash reporter as suppressing it may fall foul of Apple's Mac App Store rules.
 	// @todo Submit an application to the MAS & see whether Apple's reviewers highlight our crash reporting or trampolining to the system reporter.
 	if(GMacAppInfo.bIsSandboxed)

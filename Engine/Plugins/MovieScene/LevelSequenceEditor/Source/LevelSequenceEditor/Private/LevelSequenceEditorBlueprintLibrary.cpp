@@ -11,6 +11,7 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 
 #include "MovieSceneCommonHelpers.h"
+#include "MovieSceneSequencePlayer.h"
 #include "MovieSceneSection.h"
 #include "Channels/MovieSceneChannelProxy.h"
 
@@ -34,6 +35,15 @@ ULevelSequence* ULevelSequenceEditorBlueprintLibrary::GetCurrentLevelSequence()
 	if (CurrentSequencer.IsValid())
 	{
 		return Cast<ULevelSequence>(CurrentSequencer.Pin()->GetRootMovieSceneSequence());
+	}
+	return nullptr;
+}
+
+ULevelSequence* ULevelSequenceEditorBlueprintLibrary::GetFocusedLevelSequence()
+{
+	if (CurrentSequencer.IsValid())
+	{
+		return Cast<ULevelSequence>(CurrentSequencer.Pin()->GetFocusedMovieSceneSequence());
 	}
 	return nullptr;
 }
@@ -84,6 +94,37 @@ int32 ULevelSequenceEditorBlueprintLibrary::GetCurrentTime()
 		return ConvertFrameTime(CurrentSequencer.Pin()->GetGlobalTime().Time, TickResolution, DisplayRate).FloorToFrame().Value;
 	}
 	return 0;
+}
+
+void ULevelSequenceEditorBlueprintLibrary::SetCurrentLocalTime(int32 NewFrame)
+{
+	if (CurrentSequencer.IsValid())
+	{
+		FFrameRate DisplayRate = CurrentSequencer.Pin()->GetFocusedDisplayRate();
+		FFrameRate TickResolution = CurrentSequencer.Pin()->GetFocusedTickResolution();
+
+		CurrentSequencer.Pin()->SetLocalTime(ConvertFrameTime(NewFrame, DisplayRate, TickResolution));
+	}
+}
+
+int32 ULevelSequenceEditorBlueprintLibrary::GetCurrentLocalTime()
+{
+	if (CurrentSequencer.IsValid())
+	{
+		FFrameRate DisplayRate = CurrentSequencer.Pin()->GetFocusedDisplayRate();
+		FFrameRate TickResolution = CurrentSequencer.Pin()->GetFocusedTickResolution();
+
+		return ConvertFrameTime(CurrentSequencer.Pin()->GetLocalTime().Time, TickResolution, DisplayRate).FloorToFrame().Value;
+	}
+	return 0;
+}
+
+void ULevelSequenceEditorBlueprintLibrary::PlayTo(FMovieSceneSequencePlaybackParams PlaybackParams)
+{
+	if (CurrentSequencer.IsValid())
+	{
+		CurrentSequencer.Pin()->PlayTo(PlaybackParams);
+	}
 }
 
 bool ULevelSequenceEditorBlueprintLibrary::IsPlaying()
@@ -243,7 +284,7 @@ TArray<UObject*> ULevelSequenceEditorBlueprintLibrary::GetBoundObjects(FMovieSce
 	TArray<UObject*> BoundObjects;
 	if (CurrentSequencer.IsValid())
 	{
-		for (TWeakObjectPtr<> WeakObject : CurrentSequencer.Pin()->FindBoundObjects(ObjectBinding.GetGuid(), ObjectBinding.GetSequenceID()))
+		for (TWeakObjectPtr<> WeakObject : ObjectBinding.ResolveBoundObjects(CurrentSequencer.Pin()->GetFocusedTemplateID(), *CurrentSequencer.Pin()))
 		{
 			if (WeakObject.IsValid())
 			{

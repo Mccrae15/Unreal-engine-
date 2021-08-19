@@ -18,6 +18,22 @@
 #include "ISoundfieldFormat.h"
 #include "Sound/SoundModulationDestination.h"
 #include "Sound/QuartzQuantizationUtilities.h"
+#include "Stats/Stats.h"
+
+// Tracks the time it takes to up the source manager (computes source buffers, source effects, sample rate conversion)
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Manager Update"), STAT_AudioMixerSourceManagerUpdate, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to compute the source buffers (handle decoding tasks, resampling)
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Buffers"), STAT_AudioMixerSourceBuffers, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the source buffers through their source effects
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Effect Buffers"), STAT_AudioMixerSourceEffectBuffers, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to apply channel maps and get final pre-submix source buffers
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Output Buffers"), STAT_AudioMixerSourceOutputBuffers, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the HRTF effect.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("HRTF"), STAT_AudioMixerHRTF, STATGROUP_AudioMixer, AUDIOMIXER_API);
 
 namespace Audio
 {
@@ -116,7 +132,9 @@ namespace Audio
 		bool bUseHRTFSpatialization = false;
 		bool bIsExternalSend = false;
 		bool bIsDebugMode  = false;
-		bool bOutputToBusOnly = false;
+		bool bEnableBusSends = false;
+		bool bEnableBaseSubmix = false;
+		bool bEnableSubmixSends = false;
 		bool bIsVorbis = false;
 		bool bIsSoundfield = false;
 		bool bIsSeeking = false;
@@ -411,7 +429,9 @@ namespace Audio
 			uint8 bUseReverbPlugin:1;
 			uint8 bIsDone:1;
 			uint8 bIsLastBuffer:1;
-			uint8 bOutputToBusOnly:1;
+			uint8 bEnableBusSends : 1;
+			uint8 bEnableBaseSubmix : 1;
+			uint8 bEnableSubmixSends : 1;
 			uint8 bIsVorbis:1;
 			uint8 bIsSoundfield:1;
 			uint8 bIsBypassingLPF:1;
@@ -439,6 +459,9 @@ namespace Audio
 				HighpassModulationBase = MIN_FILTER_FREQUENCY;
 				LowpassModulationBase = MAX_FILTER_FREQUENCY;
 			}
+
+			//Helper function for determining if OutputToBusOnly is enabled
+			bool IsRenderingToSubmixes() const;
 
 #if AUDIO_MIXER_ENABLE_DEBUG_MODE
 			uint8 bIsDebugMode : 1;

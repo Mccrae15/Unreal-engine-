@@ -9,6 +9,7 @@
 #include "DataprepContentProducer.h"
 #include "DataprepEditor.h"
 #include "DataprepWidgets.h"
+#include "SDataprepProducersWidget.h"
 
 #include "Delegates/IDelegateInstance.h"
 #include "Widgets/Input/STextComboBox.h"
@@ -21,12 +22,13 @@
 class IDetailsView;
 class SDataprepAssetView;
 class SDataprepConsumerWidget;
-class SDataprepProducersWidget;
 
 class SDataprepAssetView : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SDataprepAssetView) {}
+	SLATE_ARGUMENT(FDataprepImportProducers, DataprepImportProducersDelegate) 
+	SLATE_ARGUMENT(FDataprepImportProducersEnabled, DataprepImportProducersEnabledDelegate)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs, UDataprepAssetInterface* InDataprepAssetPtr);
@@ -57,7 +59,9 @@ private:
 	TSharedPtr< FString > SelectedConsumerDescription;
 	TSharedPtr< SWidget > ConsumerSelector;
 	bool bIsChecked;
-	TSharedPtr< SDataprepConsumerWidget > ConsumerWidget;
+
+	FDataprepImportProducers DataprepImportProducersDelegate;
+	FDataprepImportProducersEnabled DataprepImportProducersEnabledDelegate;
 
 	/** Container used by all splitters in the details view, so that they move in sync */
 	TSharedPtr< FDataprepDetailsViewColumnSizeData > ColumnSizeData;
@@ -90,10 +94,12 @@ public:
 
 private:
 	/** Update the inspector window to show information on the supplied objects */
-	void UpdateFromObjects(const TArray<UObject*>& PropertyObjects);
+	void UpdateFromObjects(const TArray<UObject*>& PropertyObjects, bool bSelfUpdate = false);
 
 	/** Add this property and all its child properties to SelectedObjectProperties */
 	void AddPropertiesRecursive(FProperty* Property);
+
+	void OnSCSEditorTreeViewSelectionChanged(const TArray<TSharedPtr<class FSCSEditorTreeNode> >& SelectedNodes);
 
 private:
 	/** Property viewing widget */
@@ -107,6 +113,18 @@ private:
 
 	/** Set of object properties that should be visible */
 	TSet<TWeakFieldPtr<FProperty> > SelectedObjectProperties;
+
+	/** The splitter that divides object properties and components tree */
+	TSharedPtr<SSplitter> DetailsSplitter;
+
+	/** Component tree */
+	TSharedPtr<class SSCSEditor> SCSEditor;
+
+	/** Customize how the component tree looks like */
+	TSharedPtr<class FDataprepSCSEditorUICustomization> SCSEditorUICustomization;
+
+	/** The first actor in the currently selected objects */
+	AActor* SelectedActor;
 
 	/** When TRUE, the SGraphNodeDetailsWidget needs to refresh the details view on Tick */
 	bool bRefreshOnTick;

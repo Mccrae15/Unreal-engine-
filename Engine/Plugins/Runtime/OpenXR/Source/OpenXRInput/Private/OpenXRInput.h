@@ -1,13 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+#include "OpenXRCore.h"
 #include "GenericPlatform/IInputInterface.h"
 #include "XRMotionControllerBase.h"
 #include "IOpenXRInputPlugin.h"
 #include "IInputDevice.h"
 #include "IHapticDevice.h"
-
-#include <openxr/openxr.h>
 
 class FOpenXRHMD;
 struct FInputActionKeyMapping;
@@ -31,13 +30,14 @@ public:
 	struct FOpenXRController
 	{
 		XrActionSet		ActionSet;
+		XrPath			UserPath;
 		XrAction		GripAction;
 		XrAction		AimAction;
 		XrAction		VibrationAction;
 		int32			GripDeviceId;
 		int32			AimDeviceId;
 
-		FOpenXRController(XrActionSet InActionSet, const char* InName);
+		FOpenXRController(XrActionSet InActionSet, XrPath InUserPath, const char* InName);
 
 		void AddActionDevices(FOpenXRHMD* HMD);
 	};
@@ -94,6 +94,7 @@ public:
 		TMap<FName, EControllerHand> MotionSourceToControllerHandMap;
 		XrAction GetActionForMotionSource(FName MotionSource) const;
 		int32 GetDeviceIDForMotionSource(FName MotionSource) const;
+		XrPath GetUserPathForMotionSource(FName MotionSource) const;
 		bool IsOpenXRInputSupportedMotionSource(const FName MotionSource) const;
 		bool bActionsBound;
 

@@ -377,6 +377,8 @@ bool FDataprepCoreUtils::ExecuteDataprep(UDataprepAssetInterface* DataprepAssetI
 			LogStaticMesh.SetVerbosity( PrevLogStaticMeshVerbosity );
 		}
 
+		DataprepCorePrivateUtils::Analytics::RecipeExecuted( DataprepAssetInterface );
+
 		return bSuccessfulExecute;
 	}
 
@@ -411,6 +413,7 @@ bool FDataprepCoreUtils::IsClassValidForStepCreation(const TSubclassOf<UDataprep
 	}
 
 	UClass* DataprepFilterClass = UDataprepFilter::StaticClass();
+	UClass* DataprepFilterNoFetcherClass = UDataprepFilterNoFetcher::StaticClass();
 	UClass* DataprepTopLevelClass = UDataprepParameterizableObject::StaticClass();
 	UClass* DataprepOperationClass = UDataprepOperation::StaticClass();
 	UClass* DataprepFetcherClass = UDataprepFetcher::StaticClass();
@@ -422,6 +425,12 @@ bool FDataprepCoreUtils::IsClassValidForStepCreation(const TSubclassOf<UDataprep
 		{
 			OutMessageIfInvalid = LOCTEXT("StepTypeIsAFilter", "The class to use for the creation of the step is filter. Please use the desired fetcher for the filter instead.");
 			return false;
+		}
+
+		if ( Class == DataprepFilterNoFetcherClass )
+		{
+			OutValidRootClass = DataprepFilterNoFetcherClass;
+			return true;
 		}
 
 		if ( Class == DataprepTopLevelClass )
@@ -459,6 +468,7 @@ UClass* FDataprepCoreUtils::GetTypeOfActionStep(const UDataprepParameterizableOb
 	UClass* CurrentClass = Object ? Object->GetClass() : nullptr;
 
 	const UClass* DataprepFilterClass = UDataprepFilter::StaticClass();
+	const UClass* DataprepFilterNoFetcherClass = UDataprepFilterNoFetcher::StaticClass();
 	const UClass* DataprepOperationClass = UDataprepOperation::StaticClass();
 	const UClass* DataprepTransformClass = UDataprepSelectionTransform::StaticClass();
 
@@ -467,6 +477,7 @@ UClass* FDataprepCoreUtils::GetTypeOfActionStep(const UDataprepParameterizableOb
 		if ( CurrentClass == DataprepFilterClass
 			|| CurrentClass == DataprepOperationClass
 			|| CurrentClass == DataprepTransformClass
+			|| CurrentClass == DataprepFilterNoFetcherClass
 			)
 		{
 			break;
@@ -635,6 +646,15 @@ void FDataprepCoreUtils::BuildAssets(const TArray<TWeakObjectPtr<UObject>>& Asse
 	TSet<UStaticMesh*> StaticMeshes;
 	TSet<UMaterialInterface*> MaterialInterfaces;
 
+	// Unregister all actors components to avoid excessive refresh in the 3D engine while updating materials.
+	for (TObjectIterator<AActor> ActorIterator; ActorIterator; ++ActorIterator)
+	{
+		if (ActorIterator->GetWorld())
+		{
+			ActorIterator->UnregisterAllComponents( /* bForReregister = */true);
+		}
+	}
+
 	for( const TWeakObjectPtr<UObject>& AssetPtr : Assets )
 	{
 		UObject* AssetObject = AssetPtr.Get();
@@ -656,6 +676,15 @@ void FDataprepCoreUtils::BuildAssets(const TArray<TWeakObjectPtr<UObject>>& Asse
 		}
 	}
 
+	// Materials have been updated, we can register everything back.
+	for (TObjectIterator<AActor> ActorIterator; ActorIterator; ++ActorIterator)
+	{
+		if (ActorIterator->GetWorld())
+		{
+			ActorIterator->RegisterAllComponents();
+		}
+	}
+
 	FDataprepWorkReporter Task( ProgressReporterPtr, LOCTEXT( "BuildAssets_Building", "Building static meshes ..." ), (float)StaticMeshes.Num(), 1.0f, false );
 
 	// Build static meshes
@@ -667,7 +696,7 @@ void FDataprepCoreUtils::BuildAssets(const TArray<TWeakObjectPtr<UObject>>& Asse
 	});
 }
 
-bool FDataprepCoreUtils::RemoveSteps(UDataprepActionAsset* ActionAsset, const TArray<int32>& Indices, int32& ActionIndex)
+bool FDataprepCoreUtils::RemoveSteps(UDataprepActionAsset* ActionAsset, const TArray<int32>& Indices, int32& ActionIndex, bool bDiscardParametrization)
 {
 	ActionIndex = INDEX_NONE;
 
@@ -680,10 +709,10 @@ bool FDataprepCoreUtils::RemoveSteps(UDataprepActionAsset* ActionAsset, const TA
 		ActionIndex = DataprepAsset->GetActionIndex(ActionAsset);
 		ensure(ActionIndex != INDEX_NONE);
 
-		return DataprepAsset->RemoveAction(ActionIndex);
+		return DataprepAsset->RemoveAction(ActionIndex, bDiscardParametrization);
 	}
 
-	return ActionAsset->RemoveSteps( Indices );
+	return ActionAsset->RemoveSteps( Indices, bDiscardParametrization );
 }
 
 void FDataprepCoreUtils::GetActorsFromWorld(const UWorld* World, TArray<UObject*>& OutActors)
@@ -735,8 +764,11 @@ void FDataprepCoreUtils::DeleteTemporaryFolders(const FString& BaseTemporaryPath
 
 			if(Package->GetName().StartsWith( BaseTemporaryPath ))
 			{
-				// Remove package path from asset registry
-				AssetRegistry.RemovePath(Package->GetPathName());
+				if (AssetRegistry.PathExists(Package->GetPathName()))
+				{
+					// Remove package path from asset registry
+					AssetRegistry.RemovePath(Package->GetPathName());
+				}
 
 				ObjectsToDelete.Add( Package );
 			}

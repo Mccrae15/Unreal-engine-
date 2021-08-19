@@ -17,7 +17,18 @@
 #include "NetworkPredictionLog.h"
 #include "Trace/Trace.inl"
 
-// Also should update string tracing with Trace::AnsiString
+// TODO:
+// Should update string tracing with Trace::AnsiString
+
+namespace NetworkPredictionTraceInternal
+{
+	enum class ENetworkPredictionTraceVersion : uint32
+	{
+		Initial = 1,
+	};
+
+	static constexpr ENetworkPredictionTraceVersion NetworkPredictionTraceVersion = ENetworkPredictionTraceVersion::Initial;
+};
 
 UE_TRACE_CHANNEL_DEFINE(NetworkPredictionChannel)
 
@@ -44,12 +55,23 @@ UE_TRACE_EVENT_BEGIN(NetworkPrediction, SimulationScope)
 	UE_TRACE_EVENT_FIELD(int32, TraceID)
 UE_TRACE_EVENT_END()
 
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, SimState)
+	UE_TRACE_EVENT_FIELD(int32, TraceID)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, Version)
+	UE_TRACE_EVENT_FIELD(uint32, Version)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, WorldPreInit)
+	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
+UE_TRACE_EVENT_END()
+
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, PieBegin)
-	UE_TRACE_EVENT_FIELD(uint8, DummyData)
+	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, WorldFrameStart)
-	UE_TRACE_EVENT_FIELD(uint32, GameInstanceID)
 	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 	UE_TRACE_EVENT_FIELD(float, DeltaSeconds)
 UE_TRACE_EVENT_END()
@@ -63,7 +85,6 @@ UE_TRACE_EVENT_BEGIN(NetworkPrediction, Tick)
 	UE_TRACE_EVENT_FIELD(int32, StartMS)
 	UE_TRACE_EVENT_FIELD(int32, DeltaMS)
 	UE_TRACE_EVENT_FIELD(int32, OutputFrame)
-	UE_TRACE_EVENT_FIELD(int32, LocalOffsetFrame)
 UE_TRACE_EVENT_END()
 
 // Signals that the given sim has done a tick. Expected to be called after the 'Tick' event has been traced
@@ -81,12 +102,25 @@ UE_TRACE_EVENT_BEGIN(NetworkPrediction, ShouldReconcile)
 	UE_TRACE_EVENT_FIELD(int32, TraceID)
 UE_TRACE_EVENT_END()
 
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, Reconcile)
+UE_TRACE_EVENT_END()
+
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, RollbackInject)
 	UE_TRACE_EVENT_FIELD(int32, TraceID)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, PushInputFrame)
 	UE_TRACE_EVENT_FIELD(int32, Frame)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, FixedTickOffset)
+	UE_TRACE_EVENT_FIELD(int32, Offset)
+	UE_TRACE_EVENT_FIELD(bool, Changed)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, BufferedInput)
+	UE_TRACE_EVENT_FIELD(int32, NumBufferedFrames)
+	UE_TRACE_EVENT_FIELD(bool, bFault)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, ProduceInput)
@@ -110,35 +144,6 @@ UE_TRACE_EVENT_END()
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, PhysicsState)
 UE_TRACE_EVENT_END()
 
-// Assign Id to UGameInstance ObjectKey. Assignment
-struct FGameInstanceIdMap
-{
-	uint32 GetId(UGameInstance* Instance)
-	{
-		FObjectKey Key(Instance);
-		
-		int32 FoundIdx=INDEX_NONE;
-		if (AssignedInstances.Find(Key, FoundIdx))
-		{
-			return (uint32)(FoundIdx+1);
-		}
-
-		AssignedInstances.Add(Key);
-		uint32 Id = (uint32)AssignedInstances.Num();
-		return Id;
-	}
-
-private:
-	TArray<FObjectKey> AssignedInstances;
-
-} GameInstanceMap;
-
-
-//Tracks which SimulationIDs we've successfully traced NetGUIDs of
-TArray<uint32> TracedSimulationNetGUIDs;
-TMap<uint32, TWeakObjectPtr<const AActor>> OwningActorMap;
-
-
 // ---------------------------------------------------------------------------
 
 void FNetworkPredictionTrace::TraceSimulationCreated_Internal(FNetworkPredictionID ID, FStringBuilderBase& Builder)
@@ -153,44 +158,47 @@ void FNetworkPredictionTrace::TraceSimulationCreated_Internal(FNetworkPrediction
 
 void FNetworkPredictionTrace::TraceWorldFrameStart(UGameInstance* GameInstance, float DeltaSeconds)
 {
-	if (GameInstance->GetWorld()->GetNetMode() == NM_Standalone)
+	if (!GameInstance || GameInstance->GetWorld()->GetNetMode() == NM_Standalone)
 	{
 		// No networking yet, don't start tracing
 		return;
 	}
 
-	uint32 GameInstanceID = GameInstanceMap.GetId(GameInstance);
-
 	UE_TRACE_LOG(NetworkPrediction, WorldFrameStart, NetworkPredictionChannel)
-		<< WorldFrameStart.GameInstanceID(GameInstanceID)
 		<< WorldFrameStart.EngineFrameNumber(GFrameNumber)
 		<< WorldFrameStart.DeltaSeconds(DeltaSeconds);
 }
 
 void FNetworkPredictionTrace::TraceSimulationConfig(int32 TraceID, ENetRole NetRole, bool bHasNetConnection, const FNetworkPredictionInstanceArchetype& Archetype, const FNetworkPredictionInstanceConfig& Config, int32 ServiceMask)
 {
+	npEnsureMsgf(NetRole != ENetRole::ROLE_None && NetRole != ENetRole::ROLE_MAX, TEXT("Invalid NetRole %d"), NetRole);
+
 	UE_TRACE_LOG(NetworkPrediction, SimulationConfig, NetworkPredictionChannel)
 		<< SimulationConfig.TraceID(TraceID)
 		<< SimulationConfig.NetRole((uint8)NetRole)
 		<< SimulationConfig.bHasNetConnection((uint8)bHasNetConnection)
 		<< SimulationConfig.TickingPolicy((uint8)Archetype.TickingMode)
-		<< SimulationConfig.ServiceMask(ServiceMask);
+		<< SimulationConfig.ServiceMask(ServiceMask);		
 }
 
 void FNetworkPredictionTrace::TraceSimulationScope(int32 TraceID)
 {
 	UE_TRACE_LOG(NetworkPrediction, SimulationScope, NetworkPredictionChannel)
 		<< SimulationScope.TraceID(TraceID);
-
 }
 
-void FNetworkPredictionTrace::TraceTick(int32 StartMS, int32 DeltaMS, int32 OutputFrame, int32 LocalFrameOffset)
+void FNetworkPredictionTrace::TraceSimState(int32 TraceID)
+{
+	UE_TRACE_LOG(NetworkPrediction, SimState, NetworkPredictionChannel)
+		<< SimState.TraceID(TraceID);
+}
+
+void FNetworkPredictionTrace::TraceTick(int32 StartMS, int32 DeltaMS, int32 OutputFrame)
 {
 	UE_TRACE_LOG(NetworkPrediction, Tick, NetworkPredictionChannel)
 		<< Tick.StartMS(StartMS)
 		<< Tick.DeltaMS(DeltaMS)
-		<< Tick.OutputFrame(OutputFrame)
-		<< Tick.LocalOffsetFrame(LocalFrameOffset);
+		<< Tick.OutputFrame(OutputFrame);
 }
 
 void FNetworkPredictionTrace::TraceSimTick(int32 TraceID)
@@ -240,6 +248,14 @@ void FNetworkPredictionTrace::TraceNetRecv(int32 Frame, int32 TimeMS)
 		<< NetRecv.TimeMS(TimeMS);
 }
 
+void FNetworkPredictionTrace::TraceReconcile(const FAnsiStringView& StrView)
+{
+	const uint16 AttachmentSize = (uint16)((StrView.Len()+1) * sizeof(FAnsiStringView::ElementType));
+
+	UE_TRACE_LOG(NetworkPrediction, Reconcile, NetworkPredictionChannel, AttachmentSize)
+		<< Reconcile.Attachment(StrView.GetData(), AttachmentSize);
+}
+
 void FNetworkPredictionTrace::TraceShouldReconcile(int32 TraceID)
 {
 	UE_TRACE_LOG(NetworkPrediction, ShouldReconcile, NetworkPredictionChannel)
@@ -255,14 +271,36 @@ void FNetworkPredictionTrace::TraceRollbackInject(int32 TraceID)
 void FNetworkPredictionTrace::TracePIEStart()
 {
 	UE_TRACE_LOG(NetworkPrediction, PieBegin, NetworkPredictionChannel)
-		<< PieBegin.DummyData(0); // temp to quiet clang
+		<< PieBegin.EngineFrameNumber(GFrameNumber);
+}
 
+void FNetworkPredictionTrace::TraceWorldPreInit()
+{
+	UE_TRACE_LOG(NetworkPrediction, Version, NetworkPredictionChannel)
+		<< Version.Version((uint32)NetworkPredictionTraceInternal::NetworkPredictionTraceVersion);
+
+	UE_TRACE_LOG(NetworkPrediction, WorldPreInit, NetworkPredictionChannel)
+		<< WorldPreInit.EngineFrameNumber(GFrameNumber);
 }
 
 void FNetworkPredictionTrace::TracePushInputFrame(int32 Frame)
 {
 	UE_TRACE_LOG(NetworkPrediction, PushInputFrame, NetworkPredictionChannel)
 		<< PushInputFrame.Frame(Frame);
+}
+
+void FNetworkPredictionTrace::TraceFixedTickOffset(int32 Offset, bool bChanged)
+{
+	UE_TRACE_LOG(NetworkPrediction, FixedTickOffset, NetworkPredictionChannel)
+		<< FixedTickOffset.Offset(Offset)
+		<< FixedTickOffset.Changed(bChanged);
+}
+
+void FNetworkPredictionTrace::TraceBufferedInput(int32 NumBufferedFrames, bool bFault)
+{
+	UE_TRACE_LOG(NetworkPrediction, BufferedInput, NetworkPredictionChannel)
+		<< BufferedInput.NumBufferedFrames(NumBufferedFrames)
+		<< BufferedInput.bFault(bFault);
 }
 
 void FNetworkPredictionTrace::TraceProduceInput(int32 TraceID)
@@ -273,7 +311,7 @@ void FNetworkPredictionTrace::TraceProduceInput(int32 TraceID)
 
 void FNetworkPredictionTrace::TraceOOBStateMod(int32 TraceID, int32 Frame, const FAnsiStringView& StrView)
 {
-	const uint16 AttachmentSize = (uint16)((StrView.Len()) * sizeof(FAnsiStringView::ElementType));
+	const uint16 AttachmentSize = (uint16)((StrView.Len()+1) * sizeof(FAnsiStringView::ElementType));
 
 	UE_TRACE_LOG(NetworkPrediction, OOBStateMod, NetworkPredictionChannel, AttachmentSize)
 		<< OOBStateMod.TraceID(TraceID)

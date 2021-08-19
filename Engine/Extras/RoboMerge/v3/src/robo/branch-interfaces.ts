@@ -2,22 +2,10 @@
 
 import { BranchSpec, ConflictedResolveNFile, RoboWorkspace } from '../common/perforce';
 // TODO: Remove Circular Dependency on bot-interfaces
-import { NodeBotInterface, QueuedChange } from './bot-interfaces';
-import { BotConfig, BranchBase, EdgeOptions, NodeOptions } from './branchdefs';
+import { NodeBotInterface } from './bot-interfaces';
+import { FailureKind } from './status-types';
+import { BotConfig, BranchBase, EdgeOptions, NodeOptions, IntegrationWindowPane } from './branchdefs';
 import { BlockageNodeOpUrls } from './roboserver';
-import { PauseStatusFields } from './state-interfaces';
-import { ConflictStatusFields } from './conflicts';
-
-export type FailureKind =
-	'Integration error' |
-	'Exclusive check-out' |
-	'Merge conflict' |
-	'Commit failure' |
-	'Syntax error' |
-	'Disallowed files' |
-	'Too many files' |
-	'Conversion to edits failure' |
-	'Unit Test error'
 
 export type BranchArg = Branch | string
 export function resolveBranchArg(branchArg: BranchArg, toUpperCase?: boolean): string {
@@ -86,54 +74,6 @@ export interface BranchGraphInterface {
 	getBranchNames(): string
 }
 
-type BotStatusFields = Partial<PauseStatusFields> & {
-	display_name: string
-	last_cl: number
-
-	is_active: boolean
-	is_available: boolean
-	is_blocked: boolean
-	is_paused: boolean
-
-	status_msg?: string
-	status_since?: string
-
-	lastBlockage?: number
-
-	disallowSkip: boolean
-
-	// don't commit - added by preprocess
-	retry_cl?: number
-}
-
-export type EdgeStatusFields = BotStatusFields & {
-	name: string
-	target: string
-	targetStream?: string
-	rootPath: string
-
-	headCL?: number
-	lastGoodCL?: number
-	lastGoodCLJobLink?: string
-	lastGoodCLDate?: Date
-}
-
-type NodeStatusFields = BotStatusFields & {
-		
-	queue: QueuedChange[]
-	headCL?: number
-
-	conflicts: ConflictStatusFields[]
-	edges: { [key: string]: EdgeStatusFields }
-}
-
-export type BranchStatus = Partial<NodeStatusFields> & {
-	def: Branch
-	bot: string
-
-	branch_spec_cl: number
-}
-
 export interface Branch extends BranchBase {
 	bot?: NodeBotInterface
 	parent: BranchGraphInterface
@@ -150,6 +90,7 @@ export interface Branch extends BranchBase {
 	convertIntegratesToEdits: boolean
 	visibility: string[] | string
 	blockAssetTargets: Set<string>
+	allowDeadend: boolean
 
 	edgeProperties: Map<string, EdgeOptions>
 
@@ -157,8 +98,9 @@ export interface Branch extends BranchBase {
 }
 
 export interface Target {
-	branch: Branch
+	branchName: string
 	mergeMode: string
+	otherBot?: string
 }
 
 export type MergeMode = 'safe' | 'normal' | 'null' | 'clobber' | 'skip'
@@ -186,19 +128,22 @@ export interface TargetInfo {
 	additionalDescriptionText?: string
 }
 
+type UserRequest =
+	'node-reconsider' | 'edge-reconsider'
+
 export interface ChangeInfo extends TargetInfo {
 	branch: Branch
 	cl: number
 	source_cl: number
-	isManual: boolean
+	userRequest?: UserRequest
 	authorTag?: string
 	source: string
 	description: string
-	numFiles: number // number of files, capped out at maxFilesPerIntegration
 
 	propagatingNullMerge: boolean
 	forceCreateAShelf: boolean
 	overriddenCommand: string
+	macros: string[]
 	hasOkForGithubTag: boolean
 }
 
@@ -243,4 +188,80 @@ export interface ForcedCl {
 	previousCl: number
 	culprit: string
 	reason: string
+}
+
+export type GateInfo = {
+	cl: number
+	link?: string
+	timestamp?: number
+
+	// optional overrides for integration window (takes precedence over any in config)
+	integrationWindow?: IntegrationWindowPane[]
+	invertIntegrationWindow?: boolean
+}
+
+export function gatesSame(lhs: GateInfo | null, rhs: GateInfo | null) {
+	if (!lhs && !rhs) {
+		return true
+	}
+
+	if (!lhs || !rhs) {
+		return false
+	}
+
+	if (lhs.cl !== rhs.cl) {
+		return false
+	}
+
+	// neither has windows? no need to check further
+	if (!lhs.integrationWindow && !rhs.integrationWindow) {
+		return true
+	}
+
+	if (!lhs.integrationWindow || !rhs.integrationWindow) {
+		return false
+	}
+
+	if (lhs.integrationWindow.length !== rhs.integrationWindow.length) {
+		return false
+	}
+
+	if (!lhs.invertIntegrationWindow !== !rhs.invertIntegrationWindow) {
+		return false
+	}
+
+	for (let n = 0; n < lhs.integrationWindow.length; ++n) {
+		const lhsWindow = lhs.integrationWindow[n]
+		const rhsWindow = rhs.integrationWindow[n]
+		const lhsDays = lhsWindow.daysOfTheWeek || []
+		const rhsDays = rhsWindow.daysOfTheWeek || []
+		if (lhsWindow.startHourUTC !== rhsWindow.startHourUTC ||
+				lhsWindow.durationHours !== rhsWindow.durationHours ||
+				lhsDays.length !== rhsDays.length ||
+				!lhsDays.every((lhsDay, index) => lhsDay === rhsDays[index])) {
+			return false
+		}
+	}
+
+	return true
+}
+
+export type GateEventContext = {
+	from: Branch
+	to: Branch
+	edgeLastCl: number
+	pauseCIS: boolean
+}
+
+export type BeginIntegratingToGateEvent = {
+	context: GateEventContext
+	info: GateInfo
+
+	// would like to provide this for logging, but I'm not storing it in a convenient place yet
+	changesRemaining: number
+}
+
+export type EndIntegratingToGateEvent = {
+	context: GateEventContext
+	targetCl: number
 }

@@ -8,6 +8,7 @@
 #include "Misc/ScopedSlowTask.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/App.h"
+#include "Misc/AssetRegistryInterface.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/MetaData.h"
 #include "UObject/ConstructorHelpers.h"
@@ -872,7 +873,7 @@ void UEditorEngine::HandleSettingChanged( FName Name )
 
 void UEditorEngine::InitializeObjectReferences()
 {
-	EditorSubsystemCollection.Initialize(this);
+	EditorSubsystemCollection->Initialize(this);
 
 	Super::InitializeObjectReferences();
 
@@ -1228,7 +1229,7 @@ void UEditorEngine::FinishDestroy()
 			ToolMenus->UnregisterStringCommandHandler("Command");
 		}
 
-		EditorSubsystemCollection.Deinitialize();
+		EditorSubsystemCollection->Deinitialize();
 
 		// Unregister events
 		FEditorDelegates::MapChange.RemoveAll(this);
@@ -1513,7 +1514,13 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 		DirectoryWatcherModule.Get()->Tick(DeltaSeconds);
 	}
 
+#if !UE_SERVER
+	static const FName MediaModuleName(TEXT("Media"));
+	IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>(MediaModuleName);
+#endif
+
 	bool bAWorldTicked = false;
+	bool bMediaModulePreEngineTickDone = false;
 	ELevelTick TickType = IsRealtime ? LEVELTICK_ViewportsOnly : LEVELTICK_TimeOnly;
 
 	if( bShouldTickEditorWorld )
@@ -1526,6 +1533,9 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 			EditorContext.World()->Tick(TickType, DeltaSeconds);
 			bAWorldTicked = true;
 			FKismetDebugUtilities::NotifyDebuggerOfEndOfGameFrame(EditorContext.World());
+
+			// Track if the editor context has an active movie sequence tick associated -> if so it will have executed the MediaModule pre-engine tick already
+			bMediaModulePreEngineTickDone = (MediaModule != nullptr) && EditorContext.World()->IsMovieSceneSequenceTickHandlerBound();
 		}
 	}
 
@@ -1537,7 +1547,6 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 			// Previs level streaming volumes in the Editor.
 			if ( ViewportClient->IsPerspective() && GetDefault<ULevelEditorViewportSettings>()->bLevelStreamingVolumePrevis )
 			{
-				bool bProcessViewer = false;
 				const FVector& ViewLocation = ViewportClient->GetViewLocation();
 
 				// Iterate over streaming levels and compute whether the ViewLocation is in their associated volumes.
@@ -1591,7 +1600,6 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 						if ( bFoundValidVolume && StreamingLevel->GetShouldBeVisibleInEditor() != bStreamingLevelShouldBeVisible )
 						{
 							StreamingLevel->SetShouldBeVisibleInEditor(bStreamingLevelShouldBeVisible);
-							bProcessViewer = true;
 						}
 					}
 				}
@@ -1599,20 +1607,18 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 				// Simulate world composition streaming while in editor world
 				if (EditorContext.World()->WorldComposition)
 				{
-					if (EditorContext.World()->WorldComposition->UpdateEditorStreamingState(ViewLocation))
-					{
-						bProcessViewer = true;
-					}
+					EditorContext.World()->WorldComposition->UpdateEditorStreamingState(ViewLocation);
 				}
-				
-				// Call UpdateLevelStreaming if the visibility of any streaming levels was modified.
-				if ( bProcessViewer )
-				{
-					EditorContext.World()->UpdateLevelStreaming();
-					FEditorDelegates::RefreshPrimitiveStatsBrowser.Broadcast();
-				}
+
 				break;
 			}
+		}
+
+		// Call UpdateLevelStreaming if some streaming levels needs consideration. i.e Visibility has changed
+		if (EditorContext.World()->HasStreamingLevelsToConsider())
+		{
+			EditorContext.World()->UpdateLevelStreaming();
+			FEditorDelegates::RefreshPrimitiveStatsBrowser.Broadcast();
 		}
 	}
 
@@ -1641,15 +1647,25 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 	// if we have the side-by-side world for "Play From Here", tick it unless we are ensuring slate is responsive
 	if( FSlateThrottleManager::Get().IsAllowingExpensiveTasks() )
 	{
-		// Determine number of PIE worlds that should tick.
+		// Determine number of PIE worlds that should tick and if they feature an active movie sequence tick.
+		bool bMovieSequenceTickWillBeHandled = false;
 		TArray<FWorldContext*> LocalPieContextPtrs;
 		for (FWorldContext& PieContext : WorldList)
 		{
 			if (PieContext.WorldType == EWorldType::PIE && PieContext.World() != nullptr && PieContext.World()->ShouldTick())
 			{
 				LocalPieContextPtrs.Add(&PieContext);
+				bMovieSequenceTickWillBeHandled |= (MediaModule != nullptr) && PieContext.World()->IsMovieSceneSequenceTickHandlerBound();
 			}
 		}
+
+#if !UE_SERVER
+		// If we do not have any active movie sequence ticking, we will issue the pre-engine tick for the MediaModule as soon as we can
+		if ((MediaModule != nullptr) && !bMediaModulePreEngineTickDone && !bMovieSequenceTickWillBeHandled)
+		{
+			MediaModule->TickPreEngine();
+		}
+#endif
 
 		// Note: WorldList can change size within this loop during PIE when stopped at a breakpoint. In that case, we are
 		// running in a nested tick loop within this loop, where a new editor window with a preview viewport can be opened.
@@ -1738,20 +1754,30 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 			RestoreEditorWorld( OldGWorld );
 		}
 	}
+	else
+	{
+#if !UE_SERVER
+	// If we do not tick anything of the above, we need to still make sure to issue the pre-tick to MediaModule
+		// (unless the Editor context had a movie sequence tick active and hence already did so)
+		if ((MediaModule != nullptr) && !bMediaModulePreEngineTickDone)
+		{
+			MediaModule->TickPreEngine();
+		}
+#endif
+	}
 
 	if (bAWorldTicked)
 	{
 		FTickableGameObject::TickObjects(nullptr, TickType, false, DeltaSeconds);
 	}
 
-	// tick media framework
-	static const FName MediaModuleName(TEXT("Media"));
-	IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>(MediaModuleName);
-
+#if !UE_SERVER
+	// tick media framework post engine ticks
 	if (MediaModule != nullptr)
 	{
 		MediaModule->TickPostEngine();
 	}
+#endif
 
 	if (bFirstTick)
 	{
@@ -2085,7 +2111,7 @@ bool UEditorEngine::UpdateSingleViewportClient(FEditorViewportClient* InViewport
 	// otherwise content for editor view can be streamed out if there are other views (ex: thumbnails)
 	if (InViewportClient->IsPerspective())
 	{
-		IStreamingManager::Get().AddViewInformation( InViewportClient->GetViewLocation(), InViewportClient->Viewport->GetSizeXY().X, InViewportClient->Viewport->GetSizeXY().X / FMath::Tan(InViewportClient->ViewFOV) );
+		IStreamingManager::Get().AddViewInformation( InViewportClient->GetViewLocation(), InViewportClient->Viewport->GetSizeXY().X, InViewportClient->Viewport->GetSizeXY().X / FMath::Tan(FMath::DegreesToRadians(InViewportClient->ViewFOV * 0.5f)) );
 	}
 	
 	// Only allow viewports to be drawn if we are not throttling for slate UI responsiveness or if the viewport client requested a redraw
@@ -4214,7 +4240,7 @@ void UEditorEngine::ParentActors( AActor* ParentActor, AActor* ChildActor, const
 		}
 
 		// Snap to socket if a valid socket name was provided, otherwise attach without changing the relative transform
-		ChildRoot->AttachToComponent(ParentRoot, FAttachmentTransformRules::KeepWorldTransform, SocketName);
+		ChildRoot->AttachToComponent(Component ? Component : ParentRoot, FAttachmentTransformRules::KeepWorldTransform, SocketName);
 
 		// Refresh editor in case child was translated after snapping to socket
 		RedrawLevelEditingViewports();
@@ -4499,7 +4525,7 @@ FSavePackageResultStruct UEditorEngine::Save( UPackage* InOuter, UObject* InBase
 			GetObjectsWithPackage(InOuter, PotentialAssets, false);
 			for (UObject* Object : PotentialAssets)
 			{
-				if (Object->IsAsset())
+				if (Object->IsAsset() && !UE::AssetRegistry::FFiltering::ShouldSkipAsset(Object))
 				{
 					Base = Object;
 					break;
@@ -4949,7 +4975,9 @@ AActor* UEditorEngine::UseActorFactory( UActorFactory* Factory, const FAssetData
 				const FScopedTransaction Transaction( NSLOCTEXT("UnrealEd", "CreateActor", "Create Actor") );
 
 				// Create the actor.
-				Actor = Factory->CreateActor( Asset, DesiredLevel, ActorTransform, InObjectFlags );
+				FActorSpawnParameters SpawnParams;
+				SpawnParams.ObjectFlags = InObjectFlags;
+				Actor = Factory->CreateActor( Asset, DesiredLevel, ActorTransform, SpawnParams );
 				if(Actor != NULL)
 				{
 					SelectNone( false, true );
@@ -5258,7 +5286,7 @@ void UEditorEngine::ReplaceActors(UActorFactory* Factory, const FAssetData& Asse
 		const FTransform OldTransform = OldActor->ActorToWorld();
 
 		// create the actor
-		NewActor = Factory->CreateActor( Asset, Level, OldTransform );
+		NewActor = Factory->CreateActor(Asset, Level, OldTransform);
 		// For blueprints, try to copy over properties
 		if (Factory->IsA(UActorFactoryBlueprint::StaticClass()))
 		{
@@ -7156,7 +7184,7 @@ FORCEINLINE bool NetworkRemapPath_local(FWorldContext& Context, FString& Str, bo
 
 bool UEditorEngine::NetworkRemapPath(UNetConnection* Connection, FString& Str, bool bReading)
 {
-	if (Connection == nullptr)
+	if (Connection == nullptr || Connection->GetWorld() == nullptr)
 	{
 		return false;
 	}
@@ -7724,12 +7752,6 @@ void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPla
 
 		DefaultWorldFeatureLevel = EffectiveFeatureLevel;
 		PreviewFeatureLevelChanged.Broadcast(EffectiveFeatureLevel);
-
-		// The feature level changed, so existing debug view materials are invalid and need to be rebuilt.
-		// This process must follow the PreviewFeatureLevelChanged event, because any listeners need
-		// opportunity to switch to the new feature level first.
-		void ClearDebugViewMaterials(UMaterialInterface*);
-		ClearDebugViewMaterials(nullptr);
 	}
 	else if (bChangedPreviewShaderPlatform)
 	{

@@ -17,6 +17,7 @@
 #include "Materials/MaterialExpressionArctangent2.h"
 #include "Materials/MaterialExpressionBlackBody.h"
 #include "Materials/MaterialExpressionBreakMaterialAttributes.h"
+#include "Materials/MaterialExpressionCameraPositionWS.h"
 #include "Materials/MaterialExpressionCameraVectorWS.h"
 #include "Materials/MaterialExpressionCeil.h"
 #include "Materials/MaterialExpressionClamp.h"
@@ -49,6 +50,7 @@
 #include "Materials/MaterialExpressionNoise.h"
 #include "Materials/MaterialExpressionNormalize.h"
 #include "Materials/MaterialExpressionOneMinus.h"
+#include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionPixelNormalWS.h"
 #include "Materials/MaterialExpressionPower.h"
 #include "Materials/MaterialExpressionReflectionVectorWS.h"
@@ -396,8 +398,10 @@ namespace Generator
 	template <typename T>
 	inline void Connect(T& Target, const FMaterialExpressionConnection& Connection)
 	{
-		if (Connection.ExpressionData.Expression)
-			Target.Connect(Connection.ExpressionData.Index, Connection.ExpressionData.Expression);
+		if (UMaterialExpression* Expression = Connection.GetExpressionAndUse())
+		{
+			Target.Connect(Connection.GetExpressionOutputIndex(), Expression);
+		}
 	}
 
 	template <typename T>

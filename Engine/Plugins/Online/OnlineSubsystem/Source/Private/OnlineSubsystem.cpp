@@ -61,6 +61,13 @@ ONLINESUBSYSTEM_API DEFINE_STAT(STAT_Session_Interface);
 ONLINESUBSYSTEM_API DEFINE_STAT(STAT_Voice_Interface);
 #endif
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FName WECHAT_SUBSYSTEM(TEXT("WeChat"));
+FName TWITCH_SUBSYSTEM(TEXT("TWITCH"));
+FName LIVE_SUBSYSTEM(TEXT("LIVE"));
+FName LIVESERVER_SUBSYSTEM(TEXT("LIVESERVER"));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 /** The default key that will update presence text in the platform's UI */
 const FString DefaultPresenceKey = TEXT("RichPresence");
 
@@ -99,14 +106,14 @@ namespace OnlineIdentity
 }
 
 /** Workaround, please avoid using this */
-TSharedPtr<const FUniqueNetId> GetFirstSignedInUser(IOnlineIdentityPtr IdentityInt)
+FUniqueNetIdPtr GetFirstSignedInUser(IOnlineIdentityPtr IdentityInt)
 {
 	if (IdentityInt.IsValid())
 	{
 		// find an entry for a fully logged in user
 		for (int32 i = 0; i < MAX_LOCAL_PLAYERS; i++)
 		{
-			TSharedPtr<const FUniqueNetId> UserId = IdentityInt->GetUniquePlayerId(i);
+			FUniqueNetIdPtr UserId = IdentityInt->GetUniquePlayerId(i);
 			if (UserId.IsValid() && UserId->IsValid() && IdentityInt->GetLoginStatus(*UserId) == ELoginStatus::LoggedIn)
 			{
 				return UserId;
@@ -115,7 +122,7 @@ TSharedPtr<const FUniqueNetId> GetFirstSignedInUser(IOnlineIdentityPtr IdentityI
 		// find an entry for a locally logged in user
 		for (int32 i = 0; i < MAX_LOCAL_PLAYERS; i++)
 		{
-			TSharedPtr<const FUniqueNetId> UserId = IdentityInt->GetUniquePlayerId(i);
+			FUniqueNetIdPtr UserId = IdentityInt->GetUniquePlayerId(i);
 			if (UserId.IsValid() && UserId->IsValid())
 			{
 				return UserId;
@@ -260,7 +267,7 @@ static void ResetAchievements()
 		return;
 	}
 	
-	TSharedPtr<const FUniqueNetId> UserId = IdentityInterface->GetUniquePlayerId(0);
+	FUniqueNetIdPtr UserId = IdentityInterface->GetUniquePlayerId(0);
 	if(!UserId.IsValid())
 	{
 		UE_LOG_ONLINE(Warning, TEXT("ResetAchievements command: invalid UserId"));

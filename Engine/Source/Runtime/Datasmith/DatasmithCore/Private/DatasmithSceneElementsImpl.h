@@ -26,7 +26,6 @@ public:
 	virtual ~FDatasmithElementImpl() {}
 
 	virtual bool IsA( EDatasmithElementType InType ) const override { return EnumHasAnyFlags( GetElementType(), InType); }
-	virtual bool IsSubType( uint64 InSubType ) const override { return ( InSubType & GetSubType() ) != 0; }
 
 	virtual const TCHAR* GetName() const override { return *Name.Get(Store); }
 	virtual void SetName(const TCHAR* InName) override {Name.Set(Store, FDatasmithUtils::SanitizeObjectName(InName)); }
@@ -41,7 +40,8 @@ public:
 	virtual const DirectLink::FParameterStore& GetStore() const override { return Store; }
 	virtual       DirectLink::FParameterStore& GetStore()       override { return Store; }
 
-private:
+protected:
+	virtual bool IsSubTypeInternal( uint64 InSubType ) const { return ( InSubType & GetSubType() ) != 0; }
 	EDatasmithElementType GetElementType() const { return Type.Get(Store); }
 	uint64 GetSubType() const { return Subtype.Get(Store); }
 
@@ -93,9 +93,8 @@ private:
 enum class EActorFlags : uint8
 {
 	IsAComponent       = 0x01,
-	IsASelector        = 0x02,
+	IsASelector        = 0x02, // Deprecated
 	IsVisible          = 0x04,
-	UseParentTransform = 0x08,
 };
 ENUM_CLASS_FLAGS(EActorFlags);
 
@@ -109,21 +108,50 @@ public:
 	FDatasmithActorElementImpl(const TCHAR* InName, EDatasmithElementType InType);
 
 	virtual FVector GetTranslation() const override { return Translation.Get(Store); }
-	virtual void SetTranslation(float InX, float InY, float InZ) override { SetTranslation( FVector( InX, InY, InZ ) ); }
-	virtual void SetTranslation(const FVector& Value) override { ConvertChildsToRelative(); SetInternalTranslation(Value); ConvertChildsToWorld(); }
+	virtual void SetTranslation(float InX, float InY, float InZ, bool bKeepChildrenRelative) override { SetTranslation( FVector( InX, InY, InZ ), bKeepChildrenRelative ); }
+	virtual void SetTranslation(const FVector& Value, bool bKeepChildrenRelative) override 
+	{ 
+		if (bKeepChildrenRelative)
+		{
+			ConvertChildsToRelative();
+		}
+		SetInternalTranslation(Value); 
+		if (bKeepChildrenRelative)
+		{
+			ConvertChildsToWorld();
+		}
+	}
 
 	virtual FVector GetScale() const override { return Scale.Get(Store); }
-	virtual void SetScale(float InX, float InY, float InZ) override { SetScale( FVector( InX, InY, InZ ) ); }
-	virtual void SetScale(const FVector& Value) override { ConvertChildsToRelative(); SetInternalScale(Value); ConvertChildsToWorld(); }
+	virtual void SetScale(float InX, float InY, float InZ, bool bKeepChildrenRelative) override { SetScale( FVector( InX, InY, InZ ), bKeepChildrenRelative ); }
+	virtual void SetScale(const FVector& Value, bool bKeepChildrenRelative) override
+	{
+		if (bKeepChildrenRelative)
+		{
+			ConvertChildsToRelative();
+		}
+		SetInternalScale(Value); 
+		if (bKeepChildrenRelative)
+		{
+			ConvertChildsToWorld();
+		}
+	}
 
 	virtual FQuat GetRotation() const override { return Rotation; }
-	virtual void SetRotation(float InX, float InY, float InZ, float InW) override { SetRotation( FQuat( InX, InY, InZ, InW ) ); }
-	virtual void SetRotation(const FQuat& Value) override { ConvertChildsToRelative(); SetInternalRotation(Value); ConvertChildsToWorld(); }
-
-	virtual void SetUseParentTransform(bool bInUseParentTransform) override
-	{
-		UPDATE_BITFLAGS(Flags, bInUseParentTransform, EActorFlags::UseParentTransform);
+	virtual void SetRotation(float InX, float InY, float InZ, float InW, bool bKeepChildrenRelative) override { SetRotation( FQuat( InX, InY, InZ, InW ), bKeepChildrenRelative ); }
+	virtual void SetRotation(const FQuat& Value, bool bKeepChildrenRelative) override 
+	{ 
+		if (bKeepChildrenRelative)
+		{
+			ConvertChildsToRelative();
+		}
+		SetInternalRotation(Value); 
+		if (bKeepChildrenRelative)
+		{
+			ConvertChildsToWorld();
+		}
 	}
+
 	virtual FTransform GetRelativeTransform() const override;
 
 	virtual const TCHAR* GetLayer() const override { return *(FString&)Layer; }
@@ -157,17 +185,13 @@ public:
 		static_cast< FDatasmithActorElementImpl* >( InChild.Get() )->Parent.Inner.Reset();
 	}
 
+	virtual const TSharedPtr< IDatasmithActorElement >& GetParentActor() const override
+	{
+		return Parent.View();
+	}
+
 	virtual void SetIsAComponent(bool Value) { UPDATE_BITFLAGS(Flags, Value, EActorFlags::IsAComponent); }
 	virtual bool IsAComponent() const override { return !!(Flags & EActorFlags::IsAComponent); }
-
-	virtual void SetAsSelector(bool bInAsSelector) override { UPDATE_BITFLAGS(Flags, bInAsSelector, EActorFlags::IsASelector); }
-	virtual bool IsASelector() const override { return !!(Flags & EActorFlags::IsASelector); }
-
-	/** Set the index of the child which is active in a selector  */
-	virtual void SetSelectionIndex(int32 InSelectionIdx) override { SelectionIdx = InSelectionIdx; }
-
-	/** Get the index of the child which is active in a selector. Default is -1.  */
-	virtual int32 GetSelectionIndex() const override { return SelectionIdx; }
 
 	virtual void SetVisibility(bool bInVisibility) override { UPDATE_BITFLAGS(Flags, bInVisibility, EActorFlags::IsVisible); }
 	virtual bool GetVisibility() const override { return !!(Flags & EActorFlags::IsVisible); }
@@ -210,7 +234,7 @@ inline FDatasmithActorElementImpl<T>::FDatasmithActorElementImpl(const TCHAR* In
 	, Translation(FVector::ZeroVector)
 	, Scale(FVector::OneVector)
 	, Rotation(FQuat::Identity)
-	, Flags(EActorFlags::IsVisible|EActorFlags::UseParentTransform)
+	, Flags(EActorFlags::IsVisible)
 	, SelectionIdx(-1)
 {
 	this->RegisterReferenceProxy(Children, "Children");
@@ -230,7 +254,7 @@ inline FTransform FDatasmithActorElementImpl<T>::GetRelativeTransform() const
 {
 	FTransform ActorTransform( GetRotation(), GetTranslation(), GetScale() );
 
-	if ( Parent.Inner.IsValid() && !!(Flags & EActorFlags::UseParentTransform) )
+	if ( Parent.Inner.IsValid() )
 	{
 		FTransform ParentTransform( Parent.Inner->GetRotation(), Parent.Inner->GetTranslation(), Parent.Inner->GetScale() );
 
@@ -390,6 +414,7 @@ public:
 	virtual TSharedPtr<IDatasmithMaterialIDElement> GetMaterialOverride(int32 i) override;
 	virtual TSharedPtr<const IDatasmithMaterialIDElement> GetMaterialOverride(int32 i) const override;
 	virtual void RemoveMaterialOverride(const TSharedPtr< IDatasmithMaterialIDElement >& Material) override;
+	virtual void ResetMaterialOverrides() override;
 
 	virtual const TCHAR* GetStaticMeshPathName() const override;
 	virtual void SetStaticMeshPathName(const TCHAR* InStaticMeshName) override;
@@ -472,6 +497,12 @@ template < typename InterfaceType >
 void FDatasmithMeshActorElementImpl< InterfaceType >::RemoveMaterialOverride(const TSharedPtr< IDatasmithMaterialIDElement >& Material)
 {
 	Materials.Remove(Material);
+}
+
+template < typename InterfaceType >
+void FDatasmithMeshActorElementImpl< InterfaceType >::ResetMaterialOverrides()
+{
+	Materials.Edit().Reset();
 }
 
 template < typename InterfaceType >
@@ -949,7 +980,7 @@ public:
 	explicit FDatasmithLandscapeElementImpl(const TCHAR* InName)
 		: FDatasmithActorElementImpl(InName, EDatasmithElementType::Landscape)
 	{
-		SetScale( 100.f, 100.f, 100.f );
+		SetScale( 100.f, 100.f, 100.f, true );
 
 		RegisterReferenceProxy(Material,  "Material"  );
 		RegisterReferenceProxy(Heightmap, "Heightmap" );
@@ -1497,6 +1528,10 @@ public:
 	virtual const TSharedPtr< IDatasmithKeyValueProperty >& GetPropertyByName( const TCHAR* InName ) const override;
 
 	virtual void AddProperty( const TSharedPtr< IDatasmithKeyValueProperty >& Property ) override;
+
+	virtual void RemoveProperty( const TSharedPtr<IDatasmithKeyValueProperty>& Property ) override;
+
+	virtual void ResetProperties() override;
 
 private:
 	TDatasmithReferenceProxy<IDatasmithElement> AssociatedElement;

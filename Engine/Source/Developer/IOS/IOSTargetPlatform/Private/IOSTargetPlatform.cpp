@@ -29,15 +29,17 @@
 FIOSTargetPlatform::FIOSTargetPlatform(bool bInIsTVOS, bool bInIsClientOnly)
 	: bIsTVOS(bInIsTVOS)
 	, bIsClientOnly(bInIsClientOnly)
+	, bDistanceField(false)
 {
     if (bIsTVOS)
     {
         this->PlatformInfo = PlatformInfo::FindPlatformInfo("TVOS");
     }
 #if WITH_ENGINE
-	FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *PlatformName());
+	FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *IniPlatformName());
 	TextureLODSettings = nullptr; // TextureLODSettings are registered by the device profile.
 	StaticMeshLODSettings.Initialize(EngineSettings);
+	EngineSettings.GetBool(TEXT("/Script/Engine.RendererSettings"), TEXT("r.DistanceFields"), bDistanceField);
 #endif // #if WITH_ENGINE
 
 	// Initialize Ticker for device discovery
@@ -550,6 +552,9 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 		case ETargetPlatformFeatures::LandscapeMeshLODStreaming:
 			return SupportsLandscapeMeshLODStreaming() && SupportsMetal();
 
+		case ETargetPlatformFeatures::DistanceFieldAO:
+			return UsesDistanceFields();
+
 		default:
 			break;
 	}
@@ -725,7 +730,7 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 			{
 				FTextureFormatSettings FormatSettings;
 				Cube->GetDefaultFormatSettings(FormatSettings);
-				if (FormatSettings.CompressionSettings == TC_ReflectionCapture && !FormatSettings.CompressionNone)
+				if (FormatSettings.CompressionSettings == TC_EncodedReflectionCapture && !FormatSettings.CompressionNone)
 				{
 					TextureFormatName = FName(TEXT("ETC2_RGBA"));
 				}

@@ -13,12 +13,14 @@
 #include "IMediaControls.h"
 #include "IMediaTracks.h"
 #include "IMediaEventSink.h"
+#include "IMediaPlayerLifecycleManager.h"
 #include "MediaSampleQueue.h"
 #include "Templates/SharedPointer.h"
 #include "Logging/LogMacros.h"
 
 class IElectraPlayerRuntimeModule;
 class FElectraPlayerResourceDelegate;
+
 
 DECLARE_LOG_CATEGORY_EXTERN(LogElectraPlayerPlugin, Log, All);
 
@@ -108,6 +110,9 @@ public:
 
 	bool GetPlayerFeatureFlag(EFeatureFlag flag) const override;
 
+	bool SetAsyncResourceReleaseNotification(IAsyncResourceReleaseNotificationRef AsyncResourceReleaseNotification) override;
+	uint32 GetNewResourcesOnOpen() const override;
+
 private:
 	friend class FElectraPlayerPluginModule;
 	friend class FElectraPlayerResourceDelegate;
@@ -159,6 +164,7 @@ private:
 		void OnAudioFlush() override;
 		void PresentVideoFrame(const FVideoDecoderOutputPtr& InVideoFrame) override;
 		void PresentAudioFrame(const IAudioDecoderOutputPtr& InAudioFrame) override;
+		void PresentMetadataSample(const IMetaDataDecoderOutputPtr& InMetadataSample) override;
 		bool CanReceiveVideoSamples(int32 NumFrames) override;
 		bool CanReceiveAudioSamples(int32 NumFrames) override;
 		void PrepareForDecoderShutdown() override;
@@ -176,11 +182,14 @@ private:
 	/** Output queues as needed by MediaFramework */
 	TUniquePtr<FMediaSamples> MediaSamples;
 
+	/** Lock to guard the POD callback pointers from being changed while being used. */
+	FCriticalSection CallbackPointerLock;
+
 	/** Option interface */
-	const IMediaOptions* OptionInterface;
+	const IMediaOptions* OptionInterface = nullptr;
 
 	/** The media event handler */
-	IMediaEventSink* EventSink;
+	IMediaEventSink* EventSink = nullptr;
 
 	/** The actual player */
 	TSharedPtr<IElectraPlayerInterface, ESPMode::ThreadSafe> Player;

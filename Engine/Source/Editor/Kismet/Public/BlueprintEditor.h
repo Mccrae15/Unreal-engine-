@@ -195,6 +195,7 @@ public:
 public:
 	//~ Begin FAssetEditorToolkit Interface
 	virtual bool OnRequestClose() override;
+	virtual void OnClose() override;
 	// End of FAssetEditorToolkit 
 
 	//~ Begin IToolkit Interface
@@ -359,10 +360,14 @@ public:
 	virtual bool IsCompilingEnabled() const;
 
 	/** Returns true if the parent class is also a Blueprint */
+	UE_DEPRECATED(4.27, "Please use FBlueprintEditorUtils::IsParentClassABlueprint instead")
 	bool IsParentClassOfObjectABlueprint(const UBlueprint* Blueprint) const;
 
 	/** Returns true if the parent class of the Blueprint being edited is also a Blueprint */
 	bool IsParentClassABlueprint() const;
+
+	/** Returns true if the parent class of the Blueprint being edited is an editable Blueprint */
+	bool IsParentClassAnEditableBlueprint() const;
 
 	/** Returns true if the parent class of the Blueprint being edited is native */
 	bool IsParentClassNative() const;
@@ -475,10 +480,10 @@ public:
 	AActor* GetSCSEditorActorContext() const;
 
 	/** Delegate invoked when the selection is changed in the SCS editor widget */
-	void OnSelectionUpdated(const TArray<TSharedPtr<class FSCSEditorTreeNode>>& SelectedNodes);
+	virtual void OnSelectionUpdated(const TArray<TSharedPtr<class FSCSEditorTreeNode>>& SelectedNodes);
 
 	/** Delegate invoked when an item is double clicked in the SCS editor widget */
-	void OnComponentDoubleClicked(TSharedPtr<class FSCSEditorTreeNode> Node);
+	virtual void OnComponentDoubleClicked(TSharedPtr<class FSCSEditorTreeNode> Node);
 
 	/** Pin visibility accessors */
 	void SetPinVisibility(SGraphEditor::EPinVisibility Visibility);
@@ -678,8 +683,11 @@ protected:
 	void NavigateToChildGraph_Clicked();
 	bool CanNavigateToChildGraph() const;
 
-	/** Determines visibility of the parent class manipulation buttons on the menu bar overlay */
-	EVisibility ParentClassButtonsVisibility() const;
+	/** Determines visibility of the find parent class in content browser button on the menu bar overlay */
+	EVisibility GetFindParentClassVisibility() const;
+
+	/** Determines visibility of the edit parent class button on the menu bar overlay */
+	EVisibility GetEditParentClassVisibility() const;
 
 	/** Recreates the overlay on the menu bar */
 	virtual void PostRegenerateMenusAndToolbars() override;
@@ -1227,8 +1235,11 @@ public://@TODO
 
 protected:
 
-	// Should intermediate build products be saved when recompiling?
+	/** Should intermediate build products be saved when recompiling? */
 	bool bSaveIntermediateBuildProducts;
+
+	/** True if the current blueprint is in the process of being reparented */
+	bool bIsReparentingBlueprint;
 
 	/** Flags if this blueprint editor should close on its next tick. */
 	bool bPendingDeferredClose;
@@ -1236,7 +1247,7 @@ protected:
 	/** Currently focused graph editor */
 	TWeakPtr<class SGraphEditor> FocusedGraphEdPtr;
 	
-	// Factory that spawns graph editors; used to look up all tabs spawned by it.
+	/** Factory that spawns graph editors; used to look up all tabs spawned by it. */
 	TWeakPtr<FDocumentTabFactory> GraphEditorTabFactoryPtr;
 
 	/** User-defined enumerators to keep loaded */

@@ -6,91 +6,123 @@
 
 #include "Algo/Find.h"
 #include "Containers/Array.h"
-
-template<typename>
-class FDatasmithMaterialExpressionImpl;
-
-/**
- * Class created for direct link serialization of PbrMaterial in 4.26 post-feature-freeze.
- * It's a temporary class to avoid changing the IDatasmithExpressionInput and it should be removed at a later date before 4.27 is released.
- */
-class FDatasmithExpressionInputElement : public IDatasmithExpressionInput, public IDatasmithElement {};
-
-/**
- * Class created for direct link serialization of PbrMaterial in 4.26 post-feature-freeze.
- * It's a temporary class to avoid changing the IDatasmithExpressionOutput and it should be removed at a later date before 4.27 is released.
- */
-class FDatasmithExpressionOutputElement : public IDatasmithExpressionOutput, public IDatasmithElement {};
-
-/**
- * Class created for direct link serialization of PbrMaterial in 4.26 post-feature-freeze.
- * It's a temporary class to avoid changing the IDatasmithMaterialExpression and it should be removed at a later date before 4.27 is released.
- */
-template< typename InterfaceType >
-class FDatasmithMaterialExpressionElement : public InterfaceType, public IDatasmithElement {};
+#include "Misc/SecureHash.h"
 
 
-class FDatasmithExpressionInputImpl : public FDatasmithElementImpl < FDatasmithExpressionInputElement >
+namespace FDatasmithExpressionUtils
+{
+	FORCEINLINE void UpdateHashWithString(FMD5& MD5, const FString& String)
+	{
+		if (!String.IsEmpty())
+		{
+			MD5.Update(reinterpret_cast<const uint8*>(*String), String.Len() * sizeof(TCHAR));
+		}
+	}
+
+	FORCEINLINE void UpdateHashWithStrings(FMD5& MD5, const TArray<FString>& Strings)
+	{
+		for (const FString& String : Strings)
+		{
+			UpdateHashWithString(MD5, String);
+		}
+	}
+
+	template< typename ReferenceType >
+	void UpdateHashWithReference(FMD5& MD5, TDatasmithReferenceProxy<ReferenceType>& Reference)
+	{
+		if (Reference.View())
+		{
+			FMD5Hash ReferenceHash = Reference.Edit()->CalculateElementHash(true);
+			MD5.Update(ReferenceHash.GetBytes(), ReferenceHash.GetSize());
+		}
+	}
+
+	template< typename ClassType >
+	void UpdateHashWithArray(FMD5& MD5, TDatasmithReferenceArrayProxy<ClassType>& Array)
+	{
+		for (TSharedPtr<ClassType>& Object : Array.Edit())
+		{
+			FMD5Hash ObjectHash = Object->CalculateElementHash(true);
+			MD5.Update(ObjectHash.GetBytes(), ObjectHash.GetSize());
+		}
+	}
+};
+
+class FDatasmithExpressionInputImpl : public FDatasmithElementImpl < IDatasmithExpressionInput >
 {
 public:
 	explicit FDatasmithExpressionInputImpl( const TCHAR* InInputName );
 	virtual ~FDatasmithExpressionInputImpl() = default;
 
-	virtual const TCHAR* GetInputName() const override { return GetName(); }
-
-	virtual IDatasmithMaterialExpression* GetExpression() override;
-	virtual const IDatasmithMaterialExpression* GetExpression() const override;
+	virtual IDatasmithMaterialExpression* GetExpression() override { return Expression.Edit().Get(); }
+	virtual const IDatasmithMaterialExpression* GetExpression() const override { return Expression.View().Get(); }
 	virtual void SetExpression( IDatasmithMaterialExpression* InExpression ) override;
 
 	virtual int32 GetOutputIndex() const override { return OutputIndex; }
 	virtual void SetOutputIndex( int32 InOutputIndex ) override { OutputIndex = InOutputIndex; }
 
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FDatasmithExpressionUtils::UpdateHashWithReference(MD5, Expression);
+		MD5.Update(reinterpret_cast<const uint8*>(&OutputIndex), sizeof(OutputIndex));
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
+
+	virtual void CustomSerialize(class DirectLink::FSnapshotProxy& Ar) override;
+
 protected:
-	TDatasmithReferenceProxy<IDatasmithElement> Expression;
-	TReflected<EDatasmithMaterialExpressionType, int32> ExpressionType;
+	TDatasmithReferenceProxy<IDatasmithMaterialExpression> Expression;
 	TReflected<int32> OutputIndex;
 };
 
-/**
- * Helper class created for direct link serialization of PbrMaterial in 4.26 post-feature-freeze.
- * This is a temporary class that should be removed at a later date before 4.27 is released.
- */
-class FDatasmithUEPbrInternalHelper
-{
-public:
-	/**
-	 * Those values are cast as EDatasmithElementType and are stored as the Element type.
-	 * Even if they are outside the declared enum values they are still inside the underlying type range, as so the C++ standard tells us the value won't be changed.
-	 */
-	constexpr static uint64 MaterialExpressionType = 1ull << 31;
-	constexpr static uint64 MaterialExpressionInputType = 1ull << 32;
-	constexpr static uint64 MaterialExpressionOutputType = 1ull << 33;
-
-	static TSharedPtr<IDatasmithElement> ConvertMaterialExpressionToElementSharedPtr( IDatasmithMaterialExpression* InExpression );
-	static IDatasmithMaterialExpression* ConvertElementToMaterialExpression( IDatasmithElement* InElement, EDatasmithMaterialExpressionType ExpressionType );
-	static TSharedPtr< IDatasmithMaterialExpression > CreateMaterialExpression( EDatasmithMaterialExpressionType MaterialExpression );
-};
-
-class FDatasmithExpressionOutputImpl : public FDatasmithElementImpl < FDatasmithExpressionOutputElement >
+class FDatasmithExpressionOutputImpl : public FDatasmithElementImpl < IDatasmithExpressionOutput >
 {
 public:
 	explicit FDatasmithExpressionOutputImpl( const TCHAR* InOutputName )
-		: FDatasmithElementImpl< FDatasmithExpressionOutputElement >( InOutputName, static_cast< const EDatasmithElementType >(FDatasmithUEPbrInternalHelper::MaterialExpressionOutputType ) )
+		: FDatasmithElementImpl< IDatasmithExpressionOutput >( InOutputName, EDatasmithElementType::MaterialExpressionOutput )
 	{}
 
-	virtual const TCHAR* GetOutputName() const override { return GetName(); }
-	virtual void SetOutputName( const TCHAR* InOutputName ) override { SetName( InOutputName ); }
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FDatasmithExpressionUtils::UpdateHashWithString(MD5, Name);
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
 };
 
 template< typename InterfaceType >
-class FDatasmithMaterialExpressionImpl : public FDatasmithElementImpl < FDatasmithMaterialExpressionElement<InterfaceType> >, public TSharedFromThis< FDatasmithMaterialExpressionImpl< InterfaceType > >
+class FDatasmithMaterialExpressionImpl
+	: public FDatasmithElementImpl< InterfaceType >
+	, public TSharedFromThis< FDatasmithMaterialExpressionImpl< InterfaceType > >
 {
 public:
-	FDatasmithMaterialExpressionImpl( EDatasmithMaterialExpressionType InSubType );
+	explicit FDatasmithMaterialExpressionImpl( EDatasmithMaterialExpressionType InSubType );
 
 	virtual ~FDatasmithMaterialExpressionImpl() = default;
 
-	virtual EDatasmithMaterialExpressionType GetType() const override { return static_cast<EDatasmithMaterialExpressionType>( this->Subtype.Get( this->Store ) ); }
+	virtual EDatasmithMaterialExpressionType GetExpressionType() const override { return static_cast<EDatasmithMaterialExpressionType>( this->Subtype.Get( this->Store ) ); }
+
+	virtual bool IsSubType( const EDatasmithMaterialExpressionType ExpressionType ) const override
+	{ return this->IsSubTypeInternal( (uint64)ExpressionType ); }
+
+	virtual bool IsSubTypeInternal( uint64 InSubType ) const override { return InSubType == this->GetSubType(); } // as our subtype is not a bitfield
 
 	virtual void ConnectExpression( IDatasmithExpressionInput& ExpressionInput ) override
 	{
@@ -106,6 +138,24 @@ public:
 	virtual int32 GetDefaultOutputIndex() const override { return DefaultOutputIndex; }
 	virtual void SetDefaultOutputIndex( int32 InDefaultOutputIndex ) override { DefaultOutputIndex = InDefaultOutputIndex; }
 
+	virtual void ResetExpression() override;
+
+	virtual void ResetExpressionImpl() = 0;
+
+protected:
+	FMD5Hash ComputeHash()
+	{
+		FMD5 MD5;
+
+		FDatasmithExpressionUtils::UpdateHashWithArray(MD5, Outputs);
+		MD5.Update(reinterpret_cast<const uint8*>(&DefaultOutputIndex), sizeof(DefaultOutputIndex));
+
+		FMD5Hash MD5Hash;
+		MD5Hash.Set(MD5);
+
+		return MD5Hash;
+	}
+
 protected:
 	TDatasmithReferenceArrayProxy<FDatasmithExpressionOutputImpl> Outputs;
 
@@ -116,6 +166,7 @@ template< typename InterfaceType >
 class FDatasmithExpressionParameterImpl : public FDatasmithMaterialExpressionImpl< InterfaceType >
 {
 public:
+	typedef FDatasmithMaterialExpressionImpl< InterfaceType > TBaseExpression;
 
 	FDatasmithExpressionParameterImpl( EDatasmithMaterialExpressionType InSubType )
 		: FDatasmithMaterialExpressionImpl< InterfaceType >( InSubType )
@@ -125,6 +176,22 @@ public:
 
 	virtual const TCHAR* GetGroupName() const override { return *GroupName.Get( this->Store ); }
 	virtual void SetGroupName( const TCHAR* InGroupName ) override { GroupName = InGroupName; }
+
+protected:
+	FMD5Hash ComputeHash()
+	{
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = TBaseExpression::ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		FDatasmithExpressionUtils::UpdateHashWithString(MD5, GroupName);
+
+		FMD5Hash MD5Hash;
+		MD5Hash.Set(MD5);
+
+		return MD5Hash;
+	}
 
 protected:
 	TReflected<FString> GroupName;
@@ -138,6 +205,30 @@ public:
 	virtual bool& GetBool() override { return bValue.Edit( Store ); }
 	virtual const bool& GetBool() const override { return bValue.Get( Store ); }
 
+	virtual void ResetExpressionImpl() override
+	{
+		GroupName.Edit(Store).Reset();
+		bValue.Edit(Store) = false;
+	}
+
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		MD5.Update(reinterpret_cast<const uint8*>(&bValue), sizeof(bValue));
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
+
 protected:
 	TReflected<bool> bValue;
 };
@@ -150,6 +241,30 @@ public:
 	virtual FLinearColor& GetColor() override { return LinearColor.Edit( Store ); }
 	virtual const FLinearColor& GetColor() const override { return LinearColor.Get( Store ); }
 
+	virtual void ResetExpressionImpl() override
+	{
+		GroupName.Edit(Store).Reset();
+		LinearColor.Edit(Store) = FLinearColor();
+	}
+
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		MD5.Update(reinterpret_cast<const uint8*>(&LinearColor), sizeof(LinearColor));
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
+
 protected:
 	TReflected<FLinearColor> LinearColor;
 };
@@ -161,6 +276,30 @@ public:
 
 	virtual float& GetScalar() override { return Scalar.Edit( Store ); }
 	virtual const float& GetScalar() const override { return Scalar.Get( Store ); }
+
+	virtual void ResetExpressionImpl() override
+	{
+		GroupName.Edit(Store).Reset();
+		Scalar.Edit(Store) = 0;
+	}
+
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		MD5.Update(reinterpret_cast<const uint8*>(&Scalar), sizeof(Scalar));
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
 
 protected:
 	TReflected<float> Scalar;
@@ -183,6 +322,32 @@ public:
 	virtual int32 GetInputCount() const override { return 1; }
 	virtual IDatasmithExpressionInput* GetInput( int32 Index ) override { return TextureCoordinate.Edit().Get(); }
 	virtual const IDatasmithExpressionInput* GetInput( int32 Index ) const override { return TextureCoordinate.View().Get(); }
+
+	virtual void ResetExpressionImpl() override
+	{
+		GroupName.Edit(Store).Reset();
+		TexturePathName.Edit(Store).Reset();
+	}
+
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		FDatasmithExpressionUtils::UpdateHashWithString(MD5, TexturePathName);
+
+		FDatasmithExpressionUtils::UpdateHashWithReference(MD5, TextureCoordinate);
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
 
 protected:
 	TReflected< FString > TexturePathName;
@@ -213,6 +378,33 @@ public:
 	virtual float GetVTiling() const override { return VTiling;}
 	virtual void SetVTiling( float InVTiling ) override { VTiling = InVTiling; }
 
+	virtual void ResetExpressionImpl() override
+	{
+		CoordinateIndex.Edit(Store) = 0;
+		UTiling.Edit(Store) = 1;
+		VTiling.Edit(Store) = 1;
+	}
+
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		MD5.Update(reinterpret_cast<const uint8*>(&CoordinateIndex), sizeof(CoordinateIndex));
+		MD5.Update(reinterpret_cast<const uint8*>(&UTiling), sizeof(UTiling));
+		MD5.Update(reinterpret_cast<const uint8*>(&VTiling), sizeof(VTiling));
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
+
 protected:
 	TReflected< int32 > CoordinateIndex;
 	TReflected< float > UTiling;
@@ -224,15 +416,36 @@ class FDatasmithMaterialExpressionFlattenNormalImpl : public FDatasmithMaterialE
 public:
 	FDatasmithMaterialExpressionFlattenNormalImpl();
 
-	virtual IDatasmithExpressionInput& GetNormal() override { return *Normal.Inner.Get(); }
-	virtual const IDatasmithExpressionInput& GetNormal() const override { return *Normal.Inner.Get(); }
+	virtual IDatasmithExpressionInput& GetNormal() override { return *Normal.Edit(); }
+	virtual const IDatasmithExpressionInput& GetNormal() const override { return *Normal.View(); }
 
-	virtual IDatasmithExpressionInput& GetFlatness() override { return *Flatness.Inner.Get(); }
-	virtual const IDatasmithExpressionInput& GetFlatness() const override { return *Flatness.Inner.Get(); }
+	virtual IDatasmithExpressionInput& GetFlatness() override { return *Flatness.Edit(); }
+	virtual const IDatasmithExpressionInput& GetFlatness() const override { return *Flatness.View(); }
 
 	virtual int32 GetInputCount() const override { return 2; }
-	virtual IDatasmithExpressionInput* GetInput( int32 Index ) override { return Index == 0 ? Normal.Inner.Get() : Flatness.Inner.Get(); }
-	virtual const IDatasmithExpressionInput* GetInput( int32 Index ) const override { return Index == 0 ? Normal.Inner.Get() : Flatness.Inner.Get(); }
+	virtual IDatasmithExpressionInput* GetInput( int32 Index ) override { return Index == 0 ? Normal.Edit().Get() : Flatness.Edit().Get(); }
+	virtual const IDatasmithExpressionInput* GetInput( int32 Index ) const override { return Index == 0 ? Normal.View().Get() : Flatness.View().Get(); }
+
+	virtual void ResetExpressionImpl() override { /*Nothing to reset.*/ }
+
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		FDatasmithExpressionUtils::UpdateHashWithReference(MD5, Normal);
+		FDatasmithExpressionUtils::UpdateHashWithReference(MD5, Flatness);
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
 
 protected:
 	TDatasmithReferenceProxy< FDatasmithExpressionInputImpl > Normal;
@@ -279,6 +492,33 @@ public:
 
 	virtual const IDatasmithExpressionInput* GetInput( int32 Index ) const override { return Inputs.IsValidIndex( Index ) ? Inputs[Index].Get() : nullptr; }
 
+	virtual void ResetExpressionImpl() override
+	{
+		Inputs.Edit().Reset();
+		ExpressionName.Edit( Store ).Reset();
+		Properties.Edit().Reset();
+	}
+
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		FDatasmithExpressionUtils::UpdateHashWithArray(MD5, Inputs);
+		FDatasmithExpressionUtils::UpdateHashWithString(MD5, ExpressionName);
+		FDatasmithExpressionUtils::UpdateHashWithArray(MD5, Properties);
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
+
 protected:
 	TDatasmithReferenceArrayProxy< FDatasmithExpressionInputImpl > Inputs;
 	TReflected<FString> ExpressionName;
@@ -312,9 +552,109 @@ public:
 
 	virtual const IDatasmithExpressionInput* GetInput( int32 Index ) const override { return Inputs.IsValidIndex( Index ) ? Inputs[Index].Get() : nullptr; }
 
+	virtual void ResetExpressionImpl() override
+	{
+		Inputs.Edit().Reset();
+		FunctionPathName.Edit(Store).Reset();
+	}
+
+	FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		FDatasmithExpressionUtils::UpdateHashWithArray(MD5, Inputs);
+		FDatasmithExpressionUtils::UpdateHashWithString(MD5, FunctionPathName);
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
+
 protected:
 	TDatasmithReferenceArrayProxy< FDatasmithExpressionInputImpl > Inputs;
 	TReflected<FString> FunctionPathName;
+};
+
+class FDatasmithMaterialExpressionCustomImpl : public FDatasmithMaterialExpressionImpl< IDatasmithMaterialExpressionCustom >
+{
+public:
+	FDatasmithMaterialExpressionCustomImpl();
+
+	virtual int32 GetInputCount() const override { return Inputs.Num(); }
+	virtual IDatasmithExpressionInput* GetInput( int32 Index ) override;
+	virtual const IDatasmithExpressionInput* GetInput( int32 Index ) const override { return Inputs.IsValidIndex( Index ) ? Inputs[Index].Get() : nullptr; }
+
+	virtual void SetCode(const TCHAR* InCode) override { Code = InCode; }
+	virtual const TCHAR* GetCode() const override { return *Code.Get(this->Store); }
+
+	virtual void SetDescription(const TCHAR* InDescription) override { Description = InDescription; }
+	virtual const TCHAR* GetDescription() const override { return *Description.Get(this->Store); }
+
+	virtual void SetOutputType(EDatasmithShaderDataType InOutputType) override { OutputType = InOutputType; }
+	virtual EDatasmithShaderDataType GetOutputType() const override { return OutputType; }
+
+	virtual int32 GetIncludeFilePathCount() const override { return IncludeFilePaths.Get(Store).Num(); }
+	virtual void AddIncludeFilePath(const TCHAR* Path) override { IncludeFilePaths.Edit(Store).Add(Path); }
+	virtual const TCHAR* GetIncludeFilePath(int32 Index) const override { return IncludeFilePaths.Get(Store).IsValidIndex(Index) ? *IncludeFilePaths.Get(Store)[Index] : TEXT(""); }
+
+	virtual int32 GetAdditionalDefineCount() const override { return Defines.Get(Store).Num(); }
+	virtual void AddAdditionalDefine(const TCHAR* Define) override { Defines.Edit(Store).Add(Define); }
+	virtual const TCHAR* GetAdditionalDefine(int32 Index) const override { return Defines.Get(Store).IsValidIndex(Index) ? *Defines.Get(Store)[Index] : TEXT(""); }
+
+	virtual int32 GetArgumentNameCount() const override { return ArgNames.Get(Store).Num(); }
+	virtual void SetArgumentName(int32 ArgIndex, const TCHAR* ArgName) override;
+	virtual const TCHAR* GetArgumentName(int32 Index) const override { return ArgNames.Get(Store).IsValidIndex(Index) ? *ArgNames.Get(Store)[Index] : TEXT("");}
+
+	virtual void ResetExpressionImpl() override
+	{
+		Code.Edit( Store ).Reset();
+		Description.Edit( Store ).Reset();
+		OutputType.Edit( Store ) = EDatasmithShaderDataType::Float1;
+		IncludeFilePaths.Edit( Store ).Reset();
+		Defines.Edit( Store ).Reset();
+		ArgNames.Edit( Store ).Reset();
+		Inputs.Edit().Reset();
+	}
+
+	virtual FMD5Hash CalculateElementHash(bool bForce) override
+	{
+		if (ElementHash.IsValid() && !bForce)
+		{
+			return ElementHash;
+		}
+
+		FMD5 MD5;
+
+		FMD5Hash BaseHash = ComputeHash();
+		MD5.Update(BaseHash.GetBytes(), BaseHash.GetSize());
+
+		FDatasmithExpressionUtils::UpdateHashWithString(MD5, Code);
+		FDatasmithExpressionUtils::UpdateHashWithString(MD5, Description);
+		MD5.Update(reinterpret_cast<const uint8*>(&OutputType), sizeof(OutputType));
+		FDatasmithExpressionUtils::UpdateHashWithStrings(MD5, IncludeFilePaths);
+		FDatasmithExpressionUtils::UpdateHashWithStrings(MD5, Defines);
+		FDatasmithExpressionUtils::UpdateHashWithStrings(MD5, ArgNames);
+		FDatasmithExpressionUtils::UpdateHashWithArray(MD5, Inputs);
+
+		ElementHash.Set(MD5);
+		return ElementHash;
+	}
+
+protected:
+	TReflected<FString> Code;
+	TReflected<FString> Description;
+	TReflected<EDatasmithShaderDataType, uint32> OutputType = EDatasmithShaderDataType::Float1;
+	TReflected<TArray<FString>> IncludeFilePaths;
+	TReflected<TArray<FString>> Defines;
+	TReflected<TArray<FString>> ArgNames;
+	TDatasmithReferenceArrayProxy< FDatasmithExpressionInputImpl > Inputs;
 };
 
 class DATASMITHCORE_API FDatasmithUEPbrMaterialElementImpl : public FDatasmithBaseMaterialElementImpl< IDatasmithUEPbrMaterialElement >
@@ -323,17 +663,19 @@ public:
 	explicit FDatasmithUEPbrMaterialElementImpl( const TCHAR* InName );
 	virtual ~FDatasmithUEPbrMaterialElementImpl() = default;
 
-	virtual IDatasmithExpressionInput& GetBaseColor() override { return *BaseColor.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetMetallic() override { return *Metallic.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetSpecular() override { return *Specular.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetRoughness() override { return *Roughness.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetEmissiveColor() override { return *EmissiveColor.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetOpacity() override { return *Opacity.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetNormal() override { return *Normal.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetWorldDisplacement() override { return *WorldDisplacement.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetRefraction() override { return *Refraction.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetAmbientOcclusion() override { return *AmbientOcclusion.Inner.Get(); }
-	virtual IDatasmithExpressionInput& GetMaterialAttributes() override { return *MaterialAttributes.Inner.Get(); }
+	virtual FMD5Hash CalculateElementHash(bool bForce) override;
+
+	virtual IDatasmithExpressionInput& GetBaseColor() override { return *BaseColor.Edit(); }
+	virtual IDatasmithExpressionInput& GetMetallic() override { return *Metallic.Edit(); }
+	virtual IDatasmithExpressionInput& GetSpecular() override { return *Specular.Edit(); }
+	virtual IDatasmithExpressionInput& GetRoughness() override { return *Roughness.Edit(); }
+	virtual IDatasmithExpressionInput& GetEmissiveColor() override { return *EmissiveColor.Edit(); }
+	virtual IDatasmithExpressionInput& GetOpacity() override { return *Opacity.Edit(); }
+	virtual IDatasmithExpressionInput& GetNormal() override { return *Normal.Edit(); }
+	virtual IDatasmithExpressionInput& GetWorldDisplacement() override { return *WorldDisplacement.Edit(); }
+	virtual IDatasmithExpressionInput& GetRefraction() override { return *Refraction.Edit(); }
+	virtual IDatasmithExpressionInput& GetAmbientOcclusion() override { return *AmbientOcclusion.Edit(); }
+	virtual IDatasmithExpressionInput& GetMaterialAttributes() override { return *MaterialAttributes.Edit(); }
 
 	virtual int GetBlendMode() const override {return BlendMode; }
 	virtual void SetBlendMode( int InBlendMode ) override { BlendMode = InBlendMode; }
@@ -350,17 +692,21 @@ public:
 	virtual float GetOpacityMaskClipValue() const override { return OpacityMaskClipValue; }
 	virtual void SetOpacityMaskClipValue(float InClipValue) override { OpacityMaskClipValue = InClipValue; }
 
-	virtual int32 GetExpressionsCount() const override { return Expressions.Inner.Num(); }
+	virtual int32 GetExpressionsCount() const override { return Expressions.View().Num(); }
 	virtual IDatasmithMaterialExpression* GetExpression( int32 Index ) override;
 	virtual int32 GetExpressionIndex( const IDatasmithMaterialExpression* Expression ) const override;
 
 	virtual IDatasmithMaterialExpression* AddMaterialExpression( const EDatasmithMaterialExpressionType ExpressionType ) override;
+
+	virtual void ResetExpressionGraph( bool bRemoveAllExpressions ) override;
 
 	virtual void SetParentLabel( const TCHAR* InParentLabel ) override { ParentLabel = InParentLabel; }
 	virtual const TCHAR* GetParentLabel() const override;
 
 	virtual void SetShadingModel( const EDatasmithShadingModel InShadingModel ) override { ShadingModel.Edit( Store ) = InShadingModel; }
 	virtual EDatasmithShadingModel GetShadingModel() const override { return ShadingModel.Get( Store ); }
+
+	virtual void CustomSerialize(class DirectLink::FSnapshotProxy& Ar) override;
 
 protected:
 	TDatasmithReferenceProxy< FDatasmithExpressionInputImpl > BaseColor;
@@ -375,14 +721,12 @@ protected:
 	TDatasmithReferenceProxy< FDatasmithExpressionInputImpl > AmbientOcclusion;
 	TDatasmithReferenceProxy< FDatasmithExpressionInputImpl > MaterialAttributes;
 
-	TDatasmithReferenceArrayProxy< IDatasmithElement > Expressions;
-	TReflected<TArray<EDatasmithMaterialExpressionType>, TArray<int32>> ExpressionTypes;
+	TDatasmithReferenceArrayProxy< IDatasmithMaterialExpression > Expressions;
 
 	TReflected<int32> BlendMode;
 	TReflected<bool> bTwoSided;
 	TReflected<bool> bUseMaterialAttributes;
 	TReflected<bool> bMaterialFunctionOnly;
-
 	TReflected<float> OpacityMaskClipValue;
 
 	TReflected<FString> ParentLabel;
@@ -391,7 +735,7 @@ protected:
 
 template< typename InterfaceType >
 FDatasmithMaterialExpressionImpl< InterfaceType >::FDatasmithMaterialExpressionImpl( EDatasmithMaterialExpressionType InSubType )
-	: FDatasmithElementImpl< FDatasmithMaterialExpressionElement< InterfaceType > >( nullptr, static_cast< const EDatasmithElementType >(FDatasmithUEPbrInternalHelper::MaterialExpressionType ), (uint64)InSubType )
+	: FDatasmithElementImpl< InterfaceType >( nullptr, EDatasmithElementType::MaterialExpression, (uint64)InSubType )
 	, DefaultOutputIndex( 0 )
 {
 	this->RegisterReferenceProxy( Outputs, "Outputs" );
@@ -412,5 +756,21 @@ void FDatasmithMaterialExpressionImpl< InterfaceType >::ConnectExpression( IData
 	{
 		ExpressionInput.SetExpression( this );
 		ExpressionInput.SetOutputIndex( OutputIndex );
+	}
+}
+
+template< typename InterfaceType >
+void FDatasmithMaterialExpressionImpl< InterfaceType >::ResetExpression()
+{
+	// Call the derived implementation first, it may remove unneeded inputs.
+	ResetExpressionImpl();
+
+	this->Label.Edit( this->Store ).Reset();
+	this->ElementHash = FMD5Hash();
+
+	for ( int InputIndex = 0; InputIndex < GetInputCount(); ++InputIndex )
+	{
+		IDatasmithExpressionInput* Input = GetInput( InputIndex );
+		Input->SetExpression( nullptr );
 	}
 }

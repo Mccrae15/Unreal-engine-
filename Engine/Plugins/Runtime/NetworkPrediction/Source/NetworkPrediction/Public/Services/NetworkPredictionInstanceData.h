@@ -125,7 +125,7 @@ struct TServerRecvData_Fixed
 	int32 TraceID = INDEX_NONE;
 
 	TServerRecvData_Fixed()
-		: InputBuffer(64) {} // fixme
+		: InputBuffer(32) {} // fixme
 };
 
 // Data the server receives from an independent ticking AP client
@@ -163,7 +163,7 @@ struct TServerRecvData_Independent
 template<typename ModelDef=FNetworkPredictionModelDef>
 struct TModelDataStore
 {
-	TInstanceMap<TInstanceData<ModelDef>>	Instances;
+	TStableInstanceMap<TInstanceData<ModelDef>>	Instances;
 
 	TInstanceMap<TInstanceFrameState<ModelDef>> Frames;
 	

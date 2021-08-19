@@ -1017,14 +1017,20 @@ const TArray<uint8>& UPropertyValue::GetRecordedData()
 	if (bHasRecordedData && PropClass && PropClass->IsChildOf(FObjectPropertyBase::StaticClass()) && !TempObjPtr.IsNull())
 	{
 		UObject* Obj = TempObjPtr.LoadSynchronous();
-		if (Obj && Obj->IsValidLowLevel())
+		if ( Obj && Obj->IsValidLowLevel() && Obj->IsA( GetObjectPropertyObjectClass() ) )
 		{
 			SetRecordedDataInternal((uint8*)&Obj, sizeof(UObject*));
 		}
 		else
 		{
+			UE_LOG(LogVariantContent, Warning, TEXT("Failed to find object with the correct class at path '%s' for property '%s'. Value will be ignored."),
+				*TempObjPtr.ToString(),
+				*FullDisplayString
+			);
+
 			// Reset our storage to nullptr
-			ValueBytes.SetNumZeroed( GetValueSizeInBytes() );
+			ValueBytes.SetNumUninitialized( GetValueSizeInBytes() );
+			FMemory::Memset( ValueBytes.GetData(), 0, ValueBytes.Num() );
 			bHasRecordedData = false;
 		}
 	}
@@ -1067,16 +1073,7 @@ void UPropertyValue::SetRecordedData(const uint8* NewDataBytes, int32 NumBytes, 
 			if (PropClass && PropClass->IsChildOf(FObjectPropertyBase::StaticClass()))
 			{
 				UObject* Obj = *( ( UObject** ) ValueBytes.GetData() );
-				if ( Obj && Obj->IsValidLowLevel() )
-				{
-					TempObjPtr = Obj;
-				}
-				else
-				{
-					// Somehow our ValueBytes that was just set doesn't match an UObject, so reset it to "nullptr"
-					ValueBytes.SetNumZeroed( GetValueSizeInBytes() );
-					bHasRecordedData = false;
-				}
+				TempObjPtr = Obj;
 			}
 
 			if (UEnum* Enum = GetEnumPropertyEnum())

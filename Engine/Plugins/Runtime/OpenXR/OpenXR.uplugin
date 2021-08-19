@@ -10,13 +10,14 @@
 	"DocsURL" : "",
 	"MarketplaceURL" : "",
 	"SupportURL" : "",
-	"EnabledByDefault" : false,
-	"CanContainContent" : false,
-	"IsBetaVersion" : true,
+	"EnabledByDefault" : true,
+	"CanContainContent" : true,
+	"IsBetaVersion" : false,
 	"Installed" : false,
 	"SupportedTargetPlatforms": [
 		"Win32",
 		"Win64",
+		"Linux",
 		"Android",
 		"HoloLens"
 	],
@@ -28,6 +29,7 @@
 			"WhitelistPlatforms": [
 				"Win32",
 				"Win64",
+				"Linux",
 				"Android",
 				"HoloLens"
 			]
@@ -39,10 +41,11 @@
 			"WhitelistPlatforms": [
 				"Win32",
 				"Win64",
+				"Linux",
 				"Android",
 				"HoloLens"
 			]
-		},	
+		},
 		{
 			"Name": "OpenXRAR",
 			"Type": "Runtime",
@@ -50,8 +53,17 @@
 			"WhitelistPlatforms": [
 				"Win32",
 				"Win64",
+				"Linux",
 				"Android",
 				"HoloLens"
+			]
+		},
+		{
+			"Name": "OpenXREditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"WhitelistPlatforms": [
+				"Win64"
 			]
 		}
 	]

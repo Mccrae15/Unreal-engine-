@@ -4690,7 +4690,7 @@ void URigVMController::RepopulatePinsOnNode(URigVMNode* InNode)
 		{
 			for (URigVMInjectionInfo* InjectionInfo : InjectionPair.Value)
 			{
-				InjectionInfo->Rename(nullptr, Pin);
+				InjectionInfo->Rename(nullptr, Pin, REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
 				InjectionInfo->InputPin = InjectionInfo->StructNode->FindPin(InjectionInfo->InputPin->GetName());
 				InjectionInfo->OutputPin = InjectionInfo->StructNode->FindPin(InjectionInfo->OutputPin->GetName());
 				Pin->InjectionInfos.Add(InjectionInfo);
@@ -4700,7 +4700,7 @@ void URigVMController::RepopulatePinsOnNode(URigVMNode* InNode)
 		{
 			for (URigVMInjectionInfo* InjectionInfo : InjectionPair.Value)
 			{
-				InjectionInfo->StructNode->Rename(nullptr, InNode->GetGraph());
+				InjectionInfo->StructNode->Rename(nullptr, InNode->GetGraph(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
 				DestroyObject(InjectionInfo);
 			}
 		}
@@ -4749,17 +4749,17 @@ FLinearColor URigVMController::GetColorFromMetadata(const FString& InMetadata)
 	FLinearColor Color = FLinearColor::Black;
 
 	FString Metadata = InMetadata;
-	Metadata.TrimStartAndEnd();
+	Metadata.TrimStartAndEndInline();
 	FString SplitString(TEXT(" "));
 	FString Red, Green, Blue, GreenAndBlue;
 	if (Metadata.Split(SplitString, &Red, &GreenAndBlue))
 	{
-		Red.TrimEnd();
-		GreenAndBlue.TrimStart();
+		Red.TrimEndInline();
+		GreenAndBlue.TrimStartInline();
 		if (GreenAndBlue.Split(SplitString, &Green, &Blue))
 		{
-			Green.TrimEnd();
-			Blue.TrimStart();
+			Green.TrimEndInline();
+			Blue.TrimStartInline();
 
 			float RedValue = FCString::Atof(*Red);
 			float GreenValue = FCString::Atof(*Green);

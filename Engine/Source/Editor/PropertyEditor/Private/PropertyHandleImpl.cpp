@@ -29,6 +29,7 @@
 #include "SResetToDefaultPropertyEditor.h"
 #include "PropertyPathHelpers.h"
 #include "PropertyTextUtilities.h"
+#include "HAL/PlatformApplicationMisc.h"
 
 #define LOCTEXT_NAMESPACE "PropertyHandleImplementation"
 
@@ -58,9 +59,21 @@ void FPropertyValueImpl::EnumerateObjectsToModify( FPropertyNode* InPropertyNode
 		const int32 NumInstances = ComplexNode->GetInstancesNum();
 		for (int32 Index = 0; Index < NumInstances; ++Index)
 		{
-			uint8* ObjectOrStruct = ComplexNode->GetMemoryOfInstance(Index);
-			uint8* Addr = InPropertyNode->GetValueBaseAddress(ObjectOrStruct, false);
-			if (!InObjectsToModifyCallback(FObjectBaseAddress(ObjectOrStruct, Addr, bIsStruct), Index, NumInstances))
+			uint8* ObjectOrStruct = nullptr;
+			uint8* BaseAddress = nullptr;
+			if (bIsStruct)
+			{
+				ObjectOrStruct = ComplexNode->GetMemoryOfInstance(Index);
+				BaseAddress = InPropertyNode->GetValueBaseAddress(ObjectOrStruct, false);
+			}
+			else
+			{
+				const UObject* Obj = ComplexNode->GetInstanceAsUObject(Index).Get();
+				ObjectOrStruct = (uint8*)Obj;
+				BaseAddress = InPropertyNode->GetValueBaseAddressFromObject(Obj);
+			}
+
+			if (!InObjectsToModifyCallback(FObjectBaseAddress(ObjectOrStruct, BaseAddress, bIsStruct), Index, NumInstances))
 			{
 				break;
 			}
@@ -193,84 +206,6 @@ void FPropertyValueImpl::GenerateArrayIndexMapToObjectNode( TMap<FString,int32>&
 	}
 }
 
-void FPropertyValueImpl::RebuildInstancedProperties(const TSharedPtr<IPropertyHandle>& RootHandle, FPropertyNode* PropertyNode)
-{
-	if (PropertyNode != nullptr)
-	{
-		// Cache expansion state and then rebuild child nodes, in case we're pasting an array of a different size. This ensures instanced properties can be rebuild properly
-		TSet<FString> ExpandedChildPropertyPaths;
-		PropertyNode->GetExpandedChildPropertyPaths(ExpandedChildPropertyPaths);
-		PropertyNode->RebuildChildren();
-		PropertyNode->SetExpandedChildPropertyNodes(ExpandedChildPropertyPaths);
-	}
-
-	TSharedPtr<IPropertyHandle> Handle = RootHandle;
-
-	TArray<TSharedPtr<IPropertyHandle>> CopiedHandles;
-	CopiedHandles.Add(Handle);
-
-	while (CopiedHandles.Num() > 0)
-	{
-		Handle = CopiedHandles.Pop();
-
-		// Add all child properties to the list so we can check them next
-		uint32 NumChildren;
-		Handle->GetNumChildren(NumChildren);
-		for (uint32 ChildIndex = 0; ChildIndex < NumChildren; ChildIndex++)
-		{
-			CopiedHandles.Add(Handle->GetChildHandle(ChildIndex));
-		}
-
-		UObject* NewValueAsObject = nullptr;
-		if (FPropertyAccess::Success != Handle->GetValue(NewValueAsObject))
-		{
-			continue;
-		}
-
-		// Skip properties that are not instanced
-		if (Handle->GetProperty() == nullptr
-			|| !Handle->GetProperty()->HasAnyPropertyFlags(CPF_InstancedReference | CPF_ContainsInstancedReference))
-		{
-			continue;
-		}
-
-		// The property is instanced so we need to do a deep copy.
-		// Update the duplicate's outer to point to this outer. 
-		// The source's outer may be some other object/asset but we want this to own the duplicate.
-		TArray<UObject*> Outers;
-		Handle->GetOuterObjects(Outers);
-		UObject* DuplicateOuter = (Outers.Num() > 0) ? Outers[0] : nullptr;
-
-		// For archetypes to continue working we must maintain the name of the object, 
-		// so an existing object that is going to be replaced must be renamed out of the way
-		TArray<FString> ObjectValueAsString;
-		Handle->GetPerObjectValues(ObjectValueAsString);
-
-		int32 Index;
-		FStringView ObjNameView = ObjectValueAsString[0];
-		ObjNameView.FindLastChar(TEXT(':'),Index);
-		ObjNameView.RightChopInline(Index+1);
-		ObjNameView.LeftChopInline(1);
-
-		const FName ObjName(ObjNameView);
-
-		if (DuplicateOuter)
-		{
-			if (UObject* ExistingObj = (UObject*)FindObjectWithOuter(DuplicateOuter, nullptr, ObjName))
-			{
-				ExistingObj->Rename(*MakeUniqueObjectName(DuplicateOuter,ExistingObj->GetClass()).ToString(), nullptr, REN_ForceNoResetLoaders|REN_DontCreateRedirectors);
-			}
-		}
-
-		// This does a deep copy of NewValueAsObject. Its subobjects and property data will be copied.
-		UObject* DuplicateOfNewValue = DuplicateObject<UObject>(NewValueAsObject, DuplicateOuter, ObjName);
-
-		ObjectValueAsString.Reset();
-		ObjectValueAsString.Add(DuplicateOfNewValue->GetPathName());
-		Handle->SetPerObjectValues(ObjectValueAsString);
-	}
-}
-
 FPropertyAccess::Result FPropertyValueImpl::ImportText( const FString& InValue, FPropertyNode* InPropertyNode, EPropertyValueSetFlags::Type Flags )
 {
 	TArray<FObjectBaseAddress> ObjectsToModify;
@@ -311,7 +246,7 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 		// certain properties have requirements on the size of string values that can be imported.  Search for strings that are too large.
 		for (const FString& Value : InValues)
 		{
-			if (Value.Len() > NAME_SIZE)
+			if (Value.Len() >= NAME_SIZE)
 			{
 				Result = FPropertyAccess::Fail;
 				break;
@@ -460,7 +395,8 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 			}
 
 			// Set the new value.
-			FPropertyTextUtilities::TextToPropertyHelper(*NewValue, InPropertyNode, NodeProperty, Cur);
+			EPropertyPortFlags PortFlags = (Flags & EPropertyValueSetFlags::InstanceObjects) != 0 ? PPF_InstanceSubobjects : PPF_None;
+			FPropertyTextUtilities::TextToPropertyHelper(*NewValue, InPropertyNode, NodeProperty, Cur, PortFlags);
 
 			// Cache the value of the property after having modified it.
 			FString ValueAfterImport;
@@ -771,20 +707,12 @@ FPropertyAccess::Result FPropertyValueImpl::SetValueAsString( const FString& InV
 
 		FString Value = InValue;
 
-		// Strip any leading underscores and spaces from names.
+		// Strip any leading spaces from names.
 		if( NodeProperty && NodeProperty->IsA( FNameProperty::StaticClass() ) )
 		{
 			while ( true )
 			{
-				if ( Value.StartsWith( TEXT("_"), ESearchCase::CaseSensitive ) )
-				{
-					// Strip leading underscores.
-					do
-					{
-						Value.RightInline( Value.Len()-1, false);
-					} while ( Value.StartsWith( TEXT("_"), ESearchCase::CaseSensitive ) );
-				}
-				else if ( Value.StartsWith( TEXT(" "), ESearchCase::CaseSensitive) )
+				if ( Value.StartsWith( TEXT(" "), ESearchCase::CaseSensitive) )
 				{
 					// Strip leading spaces.
 					do
@@ -968,12 +896,9 @@ void FPropertyValueImpl::ResetToDefault()
 		if(KeyNode.IsValid())
 		{
 			FPropertyValueImpl(KeyNode, NotifyHook, PropertyUtilities.Pin())
-				.ImportText(KeyNode->GetDefaultValueAsString(bUseDisplayName), EPropertyValueSetFlags::DefaultFlags);
+				.ImportText(KeyNode->GetDefaultValueAsString(bUseDisplayName), EPropertyValueSetFlags::InstanceObjects);
 		}
-		ImportText(PropertyNodePin->GetDefaultValueAsString(bUseDisplayName), EPropertyValueSetFlags::DefaultFlags);
-		
-		TSharedPtr<IPropertyHandle> PropertyHandle = PropertyEditorHelpers::GetPropertyHandle(PropertyNodePin.ToSharedRef(), GetNotifyHook(), GetPropertyUtilities());
-		RebuildInstancedProperties(PropertyHandle, KeyNode.Get());
+		ImportText(PropertyNodePin->GetDefaultValueAsString(bUseDisplayName), EPropertyValueSetFlags::InstanceObjects);
 
 		PropertyNodePin->BroadcastPropertyResetToDefault();
 	}
@@ -1360,7 +1285,7 @@ void FPropertyValueImpl::InsertChild( TSharedPtr<FPropertyNode> ChildNodeToInser
 			UObject* Obj = ObjectNode ? ObjectNode->GetUObject(0) : nullptr;
 			if (IsTemplate(Obj))
 			{
-				ChildNodePtr->GatherInstancesAffectedByContainerPropertyChange(Obj, Addr, EPropertyArrayChangeType::Add, AffectedInstances);
+				ChildNodePtr->GatherInstancesAffectedByContainerPropertyChange(Obj, Addr, EPropertyArrayChangeType::Insert, AffectedInstances);
 			}
 		}
 
@@ -2027,6 +1952,9 @@ void FPropertyValueImpl::DuplicateChild( TSharedPtr<FPropertyNode> ChildNodeToDu
 
 		TArray< TMap<FString, int32> > ArrayIndicesPerObject;
 
+		FScriptArrayHelper ArrayHelper(ArrayProperty, Addr);
+		FPropertyNode::DuplicateArrayEntry(NodeProperty, ArrayHelper, Index);
+
 		if (Obj)
 		{
 			if (IsTemplate(Obj) && !FApp::IsGame())
@@ -2035,48 +1963,6 @@ void FPropertyValueImpl::DuplicateChild( TSharedPtr<FPropertyNode> ChildNodeToDu
 			}
 
 			TopLevelObjects.Add(Obj);
-		}
-
-		FScriptArrayHelper	ArrayHelper(ArrayProperty, Addr);
-		ArrayHelper.InsertValues(Index);
-
-		void* SrcAddress = ArrayHelper.GetRawPtr(Index + 1);
-		void* DestAddress = ArrayHelper.GetRawPtr(Index);
-
-		check(SrcAddress && DestAddress);
-
-		// Copy the selected item's value to the new item.
-		NodeProperty->CopyCompleteValue(DestAddress, SrcAddress);
-
-		if (FObjectProperty* ObjProp = CastField<FObjectProperty>(NodeProperty))
-		{
-			UObject* CurrentObject = ObjProp->GetObjectPropertyValue(DestAddress);
-
-			// For DefaultSubObjects and ArchetypeObjects we need to do a deep copy instead of a shallow copy
-			if (CurrentObject && CurrentObject->HasAnyFlags(RF_DefaultSubObject | RF_ArchetypeObject))
-			{
-				// Make a deep copy and assign it into the array.
-				UObject* DuplicatedObject = DuplicateObject(CurrentObject, CurrentObject->GetOuter());
-				ObjProp->SetObjectPropertyValue(SrcAddress, DuplicatedObject);
-			}
-		}
-		
-		// Find the object that owns the array and instance any subobjects
-		if (FObjectPropertyNode* ObjectPropertyNode = ChildNodePtr->FindObjectItemParent())
-		{
-			UObject* ArrayOwner = nullptr;
-			for (TPropObjectIterator Itor(ObjectPropertyNode->ObjectIterator()); Itor && !ArrayOwner; ++Itor)
-			{
-				ArrayOwner = Itor->Get();
-			}
-			if (ArrayOwner)
-			{
-				ArrayOwner->InstanceSubobjectTemplates();
-			}
-		}
-
-		if(Obj)
-		{
 
 			ArrayIndicesPerObject.Add(TMap<FString, int32>());
 			FPropertyValueImpl::GenerateArrayIndexMapToObjectNode(ArrayIndicesPerObject[0], ChildNodePtr);
@@ -2368,6 +2254,15 @@ TSharedRef<SWidget> FPropertyHandleBase::CreateDefaultPropertyButtonWidgets() co
 		return SNew(SDefaultPropertyButtonWidgets, PropertyEditor);
 	}
 	return SNullWidget::NullWidget;
+}
+
+void FPropertyHandleBase::CreateDefaultPropertyCopyPasteActions(FUIAction& OutCopyAction, FUIAction& OutPasteAction) const
+{
+	if(Implementation.IsValid())
+	{
+		OutCopyAction.ExecuteAction.BindStatic(&FPropertyHandleBase::CopyValueToClipboard, TWeakPtr<FPropertyValueImpl>(Implementation.ToSharedRef()));
+		OutPasteAction.ExecuteAction.BindStatic(&FPropertyHandleBase::PasteValueFromClipboard, TWeakPtr<FPropertyValueImpl>(Implementation.ToSharedRef()));
+	}
 }
 
 bool FPropertyHandleBase::IsEditConst() const
@@ -2978,17 +2873,30 @@ bool FPropertyHandleBase::GeneratePossibleValues(TArray< TSharedPtr<FString> >& 
 			}
 		}
 	}
-	else if ((Property->IsA(FStrProperty::StaticClass()) || Property->IsA(FNameProperty::StaticClass())) && Property->HasMetaData(TEXT("GetOptions")))
+	else if (const TCHAR* MetaDataKey = PropertyEditorHelpers::GetPropertyOptionsMetaDataKey(Property))
 	{
-		const FString& GetOptionsFunction = Property->GetMetaData(TEXT("GetOptions"));
-		if (!GetOptionsFunction.IsEmpty())
+		FString GetOptionsFunctionName = Property->GetOwnerProperty()->GetMetaData(MetaDataKey);
+		if (!GetOptionsFunctionName.IsEmpty())
 		{
 			TArray<UObject*> OutObjects;
 			GetOuterObjects(OutObjects);
 
+			// Check for external function references
+			if (GetOptionsFunctionName.Contains(TEXT(".")))
+			{
+				OutObjects.Empty();
+				UFunction* GetOptionsFunction = FindObject<UFunction>(nullptr, *GetOptionsFunctionName, true);
+
+				if (ensureMsgf(GetOptionsFunction && GetOptionsFunction->HasAnyFunctionFlags(EFunctionFlags::FUNC_Static), TEXT("Invalid GetOptions: %s"), *GetOptionsFunctionName))
+				{
+					UObject* GetOptionsCDO = GetOptionsFunction->GetOuterUClass()->GetDefaultObject();
+					GetOptionsFunction->GetName(GetOptionsFunctionName);
+					OutObjects.Add(GetOptionsCDO);
+				}
+			}
+
 			if (OutObjects.Num() > 0)
 			{
-				const FString GetOptionsFunctionName = Property->GetMetaData(TEXT("GetOptions"));
 				FCachedPropertyPath Path(GetOptionsFunctionName);
 				
 				TArray<FString> OptionIntersection;
@@ -3304,6 +3212,33 @@ FText FPropertyHandleBase::GetDefaultCategoryText() const
 	return FText::GetEmpty();
 }
 
+void FPropertyHandleBase::CopyValueToClipboard(TWeakPtr<FPropertyValueImpl> ImplementationWeak)
+{
+	TSharedPtr<FPropertyValueImpl> Implementation = ImplementationWeak.Pin();
+	if (Implementation.IsValid())
+	{
+		FString Value;
+		if (Implementation->GetValueAsString(Value, PPF_Copy) == FPropertyAccess::Success)
+		{
+			FPlatformApplicationMisc::ClipboardCopy(*Value);
+		}
+	}
+}
+
+void FPropertyHandleBase::PasteValueFromClipboard(TWeakPtr<FPropertyValueImpl> ImplementationWeak)
+{
+	TSharedPtr<FPropertyValueImpl> Implementation = ImplementationWeak.Pin();
+	if (Implementation.IsValid())
+	{
+		FString Value;
+		FPlatformApplicationMisc::ClipboardPaste(Value);
+		if (Value.IsEmpty() == false)
+		{
+			Implementation->SetValueAsString(Value, EPropertyValueSetFlags::DefaultFlags);
+		}
+	}
+}
+
 /** Implements common property value functions */
 #define IMPLEMENT_PROPERTY_VALUE( ClassName ) \
 	ClassName::ClassName( TSharedRef<FPropertyNode> PropertyNode, FNotifyHook* NotifyHook, TSharedPtr<IPropertyUtilities> PropertyUtilities ) \
@@ -3597,7 +3532,7 @@ FPropertyAccess::Result FPropertyHandleDouble::SetValue( const double& NewValue,
 {
 	FPropertyAccess::Result Res;
 	// Clamp the value from any meta data ranges stored on the property value
-	float FinalValue = ClampValueFromMetaData<double>( NewValue, *Implementation->GetPropertyNode() );
+	double FinalValue = ClampValueFromMetaData<double>( NewValue, *Implementation->GetPropertyNode() );
 
 	const FString ValueStr = FString::Printf( TEXT("%f"), FinalValue );
 	Res = Implementation->ImportText( ValueStr, Flags );

@@ -2,10 +2,14 @@
 
 #pragma once
 
+#include "Interfaces/IDMXProtocolFactory.h"
+
 #include "CoreMinimal.h"
 #include "HAL/IConsoleManager.h"
 #include "Modules/ModuleInterface.h"
-#include "Interfaces/IDMXProtocolFactory.h"
+
+struct FDMXProtocolRegistrationParams;
+
 
 /**
  */
@@ -25,6 +29,7 @@ private:
 	TUniquePtr<FDMXProtocolFactorySACN> FactorySACN;
 
 public:
+	UE_DEPRECATED(4.27, "Use DMX_PROTOCOLNAME_SACN instead, see DMXProtocolSACNConstants.h")
 	static FName const NAME_SACN;
 
 public:
@@ -36,6 +41,9 @@ public:
 	FDMXProtocolSACNModule& Get();
 
 private:
+	/** Registers this sACN implementation with the Protocol Module */
+	void RegisterWithProtocolModule(TArray<FDMXProtocolRegistrationParams>& InOutProtocolRegistrationParamsArray);
+
 	/**
 	 * Sending DMX through console command
 	 * Command structure is DMX.SACN.SendDMX [UniverseID] Channel:Value Channel:Value Channel:Value ...

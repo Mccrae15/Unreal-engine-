@@ -22,6 +22,8 @@ namespace UnrealBuildTool.Rules
 					"WebSockets",
 					"Json",
 					"ElectraBase",
+					"ElectraCDM",
+					"XmlParser"
 				});
 			if (Target.bCompileAgainstEngine)
 			{

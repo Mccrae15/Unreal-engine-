@@ -12,7 +12,8 @@
 #include "IMovieScenePlayer.h"
 #include "UObject/ObjectKey.h"
 #include "Rendering/MotionVectorSimulation.h"
-#include "Evaluation/IMovieSceneMotionVectorSimulation.h"
+#include "Systems/MovieSceneMotionVectorSimulationSystem.h"
+#include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "UObject/StrongObjectPtr.h"
 #include "SkeletalMeshRestoreState.h"
 #include "AnimSequencerInstanceProxy.h"
@@ -26,13 +27,13 @@ bool ShouldUsePreviewPlayback(IMovieScenePlayer& Player, UObject& RuntimeObject)
 
 bool CanPlayAnimation(USkeletalMeshComponent* SkeletalMeshComponent, UAnimSequenceBase* AnimAssetBase)
 {
-	return (SkeletalMeshComponent->SkeletalMesh && SkeletalMeshComponent->SkeletalMesh->Skeleton && 
-		(!AnimAssetBase || SkeletalMeshComponent->SkeletalMesh->Skeleton->IsCompatible(AnimAssetBase->GetSkeleton())));
+	return (SkeletalMeshComponent->SkeletalMesh && SkeletalMeshComponent->SkeletalMesh->GetSkeleton() && 
+		(!AnimAssetBase || SkeletalMeshComponent->SkeletalMesh->GetSkeleton()->IsCompatible(AnimAssetBase->GetSkeleton())));
 }
 
-void ResetAnimSequencerInstance(UObject& ObjectToRestore, IMovieScenePlayer& Player)
+void ResetAnimSequencerInstance(UObject& InObject, const UE::MovieScene::FRestoreStateParams& Params)
 {
-	CastChecked<ISequencerAnimationSupport>(&ObjectToRestore)->ResetNodes();
+	CastChecked<ISequencerAnimationSupport>(&InObject)->ResetNodes();
 }
 
 UAnimSequencerInstance* GetAnimSequencerInstance(USkeletalMeshComponent* SkeletalMeshComponent) 
@@ -78,7 +79,7 @@ struct FStopPlayingMontageTokenProducer : IMovieScenePreAnimatedTokenProducer
 			: WeakInstance(InWeakInstance)
 			, MontageInstanceId(InMontageInstanceId) {}
 
-			virtual void RestoreState(UObject& ObjectToRestore, IMovieScenePlayer& Player) override
+			virtual void RestoreState(UObject& InObject, const UE::MovieScene::FRestoreStateParams& Params) override
 			{
 				UAnimInstance* AnimInstance = WeakInstance.Get();
 				if (AnimInstance)
@@ -111,7 +112,7 @@ struct FPreAnimatedAnimationTokenProducer : IMovieScenePreAnimatedTokenProducer
 				SkeletalMeshRestoreState.SaveState(InComponent);
 			}
 
-			virtual void RestoreState(UObject& ObjectToRestore, IMovieScenePlayer& Player)
+			virtual void RestoreState(UObject& ObjectToRestore, const UE::MovieScene::FRestoreStateParams& Params)
 			{
 				USkeletalMeshComponent* Component = CastChecked<USkeletalMeshComponent>(&ObjectToRestore);
 
@@ -123,6 +124,9 @@ struct FPreAnimatedAnimationTokenProducer : IMovieScenePreAnimatedTokenProducer
 				}
 
 				FAnimCustomInstanceHelper::UnbindFromSkeletalMeshComponent<UAnimSequencerInstance>(Component);
+
+				// Restore LOD before reinitializing anim instance
+				SkeletalMeshRestoreState.RestoreLOD(Component);
 
 				if (Component->GetAnimationMode() != AnimationMode)
 				{
@@ -137,7 +141,7 @@ struct FPreAnimatedAnimationTokenProducer : IMovieScenePreAnimatedTokenProducer
 					if (Component->AnimScriptInstance && Component->SkeletalMesh)
 					{
 						//the skeleton may have changed so need to recalc required bones as needed.
-						Component->AnimScriptInstance->CurrentSkeleton = Component->SkeletalMesh->Skeleton;
+						Component->AnimScriptInstance->CurrentSkeleton = Component->SkeletalMesh->GetSkeleton();
 						//Need at least RecalcRequiredbones and UpdateMorphTargetrs
 						Component->InitializeAnimScriptInstance(true);
 					}
@@ -331,16 +335,17 @@ namespace MovieScene
 				}
 			}
 
-			if (InFinalValue.SimulatedAnimations.Num() != 0 && Player.MotionVectorSimulation.IsValid())
+			if (InFinalValue.SimulatedAnimations.Num() != 0)
 			{
-				ApplyAnimations(PersistentData, Player, SkeletalMeshComponent, InFinalValue.SimulatedAnimations, DeltaTime, bPreviewPlayback, bFireNotifies, bResetDynamics);
+				UMovieSceneMotionVectorSimulationSystem* MotionVectorSim = Player.GetEvaluationTemplate().GetEntitySystemLinker()->FindSystem<UMovieSceneMotionVectorSimulationSystem>();
+				if (MotionVectorSim && MotionVectorSim->IsSimulationEnabled())
+				{
+					ApplyAnimations(PersistentData, Player, SkeletalMeshComponent, InFinalValue.SimulatedAnimations, DeltaTime, bPreviewPlayback, bFireNotifies, bResetDynamics);
+					SkeletalMeshComponent->TickAnimation(0.f, false);
+					SkeletalMeshComponent->ForceMotionVector();
 
-				SkeletalMeshComponent->TickAnimation(0.f, false);
-				SkeletalMeshComponent->RefreshBoneTransforms();
-				SkeletalMeshComponent->FinalizeBoneTransform();
-				SkeletalMeshComponent->ForceMotionVector();
-
-				SimulateMotionVectors(PersistentData, SkeletalMeshComponent, Player);
+					SimulateMotionVectors(PersistentData, SkeletalMeshComponent, MotionVectorSim);
+				}
 			}
 
 			ApplyAnimations(PersistentData, Player, SkeletalMeshComponent, InFinalValue.AllAnimations, DeltaTime, bPreviewPlayback, bFireNotifies, bResetDynamics);
@@ -359,8 +364,6 @@ namespace MovieScene
 				SkeletalMeshComponent->MarkRenderTransformDirty();
 				SkeletalMeshComponent->MarkRenderDynamicDataDirty();
 			}
-
-			Player.PreAnimatedState.SetCaptureEntity(FMovieSceneEvaluationKey(), EMovieSceneCompletionMode::KeepState);
 		}
 
 	private:
@@ -391,7 +394,7 @@ namespace MovieScene
 			return nullptr;
 		}
 
-		void SimulateMotionVectors(FPersistentEvaluationData& PersistentData, USkeletalMeshComponent* SkeletalMeshComponent, IMovieScenePlayer& Player)
+		void SimulateMotionVectors(FPersistentEvaluationData& PersistentData, USkeletalMeshComponent* SkeletalMeshComponent, UMovieSceneMotionVectorSimulationSystem* MotionVectorSim)
 		{
 			for (USceneComponent* Child : SkeletalMeshComponent->GetAttachChildren())
 			{
@@ -399,7 +402,7 @@ namespace MovieScene
 				if (SocketName != NAME_None)
 				{
 					FTransform SocketTransform = SkeletalMeshComponent->GetSocketTransform(SocketName, RTS_Component);
-					Player.MotionVectorSimulation->Add(SkeletalMeshComponent, SocketTransform, SocketName);
+					MotionVectorSim->AddSimulatedTransform(SkeletalMeshComponent, SocketTransform, SocketName);
 				}
 			}
 		}
@@ -411,7 +414,7 @@ namespace MovieScene
 
 			for (const FMinimalAnimParameters& AnimParams : Parameters)
 			{
-				Player.PreAnimatedState.SetCaptureEntity(AnimParams.EvaluationScope.Key, AnimParams.EvaluationScope.CompletionMode);
+				FScopedPreAnimatedCaptureSource CaptureSource(&Player.PreAnimatedState, AnimParams.EvaluationScope.Key, AnimParams.EvaluationScope.CompletionMode == EMovieSceneCompletionMode::RestoreState);
 
 				if (bPreviewPlayback)
 				{
@@ -604,9 +607,9 @@ void FMovieSceneSkeletalAnimationSectionTemplate::Evaluate(const FMovieSceneEval
 		);
 		ExecutionTokens.BlendToken(ActuatorTypeID, TBlendableToken<UE::MovieScene::FBlendedAnimation>(AnimParams, BlendType.Get(), 1.f));
 
-		if (IMovieSceneMotionVectorSimulation::IsEnabled(PersistentData, Context))
+		if (FMotionVectorSimulation::IsEnabled())
 		{
-			FFrameTime SimulatedTime = IMovieSceneMotionVectorSimulation::GetSimulationTime(Context);
+			FFrameTime SimulatedTime = UE::MovieScene::GetSimulatedMotionVectorTime(Context);
 
 			// Calculate the time at which to evaluate the animation
 			float CurrentEvalTime = Params.MapTimeToAnimation(Context.GetTime(), Context.GetFrameRate());

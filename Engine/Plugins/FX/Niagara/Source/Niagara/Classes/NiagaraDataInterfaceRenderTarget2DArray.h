@@ -41,10 +41,15 @@ struct FRenderTarget2DArrayRWInstanceData_RenderThread
 
 	FIntVector Size = FIntVector(EForceInit::ForceInitToZero);
 	
-	FTextureReferenceRHIRef TextureReferenceRHI;
-	FUnorderedAccessViewRHIRef UAV;
+	FSamplerStateRHIRef SamplerStateRHI;
+	FTexture2DArrayRHIRef TextureRHI;
+	FUnorderedAccessViewRHIRef UnorderedAccessViewRHI;
 #if WITH_EDITORONLY_DATA
 	uint32 bPreviewTexture : 1;
+#endif
+#if STATS
+	void UpdateMemoryStats();
+	uint64 MemorySize = 0;
 #endif
 };
 
@@ -81,14 +86,19 @@ public:
 	// VM functionality
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target)const override { return true; }
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions) override;
+#if WITH_EDITORONLY_DATA
+	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override;
+#endif
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) override;
 
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
 
 	// GPU sim functionality
+#if WITH_EDITORONLY_DATA
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
+#endif
 
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override {}
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
@@ -108,6 +118,8 @@ public:
 	void SetSize(FVectorVMContext& Context);
 
 	static const FName SetValueFunctionName;
+	static const FName GetValueFunctionName;
+	static const FName SampleValueFunctionName;
 	static const FName SetSizeFunctionName;
 	static const FName GetSizeFunctionName;
 	static const FName LinearToIndexName;
@@ -115,19 +127,28 @@ public:
 	static const FString SizeName;
 	static const FString RWOutputName;
 	static const FString OutputName;
+	static const FString InputName;
 
-	UPROPERTY(EditAnywhere, Category = "Render Target")
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (EditCondition = "!bInheritUserParameterSettings"))
 	FIntVector Size;
 
 	/** When enabled overrides the format of the render target, otherwise uses the project default setting. */
-	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (EditCondition = "bOverrideFormat"))
+	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (EditCondition = "!bInheritUserParameterSettings && bOverrideFormat"))
 	TEnumAsByte<ETextureRenderTargetFormat> OverrideRenderTargetFormat;
 
-	UPROPERTY(EditAnywhere, Category = "Render Target", meta=(PinHiddenByDefault, InlineEditConditionToggle))
+	/**
+	When enabled texture parameters (size / etc) are taken from the user provided render target.
+	If no valid user parameter is set the system will be invalid.
+	Note: The resource will be recreated if UAV access is not available, which will reset the contents.
+	*/
+	UPROPERTY(EditAnywhere, Category = "Render Target")
+	uint8 bInheritUserParameterSettings : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Render Target")
 	uint8 bOverrideFormat : 1;
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(Transient, EditAnywhere, Category = "Render Target")
+	UPROPERTY(EditAnywhere, Category = "Render Target")
 	uint8 bPreviewRenderTarget : 1;
 #endif
 
@@ -137,6 +158,6 @@ public:
 protected:
 	static FNiagaraVariableBase ExposedRTVar;
 	
-	UPROPERTY(Transient)
+	UPROPERTY(Transient, DuplicateTransient)
 	TMap<uint64, UTextureRenderTarget2DArray*> ManagedRenderTargets;
 };

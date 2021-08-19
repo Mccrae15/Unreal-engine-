@@ -5,6 +5,7 @@
 #include "BoneControllers/AnimNode_SkeletalControlBase.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Physics/ImmediatePhysics/ImmediatePhysicsDeclares.h"
+#include "PhysicsProxy/PerSolverFieldSystem.h"
 #include "AnimNode_RigidBody.generated.h"
 
 struct FBodyInstance;
@@ -13,6 +14,8 @@ struct FConstraintInstance;
 extern ANIMGRAPHRUNTIME_API TAutoConsoleVariable<int32> CVarEnableRigidBodyNode;
 extern ANIMGRAPHRUNTIME_API TAutoConsoleVariable<int32> CVarEnableRigidBodyNodeSimulation;
 extern ANIMGRAPHRUNTIME_API TAutoConsoleVariable<int32> CVarRigidBodyLODThreshold;
+
+#define ENABLE_RBAN_PERF_LOGGING (1 && !NO_LOGGING && !UE_BUILD_SHIPPING)
 
 /** Determines in what space the simulation should run */
 UENUM()
@@ -283,7 +286,7 @@ private:
 
 	void InitPhysics(const UAnimInstance* InAnimInstance);
 	void UpdateWorldGeometry(const UWorld& World, const USkeletalMeshComponent& SKC);
-	void UpdateWorldForces(const FTransform& ComponentToWorld, const FTransform& RootBoneTM);
+	void UpdateWorldForces(const FTransform& ComponentToWorld, const FTransform& RootBoneTM, const float DeltaSeconds);
 
 	void InitializeNewBodyTransformsDuringSimulation(FComponentSpacePoseContext& Output, const FTransform& ComponentTransform, const FTransform& BaseBoneTM);
 
@@ -320,6 +323,10 @@ private:
 
 	float WorldTimeSeconds;
 	float LastEvalTimeSeconds;
+
+#if ENABLE_RBAN_PERF_LOGGING
+	float LastPerfWarningTimeSeconds;
+#endif
 
 	float AccumulatedDeltaTime;
 	float AnimPhysicsMinDeltaTime;
@@ -391,6 +398,8 @@ private:
 	TArray<FPhysicsConstraintHandle*> Constraints;
 	TArray<USkeletalMeshComponent::FPendingRadialForces> PendingRadialForces;
 
+	FPerSolverFieldSystem PerSolverField;
+
 	TMap<const UPrimitiveComponent*, FWorldObject> ComponentsInSim;
 	int32 ComponentsInSimTick;
 
@@ -419,13 +428,15 @@ private:
 	FCSPose<FCompactHeapPose> CapturedFrozenPose;
 	FBlendedHeapCurve CapturedFrozenCurves;
 
-	// Used by the world-space to simulation-space motion transfer system in Component- or Bone-Space sims
-	FTransform PreviousComponentToWorld;
-	FTransform PreviousBoneToComponent;
 	FVector PreviousComponentLinearVelocity;
-	FVector PreviousComponentAngularVelocity;
-	FVector PreviousBoneLinearVelocity;
-	FVector PreviousBoneAngularVelocity;
+
+	// Used by the world-space to simulation-space motion transfer system in Component- or Bone-Space sims
+	FTransform SimSpacePreviousComponentToWorld;
+	FTransform SimSpacePreviousBoneToComponent;
+	FVector SimSpacePreviousComponentLinearVelocity;
+	FVector SimSpacePreviousComponentAngularVelocity;
+	FVector SimSpacePreviousBoneLinearVelocity;
+	FVector SimSpacePreviousBoneAngularVelocity;
 };
 
 #if WITH_EDITORONLY_DATA

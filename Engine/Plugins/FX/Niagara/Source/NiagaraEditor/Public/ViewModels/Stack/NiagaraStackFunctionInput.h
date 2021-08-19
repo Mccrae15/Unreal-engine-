@@ -22,6 +22,7 @@ enum class EStackParameterBehavior;
 class UNiagaraClipboardFunctionInput;
 class UNiagaraClipboardFunction;
 class UNiagaraScriptVariable;
+class FNiagaraPlaceholderDataInterfaceHandle;
 
 /** Represents a single module input in the module stack view model. */
 UCLASS()
@@ -107,6 +108,7 @@ public:
 	virtual bool TestCanPasteWithMessage(const UNiagaraClipboardContent* ClipboardContent, FText& OutMessage) const override;
 	virtual FText GetPasteTransactionText(const UNiagaraClipboardContent* ClipboardContent) const override;
 	virtual void Paste(const UNiagaraClipboardContent* ClipboardContent, FText& OutPasteWarning) override;
+	virtual bool HasOverridenContent() const override;
 
 	/** Gets the tooltip that should be shown for the value of this input. */
 	FText GetValueToolTip() const;
@@ -139,7 +141,7 @@ public:
 	void GetAvailableDynamicInputs(TArray<UNiagaraScript*>& AvailableDynamicInputs, bool bIncludeNonLibraryInputs = false);
 
 	/** Sets the dynamic input script for this input. */
-	void SetDynamicInput(UNiagaraScript* DynamicInput, FString SuggestedName = FString());
+	void SetDynamicInput(UNiagaraScript* DynamicInput, FString SuggestedName = FString(), const FGuid& InScriptVersion = FGuid());
 
 	/** Gets the expression providing the value for this input, if one is available. */
 	FText GetCustomExpressionText() const;
@@ -173,9 +175,6 @@ public:
 
 	/** Resets the value and handle of this input to the value and handle defined in the module. */
 	void Reset();
-
-	/** Checks if any data needs a fixup after the module definition changed. */
-	void ApplyModuleChanges();
 
 	/** Determine if this field is editable */
 	bool IsEditable() const;
@@ -246,6 +245,8 @@ public:
 	/** Gets whether or not this input is filtered from search results and appearing in stack due to visibility metadata*/
 	bool GetShouldPassFilterForVisibleCondition() const;
 
+	void ChangeScriptVersion(FGuid NewScriptVersion);
+
 	const UNiagaraClipboardFunctionInput* ToClipboardFunctionInput(UObject* InOuter) const;
 
 	void SetValueFromClipboardFunctionInput(const UNiagaraClipboardFunctionInput& ClipboardFunctionInput);
@@ -259,9 +260,6 @@ public:
 	virtual void GetSearchItems(TArray<FStackSearchItem>& SearchItems) const override;
 	virtual bool HasFrontDivider() const override;
 
-	/** If false then the stack parameter is not visible */
-	bool bIsVisible = true;
-
 protected:
 	//~ UNiagaraStackEntry interface
 	virtual void FinalizeInternal() override;
@@ -270,6 +268,7 @@ protected:
 	bool UpdateRapidIterationParametersForAffectedScripts(const uint8* Data);
 	bool RemoveRapidIterationParametersForAffectedScripts();
 	FString ResolveDisplayNameArgument(const FString& InArg) const;
+	FStackIssueFixDelegate GetUpgradeDynamicInputVersionFix();
 
 private:
 	struct FInputValues
@@ -298,7 +297,7 @@ private:
 	void RefreshValues();
 
 	/** Refreshes additional state for this input which comes from input metadata. */
-	void RefreshFromMetaData();
+	void RefreshFromMetaData(TArray<FStackIssue>& NewIssues);
 
 	/** Called whenever the graph which generated this input changes. */
 	void OnGraphChanged(const struct FEdGraphEditAction& InAction);
@@ -348,8 +347,6 @@ private:
 	void OnMessageManagerRefresh(const TArray<TSharedRef<const INiagaraMessage>>& NewMessages);
 
 	TArray<UNiagaraStackFunctionInput*> GetChildInputs() const;
-
-	void ResetDataInterfaceOverride();
 
 private:
 	/** The module function call which owns this input entry. NOTE: This input might not be an input to the module function
@@ -401,6 +398,8 @@ private:
 
 	/** Pointers and handles to the various values this input can have. */
 	FInputValues InputValues;
+
+	TSharedPtr<FNiagaraPlaceholderDataInterfaceHandle> PlaceholderDataInterfaceHandle;
 
 	/** A cached pointer to the override node for this input if it exists.  This value is cached here since the
 	  * UI reads this value every frame due to attribute updates. */

@@ -15,7 +15,7 @@
 #include "FieldSystemObjects.generated.h"
 
 /**
-* Context : 
+* Context :
 *   Contexts are used to pass extra data into the field evaluation.
 */
 UCLASS()
@@ -29,12 +29,10 @@ public:
 	virtual FFieldSystemMetaData* NewMetaData() const { return nullptr; }
 };
 
-
-
 /*
 * UFieldSystemMetaDataIteration
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Disabled for now (WIP)"), ShowCategories = ("Field"), DisplayName = "MetaDataIteration")
 class FIELDSYSTEMENGINE_API UFieldSystemMetaDataIteration : public UFieldSystemMetaData
 {
 	GENERATED_BODY()
@@ -45,19 +43,22 @@ public:
 
 	virtual FFieldSystemMetaData* NewMetaData() const override;
 
+	/**
+	 * Set the number of iteration type
+	 * @param    Iterations Number of iterations (WIP)
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field", meta = (Iterations = "1"))
-	UFieldSystemMetaDataIteration* SetMetaDataIteration(int Iterations);
+	UFieldSystemMetaDataIteration* SetMetaDataIteration(UPARAM(DisplayName = "Iteration Count") int Iterations);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Number of iterations (WIP) */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Iteration Count")
 	int Iterations;
 };
-
-
 
 /*
 * UFieldSystemMetaDataProcessingResolution
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Control the set of particles on which the field will be applied"), ShowCategories = ("Field"), DisplayName = "MetaDataResolution")
 class FIELDSYSTEMENGINE_API UFieldSystemMetaDataProcessingResolution : public UFieldSystemMetaData
 {
 	GENERATED_BODY()
@@ -67,14 +68,42 @@ public:
 	virtual FFieldSystemMetaData::EMetaType Type() const override { return  FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution; }
 	virtual FFieldSystemMetaData* NewMetaData() const override;
 
-	UFUNCTION(BlueprintPure, Category = "Field" )
+	/**
+	 * Set the processing resolution type
+	 * @param    ResolutionType Type of processing resolution used to select the particles on which the field will be applied
+	 */
+	UFUNCTION(BlueprintPure, Category = "Field", DisplayName = "Set Meta Data Resolution")
 	UFieldSystemMetaDataProcessingResolution* SetMetaDataaProcessingResolutionType(EFieldResolutionType ResolutionType);
 
+	/** Precessing resolution type used to select the particles on which the field will be applied */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Field")
 	TEnumAsByte<EFieldResolutionType> ResolutionType;
 };
 
+/*
+* UFieldSystemMetaDataFilter
+*/
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Filter the particles on which the field will be applied"), ShowCategories = ("Field"), DisplayName = "MetaDataFilter")
+class FIELDSYSTEMENGINE_API UFieldSystemMetaDataFilter : public UFieldSystemMetaData
+{
+	GENERATED_BODY()
 
+public:
+	virtual ~UFieldSystemMetaDataFilter() {}
+	virtual FFieldSystemMetaData::EMetaType Type() const override { return  FFieldSystemMetaData::EMetaType::ECommandData_Filter; }
+	virtual FFieldSystemMetaData* NewMetaData() const override;
+
+	/**
+	 * Set the particles filter type
+	 * @param    FilterType Type of filter used to select the particles on whidh the field will be applied
+	 */
+	UFUNCTION(BlueprintPure, Category = "Field", DisplayName = "Set Meta Data Filter")
+	UFieldSystemMetaDataFilter* SetMetaDataFilterType(EFieldFilterType FilterType);
+
+	/** Filter type used to select the particles on which the field will be applied */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Field")
+	TEnumAsByte<EFieldFilterType> FilterType;
+};
 
 
 /**
@@ -135,7 +164,7 @@ public:
 /**
 * UUniformInteger
 **/
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Set a uniform integer value independently of the sample position. The output is equal to magnitude"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UUniformInteger : public UFieldNodeInt
 {
 	GENERATED_BODY()
@@ -150,10 +179,15 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
+	/**
+	 * Set a uniform integer value independently of the sample position. The output is equal to magnitude
+	 * @param    Magnitude The field output will be equal the magnitude
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "0"))
-	UUniformInteger* SetUniformInteger(int32 Magnitude);
+	UUniformInteger* SetUniformInteger(UPARAM(DisplayName = "Field Magnitude") int32 Magnitude);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The field output will be equal the magnitude */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
 	int32 Magnitude;
 };
 
@@ -161,7 +195,7 @@ public:
 /**
 * URadialIntMask
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "This function first defines a radial integer field equal to Interior-value inside a sphere / Exterior-value outside. This field will be used alongside the particle input value and the mask condition to compute the particle output value."), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API URadialIntMask : public UFieldNodeInt
 {
 	GENERATED_BODY()
@@ -179,22 +213,42 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
-	UFUNCTION(BlueprintPure, Category = "Field", meta = (InteriorValue="1.0"))
-	URadialIntMask* SetRadialIntMask(float Radius, FVector Position,int32 InteriorValue,int32 ExteriorValue, ESetMaskConditionType SetMaskConditionIn);
+	/**
+	* This function first defines a radial integer field equal to Interior-value inside a sphere / Exterior-value outside. This field will be used alongside the particle input value and the mask condition to compute the particle output value.
+	 * - If Mask-condition = set-always : the particle output value will be equal to Interior-value if the particle position is inside a sphere / Exterior-value otherwise. 
+	 * - If Mask-condition = merge-interior : the particle output value will be equal to Interior-value if the particle position is inside the sphere or if the particle input value is already Interior-Value / Exterior-value otherwise.
+	 * - If Mask-condition = merge-exterior : the particle output value will be equal to Exterior-value if the particle position is outside the sphere or if the particle input value is already Exterior-Value / Interior-value otherwise.
+	 * @param    Radius Radius of the radial field
+	 * @param    Position Center position of the radial field"
+	 * @param    InteriorValue If the sample distance from the center is less than radius, the intermediate value will be set the interior value
+	 * @param    ExteriorValue If the sample distance from the center is greater than radius, the intermediate value will be set the exterior value
+	 * @param    SetMaskConditionIn If the mask condition is set to always the output value will be the intermediate one. If set to not interior/exterior the output value will be the intermediate one if the input is different from the interior/exterior value
+	 */
+	UFUNCTION(BlueprintPure, Category = "Field", meta = (InteriorValue = "1"), DisplayName = "Set Radial Mask")
+	URadialIntMask* SetRadialIntMask(UPARAM(DisplayName = "Mask Radius") float Radius,
+			UPARAM(DisplayName = "Center Position") FVector Position,
+			UPARAM(DisplayName = "Interior Value") int32 InteriorValue,
+			UPARAM(DisplayName = "Exterior Value") int32 ExteriorValue,
+			UPARAM(DisplayName = "Mask Condition") ESetMaskConditionType SetMaskConditionIn);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Radius of the radial mask field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Mask Radius")
 	float Radius;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Center position of the radial mask field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Center Position")
 	FVector Position;
-	
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+
+	/** If the sample distance from the center is less than radius, the intermediate value will be set the interior value */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Interior Value")
 	int32 InteriorValue;
-	
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+
+	/** If the sample distance from the center is greater than radius, the intermediate value will be set the exterior value */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Exterior Value")
 	int32 ExteriorValue;
-	
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+
+	/** If the mask condition is set to always the output value will be the intermediate one. If set to not interior/exterior the output value will be the intermediate one if the input is different from the interior/exterior value */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Mask Condition")
 	TEnumAsByte<ESetMaskConditionType> SetMaskCondition;
 };
 
@@ -202,7 +256,7 @@ public:
 /**
 * UUniformScalar
 **/
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Set a uniform scalar value independently of the sample position. The output is equal to magnitude"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UUniformScalar : public UFieldNodeFloat
 {
 	GENERATED_BODY()
@@ -217,19 +271,91 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
+	/**
+	 * Set a uniform scalar value independently of the sample position. The output is equal to magnitude
+	 * @param    Magnitude The field output will be equal the magnitude
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "1.0"))
-	UUniformScalar* SetUniformScalar(float Magnitude);
+	UUniformScalar* SetUniformScalar(UPARAM(DisplayName = "Field Magnitude") float Magnitude);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The field output will be equal the magnitude */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
 	float Magnitude;
 
 };
+
+/**
+* UWaveScalar
+**/
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Set a temporal wave scalar value according to the sample distance from the field position."), ShowCategories = ("Field"))
+class FIELDSYSTEMENGINE_API UWaveScalar : public UFieldNodeFloat
+{
+	GENERATED_BODY()
+public:
+
+	UWaveScalar()
+		: Super()
+		, Magnitude(1.0)
+		, Position(0, 0, 0)
+		, Wavelength(10000)
+		, Period(1.0)
+		, Function(EWaveFunctionType::Field_Wave_Cosine)
+		, Falloff(EFieldFalloffType::Field_Falloff_Linear)
+	{}
+
+	virtual ~UWaveScalar() {}
+
+	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
+
+	/**
+	 * Set a temporal wave scalar value according to the sample distance from the field position.
+	 * @param    Magnitude Magnitude of the wave function
+	 * @param    Position Center position of the wave field
+	 * @param    Wavelength Distance between 2 wave peaks
+	 * @param    Period Time over which the wave will travel from one peak to another one. The wave velocity is proportional to wavelength/period
+	 * @param    Function Wave function used for the field
+	 * @param    Falloff Type of falloff function used if the falloff function is picked
+	 */
+	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "1.0", Wavelength = "1000", Period = "1", HidePin = "Time"), DisplayName = "Set Wave Scalar")
+	UWaveScalar* SetWaveScalar(UPARAM(DisplayName = "Field Magnitude") float Magnitude,
+			UPARAM(DisplayName = "Center Position") FVector Position,
+			UPARAM(DisplayName = "Wave Length") float Wavelength,
+			UPARAM(DisplayName = "Wave Period") float Period,
+			UPARAM(DisplayName = "Time Offset") float Time,
+			UPARAM(DisplayName = "Wave Function") EWaveFunctionType Function,
+			UPARAM(DisplayName = "Falloff Type") EFieldFalloffType Falloff);
+
+	/** Magnitude of the wave function */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
+	float Magnitude;
+
+	/** Center position of the wave field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Center Position")
+	FVector Position;
+
+	/** Distance between 2 wave peaks */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Wave Length")
+	float Wavelength;
+
+	/** Time over which the wave will travel from one peak to another one. The wave velocity is proportional to wavelength/period */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Wave Period")
+	float Period;
+
+	/** Wave function used for the field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Wave Function")
+	TEnumAsByte<EWaveFunctionType> Function;
+
+	/** Type of falloff function used if the falloff function is picked */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Falloff Type")
+	TEnumAsByte<EFieldFalloffType> Falloff;
+};
+
 
 
 /**
 * RadialFalloff
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Sphere scalar field that will be defined only within a sphere"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API URadialFalloff : public UFieldNodeFloat
 {
 	GENERATED_BODY()
@@ -250,35 +376,58 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
-	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude ="1.0", MinRange="0.0", MaxRange="1.0"))
-	URadialFalloff* SetRadialFalloff(float Magnitude, float MinRange, float MaxRange, float Default,  float Radius, FVector Position, EFieldFalloffType Falloff);
+	/**
+	 * Sphere scalar field that will be defined only within a sphere
+	 * @param    Magnitude Magnitude of the sphere falloff field
+	 * @param    MinRange The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude
+	 * @param    MaxRange The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude
+	 * @param    Default The field value will be set to Default if the sample distance from the center is higher than the radius
+	 * @param    Radius Radius of the sphere falloff field
+	 * @param    Position Center position of the sphere falloff field
+	 * @param    Falloff Type of falloff function used if the falloff function is picked
+	 */
+	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "1.0", MinRange = "0.0", MaxRange = "1.0"), DisplayName = "Set Radial Falloff")
+	URadialFalloff* SetRadialFalloff(UPARAM(DisplayName = "Field Magnitude") float Magnitude,
+			UPARAM(DisplayName = "Min Range") float MinRange,
+			UPARAM(DisplayName = "Max Range") float MaxRange,
+			UPARAM(DisplayName = "Default Value") float Default,
+			UPARAM(DisplayName = "Sphere Radius") float Radius,
+			UPARAM(DisplayName = "Center Position") FVector Position,
+			UPARAM(DisplayName = "Falloff Type") EFieldFalloffType Falloff);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Magnitude of the sphere falloff field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
 	float Magnitude;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Min Range")
 	float MinRange;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Max Range")
 	float MaxRange;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The field value will be set to Default if the sample distance from the center is higher than the radius */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Default Value")
 	float Default;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Radius of the sphere falloff field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Sphere Radius")
 	float Radius;
-	
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+
+	/** Center position of the sphere falloff field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Center Position")
 	FVector Position;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Type of falloff function used to model the evolution of the field from the sphere center to the sample position */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Falloff Type")
 	TEnumAsByte<EFieldFalloffType> Falloff;
 };
 
 /**
 * PlaneFalloff
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Plane scalar field that will be defined only within a distance from a plane"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UPlaneFalloff : public UFieldNodeFloat
 {
 	GENERATED_BODY()
@@ -301,38 +450,64 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
+	/**
+	 * Plane scalar field that will be defined only within a distance from a plane
+	 * @param    Magnitude Magnitude of the plane falloff field
+	 * @param    MinRange The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude
+	 * @param    MaxRange The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude
+	 * @param    Default The field value will be set to default if the sample projected distance ((Sample Position - Center Position).dot(Plane Normal)) is higher than the Plane Distance 
+	 * @param    Distance Distance limit for the plane falloff field starting from the center position and extending in the direction of the plane normal
+	 * @param    Position Plane center position of the plane falloff field
+	 * @param    Normal Plane normal of the plane falloff field
+	 * @param    Falloff Type of falloff function used to model the evolution of the field from the plane surface to the distance isosurface
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "1.0", MinRange = "0.0", MaxRange = "1.0"))
-	UPlaneFalloff* SetPlaneFalloff(float Magnitude, float MinRange, float MaxRange, float Default, float Distance, FVector Position, FVector Normal, EFieldFalloffType Falloff);
+	UPlaneFalloff* SetPlaneFalloff(UPARAM(DisplayName = "Field Magnitude") float Magnitude,
+			UPARAM(DisplayName = "Min Range") float MinRange,
+			UPARAM(DisplayName = "Max Range") float MaxRange,
+			UPARAM(DisplayName = "Default Value") float Default,
+			UPARAM(DisplayName = "Plane Distance") float Distance,
+			UPARAM(DisplayName = "Center Position") FVector Position,
+			UPARAM(DisplayName = "Plane Normal") FVector Normal,
+			UPARAM(DisplayName = "Falloff Type") EFieldFalloffType Falloff);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Magnitude of the plane falloff field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
 	float Magnitude;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Min Range")
 	float MinRange;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Max Range")
 	float MaxRange;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The field value will be set to Default if the sample distance from the plane is higher than the distance*/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Default Value")
 	float Default;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Distance limit for the plane falloff field*/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Plane Distance")
 	float Distance;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Plane position of the plane falloff field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Center Position")
 	FVector Position;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Plane normal of the plane falloff field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Plane Normal")
 	FVector Normal;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Type of falloff function used to model the evolution of the field from the plane surface to the distance isosurface */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Falloff Type")
 	TEnumAsByte<EFieldFalloffType> Falloff;
 };
 
 /**
 * BoxFalloff
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Box scalar field that will be defined only within a box"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UBoxFalloff : public UFieldNodeFloat
 {
 	GENERATED_BODY()
@@ -353,25 +528,45 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
+	/**
+	 * Box scalar field that will be defined only within a box
+	 * @param    Magnitude Magnitude of the box falloff field
+	 * @param    MinRange The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude
+	 * @param    MaxRange The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude
+	 * @param    Default The field value will be set to Default if the sample distance from the box is higher than the scale of the transform
+	 * @param    Transform Translation, Rotation and Scale of the unit box
+	 * @param    Falloff Type of falloff function used to model the evolution of the field from the box surface to the sample position
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "1.0", MinRange = "0.0", MaxRange = "1.0"))
-	UBoxFalloff* SetBoxFalloff(float Magnitude, float MinRange, float MaxRange, float Default, FTransform Transform, EFieldFalloffType Falloff);
+	UBoxFalloff* SetBoxFalloff(UPARAM(DisplayName = "Field Magnitude")  float Magnitude,
+			UPARAM(DisplayName = "Min Range")  float MinRange,
+			UPARAM(DisplayName = "Max Range")  float MaxRange,
+			UPARAM(DisplayName = "Default Value")  float Default,
+			UPARAM(DisplayName = "Box Transform")  FTransform Transform,
+			UPARAM(DisplayName = "Falloff Type")  EFieldFalloffType Falloff);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Magnitude of the box falloff field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
 	float Magnitude;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude*/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Min Range")
 	float MinRange;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Max Range")
 	float MaxRange;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The field value will be set to Default if the sample distance from the box is higher than the scale of the transform */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Default Value")
 	float Default;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Translation, Rotation and Scale of the unit box */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Box Transform")
 	FTransform Transform;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Type of falloff function used to model the evolution of the field from the box surface to the sample position */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Falloff Type")
 	TEnumAsByte<EFieldFalloffType> Falloff;
 };
 
@@ -379,7 +574,7 @@ public:
 /**
 * NoiseField
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Defines a perlin noise scalar value if the sample is within a box"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UNoiseField : public UFieldNodeFloat
 {
 	GENERATED_BODY()
@@ -397,25 +592,34 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
-	UFUNCTION(BlueprintPure, Category = "Field", meta = (MinRange = "0.0", MaxRange = "1.0"))
-	UNoiseField* SetNoiseField(float MinRange, float MaxRange, FTransform Transform);
+	/**
+	 * Defines a perlin noise scalar value if the sample is within a box
+	 * @param    MinRange The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude
+	 * @param    MaxRange The initial function value between 0 and 1 will be scaled between MinRange and MaxRange before being multiplied by magnitude
+	 * @param    Transform Transform of the box in which the perlin noise will be defined
+	 */
+	UFUNCTION(BlueprintPure, Category = "Field", meta = (MinRange = "0.0", MaxRange = "1.0"), DisplayName = "Set Noise Field")
+	UNoiseField* SetNoiseField(UPARAM(DisplayName = "Min Range") float MinRange,
+			UPARAM(DisplayName = "Max Range") float MaxRange,
+			UPARAM(DisplayName = "Noise Transform")  FTransform Transform);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The initial function value between 0 and 1 will be scaled between MinRange and MaxRange */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Min Range")
 	float MinRange;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** The initial function value between 0 and 1 will be scaled between MinRange and MaxRange */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Max Range")
 	float MaxRange;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Transform of the box in which the perlin noise will be defined */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Noise Transform")
 	FTransform Transform;
 };
-
-
 
 /**
 * UniformVector
 **/
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Set a uniform vector value independently of the sample position.The output is equal to magnitude * direction"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UUniformVector : public UFieldNodeVector
 {
 	GENERATED_BODY()
@@ -431,13 +635,21 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
+	/**
+	 * Set a uniform vector value independently of the sample position.The output is equal to magnitude * direction
+	 * @param    Magnitude Magnitude of the uniform vector field
+	 * @param    Direction Normalized direction of the uniform vector field
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "1.0"))
-	UUniformVector* SetUniformVector(float Magnitude, FVector Direction);
+	UUniformVector* SetUniformVector(UPARAM(DisplayName = "Field Magnitude") float Magnitude,
+			UPARAM(DisplayName = "Uniform Direction") FVector Direction);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Magnitude of the uniform vector field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
 	float Magnitude;
-	
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+
+	/** Normalized direction of the uniform vector field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Uniform Direction")
 	FVector Direction;
 };
 
@@ -445,7 +657,7 @@ public:
 /**
 * RadialVector
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Set a radial vector value, the direction being the vector from the sample position to the field one. The output is equal to magnitude * direction"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API URadialVector : public UFieldNodeVector
 {
 	GENERATED_BODY()
@@ -461,20 +673,28 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
+	/**
+	 * Set a radial vector value. The direction is the normalized vector from the field position to the sample one. The output is equal to this direction * magnitude.
+	 * @param    Magnitude Magnitude of the radial vector field
+	 * @param    Position Center position of the radial vector field
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "1.0"))
-	URadialVector* SetRadialVector(float Magnitude, FVector Position);
+	URadialVector* SetRadialVector(UPARAM(DisplayName = "Field Magnitude") float Magnitude,
+								   UPARAM(DisplayName = "Center Position") FVector Position);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Magnitude of the radial vector field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
 	float Magnitude;
-	
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+
+	/** Center position of the radial vector field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Center Position")
 	FVector Position;
 };
 
 /**
 * URandomVector
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Set a random vector value independently of the sample position. The output is equal to magnitude * random direction "), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API URandomVector : public UFieldNodeVector
 {
 	GENERATED_BODY()
@@ -489,18 +709,23 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
+	/**
+	 * Set a random vector value independently of the sample position. The output is equal to magnitude * random direction
+	 * @param    Magnitude Magnitude of the random vector field
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "1.0"))
-	URandomVector* SetRandomVector(float Magnitude);
+	URandomVector* SetRandomVector(UPARAM(DisplayName = "Field Magnitude") float Magnitude);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
-		float Magnitude;
+	/** Magnitude of the random vector field*/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
+	float Magnitude;
 };
 
 
 /**
 * UOperatorField
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Compute an operation between 2 incoming fields"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UOperatorField : public UFieldNodeBase
 {
 	GENERATED_BODY()
@@ -521,27 +746,40 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
+	/**
+	 * Compute an operation between 2 incoming fields
+	 * @param    Magnitude Magnitude of the operator field
+	 * @param    LeftField Input field A to be processed
+	 * @param    RightField Input field B to be processed
+	 * @param    Operation Type of math operation you want to perform between the 2 fields
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field", meta = (Magnitude = "1.0"))
-	UOperatorField* SetOperatorField(float Magnitude, const UFieldNodeBase* RightField, const UFieldNodeBase* LeftField, EFieldOperationType Operation);
-	
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	UOperatorField* SetOperatorField(UPARAM(DisplayName = "Field Magnitude") float Magnitude,
+			UPARAM(DisplayName = "Left Field") const UFieldNodeBase* LeftField,
+			UPARAM(DisplayName = "Right Field") const UFieldNodeBase* RightField,
+			UPARAM(DisplayName = "Field Operation") EFieldOperationType Operation);
+
+	/** Magnitude of the operator field */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Magnitude")
 	float Magnitude;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Right field to be processed */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Input Field A")
 	const UFieldNodeBase* RightField;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Left field to be processed */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Input Field B")
 	const UFieldNodeBase* LeftField;
-	
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
-	TEnumAsByte<EFieldOperationType> Operation;
 
+	/** Type of operation you want to perform between the 2 fields */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Field Operation")
+	TEnumAsByte<EFieldOperationType> Operation;
 };
 
 /**
 * UToIntegerField
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Convert a scalar field to a integer one"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UToIntegerField : public UFieldNodeInt
 {
 	GENERATED_BODY()
@@ -556,17 +794,22 @@ public:
 
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
-	UFUNCTION(BlueprintPure, Category = "Field")
-	UToIntegerField* SetToIntegerField(const UFieldNodeFloat* FloatField);
+	/**
+	 * Convert a float field to a integer one
+	 * @param    FloatField Float field to be converted to an an integer one
+	 */
+	UFUNCTION(BlueprintPure, Category = "Field", DisplayName = "Set To Integer Field")
+	UToIntegerField* SetToIntegerField(UPARAM(DisplayName = "Float Field") const UFieldNodeFloat* FloatField);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Scalar field to be converted to an an integer one */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Float Field")
 	const UFieldNodeFloat* FloatField;
 };
 
 /**
 * UToFloatField
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Convert an integer field to a scalar one"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UToFloatField : public UFieldNodeFloat
 {
 	GENERATED_BODY()
@@ -578,20 +821,25 @@ public:
 	{}
 
 	virtual ~UToFloatField() {}
-	 
+
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 
-	UFUNCTION(BlueprintPure, Category = "Field")
-	UToFloatField* SetToFloatField(const UFieldNodeInt* IntegerField);
+	/**
+	 * Convert an integer field to a float one
+	 * @param    IntegerField Integer field to be converted to an a float one
+	 */
+	UFUNCTION(BlueprintPure, Category = "Field", DisplayName = "Set To Float Field")
+	UToFloatField* SetToFloatField(UPARAM(DisplayName = "Integer Field") const UFieldNodeInt* IntegerField);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Integer field to be converted to an a scalar one */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Integer Field")
 	const UFieldNodeInt* IntField;
 };
 
 /**
 * UCullingField
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Evaluate the input field according to the result of the culling field"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UCullingField : public UFieldNodeBase
 {
 	GENERATED_BODY()
@@ -610,23 +858,34 @@ public:
 
 	virtual FFieldNodeBase::EFieldType Type() const override;
 
+	/**
+	 * Evaluate the input field according to the result of the culling field
+	 * @param    Culling Culling field to be used
+	 * @param    Field Input field that will be evaluated according to the culling field result
+	 * @param    Operation Evaluate the input field if the result of the culling field is equal to 0 (Inside) or different from 0 (Outside)
+	 */
 	UFUNCTION(BlueprintPure, Category = "Field")
-	UCullingField* SetCullingField( const UFieldNodeBase* Culling, const UFieldNodeBase* Field, EFieldCullingOperationType Operation);
+	UCullingField* SetCullingField(UPARAM(DisplayName = "Culling Field") const UFieldNodeBase* Culling,
+			UPARAM(DisplayName = "Input Field") const UFieldNodeBase* Field,
+			UPARAM(DisplayName = "Culling Operation") EFieldCullingOperationType Operation);
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Culling field to be used */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Culling Field")
 	const UFieldNodeBase* Culling;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Input field that will be evaluated according to the culling field result */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Input Field")
 	const UFieldNodeBase* Field;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field")
+	/** Evaluate the input field if the result of the culling field is equal to 0 (Inside) or different from 0 (Outside) */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Culling Operation")
 	TEnumAsByte<EFieldCullingOperationType> Operation;
 };
 
 /**
 * UReturnResultsField
 */
-UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent), ShowCategories = ("Field"))
+UCLASS(ClassGroup = "Field", meta = (BlueprintSpawnableComponent, ToolTip = "Terminal field of a graph"), ShowCategories = ("Field"))
 class FIELDSYSTEMENGINE_API UReturnResultsTerminal : public UFieldNodeBase
 {
 	GENERATED_BODY()
@@ -640,10 +899,104 @@ public:
 	virtual FFieldNodeBase* NewEvaluationGraph(TArray<const UFieldNodeBase*>& Nodes) const override;
 	virtual FFieldNodeBase::EFieldType Type() const override { return  FFieldNodeBase::EFieldType::EField_Results; }
 
-	UFUNCTION(BlueprintPure, Category = "Field")
-	UReturnResultsTerminal* SetReturnResultsTerminal( );
+	/** Terminal field of a graph */
+	UFUNCTION(BlueprintPure, Category = "Field", DisplayName = "Set Terminal Field")
+	UReturnResultsTerminal* SetReturnResultsTerminal();
 
 };
+
+/**
+* Field Commands container that will be stored in the construction script
+*/
+USTRUCT(BlueprintType)
+struct FIELDSYSTEMENGINE_API FFieldObjectCommands
+{
+	GENERATED_BODY()
+
+		FFieldObjectCommands()
+		: TargetNames()
+		, RootNodes()
+		, MetaDatas()
+	{}
+
+	~FFieldObjectCommands() {}
+
+	/** Add a command to the container */
+	void AddFieldCommand(const FName& TargetName, UFieldNodeBase* RootNode, UFieldSystemMetaData* MetaData)
+	{
+		TargetNames.Add(TargetName);
+		RootNodes.Add(RootNode);
+		MetaDatas.Add(MetaData);
+	}
+
+	/** Reset the commands container to empty */
+	void ResetFieldCommands()
+	{
+		TargetNames.Reset();
+		RootNodes.Reset();
+		MetaDatas.Reset();
+	}
+
+	/** Get the number of commands in the container */
+	int32 GetNumCommands() const
+	{
+		return TargetNames.Num();
+	}
+
+	/** Create a FFieldCommand from a given target + node + metadata + transform */
+	static FFieldSystemCommand CreateFieldCommand(const FName& TargetName, UFieldNodeBase* RootNode, UFieldSystemMetaData* MetaData)
+	{
+		if (RootNode)
+		{
+			TArray<const UFieldNodeBase*> Nodes;
+			FFieldSystemCommand Command = { TargetName, RootNode->NewEvaluationGraph(Nodes) };
+			if (ensureMsgf(Command.RootNode,
+				TEXT("Failed to generate physics field command for target attribute.")))
+			{
+				if (MetaData)
+				{
+					switch (MetaData->Type())
+					{
+					case FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution:
+						Command.MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution).Reset(new FFieldSystemMetaDataProcessingResolution(static_cast<UFieldSystemMetaDataProcessingResolution*>(MetaData)->ResolutionType));
+						break;
+					case FFieldSystemMetaData::EMetaType::ECommandData_Iteration:
+						Command.MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_Iteration).Reset(new FFieldSystemMetaDataIteration(static_cast<UFieldSystemMetaDataIteration*>(MetaData)->Iterations));
+						break;
+					case FFieldSystemMetaData::EMetaType::ECommandData_Filter:
+						Command.MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_Filter).Reset(new FFieldSystemMetaDataFilter(static_cast<UFieldSystemMetaDataFilter*>(MetaData)->FilterType));
+						break;
+					}
+				}
+				ensure(!Command.TargetAttribute.IsEqual("None"));
+			}
+			return Command;
+		}
+		else
+		{
+			return FFieldSystemCommand();
+		}
+	}
+
+	/** Build the FFieldCommand from one item in the container */
+	FFieldSystemCommand BuildFieldCommand(const int32 CommandIndex) const
+	{
+		return (CommandIndex < GetNumCommands()) ? CreateFieldCommand(TargetNames[CommandIndex], RootNodes[CommandIndex], MetaDatas[CommandIndex]) : FFieldSystemCommand();
+	}
+
+	/**Commands Target Name */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Target Names")
+	TArray<FName> TargetNames;
+
+	/** Commands Root Node */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Root Nodes")
+	TArray<UFieldNodeBase*> RootNodes;
+
+	/** Commands Meta Data*/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Meta Datas")
+	TArray<UFieldSystemMetaData*> MetaDatas;
+};
+
 
 
 

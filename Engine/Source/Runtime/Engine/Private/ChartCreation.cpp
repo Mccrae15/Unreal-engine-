@@ -81,8 +81,6 @@ static TAutoConsoleVariable<FString> GFPSChartInterestingFramerates(
 /** Array of interesting summary thresholds (e.g., 30 Hz, 60 Hz, 120 Hz) */
 TArray<int32> GTargetFrameRatesForSummary;
 
-TWeakObjectPtr<UDeviceProfileManager> GDeviceProfileManager = nullptr;
-
 //////////////////////////////////////////////////////////////////////
 // FDumpFPSChartToEndpoint
 
@@ -266,7 +264,7 @@ void FDumpFPSChartToEndpoint::DumpChart(double InWallClockTimeFromStartOfChartin
 
 	for (int32 NumBins = Chart.DynamicResHistogram.GetNumBins(), BinIndex = 0; BinIndex < NumBins; ++BinIndex)
 	{
-		// Get the sub of this and all subsequent bins data. This is O(N^2), but we only have 5 bins... 
+		// Get the sub of this and all subsequent bins data. This is O(N^2), but we only have a few bins... 
 		int32 ChartEntryCount = 0;
 		for (int BinIndex2 = BinIndex; BinIndex2 < NumBins; BinIndex2++)
 		{
@@ -569,17 +567,6 @@ FPerformanceTrackingChart::FPerformanceTrackingChart(const FDateTime& InStartTim
 	: ChartLabel(InChartLabel)
 {
 	Reset(InStartTime);
-
-	// Lazy init the DP manager. Need a weak ptr to it to tell if it still exists
-	if (GDeviceProfileManager == nullptr)
-	{
-		GDeviceProfileManager = &UDeviceProfileManager::Get(); 
-	}
-
-	if (GDeviceProfileManager.IsValid())
-	{
-		DeviceProfilesUpdatedDelegateHandle = UDeviceProfileManager::Get().OnManagerUpdated().AddRaw(this, &FPerformanceTrackingChart::OnDeviceProfileManagerUpdated);
-	}
 }
 
 FPerformanceTrackingChart::FPerformanceTrackingChart()
@@ -589,10 +576,6 @@ FPerformanceTrackingChart::FPerformanceTrackingChart()
 
 FPerformanceTrackingChart::~FPerformanceTrackingChart()
 {
-	if (GDeviceProfileManager.IsValid() && DeviceProfilesUpdatedDelegateHandle.IsValid() )
-	{
-		UDeviceProfileManager::Get().OnManagerUpdated().Remove(DeviceProfilesUpdatedDelegateHandle);
-	}
 }
 
 // Discard all accumulated data
@@ -655,8 +638,8 @@ void FPerformanceTrackingChart::Reset(const FDateTime& InStartTime)
 	}
 
 	{
-		FHistogramBuilder Builder(DynamicResHistogram, 60.0);
-		const double DynamicResMaxPercentages[] = { 70.0, 80.0, 90.0, 100.0 };
+		FHistogramBuilder Builder(DynamicResHistogram, 0.0);
+		const double DynamicResMaxPercentages[] = { 60.0, 70.0, 80.0, 90.0, 100.0 };
 
 		for (double MaxPercentage : DynamicResMaxPercentages)
 		{
@@ -678,6 +661,7 @@ void FPerformanceTrackingChart::AccumulateWith(const FPerformanceTrackingChart& 
 {
 	FrametimeHistogram += Chart.FrametimeHistogram;
 	HitchTimeHistogram += Chart.HitchTimeHistogram;
+	DynamicResHistogram += Chart.DynamicResHistogram;
 	NumFramesBound_GameThread += Chart.NumFramesBound_GameThread;
 	NumFramesBound_RenderThread += Chart.NumFramesBound_RenderThread;
 	NumFramesBound_RHIThread += Chart.NumFramesBound_RHIThread;
@@ -748,15 +732,6 @@ void FPerformanceTrackingChart::ResumeCharting()
 	bIsChartingPaused = false;
 }
 
-void FPerformanceTrackingChart::OnDeviceProfileManagerUpdated()
-{
-	FString CurrentDeviceProfileName = UDeviceProfileManager::Get().GetActiveDeviceProfileName();
-	if (CurrentDeviceProfileName != DeviceProfileName)
-	{
-		DeviceProfileName = TEXT("Mixed");
-	}
-}
-
 void FPerformanceTrackingChart::ProcessFrame(const FFrameData& FrameData)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FPerformanceTrackingChart_ProcessFrame);
@@ -806,14 +781,16 @@ void FPerformanceTrackingChart::ProcessFrame(const FFrameData& FrameData)
 		TotalSyncLoadCount += FrameData.SyncLoadCount;
 
 		// Track draw calls
-		MaxDrawCalls = FMath::Max(MaxDrawCalls, GNumDrawCallsRHI);
-		MinDrawCalls = FMath::Min(MinDrawCalls, GNumDrawCallsRHI);
-		TotalDrawCalls += GNumDrawCallsRHI;
+		// Multi-GPU support : ChartCreation doesn't support MGPU yet
+		MaxDrawCalls = FMath::Max(MaxDrawCalls, GNumDrawCallsRHI[0]);
+		MinDrawCalls = FMath::Min(MinDrawCalls, GNumDrawCallsRHI[0]);
+		TotalDrawCalls += GNumDrawCallsRHI[0];
 
 		// Track primitives
-		MaxDrawnPrimitives = FMath::Max(MaxDrawnPrimitives, GNumPrimitivesDrawnRHI);
-		MinDrawnPrimitives = FMath::Min(MinDrawnPrimitives, GNumPrimitivesDrawnRHI);
-		TotalDrawnPrimitives += GNumPrimitivesDrawnRHI;
+		// Multi-GPU support : ChartCreation doesn't support MGPU yet
+		MaxDrawnPrimitives = FMath::Max(MaxDrawnPrimitives, GNumPrimitivesDrawnRHI[0]);
+		MinDrawnPrimitives = FMath::Min(MinDrawnPrimitives, GNumPrimitivesDrawnRHI[0]);
+		TotalDrawnPrimitives += GNumPrimitivesDrawnRHI[0];
 
 		// track memory
 		FPlatformMemoryStats MemoryStats = FPlatformMemory::GetStats();
@@ -1413,8 +1390,9 @@ void UEngine::TickPerformanceMonitoring(float DeltaSeconds)
 	LLM_SCOPE(ELLMTag::Stats);
 
 #if !UE_BUILD_SHIPPING
-	FPlatformMisc::CustomNamedStat("NumDrawCallsRHI", (float)GNumDrawCallsRHI, "Rendering", "Count");
-	FPlatformMisc::CustomNamedStat("NumPrimitivesDrawnRHI", (float)GNumPrimitivesDrawnRHI, "Rendering", "Count");
+	// Multi-GPU support : ChartCreation doesn't support MGPU yet
+	FPlatformMisc::CustomNamedStat("NumDrawCallsRHI", (float)GNumDrawCallsRHI[0], "Rendering", "Count");
+	FPlatformMisc::CustomNamedStat("NumPrimitivesDrawnRHI", (float)GNumPrimitivesDrawnRHI[0], "Rendering", "Count");
 
 	FPlatformMisc::CustomNamedStat("MemoryUsed", (float)FPlatformMemory::GetMemoryUsedFast(), "Memory", "Bytes");
 #endif // !UE_BUILD_SHIPPING

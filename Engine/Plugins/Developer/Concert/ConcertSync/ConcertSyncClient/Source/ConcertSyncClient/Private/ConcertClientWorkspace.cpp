@@ -1,12 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertClientWorkspace.h"
+#include "Algo/AllOf.h"
 #include "ConcertClientTransactionManager.h"
 #include "ConcertClientPackageManager.h"
 #include "ConcertClientLockManager.h"
 #include "IConcertClientPackageBridge.h"
 #include "IConcertClient.h"
+#include "IConcertClientWorkspace.h"
 #include "IConcertModule.h"
+#include "IConcertSyncClientModule.h"
+
 #include "IConcertSession.h"
 #include "IConcertFileSharingService.h"
 #include "ConcertSyncClientLiveSession.h"
@@ -18,8 +22,10 @@
 #include "ConcertClientDataStore.h"
 #include "ConcertClientLiveTransactionAuthors.h"
 
+
 #include "Containers/Ticker.h"
 #include "Containers/ArrayBuilder.h"
+#include "IConcertSyncClient.h"
 #include "UObject/Package.h"
 #include "UObject/Linker.h"
 #include "UObject/LinkerLoad.h"
@@ -27,6 +33,7 @@
 #include "Misc/PackageName.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFilemanager.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/App.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
@@ -111,10 +118,85 @@ private:
 	TArray<TUniquePtr<FScopedSlowTask>> ExtendedTaskLife;
 };
 
+void SetReflectEditorLevelVisibilityWithGame(bool InValue)
+{
+#if WITH_EDITOR
+	// Detail mode was modified, so store in the CVar
+	static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("Editor.ReflectEditorLevelVisibilityWithGame"));
+	int32 ValAsInt = !!InValue;
+	CVar->Set(ValAsInt);
+#endif
+}
+
+struct FConcertWorkspaceConsoleCommands
+{
+	FConcertWorkspaceConsoleCommands() :
+		EnableRemoteVerboseLogging(TEXT("Concert.SetRemoteLoggingOn"), TEXT("Send logging event to enable verbose logging on server."),
+								   FConsoleCommandDelegate::CreateRaw(this, &FConcertWorkspaceConsoleCommands::EnableRemoteLogging)),
+		DisableRemoteVerboseLogging(TEXT("Concert.SetRemoteLoggingOff"), TEXT("Send logging event to disable verbose logging on server."),
+									FConsoleCommandDelegate::CreateRaw(this, &FConcertWorkspaceConsoleCommands::DisableRemoteLogging))
+	{
+	};
+
+	TSharedPtr<IConcertClientWorkspace> GetConnectedWorkspace()
+	{
+		if (TSharedPtr<IConcertSyncClient> ConcertSyncClient = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser")))
+		{
+			TSharedPtr<IConcertClientWorkspace> Workspace = ConcertSyncClient->GetWorkspace();
+			IConcertClientSession& Session = Workspace->GetSession();
+			if (Session.GetConnectionStatus() == EConcertConnectionStatus::Connected)
+			{
+				return Workspace;
+			}
+		}
+		return nullptr;
+	}
+
+	void SendForceResend()
+	{
+		TSharedPtr<IConcertClientWorkspace> Workspace = GetConnectedWorkspace();
+		if (Workspace)
+		{
+			IConcertClientSession& Session = Workspace->GetSession();
+			FConcertSendResendPending Resend;
+			Session.SendCustomEvent(Resend, Session.GetSessionServerEndpointId(), EConcertMessageFlags::None);
+		}
+	}
+
+	void SendRemoteLogging(bool bInValue)
+	{
+		TSharedPtr<IConcertClientWorkspace> Workspace = GetConnectedWorkspace();
+		if (Workspace)
+		{
+			IConcertClientSession& Session = Workspace->GetSession();
+			FConcertServerLogging Logging;
+			Logging.bLoggingEnabled = bInValue;
+			Session.SendCustomEvent(Logging, Session.GetSessionServerEndpointId(), EConcertMessageFlags::None);
+		}
+	}
+
+	void EnableRemoteLogging()
+	{
+		SendRemoteLogging(true);
+	}
+
+	void DisableRemoteLogging()
+	{
+		SendRemoteLogging(false);
+	}
+
+	/** Console command enable verbose logging command to server. */
+	FAutoConsoleCommand EnableRemoteVerboseLogging;
+
+	/** Console command disable verbose logging command to server. */
+	FAutoConsoleCommand DisableRemoteVerboseLogging;
+};
 
 FConcertClientWorkspace::FConcertClientWorkspace(TSharedRef<FConcertSyncClientLiveSession> InLiveSession, IConcertClientPackageBridge* InPackageBridge, IConcertClientTransactionBridge* InTransactionBridge, TSharedPtr<IConcertFileSharingService> InFileSharingService)
 	: FileSharingService(MoveTemp(InFileSharingService))
 {
+	static FConcertWorkspaceConsoleCommands ConsoleCommands;
+
 	BindSession(InLiveSession, InPackageBridge, InTransactionBridge);
 }
 
@@ -250,7 +332,7 @@ TFuture<TOptional<FConcertSyncTransactionEvent>> FConcertClientWorkspace::FindOr
 			TWeakPtr<FConcertSyncClientLiveSession> WeakLiveSession = LiveSession;
 			return LiveSession->GetSession().SendCustomRequest<FConcertSyncEventRequest, FConcertSyncEventResponse>(SyncEventRequest, LiveSession->GetSession().GetSessionServerEndpointId()).Next([WeakLiveSession, TransactionEventId](const FConcertSyncEventResponse& Response)
 			{
-				if (Response.Event.UncompressedPayloadSize > 0) // Some data was sent back?
+				if (Response.Event.PayloadSize > 0) // Some data was sent back?
 				{
 					// Extract the payload as FConcertSyncTransactionEvent.
 					FStructOnScope EventPayload;
@@ -535,6 +617,7 @@ void FConcertClientWorkspace::HandleConnectionChanged(IConcertClientSession& InS
 		bHasSyncedWorkspace = false;
 		bFinalizeWorkspaceSyncRequested = false;
 		FConcertSlowTaskStackWorkaround::Get().PopTask(MoveTemp(InitialSyncSlowTask));
+		SetReflectEditorLevelVisibilityWithGame(false);
 	}
 }
 
@@ -685,7 +768,9 @@ void FConcertClientWorkspace::HandleEndPIE(const bool InIsSimulating)
 
 void FConcertClientWorkspace::OnEndFrame()
 {
-	if (bFinalizeWorkspaceSyncRequested)
+	SCOPED_CONCERT_TRACE(FConcertClientWorkspace_OnEndFrame);
+
+	if (CanFinalize())
 	{
 		bFinalizeWorkspaceSyncRequested = false;
 
@@ -724,7 +809,7 @@ void FConcertClientWorkspace::OnEndFrame()
 		FConcertSlowTaskStackWorkaround::Get().PopTask(MoveTemp(InitialSyncSlowTask));
 	}
 
-	if (bHasSyncedWorkspace)
+	if (bHasSyncedWorkspace && CanProcessPendingPackages())
 	{
 		if (PackageManager)
 		{
@@ -743,6 +828,9 @@ void FConcertClientWorkspace::OnEndFrame()
 			bPendingStopIgnoringActivityOnRestore = false;
 		}
 	}
+	LiveSession->GetSessionDatabase().UpdateAsynchronousTasks();
+	const UConcertClientConfig *Config = GetDefault<UConcertClientConfig>();
+	SetReflectEditorLevelVisibilityWithGame(Config->ClientSettings.bReflectLevelEditorInGame);
 }
 
 void FConcertClientWorkspace::HandleWorkspaceSyncEndpointEvent(const FConcertSessionContext& Context, const FConcertWorkspaceSyncEndpointEvent& Event)
@@ -760,6 +848,8 @@ void FConcertClientWorkspace::HandleWorkspaceSyncEndpointEvent(const FConcertSes
 
 void FConcertClientWorkspace::HandleWorkspaceSyncActivityEvent(const FConcertSessionContext& Context, const FConcertWorkspaceSyncActivityEvent& Event)
 {
+	SCOPED_CONCERT_TRACE(FConcertClientWorkspace_HandleWorkspaceSyncActivityEvent);
+
 	FStructOnScope ActivityPayload;
 	Event.Activity.GetPayload(ActivityPayload);
 
@@ -917,10 +1007,10 @@ void FConcertClientWorkspace::SetPackageActivity(const FConcertSyncPackageActivi
 	}
 	else
 	{
-		FMemoryReader Ar(InPackageActivity.EventData.Package.PackageData); // Package data is embedded in the activity itself.
+		FMemoryReader Ar(InPackageActivity.EventData.Package.PackageData.Bytes); // Package data is embedded in the activity itself.
 		PackageActivityEventPart.PackageDataStream.DataAr = &Ar;
 		PackageActivityEventPart.PackageDataStream.DataSize = Ar.TotalSize();
-		PackageActivityEventPart.PackageDataStream.DataBlob = &InPackageActivity.EventData.Package.PackageData;
+		PackageActivityEventPart.PackageDataStream.DataBlob = &InPackageActivity.EventData.Package.PackageData.Bytes;
 		SetPackageActivityFn(PackageActivityBasePart, PackageActivityEventPart);
 	}
 }
@@ -961,5 +1051,50 @@ void FConcertClientWorkspace::SetIgnoreOnRestoreFlagForEmittedActivities(bool bI
 		bPendingStopIgnoringActivityOnRestore = true;
 	}
 }
+
+bool FConcertClientWorkspace::CanFinalize() const
+{
+	return bFinalizeWorkspaceSyncRequested && Algo::AllOf(CanFinalizeDelegates, [](const TTuple<FName,FCanFinalizeWorkspaceDelegate>& Pair)
+		{
+			if (Pair.Get<1>().IsBound())
+			{
+				return Pair.Get<1>().Execute();
+			}
+			return true;
+		});
+}
+
+void FConcertClientWorkspace::AddWorkspaceFinalizeDelegate(FName InDelegateName, FCanFinalizeWorkspaceDelegate InDelegate)
+{
+	CanFinalizeDelegates.FindOrAdd(InDelegateName, MoveTemp(InDelegate));
+}
+
+void FConcertClientWorkspace::RemoveWorkspaceFinalizeDelegate(FName InDelegateName)
+{
+	CanFinalizeDelegates.Remove(InDelegateName);
+}
+
+void FConcertClientWorkspace::AddWorkspaceCanProcessPackagesDelegate(FName InDelegateName, FCanProcessPendingPackages Delegate)
+{
+	CanProcessPendingDelegates.FindOrAdd(InDelegateName, MoveTemp(Delegate));
+}
+
+void FConcertClientWorkspace::RemoveWorkspaceCanProcessPackagesDelegate(FName InDelegateName)
+{
+	CanProcessPendingDelegates.Remove(InDelegateName);
+}
+
+bool FConcertClientWorkspace::CanProcessPendingPackages() const
+{
+	return Algo::AllOf(CanProcessPendingDelegates, [](const TTuple<FName,FCanProcessPendingPackages>& Pair)
+		{
+			if (Pair.Get<1>().IsBound())
+			{
+				return Pair.Get<1>().Execute();
+			}
+			return true;
+		});
+}
+
 
 #undef LOCTEXT_NAMESPACE

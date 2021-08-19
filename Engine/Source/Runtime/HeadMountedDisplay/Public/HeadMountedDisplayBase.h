@@ -19,6 +19,11 @@ public:
 	virtual ~FHeadMountedDisplayBase() {}
 
 	/**
+	 * Retrieves the HMD name, by default this is the same as the system name.
+	 */
+	virtual FName GetHMDName() const override { return GetSystemName(); }
+
+	/**
 	 * Record analytics - To add custom information logged with the analytics, override PopulateAnalyticsAttributes
 	 */
 	virtual void RecordAnalytics() override;
@@ -39,7 +44,7 @@ public:
 	virtual IStereoLayers* GetStereoLayers() override;
 
 	virtual bool GetHMDDistortionEnabled(EShadingPath ShadingPath) const override;
-	virtual void OnLateUpdateApplied_RenderThread(const FTransform& NewRelativeTransform) override;
+	virtual void OnLateUpdateApplied_RenderThread(FRHICommandListImmediate& RHICmdList, const FTransform& NewRelativeTransform) override;
 
 	virtual void CalculateStereoViewOffset(const enum EStereoscopicPass StereoPassType, FRotator& ViewRotation, const float WorldToMeters, FVector& ViewLocation) override;
 	virtual void InitCanvasFromView(FSceneView* InView, UCanvas* Canvas) override;

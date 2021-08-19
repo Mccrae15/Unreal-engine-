@@ -572,6 +572,15 @@ public:
 **/
 class COREUOBJECT_API FUObjectArray
 {
+	friend class UObject;
+private:
+	/**
+	 * Reset the serial number from the game thread to invalidate all weak object pointers to it
+	 *
+	 * @param Object to reset
+	 */
+	void ResetSerialNumber(UObjectBase* Object);
+
 public:
 
 	enum ESerialNumberConstants
@@ -911,6 +920,24 @@ public:
 		return ObjectItem->GetSerialNumber();
 	}
 
+	/** Locks the internal object array mutex */
+	void LockInternalArray() const
+	{
+#if THREADSAFE_UOBJECTS
+		ObjObjectsCritical.Lock();
+#else
+		check(IsInGameThread());
+#endif
+	}
+
+	/** Unlocks the internal object array mutex */
+	void UnlockInternalArray() const
+	{
+#if THREADSAFE_UOBJECTS
+		ObjObjectsCritical.Unlock();
+#endif
+	}
+
 	/**
 	 * Low level iterator.
 	 */
@@ -1010,6 +1037,13 @@ public:
 			}
 			return false;
 		}
+
+		/** Gets the array this iterator iterates over */
+		const FUObjectArray& GetIteratedArray() const
+		{
+			return Array;
+		}
+
 	private:
 		/** the array that we are iterating on, probably always GUObjectArray */
 		const FUObjectArray& Array;
@@ -1038,9 +1072,9 @@ private:
 	/** Array of all live objects.											*/
 	TUObjectArray ObjObjects;
 	/** Synchronization object for all live objects.											*/
-	FCriticalSection ObjObjectsCritical;
+	mutable FCriticalSection ObjObjectsCritical;
 	/** Available object indices.											*/
-	TLockFreePointerListUnordered<int32, PLATFORM_CACHE_LINE_SIZE> ObjAvailableList;
+	TArray<int32> ObjAvailableList;
 #if UE_GC_TRACK_OBJ_AVAILABLE
 	/** Available object index count.										*/
 	FThreadSafeCounter ObjAvailableCount;

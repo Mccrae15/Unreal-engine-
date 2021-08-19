@@ -127,15 +127,6 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOnlineEnvironmentChanged, EOnlineEnviron
 typedef FOnOnlineEnvironmentChanged::FDelegate FOnOnlineEnvironmentChangedDelegate;
 
 /**
-* Delegate fired when the "Play Together" event is sent from the PS4 system (Deprecated)
-*
-* @param UserIndex - User index of the player the event is for
-* @param UserIdList - list of other users in the PS4 party to send invites to
-*/
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPlayTogetherEventReceived, int32, TArray<TSharedPtr<const FUniqueNetId>>);
-typedef FOnPlayTogetherEventReceived::FDelegate FOnPlayTogetherEventReceivedDelegate;
-
-/**
  *	OnlineSubsystem - Series of interfaces to support communicating with various web/platform layer services
  */
 class ONLINESUBSYSTEM_API IOnlineSubsystem
@@ -605,17 +596,14 @@ public:
 	DEFINE_ONLINE_DELEGATE_TWO_PARAM(OnOnlineEnvironmentChanged, EOnlineEnvironment::Type /*LastEnvironment*/, EOnlineEnvironment::Type /*Environment*/);
 
 	/**
-	* Delegate fired when the "Play Together" event is sent from the PS4 system (Deprecated)
-	*
-	* @param UserIndex - User index of the player the event is for
-	* @param UserIdList - list of other users in the PS4 party to send invites to
-	*/
- 	DEFINE_ONLINE_DELEGATE_TWO_PARAM(OnPlayTogetherEventReceived, int32, TArray<TSharedPtr<const FUniqueNetId>>);
-
-	/**
 	 * @return The name of the online service this platform uses
 	 */
 	virtual FText GetOnlineServiceName() const = 0;
+
+	/**
+	 * @return The name of the social platform for this subsystem
+	 */
+	virtual FText GetSocialPlatformName() const = 0;
 
 	/**
 	 * Reload the configuration if it is relevant for this OSS instance
@@ -685,4 +673,4 @@ ONLINESUBSYSTEM_API bool IsUniqueIdLocal(const FUniqueNetId& UniqueId);
 ONLINESUBSYSTEM_API int32 GetBeaconPortFromSessionSettings(const class FOnlineSessionSettings& SessionSettings);
 
 /** Temp solution for some hardcoded access to logged in user 0, please avoid using this */
-ONLINESUBSYSTEM_API TSharedPtr<const FUniqueNetId> GetFirstSignedInUser(IOnlineIdentityPtr IdentityInt);
+ONLINESUBSYSTEM_API FUniqueNetIdPtr GetFirstSignedInUser(IOnlineIdentityPtr IdentityInt);

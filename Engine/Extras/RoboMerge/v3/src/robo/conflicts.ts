@@ -2,7 +2,8 @@
 
 import { ContextualLogger } from 'common/logger';
 import { AlreadyIntegrated, Blockage, Branch, BranchArg, branchesMatch } from './branch-interfaces';
-import { ChangeInfo, FailureKind, ForcedCl, resolveBranchArg } from './branch-interfaces';
+import { ChangeInfo, ForcedCl, resolveBranchArg } from './branch-interfaces';
+import { ConflictStatusFields } from './status-types';
 import { PersistentConflict, PersistentConflictToString, Resolution } from './conflict-interfaces';
 import { EdgeBot } from './edgebot';
 import { BotEventHandler, BotEventTriggers } from './events';
@@ -85,16 +86,6 @@ class BuildHealthReporter implements BotEventHandler {
 			UGS.reportResolved(conflict.ugsIssue)
 		}
 	}
-}
-
-export type ConflictStatusFields = {
-	cl: number
-	sourceCl: number
-	target?: string
-	targetStream?: string 
-	kind: FailureKind
-	author: string
-	owner: string
 }
 
 /** Per node-bot record of conflicts waiting for resolution */
@@ -269,7 +260,7 @@ export class Conflicts {
 				setResolvedTimeAsNow(conflict)
 			}
 
-			this.conflictLogger.info(`Conflict for branch ${targetBranchStr} cl ${conflict.cl} seems to be resolved: ${conflict.resolution}`)
+			this.conflictLogger.info(`Conflict for branch ${targetBranchStr} cl ${conflict.cl} seems to be resolved: ${conflict.resolution} by ${conflict.resolvingAuthor}`)
 		}
 
 
@@ -277,7 +268,6 @@ export class Conflicts {
 		
 		// fire events after updating the conflicts state
 		for (const conflict of resolvedConflicts) {
-this.conflictLogger.info(`Reporting unblocked (newly resolved) ${conflict.cl} (${remainingConflicts.length}, ${resolvedConflicts.length}`)
 			this.reportUnblocked(conflict)
 		}
 	}

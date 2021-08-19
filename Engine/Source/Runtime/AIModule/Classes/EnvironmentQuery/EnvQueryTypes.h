@@ -305,7 +305,7 @@ struct AIMODULE_API FEnvDirection
 
 	/** defines direction of second line used by test */
 	UPROPERTY(EditDefaultsOnly, Category=Direction, meta=(DisplayName="Mode"))
-	TEnumAsByte<EEnvDirection::Type> DirMode;
+	TEnumAsByte<EEnvDirection::Type> DirMode = EEnvDirection::Type::TwoPoints;
 
 	FText ToText() const;
 };
@@ -703,6 +703,9 @@ struct FEnvQueryDebugData : public FEnvQueryDebugProfileData
 
 	// indicates the query was run in a single-item mode and that it has been found
 	uint32 bSingleItemResult : 1;
+
+	/** composite generator can be counted correctly */
+	int32 CurrentOptionGeneratorIdx = INDEX_NONE;
 
 	FEnvQueryDebugData() : bSingleItemResult(false) {}
 	

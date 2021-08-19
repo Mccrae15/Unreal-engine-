@@ -326,12 +326,16 @@ private:
 	TMap<FCurveEditorTreeItemID, ECurveEditorTreeFilterState> FilterStates;
 };
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnCurveEditorToggleExpansionState, bool);
+
 /** 
  * Complete implementation of a curve editor tree. Only really defines the hierarchy and selection states for tree items.
  */
 class CURVEEDITOR_API FCurveEditorTree
 {
 public:
+	/** Defines a predicate for sorting curve editor tree item implementations. */
+	DECLARE_DELEGATE_RetVal_TwoParams(bool, FTreeItemSortPredicate, const ICurveEditorTreeItem* /* ItemA */, const ICurveEditorTreeItem* /* ItemB */);
 
 	/** Structure containing all the events for this tree */
 	FCurveEditorTreeEvents Events;
@@ -421,10 +425,25 @@ public:
 	const FCurveEditorTreeFilter* FindFilterByType(ECurveEditorTreeFilterType Type) const;
 
 	/**
+	 * Sets a predicate which will be used to sort tree items after they're been marked as needing sort.
+	 */
+	 void SetSortPredicate(FTreeItemSortPredicate InSortPredicate);
+
+	 /**
+	  * Sorts all tree items which have been marked for sorting if the sort predicate has been set.
+	  */
+	void SortTreeItems();
+
+	/**
 	 * Inform this tree that the specified tree item IDs have been directly selected on the UI.
 	 * @note: This populates both implicit and explicit selection state for the supplied items and any children/parents
 	 */
 	void SetDirectSelection(TArray<FCurveEditorTreeItemID>&& TreeItems, FCurveEditor* InCurveEditor);
+
+	/**
+	 * Removes tree items from the current selection.
+	 */
+	void RemoveFromSelection(TArrayView<const FCurveEditorTreeItemID> TreeItems, FCurveEditor* InCurveEditor);
 
 	/**
 	 * Access the selection state for this tree. Items that are neither implicitly or explicitly selected are not present in the map.
@@ -460,6 +479,13 @@ public:
 	 */
 	void Compact();
 
+	/*
+	 * Toggle the expansion state of the selected nodes or all nodes if none selected
+	 */
+	void ToggleExpansionState(bool bRecursive);
+
+	FOnCurveEditorToggleExpansionState& GetToggleExpansionState() { return ToggleExpansionStateDelegate; }
+
 private:
 
 	// Recursively removes children without removing them from the parent (assuming the parent is also being removed)
@@ -474,6 +500,11 @@ private:
 	 * @return Whether any of the items or any their recursive children matched any filter
 	 */
 	bool PerformFilterPass(TArrayView<const FCurveEditorTreeFilter* const> FilterPtrs, TArrayView<const FCurveEditorTreeItemID> ItemsToFilter, ECurveEditorTreeFilterState InheritedState);
+
+	/** 
+	 * Recursively sorts the tree item ids using the sort predicate.
+	 */
+	void SortTreeItems(FSortedCurveEditorTreeItems& TreeItemIDsToSort);
 
 	/** Incrementing ID for the next tree item to be created */
 	FCurveEditorTreeItemID NextTreeItemID;
@@ -493,4 +524,10 @@ private:
 
 	/** Filter state map. Items with no implicit or explicit filter state are not present */
 	FCurveEditorFilterStates FilterStates;
+
+	/** A predicate which will be used to sort tree items after they're been marked as needing sort. */
+	FTreeItemSortPredicate SortPredicate;
+
+	/** Delegate for when toggle expansion state is invoked */
+	FOnCurveEditorToggleExpansionState ToggleExpansionStateDelegate;
 };

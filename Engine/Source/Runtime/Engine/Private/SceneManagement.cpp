@@ -190,8 +190,7 @@ FMeshBatchAndRelevance::FMeshBatchAndRelevance(const FMeshBatch& InMesh, const F
 	Mesh(&InMesh),
 	PrimitiveSceneProxy(InPrimitiveSceneProxy)
 {
-	const FMaterial* Material = InMesh.MaterialRenderProxy->GetMaterial(FeatureLevel);
-	EBlendMode BlendMode = Material->GetBlendMode();
+	EBlendMode BlendMode = InMesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel).GetBlendMode();
 	bHasOpaqueMaterial = (BlendMode == BLEND_Opaque);
 	bHasMaskedMaterial = (BlendMode == BLEND_Masked);
 	bRenderInMainPass = PrimitiveSceneProxy->ShouldRenderInMainPass();
@@ -389,7 +388,6 @@ FLightMapInteraction FLightMapInteraction::InitVirtualTexture(
 {
 	FLightMapInteraction Result;
 	Result.Type = LMIT_Texture;
-	check(bAllowHighQualityLightMaps == true);
 
 #if ALLOW_LQ_LIGHTMAPS && ALLOW_HQ_LIGHTMAPS
 	// however, if simple and directional are allowed, then we must use the value passed in,
@@ -422,6 +420,7 @@ FLightMapInteraction FLightMapInteraction::InitVirtualTexture(
 	if (GIsEditor || !bAllowHighQualityLightMaps)
 	{
 #if ALLOW_LQ_LIGHTMAPS
+		Result.VirtualTexture = VirtualTexture;
 		for (uint32 CoefficientIndex = 0; CoefficientIndex < NUM_LQ_LIGHTMAP_COEF; CoefficientIndex++)
 		{
 			Result.LowQualityCoefficientScales[CoefficientIndex] = InCoefficientScales[LQ_LIGHTMAP_COEF_INDEX + CoefficientIndex];
@@ -725,6 +724,7 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	SharedPointClampedSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	SharedBilinearWrappedSampler = TStaticSamplerState<SF_Bilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
 	SharedBilinearClampedSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	SharedBilinearAnisoClampedSampler = TStaticSamplerState<SF_AnisotropicLinear, AM_Clamp, AM_Clamp, AM_Clamp, 0, 0>::GetRHI();
 	SharedTrilinearWrappedSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
 	SharedTrilinearClampedSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
@@ -748,6 +748,8 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	LightmapSceneData = GIdentityPrimitiveBuffer.LightmapSceneDataBufferSRV;
 
 	SkyIrradianceEnvironmentMap = GIdentityPrimitiveBuffer.SkyIrradianceEnvironmentMapSRV;
+
+	PhysicsFieldClipmapBuffer = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 
 	// [todo] Default to some other buffer
 	WaterIndirection = GIdentityPrimitiveBuffer.PrimitiveSceneDataBufferSRV;
@@ -859,7 +861,7 @@ void GetLightmapClusterResourceParameters(
 	const bool bAllowHighQualityLightMaps = AllowHighQualityLightmaps(FeatureLevel);
 
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
-	const bool bUseVirtualTextures = bAllowHighQualityLightMaps && (CVar->GetValueOnRenderThread() != 0) && UseVirtualTexturing(FeatureLevel);
+	const bool bUseVirtualTextures = (CVar->GetValueOnRenderThread() != 0) && UseVirtualTexturing(FeatureLevel);
 
 	Parameters.LightMapTexture = GBlackTexture->TextureRHI;
 	Parameters.SkyOcclusionTexture = GWhiteTexture->TextureRHI;
@@ -873,6 +875,7 @@ void GetLightmapClusterResourceParameters(
 	Parameters.LightmapVirtualTexturePageTable0 = GBlackTexture->TextureRHI;
 	Parameters.LightmapVirtualTexturePageTable1 = GBlackTexture->TextureRHI;
 	Parameters.LightMapSampler = GBlackTexture->SamplerStateRHI;
+	Parameters.LightMapSampler_1 = GBlackTexture->SamplerStateRHI;
 	Parameters.SkyOcclusionSampler = GWhiteTexture->SamplerStateRHI;
 	Parameters.AOMaterialMaskSampler = GBlackTexture->SamplerStateRHI;
 	Parameters.StaticShadowTextureSampler = GWhiteTexture->SamplerStateRHI;
@@ -880,12 +883,12 @@ void GetLightmapClusterResourceParameters(
 	if (bUseVirtualTextures)
 	{
 		// this is sometimes called with NULL input to initialize default buffer
-		const ULightMapVirtualTexture2D* VirtualTexture = Input.LightMapVirtualTexture;
+		const ULightMapVirtualTexture2D* VirtualTexture = Input.LightMapVirtualTextures[bAllowHighQualityLightMaps ? 0 : 1];
 		if (VirtualTexture && AllocatedVT)
 		{
 			// Bind VT here
-			Parameters.VTLightMapTexture = AllocatedVT->GetPhysicalTextureSRV((uint32)ELightMapVirtualTextureType::HqLayer0, false);
-			Parameters.VTLightMapTexture_1 = AllocatedVT->GetPhysicalTextureSRV((uint32)ELightMapVirtualTextureType::HqLayer1, false);
+			Parameters.VTLightMapTexture = AllocatedVT->GetPhysicalTextureSRV((uint32)ELightMapVirtualTextureType::LightmapLayer0, false);
+			Parameters.VTLightMapTexture_1 = AllocatedVT->GetPhysicalTextureSRV((uint32)ELightMapVirtualTextureType::LightmapLayer1, false);
 
 			if (VirtualTexture->HasLayerForType(ELightMapVirtualTextureType::SkyOcclusion))
 			{
@@ -928,6 +931,7 @@ void GetLightmapClusterResourceParameters(
 
 			const uint32 MaxAniso = 4;
 			Parameters.LightMapSampler = TStaticSamplerState<SF_AnisotropicLinear, AM_Clamp, AM_Clamp, AM_Clamp, 0, MaxAniso>::GetRHI();
+			Parameters.LightMapSampler_1 = TStaticSamplerState<SF_AnisotropicLinear, AM_Clamp, AM_Clamp, AM_Clamp, 0, MaxAniso>::GetRHI();
 			Parameters.SkyOcclusionSampler = TStaticSamplerState<SF_AnisotropicLinear, AM_Clamp, AM_Clamp, AM_Clamp, 0, MaxAniso>::GetRHI();
 			Parameters.AOMaterialMaskSampler = TStaticSamplerState<SF_AnisotropicLinear, AM_Clamp, AM_Clamp, AM_Clamp, 0, MaxAniso>::GetRHI();
 			Parameters.StaticShadowTextureSampler = TStaticSamplerState<SF_AnisotropicLinear, AM_Clamp, AM_Clamp, AM_Clamp, 0, MaxAniso>::GetRHI();
@@ -942,6 +946,7 @@ void GetLightmapClusterResourceParameters(
 		Parameters.AOMaterialMaskTexture = Input.AOMaterialMaskTexture ? Input.AOMaterialMaskTexture->TextureReference.TextureReferenceRHI.GetReference() : GBlackTexture->TextureRHI;
 
 		Parameters.LightMapSampler = GetTextureSamplerState(LightMapTexture, GBlackTexture->SamplerStateRHI);
+		Parameters.LightMapSampler_1 = GetTextureSamplerState(LightMapTexture, GBlackTexture->SamplerStateRHI);
 		Parameters.SkyOcclusionSampler = GetTextureSamplerState(Input.SkyOcclusionTexture, GWhiteTexture->SamplerStateRHI);
 		Parameters.AOMaterialMaskSampler = GetTextureSamplerState(Input.AOMaterialMaskTexture, GBlackTexture->SamplerStateRHI);
 

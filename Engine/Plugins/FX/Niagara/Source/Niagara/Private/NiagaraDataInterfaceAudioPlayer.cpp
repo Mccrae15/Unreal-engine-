@@ -93,7 +93,8 @@ void UNiagaraDataInterfaceAudioPlayer::PostInitProperties()
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
-		FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(GetClass()), true, false, false);
+		ENiagaraTypeRegistryFlags Flags = ENiagaraTypeRegistryFlags::AllowAnyVariable | ENiagaraTypeRegistryFlags::AllowParameter;
+		FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(GetClass()), Flags);
 	}
 }
 
@@ -375,11 +376,6 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	OutFunctions.Add(Sig);
 }
 
-bool UNiagaraDataInterfaceAudioPlayer::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
-{
-	return false;
-}
-
 DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceAudioPlayer, PlayOneShotAudio);
 DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceAudioPlayer, PlayPersistentAudio);
 DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceAudioPlayer, SetParameterBool);
@@ -575,6 +571,7 @@ void UNiagaraDataInterfaceAudioPlayer::UpdatePitch(FVectorVMContext& Context)
 	FNDIInputParam<float> PitchParam(Context);
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
+	InstData->bHadPersistentAudioUpdateThisTick = true;
 	for (int32 i = 0; i < Context.NumInstances; ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
@@ -634,6 +631,7 @@ void UNiagaraDataInterfaceAudioPlayer::UpdateRotation(FVectorVMContext& Context)
 	FNDIInputParam<FVector> RotationParam(Context);
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
+	InstData->bHadPersistentAudioUpdateThisTick = true;
 	for (int32 i = 0; i < Context.NumInstances; ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();

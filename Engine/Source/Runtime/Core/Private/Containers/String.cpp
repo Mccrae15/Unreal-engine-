@@ -179,14 +179,14 @@ void FString::TrimToNullTerminator()
 
 int32 FString::Find(const TCHAR* SubStr, ESearchCase::Type SearchCase, ESearchDir::Type SearchDir, int32 StartPosition) const
 {
-	if ( SubStr == nullptr )
+	if (SubStr == nullptr)
 	{
 		return INDEX_NONE;
 	}
 	if( SearchDir == ESearchDir::FromStart)
 	{
 		const TCHAR* Start = **this;
-		if ( StartPosition != INDEX_NONE )
+		if (StartPosition != INDEX_NONE && Len() > 0)
 		{
 			Start += FMath::Clamp(StartPosition, 0, Len() - 1);
 		}
@@ -556,31 +556,36 @@ FString FString::TrimEnd() &&
 	return MoveTemp(*this);
 }
 
-void FString::TrimQuotesInline(bool* bQuotesRemoved)
+void FString::TrimCharInline(const TCHAR CharacterToTrim, bool* bCharRemoved)
 {
 	bool bQuotesWereRemoved=false;
 	int32 Start = 0, Count = Len();
 	if ( Count > 0 )
 	{
-		if ( (*this)[0] == TCHAR('"') )
+		if ( (*this)[0] == CharacterToTrim )
 		{
 			Start++;
 			Count--;
 			bQuotesWereRemoved=true;
 		}
 
-		if ( Len() > 1 && (*this)[Len() - 1] == TCHAR('"') )
+		if ( Len() > 1 && (*this)[Len() - 1] == CharacterToTrim )
 		{
 			Count--;
 			bQuotesWereRemoved=true;
 		}
 	}
 
-	if ( bQuotesRemoved != nullptr )
+	if ( bCharRemoved != nullptr )
 	{
-		*bQuotesRemoved = bQuotesWereRemoved;
+		*bCharRemoved = bQuotesWereRemoved;
 	}
 	MidInline(Start, Count, false);
+}
+
+void FString::TrimQuotesInline(bool* bQuotesRemoved)
+{
+	TrimCharInline(TCHAR('"'), bQuotesRemoved);
 }
 
 FString FString::TrimQuotes(bool* bQuotesRemoved) const &
@@ -593,6 +598,19 @@ FString FString::TrimQuotes(bool* bQuotesRemoved) const &
 FString FString::TrimQuotes(bool* bQuotesRemoved) &&
 {
 	TrimQuotesInline(bQuotesRemoved);
+	return MoveTemp(*this);
+}
+
+FString FString::TrimChar(const TCHAR CharacterToTrim, bool* bCharRemoved) const &
+{
+	FString Result(*this);
+	Result.TrimCharInline(CharacterToTrim, bCharRemoved);
+	return Result;
+}
+
+FString FString::TrimChar(const TCHAR CharacterToTrim, bool* bCharRemoved) &&
+{
+	TrimCharInline(CharacterToTrim, bCharRemoved);
 	return MoveTemp(*this);
 }
 
@@ -785,13 +803,20 @@ bool FString::ToHexBlob( const FString& Source, uint8* DestBuffer, const uint32 
 	return false;
 }
 
+PRAGMA_DISABLE_OPTIMIZATION
+void StripNegativeZero(double& InFloat)
+{
+	// This works for translating a negative zero into a positive zero,
+	// but if optimizations are enabled when compiling with -ffast-math
+	// or /fp:fast, the compiler can strip it out.
+	InFloat += 0.0f;
+}
+PRAGMA_ENABLE_OPTIMIZATION
+
 FString FString::SanitizeFloat( double InFloat, const int32 InMinFractionalDigits )
 {
 	// Avoids negative zero
-	if( InFloat == 0 )
-	{
-		InFloat = 0;
-	}
+	StripNegativeZero(InFloat);
 
 	// First create the string
 	FString TempString = FString::Printf(TEXT("%f"), InFloat);
@@ -1224,26 +1249,22 @@ static const TCHAR* CharToEscapeSeqMap[][2] =
 
 static const uint32 MaxSupportedEscapeChars = UE_ARRAY_COUNT(CharToEscapeSeqMap);
 
-FString FString::ReplaceCharWithEscapedChar(const TArray<TCHAR>* Chars/*=nullptr*/) &&
+void FString::ReplaceCharWithEscapedCharInline(const TArray<TCHAR>* Chars/*=nullptr*/)
 {
 	if ( Len() > 0 && (Chars == nullptr || Chars->Num() > 0) )
 	{
-		FString Result(*this);
 		for ( int32 ChIdx = 0; ChIdx < MaxSupportedEscapeChars; ChIdx++ )
 		{
 			if ( Chars == nullptr || Chars->Contains(*(CharToEscapeSeqMap[ChIdx][0])) )
 			{
 				// use ReplaceInline as that won't create a copy of the string if the character isn't found
-				Result.ReplaceInline(CharToEscapeSeqMap[ChIdx][0], CharToEscapeSeqMap[ChIdx][1]);
+				ReplaceInline(CharToEscapeSeqMap[ChIdx][0], CharToEscapeSeqMap[ChIdx][1]);
 			}
 		}
-		return Result;
 	}
-
-	return *this;
 }
 
-FString FString::ReplaceEscapedCharWithChar(const TArray<TCHAR>* Chars/*=nullptr*/) &&
+void FString::ReplaceEscapedCharWithCharInline(const TArray<TCHAR>* Chars/*=nullptr*/)
 {
 	if ( Len() > 0 && (Chars == nullptr || Chars->Num() > 0) )
 	{
@@ -1257,8 +1278,6 @@ FString FString::ReplaceEscapedCharWithChar(const TArray<TCHAR>* Chars/*=nullptr
 			}
 		}
 	}
-
-	return MoveTemp(*this);
 }
 
 /** 

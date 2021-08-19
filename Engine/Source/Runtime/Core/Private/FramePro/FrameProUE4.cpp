@@ -420,8 +420,20 @@
 		//------------------------------------------------------------------------
 		bool Platform::GetProcessName(int process_id, char* p_name, int max_name_length)
 		{
-			const TCHAR* p_process_name_w = FPlatformProcess::ExecutableName();
-			const char* p_process_name = TCHAR_TO_ANSI(p_process_name_w);
+//@EPIC BEGIN: get process name via process_id
+#if PLATFORM_DESKTOP
+			FString ProcessNameOrPath = FPlatformProcess::GetApplicationName((uint32)process_id);
+#else
+			FString ProcessNameOrPath = FPlatformProcess::ExecutableName();
+#endif
+			if (ProcessNameOrPath.IsEmpty())
+			{
+				return false;
+			}
+			
+			FString ProcessName = FPaths::GetCleanFilename(ProcessNameOrPath);
+			const char* p_process_name = TCHAR_TO_ANSI(*ProcessName);
+//@EPIC END
 			size_t length = strlen(p_process_name);
 			size_t max_length = max_name_length - 1;
 
@@ -455,7 +467,7 @@
 				p_event = new FPThreadEvent();
 				p_event->Create(!auto_reset);
 #else
-				checkf(false,"unsupported platform for -nothreading");
+				checkf(false, TEXT("unsupported platform for -nothreading"));
 				return;
 #endif
 			}
@@ -597,7 +609,7 @@
 					pthread_t thread_id;
 					pthread_create( &thread_id, nullptr, (PthreadEntryPoint)mp_ThreadMain, mp_Context );
 #else
-					checkf(false,"unsupported platform for -nothreading");
+					checkf(false,TEXT("unsupported platform for -nothreading"));
 #endif
 				}
 //@EPIC END

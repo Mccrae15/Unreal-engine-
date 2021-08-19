@@ -90,8 +90,8 @@ void FSkeletalMeshPhysicsProxy::UpdateKinematicBodiesCallback(const FParticlesTy
 				const FVector& AngularVelocity = InputBuffer->AngularVelocities[TransformIndex];
 
 				Proxy.Ids.Add(RigidBodyId);
-				Proxy.Position.Add(Chaos::TVector<float, 3>(Transform.GetTranslation()));
-				Proxy.NextPosition.Add(Proxy.Position[RigidBodyIndex] + Chaos::TVector<float, 3>(LinearVelocity) * Dt);
+				Proxy.Position.Add(Chaos::FVec3(Transform.GetTranslation()));
+				Proxy.NextPosition.Add(Proxy.Position[RigidBodyIndex] + Chaos::FVec3(LinearVelocity) * Dt);
 				Proxy.Rotation.Add(Chaos::TRotation<float, 3>(Transform.GetRotation().GetNormalized()));
 				Proxy.NextRotation.Add(Chaos::TRotation<float, 3>::IntegrateRotationWithAngularVelocity(Proxy.Rotation[RigidBodyIndex], AngularVelocity, Dt));
 				++RigidBodyIndex;
@@ -138,11 +138,11 @@ void FSkeletalMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particle
 
 			float TotalMass = 0.f;
 			const float DensityKgCm3 = Parameters.Density / 1000.0f;
-			Chaos::TMassProperties<float, 3> MassProperties = Group->BuildMassProperties(DensityKgCm3, TotalMass);
+			Chaos::FMassProperties MassProperties = Group->BuildMassProperties(DensityKgCm3, TotalMass);
 
 			const bool DoCollisionGeom = Parameters.CollisionType == ECollisionTypeEnum::Chaos_Surface_Volumetric;
-			TArray<Chaos::TVector<float, 3>>* SamplePoints = nullptr;
-			Chaos::TAABB<float, 3> SamplePointsBBox = Chaos::TAABB<float, 3>::EmptyAABB();
+			TArray<Chaos::FVec3>* SamplePoints = nullptr;
+			Chaos::FAABB3 SamplePointsBBox = Chaos::FAABB3::EmptyAABB();
 			if (DoCollisionGeom)
 			{
 				SamplePoints =
@@ -150,10 +150,10 @@ void FSkeletalMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particle
 						Parameters.ParticlesPerUnitArea,
 						Parameters.MinNumParticles,
 						Parameters.MaxNumParticles);
-				for (const Chaos::TVector<float, 3>& Point : *SamplePoints)
+				for (const Chaos::FVec3& Point : *SamplePoints)
 					SamplePointsBBox.GrowToInclude(Point);
 			}
-			//Chaos::TTriangleMesh<T> TriMesh = Chaos::TTriangleMesh<T>::GetConvexHullFromParticles(
+			//Chaos::FTriangleMesh TriMesh = Chaos::FTriangleMesh::GetConvexHullFromParticles(
 			//	TArrayView<const Chaos::TVector<T, 3>>(SamplePoints));
 
 			TUniquePtr<Chaos::FImplicitObject> ImplicitObject(Group->BuildSimImplicitObject());
@@ -162,7 +162,7 @@ void FSkeletalMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particle
 			if (SamplePoints)
 			{
 				auto PointVolumeRegistrationCheck = 
-					[&](const TArray<Chaos::TVector<float, 3>> &InSamplePoints, const Chaos::FImplicitObject &InImplicitObject, const float InTolerance) -> bool
+					[&](const TArray<Chaos::FVec3> &InSamplePoints, const Chaos::FImplicitObject &InImplicitObject, const float InTolerance) -> bool
 					{
 						for (int32 i = 0; i < InSamplePoints.Num(); i++)
 						{
@@ -178,7 +178,7 @@ void FSkeletalMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particle
 				// Precision gets worse in opt builds, so only do the phi test in debug.
 				checkSlow(PointVolumeRegistrationCheck(*SamplePoints, *ImplicitObject, 0.01));
 				auto PointBBoxCheck =
-					[&](const auto &InSamplePoints, const Chaos::TAABB<float,3> &BBox) -> bool
+					[&](const auto &InSamplePoints, const Chaos::FAABB3 &BBox) -> bool
 					{
 						for (int32 i = 0; i < InSamplePoints.Num(); i++)
 						{
@@ -194,7 +194,7 @@ void FSkeletalMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particle
 				check(PointBBoxCheck(*SamplePoints, ImplicitObject->BoundingBox()));
 			}
 
-			const Chaos::TAABB<float, 3>& BBox = ImplicitObject->BoundingBox();
+			const Chaos::FAABB3& BBox = ImplicitObject->BoundingBox();
 
 			const FVector Scale = WorldTransform->GetScale3D();
 			const FVector &CenterOfMass = MassProperties.CenterOfMass;
@@ -226,10 +226,10 @@ void FSkeletalMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particle
 			//Particles.X(RigidBodyId) = WorldTransform->TransformPosition(CenterOfMass);
 			Particles.X(RigidBodyId) = WorldTransform->GetTranslation();
 			check(!FMath::IsNaN(Particles.X(RigidBodyId)[0]) && !FMath::IsNaN(Particles.X(RigidBodyId)[1]) && !FMath::IsNaN(Particles.X(RigidBodyId)[2]));
-			Particles.V(RigidBodyId) = Chaos::TVector<float, 3>(0.f);
+			Particles.V(RigidBodyId) = Chaos::FVec3(0.f);
 			//Particles.R(RigidBodyId) = (WorldTransform->TransformRotation(MassProperties.RotationOfMass)).GetNormalized();
 			Particles.R(RigidBodyId) = WorldTransform->GetRotation().GetNormalized();
-			Particles.W(RigidBodyId) = Chaos::TVector<float, 3>(0.f);
+			Particles.W(RigidBodyId) = Chaos::FVec3(0.f);
 			Particles.P(RigidBodyId) = Particles.X(RigidBodyId);
 			Particles.Q(RigidBodyId) = Particles.R(RigidBodyId);
 
@@ -311,7 +311,7 @@ void FSkeletalMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particle
 						const FTransform& ParentWorldTransform = *Parameters.BoneHierarchy.GetAnimWorldSpaceTransformsForBone(ParentBoneIndex);
 
 						const Chaos::TVector<int32, 2> ConstrainedParticleIndices = { RigidBodyId, ParentRigidBodyId };
-						const Chaos::TVector<float, 3> JointPosition = ParentWorldTransform.GetTranslation();
+						const Chaos::FVec3 JointPosition = ParentWorldTransform.GetTranslation();
 #if TODO_REWRITE_ALL_CONSTRAINT_ADDS_TO_USE_HANDLES
 						JointConstraints.AddConstraint(Particles, ConstrainedParticleIndices, JointPosition);
 #endif

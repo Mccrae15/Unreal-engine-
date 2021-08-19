@@ -61,6 +61,9 @@ struct PROJECTS_API FPluginDescriptor
 	/** Version of the engine that this plugin is compatible with */
 	FString EngineVersion;
 
+	/** Optional custom virtual path to display in editor to better organize. Inserted just before this plugin's directory in the path: /All/Plugins/EditorCustomVirtualPath/PluginName */
+	FString EditorCustomVirtualPath;
+
 	/** Controls a subset of platforms that can use this plugin, and which ones will stage the .uplugin file and content files. 
 	Generally, for code plugins, it should be the union of platforms that the modules in the plugin are compiled for. */
 	TArray<FString> SupportedTargetPlatforms;
@@ -110,8 +113,13 @@ struct PROJECTS_API FPluginDescriptor
 	/** Post-build steps for each host platform */
 	FCustomBuildSteps PostBuildSteps;
 
-	/** Dependent plugins */
+	/** Plugins used by this plugin */
 	TArray<FPluginReferenceDescriptor> Plugins;
+
+#if WITH_EDITOR
+	/** Cached json for custom data */
+	TSharedPtr<FJsonObject> CachedJson;
+#endif
 
 	/** Constructor. */
 	FPluginDescriptor();
@@ -133,6 +141,15 @@ struct PROJECTS_API FPluginDescriptor
 
 	/** Writes a descriptor to JSON */
 	void Write(TJsonWriter<>& Writer) const;
+
+	/** Updates the given json object with values in this descriptor */
+	void UpdateJson(FJsonObject& JsonObject) const;
+
+	/**
+	 * Updates the content of the specified plugin file with values in this descriptor
+	 * (hence preserving json fields that the plugin descriptor doesn't know about)
+	 */
+	bool UpdatePluginFile(const FString& FileName, FText& OutFailReason) const;
 
 	/** Determines whether the plugin supports the given platform */
 	bool SupportsTargetPlatform(const FString& Platform) const;

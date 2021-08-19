@@ -26,12 +26,12 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnNameChanged);
 public:
 	/** Creates a new emitter editor view model.  This must be initialized before it can be used. */
-	FNiagaraEmitterHandleViewModel();
+	FNiagaraEmitterHandleViewModel(bool bInIsForDataProcessingOnly);
 	
 	~FNiagaraEmitterHandleViewModel();
 
 	/** Initializes the emitter editor view model with the supplied emitter handle and simulation.*/
-	void Initialize(TSharedRef<FNiagaraSystemViewModel> InOwningSystemViewModel, FNiagaraEmitterHandle* InEmitterHandle, TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation);
+	void Initialize(TSharedRef<FNiagaraSystemViewModel> InOwningSystemViewModel, int32 InEmitterHandleIndex, TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation);
 
 	/** Returns whether or not this view model represents a valid emitter handle. */
 	bool IsValid() const;
@@ -77,8 +77,9 @@ public:
 	/** Gets whether or not this emitter handle is enabled. */
 	NIAGARAEDITOR_API bool GetIsEnabled() const;
 
-	/** Sets whether or not this emitter handle is enabled. */
-	NIAGARAEDITOR_API void SetIsEnabled(bool bInIsEnabled);
+	/** Sets whether or not this emitter handle is enabled. Returns true if state was changed.
+	 * Requests a recompile by default. Useful to turn off for batch operations. */
+	NIAGARAEDITOR_API bool SetIsEnabled(bool bInIsEnabled, bool bRequestRecompile = true);
 
 	/** Gets whether or not the emitter for this handle has been isolated in the UI. */
 	NIAGARAEDITOR_API bool GetIsIsolated() const;
@@ -129,6 +130,9 @@ public:
 private:
 	/** The system view model which owns this emitter handle view model. */
 	TWeakPtr<FNiagaraSystemViewModel> OwningSystemViewModelWeak;
+
+	/** The index of this handle in the system when it was initialized. */
+	int32 EmitterHandleIndex;
 
 	/** The emitter handle being displayed and edited by this view model. */
 	FNiagaraEmitterHandle* EmitterHandle;

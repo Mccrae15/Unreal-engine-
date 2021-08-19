@@ -13,6 +13,7 @@
 #include "Particles/Emitter.h"
 #include "Runtime/Launch/Resources/Version.h"
 #include "Particles/WorldPSCPool.h"
+#include "Particles/ParticlePerfStats.h"
 #include "ParticleSystemComponent.generated.h"
 
 class FParticleDynamicData;
@@ -416,6 +417,13 @@ public:
 	virtual uint32 GetApproxMemoryUsage() const { return 0; }
 
 	virtual void ActivateSystem(bool bFlagAsJustAttached = false) { };
+
+	/** Forces component to deactivate immediately. */
+	virtual void DeactivateImmediate() {}
+
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+	mutable FParticlePerfStats* ParticlePerfStats = nullptr;
+#endif
 };
 
 
@@ -1379,6 +1387,7 @@ protected:
 public:
 	virtual void Activate(bool bReset=false) override;
 	virtual void Deactivate() override;
+	virtual void DeactivateImmediate() override;
 	virtual void ApplyWorldOffset(const FVector& InOffset, bool bWorldShift) override;
 	//~ End USceneComponent Interface
 
@@ -1631,6 +1640,9 @@ private:
 	 * visibility information from the renderer.
 	 */
 	bool ShouldComputeLODFromGameThread();
+
+public:
+	FORCEINLINE FParticlePerfStatsContext GetPerfStatsContext(){ return FParticlePerfStatsContext(GetWorld(), Template, this); }
 };
 
 

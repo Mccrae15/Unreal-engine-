@@ -8,6 +8,7 @@
 #include "PipelineStateCache.h"
 #include "VisualizeTexture.h"
 #include "RendererUtils.h"
+#include "SceneTextureParameters.h"
 
 static TAutoConsoleVariable<float> CVarStencilSizeThreshold(
 	TEXT("r.Decal.StencilSizeThreshold"),
@@ -18,21 +19,29 @@ static TAutoConsoleVariable<float> CVarStencilSizeThreshold(
 	TEXT("0..1: optimization is enabled, value defines the minimum size (screen space) to trigger the optimization (default 0.1)")
 );
 
+IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FDecalPassUniformParameters, "DecalPass", SceneTextures);
+
 FDeferredDecalPassTextures GetDeferredDecalPassTextures(
 	FRDGBuilder& GraphBuilder,
-	const FViewInfo& View,
-	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer)
+	const FViewInfo& View)
 {
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(GraphBuilder.RHICmdList);
 
 	FDeferredDecalPassTextures PassTextures;
-	PassTextures.SceneTexturesUniformBuffer = SceneTexturesUniformBuffer;
+
+	auto* Parameters = GraphBuilder.AllocParameters<FDecalPassUniformParameters>();
+	const ESceneTextureSetupMode TextureReadAccess = ESceneTextureSetupMode::GBufferA | ESceneTextureSetupMode::SceneDepth | ESceneTextureSetupMode::CustomDepth;
+	SetupSceneTextureUniformParameters(GraphBuilder, View.FeatureLevel, TextureReadAccess, Parameters->SceneTextures);
+	Parameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+	PassTextures.DecalPassUniformBuffer = GraphBuilder.CreateUniformBuffer(Parameters);
+
 	PassTextures.Depth = RegisterExternalTextureMSAA(GraphBuilder, SceneContext.SceneDepthZ);
 	PassTextures.Color = TryRegisterExternalTexture(GraphBuilder, SceneContext.GetSceneColor(), ERenderTargetTexture::Targetable);
 	PassTextures.GBufferA = TryRegisterExternalTexture(GraphBuilder, SceneContext.GBufferA);
 	PassTextures.GBufferB = TryRegisterExternalTexture(GraphBuilder, SceneContext.GBufferB);
 	PassTextures.GBufferC = TryRegisterExternalTexture(GraphBuilder, SceneContext.GBufferC);
 	PassTextures.GBufferE = TryRegisterExternalTexture(GraphBuilder, SceneContext.GBufferE);
+
 	return PassTextures;
 }
 
@@ -45,7 +54,7 @@ void GetDeferredDecalPassParameters(
 	const bool bWritingToGBufferA = IsWritingToGBufferA(RenderTargetMode);
 	const bool bWritingToDepth = IsWritingToDepth(RenderTargetMode);
 
-	PassParameters.SceneTextures = Textures.SceneTexturesUniformBuffer;
+	PassParameters.DecalPass = Textures.DecalPassUniformBuffer;
 
 	FRDGTextureRef DepthTexture = Textures.Depth.Target;
 
@@ -382,7 +391,7 @@ static bool IsStencilOptimizationAvailable(EDecalRenderStage RenderStage)
 static EDecalDBufferMaskTechnique GetDBufferMaskTechnique(EShaderPlatform ShaderPlatform)
 {
 	const bool bWriteMaskDBufferMask = RHISupportsRenderTargetWriteMask(ShaderPlatform);
-	const bool bPerPixelDBufferMask = IsUsingPerPixelDBufferMask(ShaderPlatform);
+	const bool bPerPixelDBufferMask = FDataDrivenShaderPlatformInfo::GetSupportsPerPixelDBufferMask(ShaderPlatform);
 	checkf(!bWriteMaskDBufferMask || !bPerPixelDBufferMask, TEXT("The WriteMask and PerPixel DBufferMask approaches cannot be enabled at the same time. They are mutually exclusive."));
 
 	if (bWriteMaskDBufferMask)
@@ -575,7 +584,7 @@ void AddDeferredDecalPass(
 				// This significantly reduces bandwidth for clearing, writing and reading on some GPUs.
 				// While a smaller format, such as R8_UINT, will use less video memory, it will result in slower clears and higher bandwidth requirements.
 				check(Desc.Format == PF_B8G8R8A8);
-				Desc.Flags = TexCreate_ShaderResource;
+				Desc.Flags = BaseFlags;
 				Desc.ClearValue = FClearValueBinding::Transparent;
 				PassTextures.DBufferMask = CreateOrImportTexture(SceneContext.DBufferMask, Desc, TEXT("DBufferMask"));
 			}

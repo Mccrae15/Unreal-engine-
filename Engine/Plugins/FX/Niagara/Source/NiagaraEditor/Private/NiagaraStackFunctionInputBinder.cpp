@@ -21,6 +21,7 @@ FNiagaraStackFunctionInputBinder::FNiagaraStackFunctionInputBinder()
 bool FNiagaraStackFunctionInputBinder::TryBind(
 	UNiagaraScript* InScript,
 	TArray<UNiagaraScript*> InDependentScripts,
+	FCompileConstantResolver InConstantResolver,
 	FString InOwningEmitterUniqueName,
 	UNiagaraNodeFunctionCall* InFunctionCallNode,
 	FName InMetaDataKey,
@@ -29,7 +30,7 @@ bool FNiagaraStackFunctionInputBinder::TryBind(
 	bool bInIsRequired,
 	FText& OutErrorMessage)
 {
-	UNiagaraGraph* FunctionGraph = CastChecked<UNiagaraScriptSource>(InFunctionCallNode->FunctionScript->GetSource())->NodeGraph;
+	UNiagaraGraph* FunctionGraph = InFunctionCallNode->GetCalledGraph();
 
 	FInputMatchesPredicate InputMatches;
 	InputMatches.BindLambda([=](FNiagaraVariable InputVariable)
@@ -48,13 +49,14 @@ bool FNiagaraStackFunctionInputBinder::TryBind(
 	
 	FText InputMatchDescription = FText::Format(LOCTEXT("MetadataMatchDescriptionFormat", "metadata key = '{0}' and value = '{1}'"),
 		FText::FromName(InMetaDataKey), FText::FromString(InMetaDataValue));
-	return TryBindInternal(InScript, InDependentScripts, InOwningEmitterUniqueName, InFunctionCallNode, InputMatches,
+	return TryBindInternal(InScript, InDependentScripts, InConstantResolver, InOwningEmitterUniqueName, InFunctionCallNode, InputMatches,
 		InputMatchDescription, InInputType, bInIsRequired, OutErrorMessage);
 }
 
 bool FNiagaraStackFunctionInputBinder::TryBind(
 	UNiagaraScript* InScript,
 	TArray<UNiagaraScript*> InDependentScripts,
+	FCompileConstantResolver InConstantResolver,
 	FString InOwningEmitterUniqueName,
 	UNiagaraNodeFunctionCall* InFunctionCallNode,
 	FName InInputName,
@@ -69,13 +71,14 @@ bool FNiagaraStackFunctionInputBinder::TryBind(
 	});
 
 	FText InputMatchDescription = FText::Format(LOCTEXT("NameMatchDescriptionFormat", "name = '{0}'"), FText::FromName(InInputName));
-	return TryBindInternal(InScript, InDependentScripts, InOwningEmitterUniqueName, InFunctionCallNode, InputMatches,
+	return TryBindInternal(InScript, InDependentScripts, InConstantResolver, InOwningEmitterUniqueName, InFunctionCallNode, InputMatches,
 		InputMatchDescription, InInputType, bInIsRequired, OutErrorMessage);
 }
 
 bool FNiagaraStackFunctionInputBinder::TryBindInternal(
 	UNiagaraScript* InScript,
 	TArray<UNiagaraScript*> InDependentScripts,
+	FCompileConstantResolver InConstantResolver,
 	FString InOwningEmitterUniqueName,
 	UNiagaraNodeFunctionCall* InFunctionCallNode,
 	FInputMatchesPredicate InputMatchesCallback,
@@ -92,12 +95,17 @@ bool FNiagaraStackFunctionInputBinder::TryBindInternal(
 	FunctionCallNode = InFunctionCallNode;
 
 	TArray<const UEdGraphPin*> InputPins;
-	FNiagaraStackGraphUtilities::GetStackFunctionInputPins(*FunctionCallNode, InputPins, FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly);
-	
+	TSet<const UEdGraphPin*> HiddenInputPins;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputPins(*FunctionCallNode, InputPins, HiddenInputPins, InConstantResolver, FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly);
 	bool bInputFound = false;
 	const UEdGraphSchema_Niagara* Schema = GetDefault<UEdGraphSchema_Niagara>();
 	for (const UEdGraphPin* InputPin : InputPins)
 	{
+		if (HiddenInputPins.Contains(InputPin))
+		{
+			continue;
+		}
+
 		FNiagaraVariable InputVariable = Schema->PinToNiagaraVariable(InputPin);
 		if(InputMatchesCallback.Execute(InputVariable))
 		{
@@ -179,7 +187,7 @@ bool FNiagaraStackFunctionInputBinder::IsValid() const
 {
 	if (Script.IsValid())
 	{
-		if (ValidScriptGraphChangeIdForOverridePin != Script->GetSource()->GetChangeID() ||
+		if (ValidScriptGraphChangeIdForOverridePin != Script->GetSource(FunctionCallNode->SelectedScriptVersion)->GetChangeID() ||
 			ValidScriptGraphChangeIdForDefaultPin != GetChangeIdFromFunctionScript())
 		{
 			RefreshGraphPins();
@@ -222,7 +230,7 @@ UNiagaraNodeFunctionCall* FNiagaraStackFunctionInputBinder::GetFunctionCallNode(
 TArray<uint8> FNiagaraStackFunctionInputBinder::GetData() const
 {
 	checkf(Script.IsValid(), TEXT("Bound script is not valid"));
-	if (ValidScriptGraphChangeIdForOverridePin != Script->GetSource()->GetChangeID() ||
+	if (ValidScriptGraphChangeIdForOverridePin != Script->GetSource(FunctionCallNode->SelectedScriptVersion)->GetChangeID() ||
 		ValidScriptGraphChangeIdForDefaultPin != GetChangeIdFromFunctionScript())
 	{
 		RefreshGraphPins();
@@ -282,7 +290,7 @@ void FNiagaraStackFunctionInputBinder::SetData(const uint8* InValue, int32 InSiz
 			OverridePin->DefaultValue = PinDefaultValue;
 
 			Cast<UNiagaraNode>(OverridePin->GetOwningNode())->MarkNodeRequiresSynchronization(TEXT("OverridePin Default Value Changed"), true);
-			ValidScriptGraphChangeIdForOverridePin = Script->GetSource()->GetChangeID();
+			ValidScriptGraphChangeIdForOverridePin = Script->GetSource(FunctionCallNode->SelectedScriptVersion)->GetChangeID();
 			ValidScriptGraphChangeIdForDefaultPin = GetChangeIdFromFunctionScript();
 		}
 	}
@@ -290,16 +298,16 @@ void FNiagaraStackFunctionInputBinder::SetData(const uint8* InValue, int32 InSiz
 
 FGuid FNiagaraStackFunctionInputBinder::GetChangeIdFromFunctionScript() const
 {
-	if (FunctionCallNode->FunctionScript != nullptr && FunctionCallNode->FunctionScript->GetSource() != nullptr)
+	if (FunctionCallNode->FunctionScript != nullptr && FunctionCallNode->GetFunctionScriptSource() != nullptr)
 	{
-		return FunctionCallNode->FunctionScript->GetSource()->GetChangeID();
+		return FunctionCallNode->GetFunctionScriptSource()->GetChangeID();
 	}
 	return FGuid();
 }
 
 void FNiagaraStackFunctionInputBinder::RefreshGraphPins() const
 {
-	if (FunctionCallNode.IsValid() == false || FunctionCallNode->FunctionScript == nullptr || FunctionCallNode->FunctionScript->GetSource() == nullptr)
+	if (FunctionCallNode.IsValid() == false || FunctionCallNode->FunctionScript == nullptr || FunctionCallNode->GetFunctionScriptSource() == nullptr)
 	{
 		OverridePin = nullptr;
 		DefaultPin = nullptr;
@@ -314,7 +322,7 @@ void FNiagaraStackFunctionInputBinder::RefreshGraphPins() const
 	{
 		DefaultPin = FunctionCallNode->FindStaticSwitchInputPin(InputName);
 	}
-	ValidScriptGraphChangeIdForOverridePin = Script->GetSource()->GetChangeID();
+	ValidScriptGraphChangeIdForOverridePin = Script->GetSource(FunctionCallNode->SelectedScriptVersion)->GetChangeID();
 	ValidScriptGraphChangeIdForDefaultPin = GetChangeIdFromFunctionScript();
 }
 

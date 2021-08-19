@@ -1,23 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ViewModels/Stack/NiagaraStackViewModel.h"
-#include "ViewModels/Stack/NiagaraStackRoot.h"
-#include "ViewModels/NiagaraSystemViewModel.h"
-#include "ViewModels/NiagaraEmitterViewModel.h"
-#include "ViewModels/NiagaraEmitterHandleViewModel.h"
-#include "NiagaraScriptGraphViewModel.h"
-#include "ViewModels/NiagaraScriptViewModel.h"
-#include "NiagaraSystemEditorData.h"
+
 #include "NiagaraEmitterEditorData.h"
+#include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraStackEditorData.h"
 #include "NiagaraSystem.h"
-#include "NiagaraEmitterHandle.h"
-#include "NiagaraEmitter.h"
-#include "ViewModels/Stack/NiagaraStackItemGroup.h"
-#include "ViewModels/Stack/NiagaraStackItem.h"
+#include "NiagaraSystemEditorData.h"
 #include "ScopedTransaction.h"
-
-#include "Editor.h"
+#include "ViewModels/NiagaraEmitterHandleViewModel.h"
+#include "ViewModels/NiagaraEmitterViewModel.h"
+#include "ViewModels/NiagaraScriptViewModel.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/Stack/NiagaraStackItem.h"
+#include "ViewModels/Stack/NiagaraStackItemGroup.h"
+#include "ViewModels/Stack/NiagaraStackRoot.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackViewModel"
 const double UNiagaraStackViewModel::MaxSearchTime = .02f; // search at 50 fps
@@ -104,6 +101,7 @@ void UNiagaraStackViewModel::InitializeWithViewModels(TSharedPtr<FNiagaraSystemV
 		StackRoot->Initialize(RequiredEntryData, Options.GetIncludeSystemInformation(), Options.GetIncludeEmitterInformation());
 		StackRoot->RefreshChildren();
 		StackRoot->OnStructureChanged().AddUObject(this, &UNiagaraStackViewModel::EntryStructureChanged);
+		StackRoot->OnExpansionChanged().AddUObject(this, &UNiagaraStackViewModel::EntryExpansionChanged);
 		StackRoot->OnDataObjectModified().AddUObject(this, &UNiagaraStackViewModel::EntryDataObjectModified);
 		StackRoot->OnRequestFullRefresh().AddUObject(this, &UNiagaraStackViewModel::EntryRequestFullRefresh);
 		StackRoot->OnRequestFullRefreshDeferred().AddUObject(this, &UNiagaraStackViewModel::EntryRequestFullRefreshDeferred);
@@ -113,7 +111,7 @@ void UNiagaraStackViewModel::InitializeWithViewModels(TSharedPtr<FNiagaraSystemV
 		bExternalRootEntry = false;
 	}
 
-	StructureChangedDelegate.Broadcast();
+	StructureChangedDelegate.Broadcast(ENiagaraStructureChangedFlags::StructureChanged);
 }
 
 void UNiagaraStackViewModel::InitializeWithRootEntry(UNiagaraStackEntry* InRootEntry)
@@ -123,19 +121,21 @@ void UNiagaraStackViewModel::InitializeWithRootEntry(UNiagaraStackEntry* InRootE
 
 	RootEntry = InRootEntry;
 	RootEntry->OnStructureChanged().AddUObject(this, &UNiagaraStackViewModel::EntryStructureChanged);
+	RootEntry->OnExpansionChanged().AddUObject(this, &UNiagaraStackViewModel::EntryExpansionChanged);
 	RootEntry->OnRequestFullRefresh().AddUObject(this, &UNiagaraStackViewModel::EntryRequestFullRefresh);
 	RootEntry->OnRequestFullRefreshDeferred().AddUObject(this, &UNiagaraStackViewModel::EntryRequestFullRefreshDeferred);
 	RootEntries.Add(RootEntry);
 
 	bExternalRootEntry = true;
 
-	StructureChangedDelegate.Broadcast();
+	StructureChangedDelegate.Broadcast(ENiagaraStructureChangedFlags::StructureChanged);
 }
 
 void UNiagaraStackViewModel::Reset()
 {
 	if (RootEntry != nullptr)
 	{
+		RootEntry->OnExpansionChanged().RemoveAll(this);
 		RootEntry->OnStructureChanged().RemoveAll(this);
 		RootEntry->OnDataObjectModified().RemoveAll(this);
 		RootEntry->OnRequestFullRefresh().RemoveAll(this);
@@ -247,7 +247,6 @@ void UNiagaraStackViewModel::AddSearchScrollOffset(int NumberOfSteps)
 void UNiagaraStackViewModel::CollapseToHeaders()
 {
 	CollapseToHeadersRecursive(GetRootEntryAsArray());
-	NotifyStructureChanged();
 }
 
 void UNiagaraStackViewModel::UndismissAllIssues()
@@ -351,7 +350,7 @@ void UNiagaraStackViewModel::OnSystemCompiled()
 	bRefreshPending = true;
 }
 
-void UNiagaraStackViewModel::OnEmitterCompiled()
+void UNiagaraStackViewModel::OnEmitterCompiled(UNiagaraScript*, const FGuid&)
 {
 	// Queue a refresh for the next tick because forcing a refresh now can cause entries to be finalized while they're still being used.
 	bRefreshPending = true;
@@ -424,6 +423,8 @@ void UNiagaraStackViewModel::SearchTick()
 		}
 		if (ItemsToSearch.Num() == 0)
 		{
+			// The search can change the child filtering so refresh it when the search finishes.
+			RootEntry->RefreshFilteredChildren();
 			SearchCompletedDelegate.Broadcast();
 		}
 	}
@@ -483,6 +484,11 @@ TArray<UNiagaraStackEntry*>& UNiagaraStackViewModel::GetRootEntryAsArray()
 	return RootEntries;
 }
 
+UNiagaraStackViewModel::FOnExpansionChanged& UNiagaraStackViewModel::OnExpansionChanged()
+{
+	return ExpansionChangedDelegate;
+}
+
 UNiagaraStackViewModel::FOnStructureChanged& UNiagaraStackViewModel::OnStructureChanged()
 {
 	return StructureChangedDelegate;
@@ -521,7 +527,7 @@ void UNiagaraStackViewModel::SetShowAllAdvanced(bool bInShowAllAdvanced)
 	}
 
 	InvalidateSearchResults();
-	StructureChangedDelegate.Broadcast();
+	RootEntry->RefreshFilteredChildren();
 }
 
 bool UNiagaraStackViewModel::GetShowOutputs() const
@@ -623,30 +629,35 @@ void UNiagaraStackViewModel::SetLastScrollPosition(double InLastScrollPosition)
 	}
 }
 
-void UNiagaraStackViewModel::NotifyStructureChanged()
+void UNiagaraStackViewModel::EntryExpansionChanged()
 {
-	EntryStructureChanged();
+	ExpansionChangedDelegate.Broadcast();
 }
 
-void UNiagaraStackViewModel::EntryStructureChanged()
+void UNiagaraStackViewModel::EntryStructureChanged(ENiagaraStructureChangedFlags Flags)
 {
 	if (bUsesTopLevelViewModels)
 	{
 		RefreshTopLevelViewModels();
 	}
 	RefreshHasIssues();
-	StructureChangedDelegate.Broadcast();
-	InvalidateSearchResults();
+	StructureChangedDelegate.Broadcast(Flags);
+
+	// if the structure changed, additionally invalidate search results
+	if((Flags & StructureChanged) != 0)
+	{
+		InvalidateSearchResults();
+	}
 }
 
-void UNiagaraStackViewModel::EntryDataObjectModified(UObject* ChangedObject)
+void UNiagaraStackViewModel::EntryDataObjectModified(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType)
 {
 	if (SystemViewModel.IsValid())
 	{
-		SystemViewModel.Pin()->NotifyDataObjectChanged(ChangedObject);
+		SystemViewModel.Pin()->NotifyDataObjectChanged(ChangedObjects, ChangeType);
 	}
 	InvalidateSearchResults();
-	DataObjectChangedDelegate.Broadcast(ChangedObject);
+	DataObjectChangedDelegate.Broadcast(ChangedObjects, ChangeType);
 }
 
 void UNiagaraStackViewModel::EntryRequestFullRefresh()

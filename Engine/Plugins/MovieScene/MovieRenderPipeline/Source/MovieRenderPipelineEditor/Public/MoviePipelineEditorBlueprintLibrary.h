@@ -14,6 +14,7 @@
 // Forward Declare
 class UMoviePipelineMasterConfig;
 class UMoviePipelineExecutorJob;
+class ULevelSequence;
 
 UCLASS(meta=(ScriptName="MoviePipelineEditorLibrary"))
 class MOVIERENDERPIPELINEEDITOR_API UMoviePipelineEditorBlueprintLibrary : public UBlueprintFunctionLibrary
@@ -39,4 +40,12 @@ public:
 	/** Loads the specified manifest file and converts it into an FString to be embedded with HTTP REST requests. Use in combination with SaveQueueToManifestFile. */
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
 	static FString ConvertManifestFileToString(const FString& InManifestFilePath);
+
+	/** Create a job from a level sequence. Sets the map as the currently editor world, the author, the sequence and the job name as the sequence name on the new job. Returns the newly created job. */
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
+	static UMoviePipelineExecutorJob* CreateJobFromSequence(UMoviePipelineQueue* InPipelineQueue, const ULevelSequence* InSequence);
+
+	/** Ensure the job has the settings specified by the project settings added. If they're already added we don't modify the object so that we don't make it confused about whether or not you've modified the preset. */
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
+	static void EnsureJobHasDefaultSettings(UMoviePipelineExecutorJob* InJob);
 };

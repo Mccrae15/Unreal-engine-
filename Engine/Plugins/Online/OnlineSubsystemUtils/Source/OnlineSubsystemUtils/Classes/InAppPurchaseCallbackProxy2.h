@@ -23,7 +23,7 @@ struct FInAppPurchaseProductRequest2
 
 	// Flag to determine whether this is a consumable purchase, or not.
 	UPROPERTY(BlueprintReadWrite, Category = ProductInfo)
-		bool bIsConsumable;
+		bool bIsConsumable = false;
 };
 
 /**
@@ -56,7 +56,7 @@ struct FInAppPurchaseProductInfo2
 
 	// Raw price without currency code and symbol
 	UPROPERTY(BlueprintReadOnly, Category = ProductInfo)
-		float RawPrice;
+		float RawPrice = 0.0f;
 
 	// The localized currency code of the price
 	UPROPERTY(BlueprintReadOnly, Category = ProductInfo)
@@ -190,7 +190,7 @@ private:
 
 	TArray<FInAppPurchaseReceiptInfo2> SavedReceipts;
 
-	TSharedPtr<const FUniqueNetId> PurchasingPlayer;
+	FUniqueNetIdPtr PurchasingPlayer;
 
 	IOnlinePurchasePtr PurchaseInterface;
 

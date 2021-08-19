@@ -7,7 +7,6 @@
 
 class IPDisplayClusterRenderManager;
 class IPDisplayClusterClusterManager;
-class IPDisplayClusterInputManager;
 class IPDisplayClusterConfigManager;
 class IPDisplayClusterGameManager;
 class ADisplayClusterSettings;
@@ -21,12 +20,11 @@ class IPDisplayCluster
 	, public IPDisplayClusterManager
 {
 public:
-	virtual ~IPDisplayCluster() = 0
-	{ }
+	virtual ~IPDisplayCluster() = default;
 
+public:
 	virtual IPDisplayClusterRenderManager*    GetPrivateRenderMgr() const = 0;
 	virtual IPDisplayClusterClusterManager*   GetPrivateClusterMgr() const = 0;
-	virtual IPDisplayClusterInputManager*     GetPrivateInputMgr() const = 0;
 	virtual IPDisplayClusterConfigManager*    GetPrivateConfigMgr() const = 0;
 	virtual IPDisplayClusterGameManager*      GetPrivateGameMgr() const = 0;
 };

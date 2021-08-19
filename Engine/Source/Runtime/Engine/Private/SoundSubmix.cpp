@@ -22,7 +22,7 @@ static int32 ClearBrokenSubmixAssetsCVar = 0;
 FAutoConsoleVariableRef CVarFixUpBrokenSubmixAssets(
 	TEXT("au.submix.clearbrokensubmixassets"),
 	ClearBrokenSubmixAssetsCVar,
-	TEXT("If fixed, will verify that we don't have a submix list a child submix that doesn't have it as it's parent, or vice versa.\n")
+	TEXT("If set, will verify that we don't have a submix that lists a child submix that is no longer its child, and the former children will not erroneously list their previous parents.\n")
 	TEXT("0: Disable, >0: Enable"),
 	ECVF_Default);
 
@@ -53,6 +53,9 @@ USoundSubmix::USoundSubmix(const FObjectInitializer& ObjectInitializer)
 	, DryLevelDB(-120.0f)
 #endif
 {
+	OutputVolumeModulation.Value = 0.f;
+	WetLevelModulation.Value = 0.f;
+	DryLevelModulation.Value = 0.f;
 }
 
 void USoundSubmix::PostLoad()
@@ -395,7 +398,7 @@ void USoundSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 		}
 		else if (ChangedPropName == GET_MEMBER_NAME_CHECKED(USoundSubmix, OutputVolumeDB))
 		{
-			if (OutputVolumeDB <= -120.f)
+			if (OutputVolumeDB <= -160.f)
 			{
 				OutputVolume = 0.0f;
 			}
@@ -445,7 +448,34 @@ void USoundSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 				});
 			}
 
-			if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(USoundSubmix, SubmixEffectChain))
+			FName MemberName = PropertyChangedEvent.MemberProperty->GetFName();
+
+			if (MemberName == GET_MEMBER_NAME_CHECKED(USoundSubmix, OutputVolumeModulation)
+				|| MemberName == GET_MEMBER_NAME_CHECKED(USoundSubmix, WetLevelModulation)
+				|| MemberName == GET_MEMBER_NAME_CHECKED(USoundSubmix, DryLevelModulation))
+			{
+				USoundSubmix* SoundSubmix = this;
+
+				USoundModulatorBase* NewVolumeMod = OutputVolumeModulation.Modulator;
+				USoundModulatorBase* NewWetLevelMod = WetLevelModulation.Modulator;
+				USoundModulatorBase* NewDryLevelMod = DryLevelModulation.Modulator;
+
+				AudioDeviceManager->IterateOverAllDevices([SoundSubmix, NewVolumeMod, NewWetLevelMod, NewDryLevelMod](Audio::FDeviceId Id, FAudioDevice* Device)
+					{
+						Device->UpdateSubmixModulationSettings(SoundSubmix, NewVolumeMod, NewWetLevelMod, NewDryLevelMod);
+					});
+
+				float NewVolumeModBase = OutputVolumeModulation.Value;
+				float NewWetModBase = WetLevelModulation.Value;
+				float NewDryModBase = DryLevelModulation.Value;
+
+				AudioDeviceManager->IterateOverAllDevices([SoundSubmix, NewVolumeModBase, NewWetModBase, NewDryModBase](Audio::FDeviceId Id, FAudioDevice* Device)
+					{
+						Device->SetSubmixModulationBaseLevels(SoundSubmix, NewVolumeModBase, NewWetModBase, NewDryModBase);
+					});
+			}
+
+			if (ChangedPropName == GET_MEMBER_NAME_CHECKED(USoundSubmix, SubmixEffectChain))
 			{
 				AudioDeviceManager->RegisterSoundSubmix(this);
 			}
@@ -463,8 +493,6 @@ FString USoundSubmixBase::GetDesc()
 
 void USoundSubmixBase::BeginDestroy()
 {
-	Super::BeginDestroy();
-
 	// Use the main/default audio device for storing and retrieving sound class properties
 	FAudioDeviceManager* AudioDeviceManager = (GEngine ? GEngine->GetAudioDeviceManager() : nullptr);
 
@@ -473,6 +501,10 @@ void USoundSubmixBase::BeginDestroy()
 	{
 		AudioDeviceManager->UnregisterSoundSubmix(this);
 	}
+
+	// This has to be called AFTER device unregistration.
+	// Otherwise, the object can be in a partially destroyed state.
+	Super::BeginDestroy();
 }
 
 void USoundSubmixBase::PostLoad()
@@ -510,7 +542,12 @@ void USoundSubmixBase::PostLoad()
 	FAudioDeviceManager* AudioDeviceManager = (GEngine ? GEngine->GetAudioDeviceManager() : nullptr);
 
 	// Force the properties to be initialized for this SoundClass on all active audio devices
-	if (AudioDeviceManager)
+	const FString PathName = GetPathName();
+
+	// Do not support auto-registration for submixes in the temp directory
+	// (to avoid issues with validation & automatically rooting objects on load).
+	const bool bIsTemp = PathName.StartsWith(TEXT("/Temp/"));
+	if (AudioDeviceManager && !bIsTemp)
 	{
 		AudioDeviceManager->RegisterSoundSubmix(this);
 	}

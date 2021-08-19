@@ -117,6 +117,8 @@ UMDLImporterFactory::UMDLImporterFactory(const FObjectInitializer& ObjectInitial
 		FString Extension = ListOfExtensions[Index] + TEXT(";") + ListOfExtensionsInfo[Index];
 		Formats.Add(Extension);
 	}
+#else
+	UE_LOG(LogMDLImporter, Warning, TEXT("MDL SDK was not available when plugin was build - MDL plugin won't be functional!"));
 #endif
 }
 
@@ -243,7 +245,7 @@ bool UMDLImporterFactory::LoadMaterials(IMdlFileImporter* Importer,
 	const float StartProgress = 25.f;
 	Progress.EnterProgressFrame(StartProgress, FText::Format(LOCTEXT("ImportingMaterials", "Importing materials: {0} ..."), FText::FromString(InFilename)));
 
-	bool                     bSuccess = Importer->OpenFile(InFilename, InImporterOptions);
+	bool bSuccess = Importer->OpenFile(InFilename, InImporterOptions);
 	if (bSuccess)
 	{
 		// TODO: show materials selection
@@ -264,9 +266,7 @@ bool UMDLImporterFactory::LoadMaterials(IMdlFileImporter* Importer,
 			}
 		};
 
-		TStrongObjectPtr<UTextureFactory> TextureFactory(NewObject<UTextureFactory>());
 		// processes and distills any MDL materials
-		Importer->SetTextureFactory(TextureFactory.Get());
 		bSuccess &= Importer->ImportMaterials(InPackage, InFlags, ProgressFunc);
 		if (!bSuccess)
 		{
@@ -334,8 +334,6 @@ EReimportResult::Type UMDLImporterFactory::Reimport(UObject* Obj)
 	if (Errors.Num() == 0)
 	{
 		TStrongObjectPtr<UMDLImporterOptions> ImporterOptions(NewObject<UMDLImporterOptions>(GetTransientPackage(), TEXT("MDL Importer Options")));
-		TStrongObjectPtr<UTextureFactory>     TextureFactory(NewObject<UTextureFactory>());
-		Importer->SetTextureFactory(TextureFactory.Get());
 		if (!Importer->Reimport(FileName, *ImporterOptions, Material))
 		{
 			Errors.Emplace(MDLImporterLogging::EMessageSeverity::Error, FString::Printf(TEXT("Failed to reimport material: %s"), *Material->GetName()));

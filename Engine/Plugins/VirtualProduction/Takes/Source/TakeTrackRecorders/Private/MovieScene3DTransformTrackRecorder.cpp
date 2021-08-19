@@ -402,7 +402,11 @@ bool UMovieScene3DTransformTrackRecorder::ResolveTransformToRecord(FTransform& O
  		USceneComponent* RootComponent = Actor->GetRootComponent();
  		USceneComponent* AttachParent = RootComponent ? RootComponent->GetAttachParent() : nullptr;
  
- 		bWasAttached = AttachParent != nullptr;
+		// Only track if this attachment turns true so that we can compensate on Finalize
+		if (!bWasAttached)
+		{
+	 		bWasAttached = AttachParent != nullptr;
+		}
 
 		if (AttachParent && OwningTakeRecorderSource)
  		{
@@ -471,10 +475,7 @@ void UMovieScene3DTransformTrackRecorder::PostProcessAnimationData(UMovieSceneAn
 			FTransform Relative = FTransform::Identity;
 			if (AActor* Actor = Cast<AActor>(ObjectToRecord.Get()))
 			{
-				USceneComponent* RootComponent = Actor->GetRootComponent();
-				USceneComponent* AttachParent = RootComponent ? RootComponent->GetAttachParent() : nullptr;
-				bWasAttached = AttachParent != nullptr;
-				if (AttachParent && OwningTakeRecorderSource && DefaultTransform.IsSet())
+				if (bWasAttached && OwningTakeRecorderSource && DefaultTransform.IsSet())
 				{
 					if (BufferedTransforms.Num() == 0)
 					{
@@ -502,7 +503,7 @@ void UMovieScene3DTransformTrackRecorder::PostProcessAnimationData(UMovieSceneAn
 					if (BoneTreeIndex != INDEX_NONE)
 					{
 						int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
-						int32 ParentIndex = SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
+						int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
 						if (ParentIndex == INDEX_NONE)
 						{
 							// We've found the root (root bones do not have a valid parent)

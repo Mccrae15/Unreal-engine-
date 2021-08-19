@@ -80,7 +80,7 @@ namespace
 
 	void GetPixelSpaceBoundingRect(const FSceneView& InView, const FVector& InBoxCenter, const FVector& InBoxExtents, FIntRect& OutViewport, float& OutMaxDepth, float& OutMinDepth)
 	{
-		OutViewport = FIntRect(INT_MAX, INT_MAX, -INT_MAX, -INT_MAX);
+		OutViewport = FIntRect(INT32_MAX, INT32_MAX, -INT32_MAX, -INT32_MAX);
 		// 8 corners of the bounding box. To be multiplied by box extent and offset by the center.
 		const int NumCorners = 8;
 		const FVector Verts[NumCorners] = {
@@ -242,11 +242,13 @@ namespace
 	}
 
 	// A helper function for getting the right shader.
-	TShaderMapRef<FColorCorrectRegionMaterialPS> GetRegionShader(const FGlobalShaderMap* GlobalShaderMap, EColorCorrectRegionsType RegionType, bool bIsAdvanced, bool bSampleOpacityFromGbuffer)
+	TShaderMapRef<FColorCorrectRegionMaterialPS> GetRegionShader(const FGlobalShaderMap* GlobalShaderMap, EColorCorrectRegionsType RegionType, FColorCorrectRegionMaterialPS::ETemperatureType TemperatureType, bool bIsAdvanced, bool bSampleOpacityFromGbuffer)
 	{
 		FColorCorrectRegionMaterialPS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FColorCorrectRegionMaterialPS::FAdvancedShader>(bIsAdvanced);
 		PermutationVector.Set<FColorCorrectRegionMaterialPS::FShaderType>(RegionType);
+		PermutationVector.Set<FColorCorrectRegionMaterialPS::FTemperatureType>(TemperatureType);
+
 #if ColorCorrectRegions_SHADER_DISPLAY_BOUNDING_RECT
 		PermutationVector.Set<FColorCorrectRegionMaterialPS::FDisplayBoundingRect>(true);
 #endif
@@ -364,7 +366,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 			}
 
 			FVector BoxCenter, BoxExtents;
-			Region->GetActorBounds(true, BoxCenter, BoxExtents);
+			Region->GetBounds(BoxCenter, BoxExtents);
 
 			// If bounding box is zero, then we don't need to do anything.
 			if (BoxExtents.IsNearlyZero())
@@ -385,6 +387,13 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 			else
 			{
 				GetPixelSpaceBoundingRect(View, BoxCenter, BoxExtents, Viewport, MaxDepth, MinDepth);
+
+				// Check if CCR is too small to be rendered (less than one pixel on the screen).
+				if (Viewport.Width() == 0 || Viewport.Height() == 0)
+				{
+					continue;
+				}
+
 				// This is to handle corner cases when user has a very long disproportionate region and gets either
 				// within bounds or close to the center.
 				float MaxBoxExtent = FMath::Abs(BoxExtents.GetMax());
@@ -449,7 +458,13 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 			PostProcessMaterialParameters->View = View.ViewUniformBuffer;
 
 			TShaderMapRef<FColorCorrectRegionMaterialVS> VertexShader(GlobalShaderMap);
-			TShaderMapRef<FColorCorrectRegionMaterialPS> PixelShader = GetRegionShader(GlobalShaderMap, Region->Type, bIsAdvanced, bSampleOpacityFromGbuffer);
+			const float DefaultTemperature = 6500;
+
+			// If temperature is default we don't want to do the calculations.
+			FColorCorrectRegionMaterialPS::ETemperatureType TemperatureType = FMath::IsNearlyEqual(Region->Temperature, DefaultTemperature) 
+				? FColorCorrectRegionMaterialPS::ETemperatureType::Disabled 
+				: static_cast<FColorCorrectRegionMaterialPS::ETemperatureType>(Region->TemperatureType);
+			TShaderMapRef<FColorCorrectRegionMaterialPS> PixelShader = GetRegionShader(GlobalShaderMap, Region->Type, TemperatureType, bIsAdvanced, bSampleOpacityFromGbuffer);
 
 			ClearUnusedGraphResources(VertexShader, PixelShader, PostProcessMaterialParameters);
 
@@ -600,7 +615,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 #if CLIP_PIXELS_OUTSIDE_AABB
 			// Blending the output from the main step with scene color.
 			// src.rgb*src.a + dest.rgb*(1.-src.a); alpha = src.a*0. + dst.a*1.0
-			FRHIBlendState* CopyBlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
+			FRHIBlendState* CopyBlendState = TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
 #else	
 			FRHIBlendState* CopyBlendState = DefaultBlendState;
 #endif

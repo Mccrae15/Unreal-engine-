@@ -8,6 +8,9 @@
 
 FVulkanLayoutManager FVulkanCommandListContext::LayoutManager;
 
+// All shader stages supported by VK device - VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, FRAGMENT etc
+extern uint32 GVulkanDeviceShaderStageBits;
+
 //
 // The following two functions are used when the RHI needs to do image layout transitions internally.
 // They are not used for the transitions requested through the public API (RHICreate/Begin/EndTransition)
@@ -57,7 +60,7 @@ static VkAccessFlags GetVkAccessMaskForLayout(VkImageLayout Layout)
 			break;
 
 		case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
-			Flags = VK_ACCESS_MEMORY_READ_BIT;
+			Flags = 0;
 			break;
 
 		case VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT:
@@ -79,7 +82,7 @@ static VkAccessFlags GetVkAccessMaskForLayout(VkImageLayout Layout)
 
 static VkPipelineStageFlags GetVkStageFlagsForLayout(VkImageLayout Layout)
 {
-	VkAccessFlags Flags = 0;
+	VkPipelineStageFlags Flags = 0;
 
 	switch (Layout)
 	{
@@ -120,7 +123,7 @@ static VkPipelineStageFlags GetVkStageFlagsForLayout(VkImageLayout Layout)
 			break;
 
 		case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
-			Flags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+			Flags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 			break;
 
 		case VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT:
@@ -203,8 +206,7 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 
 		case ERHIAccess::EReadable:
 			// All the stages which could possibly read from the resource, so basically the same as SRVGraphics + SRVCompute + DSVRead.
-			StageFlags = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			StageFlags = GVulkanDeviceShaderStageBits | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 			AccessFlags = VK_ACCESS_MEMORY_READ_BIT;
 			// For the source state, this doesn't give us enough information to know the current layout, so we'll leave it as undefined and the layout manager will fill it in when the transition is executed.
 			// For the destination state, we assume this will be an SRV.
@@ -217,8 +219,7 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 		case ERHIAccess::EWritable:
 			// The engine no longer uses this state, but there may be licensee code which does.
 			// All the stages which could possibly write to the resource, so UAVGraphics + UAVCompute + DSVWrite + RTV.
-			StageFlags = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			StageFlags = GVulkanDeviceShaderStageBits | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 			AccessFlags = VK_ACCESS_MEMORY_WRITE_BIT;
 			// For the source state, this has the same problem as EReadable. For the destination state we assume the caller means UAV.
 			if (!bIsSourceState)
@@ -229,8 +230,7 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 
 		case ERHIAccess::ERWBarrier:
 			// This is used for UAVs, so it's UAVGraphics + UAVCompute.
-			StageFlags = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			StageFlags = GVulkanDeviceShaderStageBits;
 			AccessFlags = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 			Layout = VK_IMAGE_LAYOUT_GENERAL;
 			return;
@@ -295,7 +295,7 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 
 	if (EnumHasAnyFlags(RHIAccess, ERHIAccess::SRVGraphics))
 	{
-		StageFlags |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |	VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		StageFlags |= (GVulkanDeviceShaderStageBits & ~VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 		AccessFlags |= VK_ACCESS_SHADER_READ_BIT;
 		Layout = SRVLayout;
 
@@ -316,7 +316,7 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 
 	if (EnumHasAnyFlags(RHIAccess, ERHIAccess::UAVGraphics))
 	{
-		StageFlags |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		StageFlags |= (GVulkanDeviceShaderStageBits & ~VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 		AccessFlags |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 		Layout = VK_IMAGE_LAYOUT_GENERAL;
 
@@ -728,6 +728,12 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 		{
 			GetVkStageAndAccessFlags(Info.AccessBefore, UnderlyingType, bIsDepthStencil, SrcStageMask, SrcAccessFlags, SrcLayout, true);
 			GetVkStageAndAccessFlags(Info.AccessAfter, UnderlyingType, bIsDepthStencil, DstStageMask, DstAccessFlags, DstLayout, false);
+
+			// If not compute, remove vertex pipeline bits as only compute updates vertex buffers
+			if (!(SrcStageMask & VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
+			{
+				DstStageMask &= ~(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT);
+			}
 		}
 
 		// In case of async compute, override the stage and access flags computed above, since only the compute shader stage is relevant.
@@ -1263,6 +1269,12 @@ void FVulkanPipelineBarrier::AddImageAccessTransition(const FVulkanSurface& Surf
 	GetVkStageAndAccessFlags(SrcAccess, FRHITransitionInfo::EType::Texture, bIsDepthStencil, ImgSrcStage, SrcAccessFlags, SrcLayout, true);
 	GetVkStageAndAccessFlags(DstAccess, FRHITransitionInfo::EType::Texture, bIsDepthStencil, ImgDstStage, DstAccessFlags, DstLayout, false);
 
+	// If not compute, remove vertex pipeline bits as only compute updates vertex buffers
+	if (!(ImgSrcStage & VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
+	{
+		ImgDstStage &= ~(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT);
+	}
+
 	SrcStageMask |= ImgSrcStage;
 	DstStageMask |= ImgDstStage;
 
@@ -1580,14 +1592,14 @@ void FVulkanLayoutManager::BeginRenderPass(FVulkanCommandListContext& Context, F
 		}
 	}
 
-	FRHITexture* FoveationTexture = RPInfo.FoveationTexture;
-	if (FoveationTexture)
+	FRHITexture* ShadingRateTexture = RPInfo.ShadingRateTexture;
+	if (ShadingRateTexture)
 	{
-		FVulkanSurface& Surface = FVulkanTextureBase::Cast(FoveationTexture)->Surface;
+		FVulkanSurface& Surface = FVulkanTextureBase::Cast(ShadingRateTexture)->Surface;
 		VkImageLayout& DSLayout = FindOrAddLayoutRW(Surface, VK_IMAGE_LAYOUT_UNDEFINED);
 		VkImageLayout ExpectedLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
 
-		// transition foveation textures to the foveation layout for rendering
+		// transition shading rate textures to the fragment density map layout for rendering
 		if (DSLayout != ExpectedLayout)
 		{
 			Barrier.AddImageLayoutTransition(Surface.Image, DSLayout, ExpectedLayout, FVulkanPipelineBarrier::MakeSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT));
@@ -1655,103 +1667,3 @@ void FVulkanLayoutManager::NotifyDeletedRenderTarget(FVulkanDevice& InDevice, Vk
 		}
 	}
 }
-
-#if 0
-
-// FIXME: we need to integrate this RequiresPresentLayoutFix() stuff into the new code.
-void FPendingBarrier::SetTransition(int32 BarrierIndex, EImageLayoutBarrier Source, EImageLayoutBarrier Dest)
-{
-	VkImageMemoryBarrier& Barrier = ImageBarriers[BarrierIndex];
-
-	if (FVulkanPlatform::RequiresPresentLayoutFix() && GVulkanDelayAcquireImage != EDelayAcquireImageType::DelayAcquire)
-	{
-		VkPipelineStageFlags NewSourceStage = GetImageBarrierFlags(Source, Barrier.srcAccessMask, Barrier.oldLayout);;
-		VkPipelineStageFlags NewDestStage = GetImageBarrierFlags(Dest, Barrier.dstAccessMask, Barrier.newLayout);
-
-		// special handling for VK_IMAGE_LAYOUT_PRESENT_SRC_KHR (otherwise Mali devices flicker)
-		if (Source == EImageLayoutBarrier::Present)
-		{
-			NewSourceStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-			NewDestStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		}
-		else if (Dest == EImageLayoutBarrier::Present)
-		{
-			NewSourceStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			NewDestStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-		}
-
-		SourceStage |= NewSourceStage;
-		DestStage |= NewDestStage;
-	}
-	else
-	{
-		SourceStage |= GetImageBarrierFlags(Source, Barrier.srcAccessMask, Barrier.oldLayout);
-		DestStage |= GetImageBarrierFlags(Dest, Barrier.dstAccessMask, Barrier.newLayout);
-	}
-}
-
-// Old cross-pipe transitions, kept as reference until we add support for it in the new functions.
-void FVulkanCommandListContext::TransitionUAVResourcesTransferringOwnership(FVulkanCommandListContext& GfxContext, FVulkanCommandListContext& ComputeContext,
-	EResourceTransitionPipeline Pipeline, const TArray<VkBufferMemoryBarrier>& InBufferBarriers, const TArray<VkImageMemoryBarrier>& InImageBarriers)
-{
-	auto DoBarriers = [&InImageBarriers, &InBufferBarriers](uint32 SrcQueueIndex, uint32 DestQueueIndex, FVulkanCmdBuffer* SrcCmdBuffer, FVulkanCmdBuffer* DstCmdBuffer, VkPipelineStageFlags SrcStageFlags, VkPipelineStageFlags DestStageFlags)
-	{
-		TArray<VkBufferMemoryBarrier> BufferBarriers = InBufferBarriers;
-		TArray<VkImageMemoryBarrier> ImageBarriers = InImageBarriers;
-
-		// Release resources
-		for (VkBufferMemoryBarrier& Barrier : BufferBarriers)
-		{
-			Barrier.dstAccessMask = 0;
-			Barrier.srcQueueFamilyIndex = SrcQueueIndex;
-			Barrier.dstQueueFamilyIndex = DestQueueIndex;
-		}
-
-		for (VkImageMemoryBarrier& Barrier : ImageBarriers)
-		{
-			Barrier.dstAccessMask = 0;
-			Barrier.srcQueueFamilyIndex = SrcQueueIndex;
-			Barrier.dstQueueFamilyIndex = DestQueueIndex;
-		}
-
-		VulkanRHI::vkCmdPipelineBarrier(SrcCmdBuffer->GetHandle(), SrcStageFlags, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, BufferBarriers.Num(), BufferBarriers.GetData(), ImageBarriers.Num(), ImageBarriers.GetData());
-
-		// Now acquire and restore dstAccessMask
-		for (VkBufferMemoryBarrier& Barrier : BufferBarriers)
-		{
-			Barrier.srcAccessMask = 0;
-			size_t Index = &Barrier - &BufferBarriers[0];
-			Barrier.dstAccessMask = InBufferBarriers[Index].dstAccessMask;
-		}
-
-		for (VkImageMemoryBarrier& Barrier : ImageBarriers)
-		{
-			Barrier.srcAccessMask = 0;
-			size_t Index = &Barrier - &ImageBarriers[0];
-			Barrier.dstAccessMask = ImageBarriers[Index].dstAccessMask;
-		}
-
-		VulkanRHI::vkCmdPipelineBarrier(DstCmdBuffer->GetHandle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, DestStageFlags, 0, 0, nullptr, BufferBarriers.Num(), BufferBarriers.GetData(), ImageBarriers.Num(), ImageBarriers.GetData());
-	};
-
-	bool bComputeToGfx = Pipeline == EResourceTransitionPipeline::EComputeToGfx;
-	ensure(bComputeToGfx || Pipeline == EResourceTransitionPipeline::EGfxToCompute);
-	uint32 GfxQueueIndex = GfxContext.Device->GetGraphicsQueue()->GetFamilyIndex();
-	uint32 ComputeQueueIndex = ComputeContext.Device->GetComputeQueue()->GetFamilyIndex();
-	FVulkanCmdBuffer* GfxCmdBuffer = GfxContext.GetCommandBufferManager()->GetActiveCmdBuffer();
-	if (!ComputeContext.GetCommandBufferManager()->HasPendingActiveCmdBuffer())
-	{
-		ComputeContext.GetCommandBufferManager()->PrepareForNewActiveCommandBuffer();
-	}
-	FVulkanCmdBuffer* ComputeCmdBuffer = ComputeContext.GetCommandBufferManager()->GetActiveCmdBuffer();
-	if (bComputeToGfx)
-	{
-		DoBarriers(ComputeQueueIndex, GfxQueueIndex, ComputeCmdBuffer, GfxCmdBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
-	}
-	else
-	{
-		DoBarriers(GfxQueueIndex, ComputeQueueIndex, GfxCmdBuffer, ComputeCmdBuffer, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	}
-}
-
-#endif

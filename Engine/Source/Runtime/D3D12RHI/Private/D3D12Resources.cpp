@@ -69,6 +69,8 @@ void FD3D12DeferredDeletionQueue::EnqueueResource(ID3D12Object* pResource, FD3D1
 
 bool FD3D12DeferredDeletionQueue::ReleaseResources(bool bDeleteImmediately, bool bIsShutDown)
 {
+	FScopeLock ScopeLock(&DeleteTaskCS);
+
 	FD3D12Adapter* Adapter = GetParentAdapter();
 
 	if (GD3D12AsyncDeferredDeletion)
@@ -254,9 +256,7 @@ FD3D12Resource::FD3D12Resource(FD3D12Device* ParentDevice,
 	, bRequiresResourceStateTracking(true)
 	, bDepthStencil(false)
 	, bDeferDelete(true)
-#if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 	, bBackBuffer(false)
-#endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 	, HeapType(InHeapType)
 	, GPUVirtualAddress(0)
 	, ResourceBaseAddress(nullptr)
@@ -275,6 +275,13 @@ FD3D12Resource::FD3D12Resource(FD3D12Device* ParentDevice,
 	}
 
 	InitalizeResourceState(InInitialState, InResourceStateMode, InDefaultResourceState);
+
+#if NV_AFTERMATH
+	if (GDX12NVAfterMathTrackResources)
+	{
+		GFSDK_Aftermath_DX12_RegisterResource(InResource, &AftermathHandle);
+	}
+#endif
 }
 
 FD3D12Resource::~FD3D12Resource()
@@ -282,6 +289,25 @@ FD3D12Resource::~FD3D12Resource()
 	if (D3DX12Residency::IsInitialized(ResidencyHandle))
 	{
 		D3DX12Residency::EndTrackingObject(GetParentDevice()->GetResidencyManager(), ResidencyHandle);
+	}
+
+#if NV_AFTERMATH
+	if (GDX12NVAfterMathTrackResources)
+	{
+		GFSDK_Aftermath_DX12_UnregisterResource(AftermathHandle);
+	}
+#endif
+}
+
+ID3D12Pageable* FD3D12Resource::GetPageable()
+{
+	if (IsPlacedResource())
+	{
+		return (ID3D12Pageable*)(GetHeap()->GetHeap());
+	}
+	else
+	{
+		return (ID3D12Pageable*)GetResource();
 	}
 }
 
@@ -397,7 +423,8 @@ HRESULT FD3D12Adapter::CreateCommittedResource(const D3D12_RESOURCE_DESC& InDesc
 
 	TRefCountPtr<ID3D12Resource> pResource;
 #if PLATFORM_WINDOWS
-	D3D12_HEAP_FLAGS HeapFlags = bHeapNotZeroedSupported? D3D12_HEAP_FLAG_CREATE_NOT_ZEROED : D3D12_HEAP_FLAG_NONE;
+	const bool bRequiresInitialization = (InDesc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0;
+	D3D12_HEAP_FLAGS HeapFlags = (bHeapNotZeroedSupported && !bRequiresInitialization) ? D3D12_HEAP_FLAG_CREATE_NOT_ZEROED : D3D12_HEAP_FLAG_NONE;
 #else
 	check(!bHeapNotZeroedSupported);
 	D3D12_HEAP_FLAGS HeapFlags = D3D12_HEAP_FLAG_NONE;

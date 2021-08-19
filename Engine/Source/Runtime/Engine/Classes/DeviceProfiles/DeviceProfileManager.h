@@ -16,6 +16,9 @@ class UDeviceProfile;
 // Delegate used to refresh the UI when the profiles change
 DECLARE_MULTICAST_DELEGATE( FOnDeviceProfileManagerUpdated );
 
+// Delegate used to notify systems when the active device profile changes
+DECLARE_MULTICAST_DELEGATE( FOnActiveDeviceProfileChanged );
+
 /**
  * Implements a helper class that manages all profiles in the Device
  */
@@ -30,13 +33,13 @@ public:
 	 * Startup and select the active device profile
 	 * Then Init the CVars from this profile and it's Device profile parent tree.
 	 */
-	static void InitializeCVarsForActiveDeviceProfile(bool bPushSettings=false, bool bForceDeviceProfilePriority = false);
+	static void InitializeCVarsForActiveDeviceProfile(bool bPushSettings = false, bool bIsDeviceProfilePreview = false, bool bForceReload = false);
 
 	/**
 	 * Reapplies the device profile. Useful when configs have changed (i.e. hotfix)
 	 * Applies base and then any overridden device profile.
 	 */
-	void ReapplyDeviceProfile();
+	void ReapplyDeviceProfile(bool bForceReload = false);
 
 	/**
 	 * Examine the currently active or overridden profile for references to entries in DeviceProfilesToQuery
@@ -74,7 +77,7 @@ public:
 	/**
 	* Overrides the device profile. The original profile can be restored with RestoreDefaultDeviceProfile
 	*/
-	void SetOverrideDeviceProfile(UDeviceProfile* DeviceProfile, bool bForceDeviceProfilePriority = false);
+	void SetOverrideDeviceProfile(UDeviceProfile* DeviceProfile, bool bIsDeviceProfilePreview = false);
 
 	/**
 	* Restore the device profile to the default for this device
@@ -93,6 +96,13 @@ public:
 	 * @return The delegate.
 	 */
 	FOnDeviceProfileManagerUpdated& OnManagerUpdated();
+
+	/**
+	 * Returns a delegate that is invoked when the active device profile changes
+	 *
+	 * @return The delegate.
+	 */
+	FOnActiveDeviceProfileChanged& OnActiveDeviceProfileChanged();
 
 	/**
 	 * Save the device profiles.
@@ -179,6 +189,9 @@ private:
 
 	// Holds a delegate to be invoked profiles are updated.
 	FOnDeviceProfileManagerUpdated ManagerUpdatedDelegate;
+
+	// Holds a delegate to be invoked when the active deviceprofile changes
+	FOnActiveDeviceProfileChanged ActiveDeviceProfileChangedDelegate;
 
 	// Holds the selected device profile
 	UDeviceProfile* ActiveDeviceProfile;

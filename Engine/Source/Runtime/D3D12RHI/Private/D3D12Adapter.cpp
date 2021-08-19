@@ -12,6 +12,7 @@ D3D12Adapter.cpp:D3D12 Adapter implementation.
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsPlatformMisc.h"
 #endif
+#include "Modules/ModuleManager.h"
 
 #if !PLATFORM_CPU_ARM_FAMILY && (PLATFORM_WINDOWS)
 	#include "amd_ags.h"
@@ -168,6 +169,7 @@ FD3D12Adapter::FD3D12Adapter(FD3D12AdapterDesc& DescIn)
 	: OwningRHI(nullptr)
 	, bDepthBoundsTestSupported(false)
 	, bHeapNotZeroedSupported(false)
+	, VRSTileSize(0)
 	, bDebugDevice(false)
 	, GPUCrashDebuggingMode(ED3D12GPUCrashDebugginMode::Disabled)
 	, bDeviceRemoved(false)
@@ -217,16 +219,17 @@ void FD3D12Adapter::Initialize(FD3D12DynamicRHI* RHI)
 }
 
 
+/** Callback function called when the GPU crashes, when Aftermath is enabled */
+static void D3D12AftermathCrashCallback(const void* InGPUCrashDump, const uint32_t InGPUCrashDumpSize, void* InUserData)
+{
+	// Forward to shared function which is also called when DEVICE_LOST return value is given
+	D3D12RHI::TerminateOnGPUCrash(nullptr, InGPUCrashDump, InGPUCrashDumpSize);
+}
+
+
 void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 {
 	const bool bAllowVendorDevice = !FParse::Param(FCommandLine::Get(), TEXT("novendordevice"));
-
-	CreateDXGIFactory(bWithDebug);
-
-	// QI for the Adapter
-	TRefCountPtr<IDXGIAdapter> TempAdapter;
-	DxgiFactory->EnumAdapters(Desc.AdapterIndex, TempAdapter.GetInitReference());
-	VERIFYD3D12RESULT(TempAdapter->QueryInterface(IID_PPV_ARGS(DxgiAdapter.GetInitReference())));
 
 #if PLATFORM_WINDOWS || (PLATFORM_HOLOLENS && !UE_BUILD_SHIPPING && D3D12_PROFILING_ENABLED)
 	
@@ -254,6 +257,41 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 				GPUCrashDebuggingMode = (ED3D12GPUCrashDebugginMode)GPUCrashDebuggingModeValue;
 		}
 	}
+
+#if NV_AFTERMATH
+	if (IsRHIDeviceNVIDIA())
+	{
+		// GPUcrash dump handler must be attached prior to device creation
+		static IConsoleVariable* GPUCrashDump = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GPUCrashDump"));
+		if (GPUCrashDebuggingMode == ED3D12GPUCrashDebugginMode::Full || FParse::Param(FCommandLine::Get(), TEXT("gpucrashdump")) || (GPUCrashDump && GPUCrashDump->GetInt()))
+		{
+			HANDLE CurrentThread = ::GetCurrentThread();
+
+			GFSDK_Aftermath_Result Result = GFSDK_Aftermath_EnableGpuCrashDumps(
+				GFSDK_Aftermath_Version_API,
+				GFSDK_Aftermath_GpuCrashDumpWatchedApiFlags_DX,
+				GFSDK_Aftermath_GpuCrashDumpFeatureFlags_Default,
+				D3D12AftermathCrashCallback,
+				nullptr, //Shader debug callback
+				nullptr, // description callback
+				CurrentThread); // user data
+
+			if (Result == GFSDK_Aftermath_Result_Success)
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath crash dumping enabled"));
+
+				// enable core Aftermath to set the init flags
+				GDX12NVAfterMathEnabled = 1;
+			}
+			else
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath crash dumping failed to initialize (%x)"), Result);
+
+				GDX12NVAfterMathEnabled = 0;
+			}
+		}
+	}
+#endif
 
 	bool bD3d12gpuvalidation = false;
 	if (bWithDebug)
@@ -320,6 +358,13 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	UE_LOG(LogD3D12RHI, Log, TEXT("Emitting draw events for PIX profiling."));
 	SetEmitDrawEvents(true);
 #endif
+
+	CreateDXGIFactory(bWithDebug);
+
+	// QI for the Adapter
+	TRefCountPtr<IDXGIAdapter> TempAdapter;
+	DxgiFactory->EnumAdapters(Desc.AdapterIndex, TempAdapter.GetInitReference());
+	VERIFYD3D12RESULT(TempAdapter->QueryInterface(IID_PPV_ARGS(DxgiAdapter.GetInitReference())));
 
 	bool bDeviceCreated = false;
 #if !PLATFORM_CPU_ARM_FAMILY && (PLATFORM_WINDOWS)
@@ -414,17 +459,44 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	{
 		if (IsRHIDeviceNVIDIA() && bAllowVendorDevice)
 		{
-			GFSDK_Aftermath_Result Result = GFSDK_Aftermath_DX12_Initialize(GFSDK_Aftermath_Version_API, GFSDK_Aftermath_FeatureFlags_Maximum, RootDevice);
+			static IConsoleVariable* MarkersCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GPUCrashDebugging.Aftermath.Markers"));
+			static IConsoleVariable* CallstackCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GPUCrashDebugging.Aftermath.Callstack"));
+			static IConsoleVariable* ResourcesCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GPUCrashDebugging.Aftermath.ResourceTracking"));
+			static IConsoleVariable* TrackAllCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GPUCrashDebugging.Aftermath.TrackAll"));
+
+			const bool bEnableMarkers = FParse::Param(FCommandLine::Get(), TEXT("aftermathmarkers")) || (MarkersCVar && MarkersCVar->GetInt());
+			const bool bEnableCallstack = FParse::Param(FCommandLine::Get(), TEXT("aftermathcallstack")) || (CallstackCVar && CallstackCVar->GetInt());
+			const bool bEnableResources = FParse::Param(FCommandLine::Get(), TEXT("aftermathresources")) || (ResourcesCVar && ResourcesCVar->GetInt());
+			const bool bEnableAll = FParse::Param(FCommandLine::Get(), TEXT("aftermathall")) || (TrackAllCVar && TrackAllCVar->GetInt());
+
+			uint32 Flags = GFSDK_Aftermath_FeatureFlags_Minimum;
+
+			Flags |= bEnableMarkers ? GFSDK_Aftermath_FeatureFlags_EnableMarkers : 0;
+			Flags |= bEnableCallstack ? GFSDK_Aftermath_FeatureFlags_CallStackCapturing : 0;
+			Flags |= bEnableResources ? GFSDK_Aftermath_FeatureFlags_EnableResourceTracking : 0;
+			Flags |= bEnableAll ? GFSDK_Aftermath_FeatureFlags_Maximum : 0;
+
+			GFSDK_Aftermath_Result Result = GFSDK_Aftermath_DX12_Initialize(GFSDK_Aftermath_Version_API, (GFSDK_Aftermath_FeatureFlags)Flags, RootDevice);
 			if (Result == GFSDK_Aftermath_Result_Success)
 			{
 				UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath enabled and primed"));
-				SetEmitDrawEvents(true);
-				GDX12NVAfterMathEnabled = 1;
 			}
 			else
 			{
 				UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath enabled but failed to initialize (%x)"), Result);
 				GDX12NVAfterMathEnabled = 0;
+			}
+
+			if (GDX12NVAfterMathEnabled && (bEnableMarkers || bEnableAll))
+			{
+				SetEmitDrawEvents(true);
+				GDX12NVAfterMathMarkers = 1;
+			}
+
+			GDX12NVAfterMathTrackResources = bEnableResources || bEnableAll;
+			if (GDX12NVAfterMathEnabled && GDX12NVAfterMathTrackResources)
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath resource tracking enabled"));
 			}
 		}
 		else
@@ -739,6 +811,10 @@ void FD3D12Adapter::InitializeDevices()
 
 					GRHISupportsRayTracing = true;
 
+				#if !PLATFORM_CPU_ARM_FAMILY && PLATFORM_WINDOWS
+					GRHISupportsRayTracingAMDHitToken = (OwningRHI->GetAmdSupportedExtensionFlags() & AGS_DX12_EXTENSION_INTRINSIC_RAY_TRACE_HIT_TOKEN) != 0;
+				#endif
+
 					if (D3D12Caps5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1
 						&& RootDevice7)
 					{
@@ -746,6 +822,12 @@ void FD3D12Adapter::InitializeDevices()
 
 						GRHISupportsRayTracingPSOAdditions = true;
 					}
+				}
+				else if (D3D12Caps5.RaytracingTier == D3D12_RAYTRACING_TIER_NOT_SUPPORTED 
+					&& FModuleManager::Get().IsModuleLoaded("RenderDocPlugin")
+					&& !FParse::Param(FCommandLine::Get(), TEXT("noraytracing")))
+				{
+					UE_LOG(LogD3D12RHI, Warning, TEXT("Ray Tracing is disabled because the RenderDoc plugin is currently not compatible with D3D12 ray tracing."));
 				}
 			}
 #endif // D3D12_RHI_RAYTRACING

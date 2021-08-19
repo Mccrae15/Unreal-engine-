@@ -817,7 +817,7 @@ void FSkeletalMeshLODModel::Serialize(FArchive& Ar, UObject* Owner, int32 Idx)
 			}
 
 			USkeletalMesh* SkelMeshOwner = CastChecked<USkeletalMesh>(Owner);
-			if (SkelMeshOwner->bHasVertexColors)
+			if (SkelMeshOwner->GetHasVertexColors())
 			{
 				// Handling for old color buffer data
 				if (Ar.IsLoading() && Ar.CustomVer(FSkeletalMeshCustomVersion::GUID) < FSkeletalMeshCustomVersion::UseSharedColorBufferFormat)
@@ -1137,7 +1137,10 @@ void FSkeletalMeshLODModel::UpdateChunkedSectionInfo(const FString& SkeletalMesh
 	uint32 LastBoneCount = 0;
 	int32 CurrentParentChunkIndex = INDEX_NONE;
 	int32 OriginalIndex = 0;
-	const uint32 MaxGPUSkinBones = FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones();
+	//We assume here that if the project use per platform chunking, the minimum value will be the same has the prior project settings.
+	//If this assumption is false its possible some cloth do not hook up to the correct section. There is no other data we can use to discover
+	//previously chunk sectionfor asset imported with 4.23 and older version.
+	const uint32 MaxGPUSkinBones = FGPUBaseSkinVertexFactory::GetMinimumPerPlatformMaxGPUSkinBonesValue();
 	check(MaxGPUSkinBones <= FGPUBaseSkinVertexFactory::GHardwareMaxGPUSkinBones);
 
 	for (int32 LODModelSectionIndex = 0; LODModelSectionIndex < LODModelSectionNum; ++LODModelSectionIndex)
@@ -1181,8 +1184,6 @@ void FSkeletalMeshLODModel::UpdateChunkedSectionInfo(const FString& SkeletalMesh
 		LastMaterialIndex = Section.MaterialIndex;
 		//Set the last bone count
 		LastBoneCount = (uint32)Sections[LODModelSectionIndex].BoneMap.Num();
-		//its impossible to have more bone then the maximum allowed
-		ensureMsgf(LastBoneCount <= MaxGPUSkinBones, TEXT("Skeletalmesh(%s) section %d have more bones then its alowed (MaxGPUSkinBones: %d)."), *SkeletalMeshName, LODModelSectionIndex, LastBoneCount);
 	}
 }
 

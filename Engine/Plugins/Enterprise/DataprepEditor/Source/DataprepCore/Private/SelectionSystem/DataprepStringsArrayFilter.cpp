@@ -97,7 +97,7 @@ const UDataprepFetcher* UDataprepStringsArrayFilter::GetFetcherImplementation() 
 
 FText UDataprepStringsArrayFilter::GetFilterCategoryText() const
 {
-	return NSLOCTEXT("DataprepSringsArrayFilter", "StringArrayFilterCategory", "StringArray");
+	return NSLOCTEXT("DataprepSringsArrayFilter", "StringArrayFilterCategory", "String");
 }
 
 EDataprepStringMatchType UDataprepStringsArrayFilter::GetStringMatchingCriteria() const
@@ -108,6 +108,20 @@ EDataprepStringMatchType UDataprepStringsArrayFilter::GetStringMatchingCriteria(
 FString UDataprepStringsArrayFilter::GetUserString() const
 {
 	return UserString;
+}
+
+bool UDataprepStringsArrayFilter::GetMatchInArray() const
+{
+	return bMatchInArray;
+}
+
+UDataprepStringFilterMatchingArray* UDataprepStringsArrayFilter::GetStringArray()
+{
+	if ( !UserStringArray )
+	{
+		UserStringArray = NewObject< UDataprepStringFilterMatchingArray >( this, NAME_None, RF_Transient );
+	}
+	return UserStringArray;
 }
 
 void UDataprepStringsArrayFilter::SetStringMatchingCriteria(EDataprepStringMatchType InStringMatchingCriteria)
@@ -126,4 +140,9 @@ void UDataprepStringsArrayFilter::SetUserString(FString InUserString)
 		Modify();
 		UserString = InUserString;
 	}
+}
+
+void UDataprepStringsArrayFilter::SetMatchInArray(bool bInSet)
+{
+	bMatchInArray = bInSet;
 }

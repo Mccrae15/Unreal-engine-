@@ -64,7 +64,7 @@ static TAutoConsoleVariable<int32> CVarForceNetFlush(TEXT("net.ForceNetFlush"), 
 	TEXT("Immediately flush send buffer when written to (helps trace packet writes - WARNING: May be unstable)."));
 #endif
 
-static TAutoConsoleVariable<int32> CVarNetDoPacketOrderCorrection(TEXT("net.DoPacketOrderCorrection"), 0,
+static TAutoConsoleVariable<int32> CVarNetDoPacketOrderCorrection(TEXT("net.DoPacketOrderCorrection"), 1,
 	TEXT("Whether or not to try to fix 'out of order' packet sequences, by caching packets and waiting for the missing sequence."));
 
 static TAutoConsoleVariable<int32> CVarNetPacketOrderCorrectionEnableThreshold(TEXT("net.PacketOrderCorrectionEnableThreshold"), 1,
@@ -83,6 +83,9 @@ TAutoConsoleVariable<int32> CVarNetEnableDetailedScopeCounters(TEXT("net.EnableD
 static TAutoConsoleVariable<int32> CVarDisableBandwithThrottling(TEXT("net.DisableBandwithThrottling"), 0,
 	TEXT("Forces IsNetReady to always return true. Not available in shipping builds."));
 #endif
+
+TAutoConsoleVariable<int32> CVarNetEnableCongestionControl(TEXT("net.EnableCongestionControl"), 0,
+	TEXT("Enables congestion control module."));
 
 extern int32 GNetDormancyValidate;
 extern bool GbNetReuseReplicatorsForDormantObjects;
@@ -450,11 +453,6 @@ void UNetConnection::InitHandler()
 		{
 			Handler::Mode Mode = Driver->ServerConnection != nullptr ? Handler::Mode::Client : Handler::Mode::Server;
 
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			Handler->InitializeAddressSerializer([this](const FString& InAddress){
-				return Driver->GetSocketSubsystem()->GetAddressFromString(InAddress);
-			});
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			Handler->InitializeDelegates(FPacketHandlerLowLevelSendTraits::CreateUObject(this, &UNetConnection::LowLevelSend));
 			Handler->NotifyAnalyticsProvider(Driver->AnalyticsProvider, Driver->AnalyticsAggregator);
 			Handler->Initialize(Mode, MaxPacket * 8, false, nullptr, nullptr, Driver->NetDriverName);
@@ -746,6 +744,12 @@ void UNetConnection::Serialize( FArchive& Ar )
 
 void UNetConnection::Close()
 {
+	if (IsInternalAck())
+	{
+		SetReserveDestroyedChannels(false);
+		SetIgnoreReservedChannels(false);
+	}
+
 	if (Driver != nullptr && State != USOCK_Closed)
 	{
 		NETWORK_PROFILER(GNetworkProfiler.TrackEvent(TEXT("CLOSE"), *(GetName() + TEXT(" ") + LowLevelGetRemoteAddress()), this));
@@ -1156,7 +1160,7 @@ void UNetConnection::UpdateLevelVisibilityInternal(const FUpdateLevelVisibilityL
 
 			check(Channel->OpenedLocally);
 
-			if (Channel->Actor && Channel->Actor->GetLevel()->GetOutermost()->GetFName() == LevelVisibility.PackageName)
+			if (Channel->Actor && Channel->Actor->GetLevel() && Channel->Actor->GetLevel()->GetOutermost()->GetFName() == LevelVisibility.PackageName)
 			{
 				Channel->Close(EChannelCloseReason::LevelUnloaded);
 			}
@@ -1530,8 +1534,8 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 		// Remember the actual time this packet was sent out, so we can compute ping when the ack comes back
 		OutLagPacketId[Index]			= OutPacketId;
 		OutLagTime[Index]				= PacketSentTimeInS;
-	
 		OutBytesPerSecondHistory[Index]	= FMath::Min(OutBytesPerSecond / 1024, 255);
+		
 
 		// Increase outgoing sequence number
 		if (!IsInternalAck())
@@ -1542,7 +1546,7 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 		// Make sure that we always push an ChannelRecordEntry for each transmitted packet even if it is empty
 		FChannelRecordImpl::PushPacketId(ChannelRecord, OutPacketId);
 
-		++OutPacketId; 
+		
 
 		++OutPackets;
 		++OutTotalPackets;
@@ -1550,7 +1554,7 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 		Driver->OutTotalPackets++;
 
 		//Record the first packet time in the histogram
-		if (bFlushedNetThisFrame == false)
+		if (!bFlushedNetThisFrame)
 		{
 			double LastPacketTimeDiffInMs = (Driver->GetElapsedTime() - LastSendTime) * 1000.0;
 			NetConnectionHistogram.AddMeasurement(LastPacketTimeDiffInMs);
@@ -1559,6 +1563,13 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 		LastSendTime = Driver->GetElapsedTime();
 
 		const int32 PacketBytes = SendBuffer.GetNumBytes() + PacketOverhead;
+
+		if (NetworkCongestionControl.IsSet())
+		{
+			NetworkCongestionControl.GetValue().OnSend({ PacketSentTimeInS, OutPacketId, PacketBytes });
+		}
+		
+		++OutPacketId; 
 
 		QueuedBits += (PacketBytes * 8);
 
@@ -1666,7 +1677,7 @@ bool UNetConnection::ShouldDropOutgoingPacketForLossSimulation(int64 NumBits) co
 }
 #endif
 
-int32 UNetConnection::IsNetReady( bool Saturate )
+int32 UNetConnection::IsNetReady(bool Saturate)
 {
 	// Return whether we can send more data without saturation the connection.
 	if (Saturate)
@@ -1680,6 +1691,11 @@ int32 UNetConnection::IsNetReady( bool Saturate )
 		return true;
 	}
 #endif
+
+	if (NetworkCongestionControl.IsSet())
+	{
+		return NetworkCongestionControl.GetValue().IsReadyToSend(Driver->GetElapsedTime());
+	}
 
 	return QueuedBits + SendBuffer.GetNumBits() <= 0;
 }
@@ -1927,9 +1943,9 @@ void UNetConnection::WriteFinalPacketInfo(FBitWriter& Writer, const double Packe
 bool UNetConnection::ReadPacketInfo(FBitReader& Reader, bool bHasPacketInfoPayload)
 {
 	// If this packet did not contain any packet info, nothing else to read
-	if (bHasPacketInfoPayload == false)
+	if (!bHasPacketInfoPayload)
 	{
-		const bool bCanContinueReading = Reader.IsError() == false;
+		const bool bCanContinueReading = !Reader.IsError();
 		return bCanContinueReading;
 	}
 
@@ -2004,9 +2020,14 @@ bool UNetConnection::ReadPacketInfo(FBitReader& Reader, bool bHasPacketInfoPaylo
 		LagAcc += NewLag;
 		LagCount++;
 
-		if (PlayerController != NULL)
+		if (PlayerController)
 		{
 			PlayerController->UpdatePing(NewLag);
+		}
+
+		if (NetworkCongestionControl.IsSet())
+		{
+			NetworkCongestionControl.GetValue().OnAck({ CurrentTime, OutAckPacketId });
 		}
 	}
 
@@ -2307,18 +2328,15 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacke
 			Bunch.bOpen					= bControl ? Reader.ReadBit() : 0;
 			Bunch.bClose				= bControl ? Reader.ReadBit() : 0;
 			
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			if (Bunch.EngineNetVer() < HISTORY_CHANNEL_CLOSE_REASON)
 			{
-				Bunch.bDormant = Bunch.bClose ? Reader.ReadBit() : 0;
-				Bunch.CloseReason = Bunch.bDormant ? EChannelCloseReason::Dormancy : EChannelCloseReason::Destroyed;
+				const uint8 bDormant = Bunch.bClose ? Reader.ReadBit() : 0;
+				Bunch.CloseReason = bDormant ? EChannelCloseReason::Dormancy : EChannelCloseReason::Destroyed;
 			}
 			else
 			{
 				Bunch.CloseReason = Bunch.bClose ? (EChannelCloseReason)Reader.ReadInt((uint32)EChannelCloseReason::MAX) : EChannelCloseReason::Destroyed;
-				Bunch.bDormant = (Bunch.CloseReason == EChannelCloseReason::Dormancy);
 			}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 			Bunch.bIsReplicationPaused  = Reader.ReadBit();
 			Bunch.bReliable				= Reader.ReadBit();
@@ -2425,11 +2443,10 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			Bunch.bPartialInitial = Bunch.bPartial ? Reader.ReadBit() : 0;
 			Bunch.bPartialFinal = Bunch.bPartial ? Reader.ReadBit() : 0;
 
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			if (Bunch.EngineNetVer() < HISTORY_CHANNEL_NAMES)
 			{
-				Bunch.ChType = (Bunch.bReliable || Bunch.bOpen) ? Reader.ReadInt(CHTYPE_MAX) : CHTYPE_None;
-				switch (Bunch.ChType)
+				uint32 ChType = (Bunch.bReliable || Bunch.bOpen) ? Reader.ReadInt(CHTYPE_MAX) : CHTYPE_None;
+				switch (ChType)
 				{
 					case CHTYPE_Control:
 						Bunch.ChName = NAME_Control;
@@ -2454,27 +2471,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 						CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION(this, ESecurityEvent::Malformed_Packet, TEXT("Channel name serialization failed."));
 						return;
 					}
-
-					if (Bunch.ChName == NAME_Control)
-					{
-						Bunch.ChType = CHTYPE_Control;
-					}
-					else if (Bunch.ChName == NAME_Voice)
-					{
-						Bunch.ChType = CHTYPE_Voice;
-					}
-					else if (Bunch.ChName == NAME_Actor)
-					{
-						Bunch.ChType = CHTYPE_Actor;
-					}
 				}
 				else
 				{
-					Bunch.ChType = CHTYPE_None;
 					Bunch.ChName = NAME_None;
 				}
 			}
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 			UChannel* Channel = Channels[Bunch.ChIndex];
 
@@ -2879,8 +2881,33 @@ void UNetConnection::SetAllowExistingChannelIndex(bool bAllow)
 
 		for (auto& It : ChannelIndexMap)
 		{
+			// It is possible the index we want to swap back to wasn't cleaned up because the channel was marked broken by backwards compatibility
+			if (Channels[It.Key] && Channels[It.Key]->Broken)
+			{
+				if (UActorChannel* ActorChannel = Cast<UActorChannel>(Channels[It.Key]))
+				{
+					// look for a queued close bunch
+					for (FInBunch* InBunch : ActorChannel->QueuedBunches)
+					{
+						if (InBunch && InBunch->bClose)
+						{
+							UE_LOG(LogNet, Warning, TEXT("SetAllowExistingChannelIndex:  Cleaning up broken channel: %s"), *ActorChannel->Describe());
+							ActorChannel->ConditionalCleanUp(true, InBunch->CloseReason);
+							break;
+						}
+					}
+
+					// broken channel but the actor never spawned, should be safe to remove
+					if (ActorChannel->Actor == nullptr)
+					{
+						UE_LOG(LogNet, Warning, TEXT("SetAllowExistingChannelIndex:  Cleaning up broken channel: %s"), *ActorChannel->Describe());
+						ActorChannel->ConditionalCleanUp(true, EChannelCloseReason::Destroyed);
+					}
+				}
+			}
+
 			// this channel should still exist, but the location we want to swap it back to should be empty
-			if (ensure(Channels[It.Value] && !Channels[It.Key]))
+			if (ensureMsgf(Channels[It.Value] && !Channels[It.Key], TEXT("Source should exist: [%s] Destination should be null: [%s]"), Channels[It.Value] ? *Channels[It.Value]->Describe() : TEXT("null"), Channels[It.Key] ? *Channels[It.Key]->Describe() : TEXT("null")))
 			{
 				Channels[It.Value]->ChIndex = It.Key;
 
@@ -2905,6 +2932,20 @@ void UNetConnection::SetIgnoreActorBunches(bool bInIgnoreActorBunches, TSet<FNet
 	{
 		IgnoredBunchGuids = MoveTemp(InIgnoredBunchGuids);
 	}
+}
+
+void UNetConnection::SetReserveDestroyedChannels(bool bInReserveChannels)
+{
+	check(IsInternalAck());
+	bReserveDestroyedChannels = bInReserveChannels;
+}
+
+void UNetConnection::SetIgnoreReservedChannels(bool bInIgnoreReservedChannels)
+{
+	check(IsInternalAck());
+	bIgnoreReservedChannels = bInIgnoreReservedChannels;
+
+	ReservedChannels.Empty();
 }
 
 void UNetConnection::PrepareWriteBitsToSendBuffer(const int32 SizeInBits, const int32 ExtraSizeInBits)
@@ -3184,7 +3225,9 @@ int32 UNetConnection::GetFreeChannelIndex(const FName& ChName) const
 	// Search the channel array for an available location
 	for (ChIndex = FirstChannel; ChIndex < Channels.Num(); ChIndex++)
 	{
-		if (!Channels[ChIndex])
+		const bool bIgnoreReserved = bIgnoreReservedChannels && ReservedChannels.Contains(ChIndex);
+
+		if (!Channels[ChIndex] && !bIgnoreReserved)
 		{
 			break;
 		}

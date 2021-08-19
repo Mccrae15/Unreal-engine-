@@ -23,10 +23,19 @@
 	[
 		{
 			"Name" : "DatasmithC4DTranslator",
-			"Type" : "Runtime",
+			"Type" : "Editor",
 			"LoadingPhase" : "PostDefault",
 			"WhitelistPlatforms" :
 			[
+				"Win64",
+				"Mac"
+			]
+		},
+		{
+			"Name": "DatasmithC4DDynamicImporter",
+			"Type": "Editor",
+			"LoadingPhase": "PostDefault",
+			"WhitelistPlatforms": [
 				"Win64",
 				"Mac"
 			]

@@ -11,6 +11,7 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformOutputDevices.h"
 #include "HAL/PlatformTLS.h"
+#include "HAL/PlatformTime.h"
 #include "Internationalization/Internationalization.h"
 #include "Misc/App.h"
 #include "Misc/Paths.h"
@@ -74,6 +75,7 @@ enum EConstants
 const uint32 EnsureExceptionCode = ECrashExitCodes::UnhandledEnsure; // Use a rather unique exception code in case SEH doesn't handle it as expected.
 const uint32 AssertExceptionCode = 0x4000;
 const uint32 GPUCrashExceptionCode = 0x8000;
+constexpr double CrashHandlingTimeoutSecs = 60.0;
 
 namespace {
 	/**
@@ -596,6 +598,25 @@ enum class EErrorReportUI
 
 /** This lock is to prevent an ensure and a crash to concurrently report to CrashReportClient (CRC) when CRC is running in background and waiting for crash/ensure (monitor mode). */
 static FCriticalSection GMonitorLock;
+/**
+ * Guard against additional context callbacks crashing
+ */
+void GuardedDumpAdditionalContext(const TCHAR* CrashDirectoryAbsolute)
+{
+#if !PLATFORM_SEH_EXCEPTIONS_DISABLED
+	__try
+#endif
+	{
+		FGenericCrashContext::DumpAdditionalContext(CrashDirectoryAbsolute);
+	}
+#if !PLATFORM_SEH_EXCEPTIONS_DISABLED
+	__except (TRUE)
+	{
+		// do nothing in case of an error
+		FPlatformMisc::LowLevelOutputDebugString(TEXT("An error occurred while executing addtional crash contexts"));
+	}
+#endif
+}
 
 /**
  * Write required information about the crash to the shared context, and then signal the crash reporter client 
@@ -651,6 +672,7 @@ int32 ReportCrashForMonitor(
 	if (FCommandLine::IsInitialized())
 	{
 		bNoDialog |= FApp::IsUnattended();
+		bNoDialog |= IsRunningDedicatedServer();
 	}
 
 	if (GConfig)
@@ -705,15 +727,14 @@ int32 ReportCrashForMonitor(
 	SharedContext->UserSettings.bImplicitSend = bImplicitSend;
 
 	SharedContext->SessionContext.bIsExitRequested = IsEngineExitRequested();
-	FCString::Strcpy(SharedContext->ErrorMessage, CR_MAX_ERROR_MESSAGE_CHARS-1, ErrorMessage);
+	FCString::Strncpy(SharedContext->ErrorMessage, ErrorMessage, CR_MAX_ERROR_MESSAGE_CHARS);
 
 	// Setup all the thread ids and names using snapshot dbghelp. Since it's not possible to 
 	// query thread names from an external process.
 	uint32 ThreadIdx = 0;
 	DWORD CurrentProcessId = GetCurrentProcessId();
-	DWORD CurrentThreadId = GetCurrentThreadId();
 	HANDLE ThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-	TArray<HANDLE, TInlineAllocator<CR_MAX_THREADS>> ThreadHandles;
+	bool bCapturedCrashingThreadId = false;
 	if (ThreadSnapshot != INVALID_HANDLE_VALUE)
 	{
 		THREADENTRY32 ThreadEntry;
@@ -724,26 +745,24 @@ int32 ReportCrashForMonitor(
 			{
 				if (ThreadEntry.th32OwnerProcessID == CurrentProcessId)
 				{
-					// Stop the thread (except current!). We will resume once the crash reporter is done.
-					if (ThreadEntry.th32ThreadID != CurrentThreadId)
+					if (CrashingThreadId == ThreadEntry.th32ThreadID)
 					{
-						HANDLE ThreadHandle = OpenThread(THREAD_SUSPEND_RESUME, FALSE, ThreadEntry.th32ThreadID);
-						if (ThreadHandle != NULL)
-						{
-							SuspendThread(ThreadHandle);
-							ThreadHandles.Push(ThreadHandle);
-						}
+						bCapturedCrashingThreadId = true;
 					}
 
-					SharedContext->ThreadIds[ThreadIdx] = ThreadEntry.th32ThreadID;
-					const FString& TmThreadName = FThreadManager::GetThreadName(ThreadEntry.th32ThreadID);
-					const TCHAR* ThreadName = TmThreadName.IsEmpty() ? TEXT("Unknown") : *TmThreadName;
-					FCString::Strcpy(
-						&SharedContext->ThreadNames[ThreadIdx*CR_MAX_THREAD_NAME_CHARS],
-						CR_MAX_THREAD_NAME_CHARS - 1,
-						ThreadName
-					);
-					ThreadIdx++;
+					// Always keep one spot for the crashing thread in case the number of captured threads is about to reach our limit.
+					if (bCapturedCrashingThreadId || ThreadIdx < CR_MAX_THREADS - 1)
+					{
+						SharedContext->ThreadIds[ThreadIdx] = ThreadEntry.th32ThreadID;
+						const FString& TmThreadName = FThreadManager::GetThreadName(ThreadEntry.th32ThreadID);
+						const TCHAR* ThreadName = TmThreadName.IsEmpty() ? TEXT("Unknown") : *TmThreadName;
+						FCString::Strncpy(
+							&SharedContext->ThreadNames[ThreadIdx*CR_MAX_THREAD_NAME_CHARS],
+							ThreadName,
+							CR_MAX_THREAD_NAME_CHARS
+						);
+						ThreadIdx++;
+					}
 				}
 			} while (Thread32Next(ThreadSnapshot, &ThreadEntry) && (ThreadIdx < CR_MAX_THREADS));
 		}
@@ -754,9 +773,12 @@ int32 ReportCrashForMonitor(
 	FString CrashDirectoryAbsolute;
 	if (FGenericCrashContext::CreateCrashReportDirectory(SharedContext->SessionContext.CrashGUIDRoot, ReportCallCount++, CrashDirectoryAbsolute))
 	{
-		FCString::Strcpy(SharedContext->CrashFilesDirectory, *CrashDirectoryAbsolute);
+		FCString::Strncpy(SharedContext->CrashFilesDirectory, *CrashDirectoryAbsolute, CR_MAX_DIRECTORY_CHARS);
 		// Copy the log file to output
 		FGenericCrashContext::DumpLog(CrashDirectoryAbsolute);
+
+		// Dump additional context
+		GuardedDumpAdditionalContext(*CrashDirectoryAbsolute);
 	}
 
 	// Allow the monitor process to take window focus
@@ -778,6 +800,7 @@ int32 ReportCrashForMonitor(
 
 	if (bPipeWriteSucceeded) // The receiver is not likely to respond if the shared context wasn't successfully written to the pipe.
 	{
+		double WaitResponseStartTimeSecs = FPlatformTime::Seconds();
 		// Wait for a response, saying it's ok to continue
 		bool bCanContinueExecution = false;
 		int32 ExitCode = 0;
@@ -795,13 +818,15 @@ int32 ReportCrashForMonitor(
 					bCanContinueExecution = true;
 				}
 			}
-		}
-	}
 
-	for (HANDLE ThreadHandle : ThreadHandles)
-	{
-		ResumeThread(ThreadHandle);
-		CloseHandle(ThreadHandle);
+			// In general, the crash monitor app (CRC) is expected to respond within ~5 seconds, but it might be busy sending an
+			// ensure/stall that occurred just before. In some degenerated cases, CRC may hang several minutes and cause the crash
+			// reporting thread to timeout and resume the crashing thread, likely resulting in this process to exit or to request it exit.
+			if (IsEngineExitRequested() && FPlatformTime::Seconds() - WaitResponseStartTimeSecs >= CrashHandlingTimeoutSecs)
+			{
+				break;
+			}
+		}
 	}
 
 	return EXCEPTION_CONTINUE_EXECUTION;
@@ -876,6 +901,9 @@ int32 ReportCrashUsingCrashReportClient(FWindowsPlatformCrashContext& InContext,
 
 			// Copy platform specific files (e.g. minidump) to output directory
 			InContext.CopyPlatformSpecificFiles(*CrashFolderAbsolute, (void*) ExceptionInfo);
+
+			// Dump additional context
+			GuardedDumpAdditionalContext(*CrashFolderAbsolute);
 
 			// Copy the log file to output
 			FGenericCrashContext::DumpLog(CrashFolderAbsolute);
@@ -1092,7 +1120,6 @@ private:
 		__try
 #endif
 		{
-
 			while (StopTaskCounter.GetValue() == 0)
 			{
 				if (WaitForSingleObject(CrashEvent, 500) == WAIT_OBJECT_0)
@@ -1247,8 +1274,10 @@ public:
 		{
 			FWindowsPlatformCrashContext CrashContext(ECrashContextType::Ensure, ErrorMessage);
 			CrashContext.SetCrashedProcess(FProcHandle(::GetCurrentProcess()));
+			CrashContext.SetCrashedThreadId(GetCurrentThreadId());
 			void* ContextWrapper = FWindowsPlatformStackWalk::MakeThreadContextWrapper(InExceptionInfo->ContextRecord, GetCurrentThread());
 			CrashContext.CapturePortableCallStack(NumStackFramesToIgnore, ContextWrapper);
+			//CrashContext.CaptureAllThreadContexts(); -> For ensure/stall, don't capture all threads to report and resume quickly.
 
 			return ReportCrashUsingCrashReportClient(CrashContext, InExceptionInfo, ReportUI);
 		}
@@ -1267,7 +1296,7 @@ public:
 	FORCEINLINE bool WaitUntilCrashIsHandled()
 	{
 		// Wait 60s, it's more than enough to generate crash report. We don't want to stall forever otherwise.
-		return WaitForSingleObject(CrashHandledEvent, 60000) == WAIT_OBJECT_0;
+		return WaitForSingleObject(CrashHandledEvent, static_cast<DWORD>(CrashHandlingTimeoutSecs * 1000)) == WAIT_OBJECT_0;
 	}
 
 	/** Crashes during static init should be reported directly to crash monitor. */
@@ -1447,7 +1476,6 @@ private:
 		FPlatformStackWalk::UploadLocalSymbols();
 #endif
 	}
-
 };
 
 #include "Windows/HideWindowsPlatformTypes.h"
@@ -1634,7 +1662,6 @@ FORCENOINLINE void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesT
 		FPlatformMisc::RequestExit(false);
 	}
 #endif
-
 }
 
 void ReportHang(const TCHAR* ErrorMessage, const uint64* StackFrames, int32 NumStackFrames, uint32 HungThreadId)
@@ -1687,6 +1714,7 @@ FORCENOINLINE void ReportEnsure(const TCHAR* ErrorMessage, int NumStackFramesToI
 
 	ReportEnsureInner(ErrorMessage, NumStackFramesToIgnore + 1);
 }
+
 
 #if !IS_PROGRAM && 0
 namespace {

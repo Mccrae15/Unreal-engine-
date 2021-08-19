@@ -5,15 +5,16 @@ import { OnUncaughtException, OnUnhandledRejection } from '@sentry/node/dist/int
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as p4util from '../common/p4util';
 import { Analytics } from '../common/analytics';
 import { Arg, readProcessArgs } from '../common/args';
 import { _setTimeout } from '../common/helper';
 import { ContextualLogger } from '../common/logger';
 import { Mailer } from '../common/mailer';
-import { ClientSpec, getPerforceUsername, getRootDirectoryForBranch, initializePerforce, PerforceContext } from '../common/perforce';
+import { ClientSpec, getPerforceUsername, getRootDirectoryForBranch, initializePerforce, PerforceContext, StreamSpecs } from '../common/perforce';
 import { BuildVersion, VersionReader } from '../common/version';
 import { CertFiles } from '../common/webserver';
-import { addBranchGraph, Graph } from '../new/graph';
+import { addBranchGraph, Graph, GraphAPI } from '../new/graph';
 import { AutoBranchUpdater } from './autobranchupdater';
 import { Branch } from './branch-interfaces';
 import { GraphBot } from './graphbot';
@@ -185,7 +186,7 @@ GraphBot.dataDirectory = args.branchSpecsDirectory;
 export class RoboMerge {
 	private readonly roboMergeLogger = new ContextualLogger('RoboMerge')
 	readonly graphBots = new Map<string, GraphBot>()
-	graph = new Graph
+	graph: GraphAPI
 	mailer: Mailer
 	
 	static VERSION : BuildVersion = VersionReader.getBuildVersionObj();
@@ -288,7 +289,7 @@ async function _initWorkspacesForGraphBot(graphBot: GraphBot, existingWorkspaces
 
 	if (workspacesToReset.length > 0) {
 		logger.info('The following workspaces already exist and will be reset: ' + workspacesToReset.join(', '))
-		await Promise.all(workspacesToReset.map(ws => robo.p4.sync(ws, `//${ws}/...#0`)))
+		await p4util.cleanWorkspaces(robo.p4, workspacesToReset)
 	}
 }
 
@@ -328,31 +329,37 @@ function _checkForAutoPauseBots(branches: Branch[], logger: ContextualLogger) {
 	}
 }
 
+let specReloadEntryCount = 0
 async function _onBranchSpecReloaded(graphBot: GraphBot, logger: ContextualLogger) {
-	await _initWorkspacesForGraphBot(graphBot, await _getExistingWorkspaces(), logger)
-
-	graphBot.initBots()
-
-	// regenerate ubergraph
-	const graph = new Graph
-
-
-	// race condition when two or more branches get reloaded at the same time!
-	//	- multiple bots await above, at which time new branch objects have no bots
 	try {
-		for (const graphBot of robo.graphBots.values()) {
-			addBranchGraph(graph, graphBot.branchGraph)
-		}
-		robo.graph = graph
+		++specReloadEntryCount
+		await _initWorkspacesForGraphBot(graphBot, await _getExistingWorkspaces(), logger)
 	}
-	catch (err) {
-		logger.printException(err, 'Caught error regenerating ubergraph')
+	finally {
+		--specReloadEntryCount
+	}
+
+	graphBot.initBots(robo.graph)
+
+	if (specReloadEntryCount === 0) {
+		// regenerate ubergraph (last update to finish does regen if multiple in flight)
+		const graph = new Graph
+
+		// race condition when two or more branches get reloaded at the same time!
+		//	- multiple bots await above, at which time new branch objects have no bots
+		try {
+			for (const graphBot of robo.graphBots.values()) {
+				addBranchGraph(graph, graphBot.branchGraph)
+			}
+			robo.graph.reset(graph)
+		}
+		catch (err) {
+			logger.printException(err, 'Caught error regenerating ubergraph')
+		}
 	}
 
 	logger.info(`Restarting monitoring ${graphBot.branchGraph.botname} branches after reloading branch definitions`)
 	graphBot.runbots()
-
-	// no need to check for paused bots any more - pause state persists
 }
 
 async function init(logger: ContextualLogger) {
@@ -381,14 +388,16 @@ async function init(logger: ContextualLogger) {
 	}
 
 	_initMailer(logger)
-	_initGraphBots(logger)
+	_initGraphBots(await robo.p4.streams(), logger)
 	if (!DEBUG_SKIP_BRANCH_SETUP) {
 		await _initBranchWorkspacesForAllBots(logger)
 	}
 
+	const graph = new Graph
+	robo.graph = new GraphAPI(graph)
 	for (const graphBot of robo.graphBots.values()) {
-		graphBot.initBots()
-		addBranchGraph(robo.graph, graphBot.branchGraph)
+		graphBot.initBots(robo.graph)
+		addBranchGraph(graph, graphBot.branchGraph)
 	}
 }
 
@@ -513,10 +522,10 @@ function shutdown(exitCode: number, logger: ContextualLogger) {
 process.once('SIGINT', () => { roboStartupLogger.error("Caught SIGINT"); shutdown(2, roboStartupLogger); });
 process.once('SIGTERM', () => { roboStartupLogger.error("Caught SIGTERM"); shutdown(0, roboStartupLogger); });
 
-function _initGraphBots(logger: ContextualLogger) {
+function _initGraphBots(allStreamSpecs: StreamSpecs, logger: ContextualLogger) {
 	for (const botname of args.botname)	{
 		logger.info(`Initializing bot ${botname}`)
-		const graphBot = new GraphBot(botname, robo.mailer, args.externalUrl)
+		const graphBot = new GraphBot(botname, robo.mailer, args.externalUrl, allStreamSpecs)
 		robo.graphBots.set(graphBot.branchGraph.botname, graphBot)
 
 		graphBot.reloadAsyncListeners.add(_onBranchSpecReloaded)

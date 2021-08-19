@@ -17,12 +17,17 @@
 		{
 			"Name": "PythonScriptPlugin",
 			"Enabled": true
+		},
+		{
+			"Name": "TemplateSequence",
+			"Enabled": true
 		}
+
 	],
 	"Modules": [
 		{
 			"Name": "SequencerScripting",
-			"Type": "UncookedOnly",
+			"Type": "Runtime",
 			"LoadingPhase": "Default"
 		},
 		{

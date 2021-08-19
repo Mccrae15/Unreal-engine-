@@ -128,6 +128,16 @@ void UK2Node_GetSequenceBinding::AllocateDefaultPins()
 	Super::AllocateDefaultPins();
 }
 
+void UK2Node_GetSequenceBinding::PostPlacedNewNode()
+{
+	// Attempt to assign the sequence asset from our outer if this BP is contained within a sequence
+	if (UMovieSceneSequence* OuterSequence = GetTypedOuter<UMovieSceneSequence>())
+	{
+		SourceSequence = OuterSequence;
+	}
+	Super::PostPlacedNewNode();
+}
+
 UMovieScene* UK2Node_GetSequenceBinding::GetObjectMovieScene() const
 {
 	UMovieSceneSequence* Sequence = GetSequence();
@@ -136,7 +146,7 @@ UMovieScene* UK2Node_GetSequenceBinding::GetObjectMovieScene() const
 		// Ensure that the sequence data is as loaded as it can be - we many only be able to partially load the structural information as part of a blueprint compile as that may happen at Preload time
 		EnsureFullyLoaded(Sequence);
 
-		FMovieSceneSequenceID SequenceID = Binding.GetSequenceID();
+		FMovieSceneSequenceID SequenceID = Binding.GetRelativeSequenceID();
 		if (SequenceID == MovieSceneSequenceID::Root)
 		{
 			// Look it up in the moviescene itself
@@ -176,7 +186,7 @@ UMovieScene* UK2Node_GetSequenceBinding::GetObjectMovieScene() const
 				SequenceSignatureCache.Reset();
 				SequenceHierarchyCache = FMovieSceneSequenceHierarchy();
 
-				UMovieSceneCompiledDataManager::CompileHierarchy(Sequence, &SequenceHierarchyCache);
+				UMovieSceneCompiledDataManager::CompileHierarchy(Sequence, &SequenceHierarchyCache, EMovieSceneServerClientMask::All);
 
 				for (const TTuple<FMovieSceneSequenceID, FMovieSceneSubSequenceData>& Pair : SequenceHierarchyCache.AllSubSequenceData())
 				{
@@ -236,7 +246,7 @@ FText UK2Node_GetSequenceBinding::GetTooltipText() const
 
 FText UK2Node_GetSequenceBinding::GetMenuCategory() const
 {
-	return LOCTEXT("NodeCategory", "Sequence");
+	return LOCTEXT("NodeCategory", "Sequencer|Player|Bindings");
 }
 
 FSlateIcon UK2Node_GetSequenceBinding::GetIconAndTint(FLinearColor& OutColor) const
@@ -309,6 +319,10 @@ TSharedPtr<SGraphNode> UK2Node_GetSequenceBinding::CreateVisualWidget()
 	public:
 		SLATE_BEGIN_ARGS(SGraphNodeGetSequenceBinding){}
 		SLATE_END_ARGS()
+
+		SGraphNodeGetSequenceBinding()
+			: FMovieSceneObjectBindingIDPicker(MovieSceneSequenceID::Root, nullptr)
+		{}
 
 		void Construct(const FArguments& InArgs, UK2Node_GetSequenceBinding* InNode)
 		{

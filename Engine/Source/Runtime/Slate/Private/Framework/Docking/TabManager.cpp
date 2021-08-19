@@ -376,17 +376,26 @@ TSharedRef<FJsonObject> FTabManager::FLayout::PersistToString_Helper(const TShar
 	{
 		JsonObj->SetStringField( TEXT("Type"), TEXT("Stack") );
 		JsonObj->SetBoolField( TEXT("HideTabWell"), NodeAsStack->bHideTabWell );
-		JsonObj->SetStringField( TEXT("ForegroundTab"), NodeAsStack->ForegroundTabId.ToString() );
+
+		if (NodeAsStack->ForegroundTabId.ShouldSaveLayout())
+		{
+			JsonObj->SetStringField(TEXT("ForegroundTab"), NodeAsStack->ForegroundTabId.ToString());
+		}
+		
 
 		TArray< TSharedPtr<FJsonValue> > TabsAsJson;
-		for ( int32 TabIndex=0; TabIndex < NodeAsStack->Tabs.Num(); ++TabIndex )
+		for(const FTab& Tab : NodeAsStack->Tabs)
 		{
-			TSharedRef<FJsonObject> TabAsJson = MakeShareable( new FJsonObject() );
-			TabAsJson->SetStringField( TEXT("TabId"), NodeAsStack->Tabs[TabIndex].TabId.ToString() );
-			TabAsJson->SetStringField( TEXT("TabState"), (NodeAsStack->Tabs[TabIndex].TabState == ETabState::OpenedTab)
-				? UE4_TABMANAGER_OPENED_TAB_STRING : NodeAsStack->Tabs[TabIndex].TabState == ETabState::ClosedTab
-				? UE4_TABMANAGER_CLOSED_TAB_STRING : UE4_TABMANAGER_INVALID_TAB_STRING);
-			TabsAsJson.Add( MakeShareable( new FJsonValueObject(TabAsJson) ) );
+			if (Tab.TabId.ShouldSaveLayout())
+			{	
+				TSharedRef<FJsonObject> TabAsJson = MakeShareable( new FJsonObject() );
+				TabAsJson->SetStringField( TEXT("TabId"), Tab.TabId.ToString() );
+				TabAsJson->SetStringField( TEXT("TabState"), (Tab.TabState == ETabState::OpenedTab)
+					? UE4_TABMANAGER_OPENED_TAB_STRING : Tab.TabState == ETabState::ClosedTab
+					? UE4_TABMANAGER_CLOSED_TAB_STRING : UE4_TABMANAGER_INVALID_TAB_STRING);
+
+				TabsAsJson.Add( MakeShareable( new FJsonValueObject(TabAsJson) ) );
+			}
 		}
 		JsonObj->SetArrayField( TEXT("Tabs"), TabsAsJson );
 	}
@@ -1685,7 +1694,12 @@ bool FTabManager::IsAllowedTab(const FTabId& TabId) const
 
 bool FTabManager::IsAllowedTabType(const FName TabType) const
 {
-	return TabType == NAME_None || TabBlacklist->PassesFilter(TabType);
+	const bool bIsAllowed = TabType == NAME_None || TabBlacklist->PassesFilter(TabType);
+	if (!bIsAllowed)
+	{
+		UE_LOG(LogSlate, Verbose, TEXT("Disallowed Tab: %s"), *TabType.ToString());
+	}
+	return bIsAllowed;
 }
 
 TSharedPtr<SDockTab> FTabManager::SpawnTab(const FTabId& TabId, const TSharedPtr<SWindow>& ParentWindow, const bool bCanOutputBeNullptr)
@@ -1736,7 +1750,7 @@ TSharedPtr<SDockTab> FTabManager::SpawnTab(const FTabId& TabId, const TSharedPtr
 		if (!bCanOutputBeNullptr)
 		{
 			UE_LOG(LogSlate, Log,
-				TEXT("The tab \"%s\" attempted to spawn but failed for some reason. An \"unrecognized tab\" will be returned instead."), *StringToDisplay
+				TEXT("The tab \"%s\" attempted to spawn in layout '%s' but failed for some reason. An \"unrecognized tab\" will be returned instead."), *StringToDisplay, *ActiveLayoutName.ToString()
 			);
 
 			NewTabWidget = SNew(SDockTab)
@@ -1752,13 +1766,14 @@ TSharedPtr<SDockTab> FTabManager::SpawnTab(const FTabId& TabId, const TSharedPtr
 					]
 				];
 
-			NewTabWidget->SetLayoutIdentifier(TabId);
+			const FTabId UnrecognizedId(FName(TEXT("Unrecognized")), ETabIdFlags::None);
+			NewTabWidget->SetLayoutIdentifier(UnrecognizedId);
 		}
 		// If we can return nullptr, log it
 		else
 		{
 			UE_LOG(LogSlate, Log,
-				TEXT("The tab \"%s\" attempted to spawn but failed for some reason. It will not be displayed but it will still be saved in the layout settings file."), *StringToDisplay
+				TEXT("The tab \"%s\" attempted to spawn in layout '%s' but failed for some reason. It will not be displayed."), *StringToDisplay, *ActiveLayoutName.ToString()
 			);
 		}
 	}

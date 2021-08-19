@@ -78,6 +78,23 @@ export interface DescribeResult {
 	date: Date | null
 }
 
+/**
+	Example tracing output
+
+	2020/09/12 19:40:33 576199000 pid 23850: <-  NetTcpTransport 10.200.65.101:63841 closing 10.200.21.246:1667
+ */
+
+const TRACE_OUTPUT_REGEX = /(\d\d\d\d\/\d\d\/\d\d \d\d:\d\d:\d\d \d+) pid (\d+): /
+
+function parseTrace(response: string): [string, string] {
+	const trace: string[] = []
+	const nonTrace: string[] = []
+	for (const line of response.split('\n')) {
+		(line.match(TRACE_OUTPUT_REGEX) ? trace : nonTrace).push(line)
+	}
+	return [trace.join('\n'), nonTrace.join('\n')]
+}
+
 
 // parse the perforce tagged output format into an array of objects
 // TODO: probably should switch this to scrape Python dictionary format (-G) since ztag is super inconsistent with multiline fields
@@ -205,7 +222,7 @@ export interface Change {
 	time?: number;
 
 	// hacked in
-	isManual?: boolean;
+	isUserRequest?: boolean;
 	ignoreExcludedAuthors?: boolean
 	forceCreateAShelf?: boolean
 	sendNoShelfEmail?: boolean // Used for requesting stomps for internal RM usage, such as stomp changes
@@ -234,6 +251,15 @@ export interface ClientSpec {
 	Stream?: string
 }
 
+export type StreamSpec = {
+	stream: string
+	name: string
+	parent: string
+	desc: string
+}
+
+export type StreamSpecs = Map<string, StreamSpec>
+
 export function isExecP4Error(err: any): err is [Error, string] {
 	return Array.isArray(err) && err.length === 2 && err[0] instanceof Error && typeof err[1] === "string"
 }
@@ -244,6 +270,7 @@ interface ExecOpts {
 	noCwd?: boolean;
 	noUsername?: boolean;
 	numRetries?: number;
+	trace?: boolean;
 }
 
 interface ExecZtagOpts extends ExecOpts {
@@ -471,12 +498,13 @@ export class PerforceContext {
 		return this.execAndParse(null, args, {quiet: true}, {
 			expected: {change: 'integer', client: 'string', user: 'string', desc: 'string'},
 			optional: {shelved: 'integer', oldChange: 'integer', IsPromoted: 'integer'}
-		}) as unknown as Promise<Change[]>
+		}) as Promise<unknown> as Promise<Change[]>
 	}
 
 	async latestChange(path: string): Promise<Change> {
-		const args = ['changes', '-l', '-ssubmitted', '-m1', path]
-		const result = await this.execAndParse(null, args, {quiet: true}, changeResultExpectedShape)
+		// wait no longer than 5 seconds, retry up to 3 times
+		const args = ['-vnet.maxwait=5', '-r3', 'changes', '-l', '-ssubmitted', '-m1', path]
+		const result = await this.execAndParse(null, args, {quiet: true, trace: true}, changeResultExpectedShape)
 		if (!result || result.length !== 1) {
 			throw new Error("Expected exactly one change")
 		}
@@ -486,7 +514,26 @@ export class PerforceContext {
 
 	changesBetween(path: string, from: number, to: number) {
 		const args = ['changes', '-l', '-ssubmitted', `${path}@${from},${to}`]
-		return this.execAndParse(null, args, {quiet: true}, changeResultExpectedShape) as unknown as Promise<Change[]>
+		return this.execAndParse(null, args, {quiet: true}, changeResultExpectedShape) as Promise<unknown> as Promise<Change[]>
+	}
+
+	async streams() {
+		const rawStreams = await this.execAndParse(null, ['streams'], {quiet: true}, {
+			expected: {Stream: 'string', Update: 'integer', Access: 'integer', Owner: 'string', Name: 'string', Parent: 'string', Type: 'string', desc: 'string',
+				Options: 'string', firmerThanParent: 'string', changeFlowsToParent: 'boolean', changeFlowsFromParent: 'boolean', baseParent: 'string'}
+		})
+
+		const streams = new Map<string, StreamSpec>()
+		for (const raw of rawStreams) {
+			const stream: StreamSpec = {
+				stream: raw.Stream as string,
+				name: raw.Name as string,
+				parent: raw.Parent as string,
+				desc: raw.desc as string,
+			}
+			streams.set(stream.stream, stream)
+		}
+		return streams
 	}
 
 	// find a workspace for the given user
@@ -598,7 +645,7 @@ export class PerforceContext {
 
 	// Create a new workspace for Robomerge GraphBot
 	async newGraphBotWorkspace(name: string, extraParams: any) {
-		return this.newWorkspace(name, {'AltRoots': '/src/' + name, ...extraParams});
+		return this.newWorkspace(name, {Root: '/src/' + name, ...extraParams});
 	}
 
 	// Create a new workspace for Robomerge to read branchspecs from
@@ -1074,8 +1121,11 @@ export class PerforceContext {
 		return this._execP4(workspace, ['edit', '-c', cl.toString(), filePath]);
 	}
 
-	async describe(cl: number, maxFiles?: number) {
-		const args = ['describe', ...(maxFiles ? ['-m', maxFiles.toString()] : []), cl.toString()]
+	async describe(cl: number, maxFiles?: number, includeShelved?: boolean) {
+		const args = ['describe',
+			...(maxFiles ? ['-m', maxFiles.toString()] : []),
+			...(includeShelved ? ['-S'] : []),
+			cl.toString()]
 		const ztagResult = await this._execP4Ztag(null, args, { multiline:true });
 
 		if (ztagResult.length > 2) {
@@ -1281,7 +1331,18 @@ export class PerforceContext {
 						if (response.length > 10 * 1024) {
 							logger.info(`Response size: ${Math.round(response.length / 1024.)}K`)
 						}
-						done(response)
+
+						if (opts.trace) {
+							const [traceResult, rest] = parseTrace(response)
+							const durationSeconds = (Date.now() - cmd_rec.start.valueOf()) / 1000
+							if (durationSeconds > 30) {
+								logger.info(`Cmd: ${cmd_rec.cmd}, duration: ${durationSeconds}s\n` + traceResult)
+							}
+							done(rest)
+						}
+						else {
+							done(response)
+						}
 					}
 				});
 

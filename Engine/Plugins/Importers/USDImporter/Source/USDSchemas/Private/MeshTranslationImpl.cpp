@@ -2,6 +2,7 @@
 
 #include "MeshTranslationImpl.h"
 
+#include "USDAssetCache.h"
 #include "USDAssetImportData.h"
 #include "USDGeomMeshConversion.h"
 #include "USDLog.h"
@@ -11,6 +12,7 @@
 #include "Components/MeshComponent.h"
 #include "CoreMinimal.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 
 #if USE_USD_SDK
@@ -24,7 +26,7 @@
 	#include "pxr/usd/usdShade/material.h"
 #include "USDIncludesEnd.h"
 
-TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> MeshTranslationImpl::ResolveMaterialAssignmentInfo( const pxr::UsdPrim& UsdPrim, const TArray<UsdUtils::FUsdPrimMaterialAssignmentInfo>& AssignmentInfo, const TArray<UMaterialInterface*>& ExistingAssignments, const TMap< FString, UObject* >& PrimPathsToAssets, TMap< FString, UObject* >& AssetsCache, float Time, EObjectFlags Flags )
+TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> MeshTranslationImpl::ResolveMaterialAssignmentInfo( const pxr::UsdPrim& UsdPrim, const TArray<UsdUtils::FUsdPrimMaterialAssignmentInfo>& AssignmentInfo, const TArray<UMaterialInterface*>& ExistingAssignments, UUsdAssetCache& AssetCache, float Time, EObjectFlags Flags )
 {
 	TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> ResolvedMaterials;
 
@@ -45,32 +47,35 @@ TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> MeshTranslation
 				FScopedUsdAllocs Allocs;
 
 				// Try reusing an already created DisplayColor material
-				if ( UObject** FoundAsset = AssetsCache.Find( Slot.MaterialSource ) )
+				if ( UMaterialInterface* ExistingMaterial = Cast<UMaterialInterface>( AssetCache.GetCachedAsset( Slot.MaterialSource ) ) )
 				{
-					if ( UMaterialInstanceConstant* ExistingMaterial = Cast<UMaterialInstanceConstant>( *FoundAsset ) )
-					{
-						Material = ExistingMaterial;
-					}
+					Material = ExistingMaterial;
 				}
 
 				// Need to create a new DisplayColor material
 				if ( Material == nullptr )
 				{
-					UMaterialInstanceConstant* MaterialInstance = NewObject< UMaterialInstanceConstant >( GetTransientPackage(), NAME_None, Flags );
-
-					// Leave PrimPath as empty as it likely will be reused by many prims
-					UUsdAssetImportData* ImportData = NewObject< UUsdAssetImportData >( MaterialInstance, TEXT( "USDAssetImportData" ) );
-					MaterialInstance->AssetImportData = ImportData;
-
-					AssetsCache.Add( Slot.MaterialSource, MaterialInstance );
-
-					// Move the displayColor data to the material
 					if ( TOptional< UsdUtils::FDisplayColorMaterial > DisplayColorDesc = UsdUtils::FDisplayColorMaterial::FromString( Slot.MaterialSource ) )
 					{
-						UsdToUnreal::ConvertDisplayColor( DisplayColorDesc.GetValue(), *MaterialInstance );
-					}
+						UMaterialInstance* MaterialInstance = nullptr;
 
-					Material = MaterialInstance;
+						if ( GIsEditor )  // Editor, PIE => true; Standlone, packaged => false
+						{
+							MaterialInstance = UsdUtils::CreateDisplayColorMaterialInstanceConstant( DisplayColorDesc.GetValue() );
+#if WITH_EDITOR
+							// Leave PrimPath as empty as it likely will be reused by many prims
+							UUsdAssetImportData* ImportData = NewObject< UUsdAssetImportData >( MaterialInstance, TEXT( "USDAssetImportData" ) );
+							MaterialInstance->AssetImportData = ImportData;
+#endif // WITH_EDITOR
+						}
+						else
+						{
+							MaterialInstance = UsdUtils::CreateDisplayColorMaterialInstanceDynamic( DisplayColorDesc.GetValue() );
+						}
+
+						AssetCache.CacheAsset( Slot.MaterialSource, MaterialInstance );
+						Material = MaterialInstance;
+					}
 				}
 
 				break;
@@ -88,7 +93,7 @@ TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> MeshTranslation
 					TUsdStore< pxr::UsdPrim > MaterialPrim = UsdPrim.GetStage()->GetPrimAtPath( MaterialPrimPath );
 					if ( MaterialPrim.Get() )
 					{
-						Material = Cast< UMaterialInterface >( PrimPathsToAssets.FindRef( UsdToUnreal::ConvertPath( MaterialPrim.Get().GetPrimPath() ) ) );
+						Material = Cast< UMaterialInterface >( AssetCache.GetAssetForPrim( UsdToUnreal::ConvertPath( MaterialPrim.Get().GetPrimPath() ) ) );
 					}
 				}
 
@@ -108,18 +113,18 @@ TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> MeshTranslation
 				// Assuming that we own the material instance and that we can change it as we wish, reuse it
 				if ( ExistingMaterialInstance && ExistingMaterialInstance->GetOuter() == GetTransientPackage() )
 				{
-					if ( UUsdAssetImportData* AssetImportData = Cast<UUsdAssetImportData>( ExistingMaterialInstance->AssetImportData ) )
+#if WITH_EDITOR
+					UUsdAssetImportData* AssetImportData = Cast<UUsdAssetImportData>( ExistingMaterialInstance->AssetImportData );
+					if ( AssetImportData && AssetImportData->PrimPath == UsdToUnreal::ConvertPath( UsdPrim.GetPrimPath() ) )
+#endif // WITH_EDITOR
 					{
-						if ( AssetImportData->PrimPath == UsdToUnreal::ConvertPath( UsdPrim.GetPrimPath() ) )
+						// If we have displayColor data on our prim, repurpose this material to show it
+						if ( TOptional<UsdUtils::FDisplayColorMaterial> DisplayColorDescription = UsdUtils::ExtractDisplayColorMaterial( pxr::UsdGeomMesh( UsdPrim ) ) )
 						{
-							// If we have displayColor data on our prim, repurpose this material to show it
-							if ( TOptional<UsdUtils::FDisplayColorMaterial> DisplayColorDescription = UsdUtils::ExtractDisplayColorMaterial( pxr::UsdGeomMesh( UsdPrim ) ) )
-							{
-								UsdToUnreal::ConvertDisplayColor( DisplayColorDescription.GetValue(), *ExistingMaterialInstance );
-							}
-
-							Material = ExistingMaterialInstance;
+							UsdToUnreal::ConvertDisplayColor( DisplayColorDescription.GetValue(), *ExistingMaterialInstance );
 						}
+
+						Material = ExistingMaterialInstance;
 					}
 				}
 				break;
@@ -131,6 +136,104 @@ TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> MeshTranslation
 	}
 
 	return ResolvedMaterials;
+}
+
+void MeshTranslationImpl::SetMaterialOverrides( const pxr::UsdPrim& Prim, const TArray<UMaterialInterface*>& ExistingAssignments, UMeshComponent& MeshComponent, UUsdAssetCache& AssetCache, float Time, EObjectFlags Flags, bool bInterpretLODs, const FName& RenderContext )
+{
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdGeomMesh Mesh{ Prim };
+	if ( !Mesh )
+	{
+		return;
+	}
+	pxr::SdfPath PrimPath = Prim.GetPath();
+	pxr::UsdStageRefPtr Stage = Prim.GetStage();
+
+	pxr::TfToken RenderContextToken = pxr::UsdShadeTokens->universalRenderContext;
+
+	if ( !RenderContext.IsNone() )
+	{
+		RenderContextToken = UnrealToUsd::ConvertToken( *RenderContext.ToString() ).Get();
+	}
+
+	TArray<UsdUtils::FUsdPrimMaterialAssignmentInfo> LODIndexToAssignments;
+	const bool bProvideMaterialIndices = false; // We have no use for material indices and it can be slow to retrieve, as it will iterate all faces
+
+	// Extract material assignment info from prim if it is a LOD mesh
+	bool bInterpretedLODs = false;
+	if ( bInterpretLODs && UsdUtils::IsGeomMeshALOD( Prim ) )
+	{
+		TMap<int32, UsdUtils::FUsdPrimMaterialAssignmentInfo> LODIndexToAssignmentsMap;
+		TFunction<bool( const pxr::UsdGeomMesh&, int32 )> IterateLODs = [ & ]( const pxr::UsdGeomMesh& LODMesh, int32 LODIndex )
+		{
+			UsdUtils::FUsdPrimMaterialAssignmentInfo LODInfo = UsdUtils::GetPrimMaterialAssignments( LODMesh.GetPrim(), pxr::UsdTimeCode( Time ), bProvideMaterialIndices, RenderContextToken );
+			LODIndexToAssignmentsMap.Add( LODIndex, LODInfo );
+			return true;
+		};
+
+		pxr::UsdPrim ParentPrim = Prim.GetParent();
+		bInterpretedLODs = UsdUtils::IterateLODMeshes( ParentPrim, IterateLODs );
+
+		if ( bInterpretedLODs )
+		{
+			LODIndexToAssignmentsMap.KeySort( TLess<int32>() );
+			for ( TPair<int32, UsdUtils::FUsdPrimMaterialAssignmentInfo>& Entry : LODIndexToAssignmentsMap )
+			{
+				LODIndexToAssignments.Add( MoveTemp( Entry.Value ) );
+			}
+		}
+	}
+
+	// Refresh reference to Prim because variant switching potentially invalidated it
+	pxr::UsdPrim ValidPrim = Stage->GetPrimAtPath( PrimPath );
+
+	// Extract material assignment info from prim if its *not* a LOD mesh, or if we failed to parse LODs
+	if ( !bInterpretedLODs )
+	{
+		LODIndexToAssignments = { UsdUtils::GetPrimMaterialAssignments( ValidPrim, pxr::UsdTimeCode( Time ), bProvideMaterialIndices, RenderContextToken ) };
+	}
+
+	TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> ResolvedMaterials = MeshTranslationImpl::ResolveMaterialAssignmentInfo(
+		ValidPrim,
+		LODIndexToAssignments,
+		ExistingAssignments,
+		AssetCache,
+		Time,
+		Flags
+	);
+
+	// Compare resolved materials with existing assignments, and create overrides if we need to
+	uint32 StaticMeshSlotIndex = 0;
+	for ( int32 LODIndex = 0; LODIndex < LODIndexToAssignments.Num(); ++LODIndex )
+	{
+		const TArray< UsdUtils::FUsdPrimMaterialSlot >& LODSlots = LODIndexToAssignments[ LODIndex ].Slots;
+		for ( int32 LODSlotIndex = 0; LODSlotIndex < LODSlots.Num(); ++LODSlotIndex, ++StaticMeshSlotIndex )
+		{
+			const UsdUtils::FUsdPrimMaterialSlot& Slot = LODSlots[ LODSlotIndex ];
+
+			UMaterialInterface* Material = nullptr;
+			if ( UMaterialInterface** FoundMaterial = ResolvedMaterials.Find( &Slot ) )
+			{
+				Material = *FoundMaterial;
+			}
+			else
+			{
+				UE_LOG( LogUsd, Error, TEXT( "Lost track of resolved material for slot '%d' of LOD '%d' for mesh '%s'" ), LODSlotIndex, LODIndex, *UsdToUnreal::ConvertPath( Prim.GetPath() ) );
+				continue;
+			}
+
+			UMaterialInterface* ExistingMaterial = ExistingAssignments[ StaticMeshSlotIndex ];
+			if ( ExistingMaterial == Material )
+			{
+				continue;
+			}
+			else
+			{
+				MeshComponent.SetMaterial( StaticMeshSlotIndex, Material );
+			}
+		}
+	}
 }
 
 #endif // #if USE_USD_SDK

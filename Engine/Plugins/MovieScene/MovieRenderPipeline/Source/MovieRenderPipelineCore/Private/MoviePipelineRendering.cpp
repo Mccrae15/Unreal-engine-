@@ -9,9 +9,11 @@
 #include "MoviePipelineRenderPass.h"
 #include "MoviePipelineOutputBuilder.h"
 #include "RenderingThread.h"
+#include "MoviePipelineDebugSettings.h"
 #include "MoviePipelineOutputSetting.h"
 #include "MoviePipelineConfigBase.h"
 #include "MoviePipelineMasterConfig.h"
+#include "MoviePipelineBlueprintLibrary.h"
 #include "Math/Halton.h"
 #include "ImageWriteTask.h"
 #include "ImageWriteQueue.h"
@@ -22,6 +24,8 @@
 #include "MoviePipelineCameraSetting.h"
 #include "Engine/GameViewportClient.h"
 #include "LegacyScreenPercentageDriver.h"
+#include "RenderCaptureInterface.h"
+#include "MoviePipelineGameOverrideSetting.h"
 
 // For flushing async systems
 #include "RendererInterface.h"
@@ -30,6 +34,7 @@
 #include "DistanceFieldAtlas.h"
 #include "ShaderCompiler.h"
 #include "EngineUtils.h"
+
 
 #define LOCTEXT_NAMESPACE "MoviePipeline"
 
@@ -55,11 +60,12 @@ void UMoviePipeline::SetupRenderingPipelineForShot(UMoviePipelineExecutorShot* I
 
 
 	FIntPoint BackbufferTileCount = FIntPoint(HighResSettings->TileCount, HighResSettings->TileCount);
-	
+	FIntPoint OutputResolution = UMoviePipelineBlueprintLibrary::GetEffectiveOutputResolution(GetPipelineMasterConfig(), InShot);
+
 	// Figure out how big each sub-region (tile) is.
 	FIntPoint BackbufferResolution = FIntPoint(
-		FMath::CeilToInt(OutputSettings->OutputResolution.X / HighResSettings->TileCount),
-		FMath::CeilToInt(OutputSettings->OutputResolution.Y / HighResSettings->TileCount));
+		FMath::CeilToInt(OutputResolution.X / HighResSettings->TileCount),
+		FMath::CeilToInt(OutputResolution.Y / HighResSettings->TileCount));
 
 	// Then increase each sub-region by the overlap amount.
 	BackbufferResolution = HighResSettings->CalculatePaddedBackbufferSize(BackbufferResolution);
@@ -154,6 +160,7 @@ void UMoviePipeline::RenderFrame()
 	UMoviePipelineCameraSetting* CameraSettings = FindOrAddSettingForShot<UMoviePipelineCameraSetting>(ActiveShotList[CurrentShotIndex]);
 	UMoviePipelineHighResSetting* HighResSettings = FindOrAddSettingForShot<UMoviePipelineHighResSetting>(ActiveShotList[CurrentShotIndex]);
 	UMoviePipelineOutputSetting* OutputSettings = GetPipelineMasterConfig()->FindSetting<UMoviePipelineOutputSetting>();
+	UMoviePipelineDebugSettings* DebugSettings = FindOrAddSettingForShot<UMoviePipelineDebugSettings>(ActiveShotList[CurrentShotIndex]);
 	
 	// Color settings are optional, so we don't need to do any assertion checks.
 	UMoviePipelineColorSetting* ColorSettings = GetPipelineMasterConfig()->FindSetting<UMoviePipelineColorSetting>();
@@ -164,7 +171,7 @@ void UMoviePipeline::RenderFrame()
 
 	FIntPoint TileCount = FIntPoint(HighResSettings->TileCount, HighResSettings->TileCount);
 	FIntPoint OriginalTileCount = TileCount;
-	FIntPoint OutputResolution = OutputSettings->OutputResolution;
+	FIntPoint OutputResolution = UMoviePipelineBlueprintLibrary::GetEffectiveOutputResolution(GetPipelineMasterConfig(), ActiveShotList[CurrentShotIndex]);
 
 	int32 NumSpatialSamples = AntiAliasingSettings->SpatialSampleCount;
 	int32 NumTemporalSamples = AntiAliasingSettings->TemporalSampleCount;
@@ -176,26 +183,28 @@ void UMoviePipeline::RenderFrame()
 	FrameInfo.PrevViewLocation = FrameInfo.CurrViewLocation;
 	FrameInfo.PrevViewRotation = FrameInfo.CurrViewRotation;
 
+	bool bWriteAllSamples = DebugSettings ? DebugSettings->bWriteAllSamples : false;
+
 	// Update our current view location
 	LocalPlayerController->GetPlayerViewPoint(FrameInfo.CurrViewLocation, FrameInfo.CurrViewRotation);
 
 	// Add appropriate metadata here that is shared by all passes.
 	{
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curPos/x"), FrameInfo.CurrViewLocation.X);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curPos/y"), FrameInfo.CurrViewLocation.Y);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curPos/z"), FrameInfo.CurrViewLocation.Z);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curRot/pitch"), FrameInfo.CurrViewRotation.Pitch);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curRot/yaw"), FrameInfo.CurrViewRotation.Yaw);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curRot/roll"), FrameInfo.CurrViewRotation.Roll);
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curPos/x"), FString::SanitizeFloat(FrameInfo.CurrViewLocation.X));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curPos/y"), FString::SanitizeFloat(FrameInfo.CurrViewLocation.Y));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curPos/z"), FString::SanitizeFloat(FrameInfo.CurrViewLocation.Z));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curRot/pitch"), FString::SanitizeFloat(FrameInfo.CurrViewRotation.Pitch));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curRot/yaw"), FString::SanitizeFloat(FrameInfo.CurrViewRotation.Yaw));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/curRot/roll"), FString::SanitizeFloat(FrameInfo.CurrViewRotation.Roll));
 
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevPos/x"), FrameInfo.PrevViewLocation.X);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevPos/y"), FrameInfo.PrevViewLocation.Y);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevPos/z"), FrameInfo.PrevViewLocation.Z);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevRot/pitch"), FrameInfo.PrevViewRotation.Pitch);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevRot/yaw"), FrameInfo.PrevViewRotation.Yaw);
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevRot/roll"), FrameInfo.PrevViewRotation.Roll);
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevPos/x"), FString::SanitizeFloat(FrameInfo.PrevViewLocation.X));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevPos/y"), FString::SanitizeFloat(FrameInfo.PrevViewLocation.Y));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevPos/z"), FString::SanitizeFloat(FrameInfo.PrevViewLocation.Z));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevRot/pitch"), FString::SanitizeFloat(FrameInfo.PrevViewRotation.Pitch));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevRot/yaw"), FString::SanitizeFloat(FrameInfo.PrevViewRotation.Yaw));
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/prevRot/roll"), FString::SanitizeFloat(FrameInfo.PrevViewRotation.Roll));
 
-		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/shutterAngle"), CachedOutputState.TimeData.MotionBlurFraction * 360.0f);
+		CachedOutputState.FileMetadata.Add(TEXT("unreal/camera/shutterAngle"), FString::SanitizeFloat(CachedOutputState.TimeData.MotionBlurFraction * 360.0f));
 	}
 
 	if (CurrentCameraCut.State != EMovieRenderShotState::Rendering)
@@ -241,6 +250,14 @@ void UMoviePipeline::RenderFrame()
 			RenderPass->GatherOutputPasses(OutputFrame.ExpectedRenderPasses);
 		}
 	}
+
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+	TUniquePtr<RenderCaptureInterface::FScopedCapture> ScopedGPUCapture;
+	if (CachedOutputState.bCaptureRendering)
+	{
+		ScopedGPUCapture = MakeUnique<RenderCaptureInterface::FScopedCapture>(true, *FString::Printf(TEXT("MRQ Frame: %d"), CachedOutputState.SourceFrameNumber));
+	}
+#endif
 
 	for (int32 TileY = 0; TileY < TileCount.Y; TileY++)
 	{
@@ -329,7 +346,7 @@ void UMoviePipeline::RenderFrame()
 					SpatialShiftY = r * FMath::Sin(Theta);
 				}
 
-				FIntPoint BackbufferResolution = FIntPoint(FMath::CeilToInt(OutputSettings->OutputResolution.X / OriginalTileCount.X), FMath::CeilToInt(OutputSettings->OutputResolution.Y / OriginalTileCount.Y));
+				FIntPoint BackbufferResolution = FIntPoint(FMath::CeilToInt(OutputResolution.X / OriginalTileCount.X), FMath::CeilToInt(OutputResolution.Y / OriginalTileCount.Y));
 				FIntPoint TileResolution = BackbufferResolution;
 
 				// Apply size padding.
@@ -355,7 +372,7 @@ void UMoviePipeline::RenderFrame()
 				SampleState.BackbufferSize = BackbufferResolution;
 				SampleState.TileSize = TileResolution;
 				SampleState.FrameInfo = FrameInfo;
-				SampleState.bWriteSampleToDisk = HighResSettings->bWriteAllSamples;
+				SampleState.bWriteSampleToDisk = bWriteAllSamples;
 				SampleState.TextureSharpnessBias = HighResSettings->TextureSharpnessBias;
 				SampleState.OCIOConfiguration = ColorSettings ? &ColorSettings->OCIOConfiguration : nullptr;
 				SampleState.GlobalScreenPercentageFraction = FLegacyScreenPercentageDriver::GetCVarResolutionFraction();
@@ -369,7 +386,7 @@ void UMoviePipeline::RenderFrame()
 					// Note that when bAllowSpatialJitter is false, SpatialShiftX/Y will always be zero.
 					SampleState.OverlappedSubpixelShift = FVector2D(0.5f - SpatialShiftX, 0.5f - SpatialShiftY);
 				}
-
+				SampleState.OverscanPercentage = FMath::Clamp(CameraSettings->OverscanPercentage, 0.0f, 1.0f);
 				SampleState.WeightFunctionX.InitHelper(SampleState.OverlappedPad.X, SampleState.TileSize.X, SampleState.OverlappedPad.X);
 				SampleState.WeightFunctionY.InitHelper(SampleState.OverlappedPad.Y, SampleState.TileSize.Y, SampleState.OverlappedPad.Y);
 
@@ -416,9 +433,11 @@ void UMoviePipeline::AddFrameToOutputMetadata(const FString& ClipName, const FSt
 }
 #endif
 
-void UMoviePipeline::AddOutputFuture(TFuture<bool>&& OutputFuture)
+void UMoviePipeline::AddOutputFuture(TFuture<bool>&& OutputFuture, const MoviePipeline::FMoviePipelineOutputFutureData& InOutputData)
 {
-	OutputFutures.Add(MoveTemp(OutputFuture));
+	OutputFutures.Add(
+		TTuple<TFuture<bool>, MoviePipeline::FMoviePipelineOutputFutureData>(MoveTemp(OutputFuture), InOutputData)
+	);
 }
 
 void UMoviePipeline::ProcessOutstandingFinishedFrames()
@@ -527,14 +546,19 @@ void UMoviePipeline::FlushAsyncEngineSystems()
 	}
 
 	// Flush grass
+	if (CurrentShotIndex < ActiveShotList.Num())
 	{
-		for (TActorIterator<ALandscapeProxy> It(GetWorld()); It; ++It)
+		UMoviePipelineGameOverrideSetting* GameOverrides = FindOrAddSettingForShot<UMoviePipelineGameOverrideSetting>(ActiveShotList[CurrentShotIndex]);
+		if (GameOverrides && GameOverrides->bFlushGrassStreaming)
 		{
-			ALandscapeProxy* LandscapeProxy = (*It);
-			if (LandscapeProxy)
+			for (TActorIterator<ALandscapeProxy> It(GetWorld()); It; ++It)
 			{
-				TArray<FVector> CameraList;
-				LandscapeProxy->UpdateGrass(CameraList, true);
+				ALandscapeProxy* LandscapeProxy = (*It);
+				if (LandscapeProxy)
+				{
+					TArray<FVector> CameraList;
+					LandscapeProxy->UpdateGrass(CameraList, true);
+				}
 			}
 		}
 	}

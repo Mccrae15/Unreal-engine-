@@ -10,9 +10,6 @@
 #include "Misc/BufferedOutputDevice.h"
 #include "HAL/PlatformStackWalk.h"
 
-#ifndef NEEDS_D3D12_INDIRECT_ARGUMENT_HEAP_WORKAROUND
-#define NEEDS_D3D12_INDIRECT_ARGUMENT_HEAP_WORKAROUND 0
-#endif
 
 #if D3D12RHI_SEGREGATED_TEXTURE_ALLOC
 static int32 GD3D12ReadOnlyTextureAllocatorMinPoolSize = 4 * 1024 * 1024;
@@ -649,10 +646,14 @@ void FD3D12MultiBuddyAllocator::DumpAllocatorStats(class FOutputDevice& Ar)
 
 void FD3D12MultiBuddyAllocator::UpdateMemoryStats(uint32& IOMemoryAllocated, uint32& IOMemoryUsed, uint32& IOMemoryFree, uint32& IOAlignmentWaste, uint32& IOAllocatedPageCount, uint32& IOFullPageCount)
 {
+#if defined(D3D12RHI_TRACK_DETAILED_STATS)
+	FScopeLock Lock(&CS);
+
 	for (FD3D12BuddyAllocator* Allocator : Allocators)
 	{
 		Allocator->UpdateMemoryStats(IOMemoryAllocated, IOMemoryUsed, IOMemoryFree, IOAlignmentWaste, IOAllocatedPageCount, IOFullPageCount);
 	}
+#endif
 }
 
 void FD3D12MultiBuddyAllocator::ReleaseAllResources()
@@ -1016,9 +1017,7 @@ FD3D12ResourceAllocator::FInitConfig FD3D12DefaultBufferPool::GetResourceAllocat
 	if (EnumHasAnyFlags(InBufferUsage, BUF_DrawIndirect))
 	{
 		check(InResourceFlags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-#if !NEEDS_D3D12_INDIRECT_ARGUMENT_HEAP_WORKAROUND
 		InitConfig.HeapFlags |= D3D12RHI_HEAP_FLAG_ALLOW_INDIRECT_BUFFERS;
-#endif
 	}
 
 	return InitConfig;
@@ -1346,6 +1345,8 @@ HRESULT FD3D12TextureAllocatorPool::AllocateTexture(
 	if (!(Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET ||
 		Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL ||
 		Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) &&
+		//  4K align with NV12 causes a crash on HoloLens 2.
+		Desc.Format != DXGI_FORMAT_NV12 &&
 		Desc.SampleDesc.Count == 1)
 	{
 		// The top mip level must be less than 64 KB to use 4 KB alignment
@@ -1833,13 +1834,15 @@ void FD3D12SegListAllocator::FreeRetiredBlocks(TArray<TArray<FRetiredBlock, Allo
 		for (int32 X = 0; X < RetiredBlocks.Num(); ++X)
 		{
 			FRetiredBlock& Block = RetiredBlocks[X];
-			FD3D12SegHeap* BackingHeap = static_cast<FD3D12SegHeap*>(Block.PlacedResource->GetHeap());
-			check(Block.PlacedResource->GetRefCount() == 1);
-			Block.PlacedResource->Release();
-			FD3D12SegList* Owner = BackingHeap->OwnerList;
-			check(!!Owner);
-			Owner->FreeBlock(BackingHeap, Block.Offset);
-			OnFree(Block.Offset, BackingHeap, Block.ResourceSize);
+			if (ensureAlwaysMsgf(Block.PlacedResource->GetRefCount() == 1, TEXT("Invalid refcount while releasing %s"), *Block.PlacedResource->GetName().ToString()))
+			{
+				FD3D12SegHeap* BackingHeap = static_cast<FD3D12SegHeap*>(Block.PlacedResource->GetHeap());
+				Block.PlacedResource->Release();
+				FD3D12SegList* Owner = BackingHeap->OwnerList;
+				check(!!Owner);
+				Owner->FreeBlock(BackingHeap, Block.Offset);
+				OnFree(Block.Offset, BackingHeap, Block.ResourceSize);
+			}
 		}
 	}
 }

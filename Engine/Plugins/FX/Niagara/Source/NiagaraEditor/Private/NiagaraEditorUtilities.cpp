@@ -1,52 +1,93 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraEditorUtilities.h"
-#include "NiagaraEditorModule.h"
-#include "INiagaraEditorTypeUtilities.h"
-#include "NiagaraNodeInput.h"
-#include "NiagaraNodeFunctionCall.h"
-#include "NiagaraNodeParameterMapSet.h"
-#include "NiagaraDataInterface.h"
-#include "NiagaraComponent.h"
-#include "UObject/StructOnScope.h"
-#include "NiagaraGraph.h"
-#include "NiagaraSystem.h"
-#include "NiagaraSystemEditorData.h"
-#include "NiagaraScriptSource.h"
-#include "NiagaraScript.h"
-#include "NiagaraNodeOutput.h"
-#include "NiagaraOverviewNode.h"
-#include "NiagaraConstants.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/SBoxPanel.h"
-#include "HAL/PlatformApplicationMisc.h"
-#include "NiagaraEditorStyle.h"
+
+#include "AssetRegistryModule.h"
+#include "AssetToolsModule.h"
+#include "ContentBrowserModule.h"
+#include "EdGraphSchema_Niagara.h"
 #include "EditorStyleSet.h"
-#include "ViewModels/NiagaraSystemViewModel.h"
-#include "ViewModels/NiagaraEmitterViewModel.h"
-#include "ViewModels/NiagaraEmitterHandleViewModel.h"
+#include "IContentBrowserSingleton.h"
+#include "INiagaraEditorTypeUtilities.h"
+#include "NiagaraComponent.h"
+#include "NiagaraConstants.h"
+#include "NiagaraCustomVersion.h"
+#include "NiagaraDataInterface.h"
+#include "IPythonScriptPlugin.h"
+#include "NiagaraClipboard.h"
+#include "NiagaraComponent.h"
+#include "NiagaraConstants.h"
+#include "NiagaraCustomVersion.h"
+#include "NiagaraEditorSettings.h"
+#include "NiagaraEditorStyle.h"
+#include "NiagaraGraph.h"
+#include "NiagaraEditorModule.h"
+#include "NiagaraEditorSettings.h"
+#include "NiagaraEditorStyle.h"
+#include "NiagaraNodeFunctionCall.h"
+#include "NiagaraNodeInput.h"
+#include "NiagaraNodeOutput.h"
+#include "NiagaraNodeParameterMapSet.h"
+#include "NiagaraNodeStaticSwitch.h"
+#include "NiagaraOverviewNode.h"
+#include "NiagaraParameterMapHistory.h"
+#include "NiagaraParameterDefinitions.h"
+#include "NiagaraScript.h"
+#include "NiagaraScriptSource.h"
+#include "NiagaraSimulationStageBase.h"
+#include "NiagaraStackEditorData.h"
+#include "NiagaraOverviewNode.h"
+#include "NiagaraNodeParameterMapSet.h"
+#include "NiagaraNodeStaticSwitch.h"
+#include "NiagaraOverviewNode.h"
 #include "ViewModels/NiagaraOverviewGraphViewModel.h"
 #include "ViewModels/NiagaraSystemSelectionViewModel.h"
 #include "AssetRegistryModule.h"
-#include "Misc/FeedbackContext.h"
-#include "EdGraphSchema_Niagara.h"
-#include "HAL/PlatformFilemanager.h"
-#include "Misc/FileHelper.h"
-#include "EdGraph/EdGraphPin.h"
+#include "ViewModels/NiagaraParameterDefinitionsSubscriberViewModel.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/NiagaraOverviewGraphViewModel.h"
+#include "ViewModels/NiagaraScratchPadUtilities.h"
+#include "ViewModels/NiagaraScriptViewModel.h"
+#include "ViewModels/NiagaraSystemSelectionViewModel.h"
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
-#include "NiagaraNodeStaticSwitch.h"
-#include "NiagaraParameterMapHistory.h"
-#include "ScopedTransaction.h"
-#include "NiagaraStackEditorData.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
-#include "Modules/ModuleManager.h"
+#include "Widgets/SNiagaraParameterName.h"
+
+#include "AssetRegistryModule.h"
 #include "AssetToolsModule.h"
-#include "NiagaraCustomVersion.h"
+#include "ContentBrowserModule.h"
+#include "EdGraph/EdGraphPin.h"
+#include "Editor/EditorEngine.h"
+#include "EditorStyleSet.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "HAL/PlatformFilemanager.h"
+#include "IContentBrowserSingleton.h"
+#include "Interfaces/IPluginManager.h"
+#include "NiagaraScript.h"
+#include "NiagaraScriptSource.h"
+#include "NiagaraSimulationStageBase.h"
+#include "NiagaraStackEditorData.h"
+#include "NiagaraSystem.h"
+#include "NiagaraSystemEditorData.h"
+#include "ScopedTransaction.h"
+#include "UpgradeNiagaraScriptResults.h"
+#include "EdGraph/EdGraphPin.h"
+#include "Editor/EditorEngine.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "HAL/PlatformFilemanager.h"
+#include "Misc/FeedbackContext.h"
+#include "Misc/FileHelper.h"
+#include "Misc/ScopeExit.h"
+#include "Styling/CoreStyle.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "UObject/StructOnScope.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/STextBlock.h"
+#include "UObject/StructOnScope.h"
 #include "UObject/TextProperty.h"
 #include "Editor/EditorEngine.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -55,7 +96,19 @@
 #include "NiagaraSimulationStageBase.h"
 #include "NiagaraEditorSettings.h"
 #include "Widgets/SNiagaraParameterName.h"
+#include "ViewModels/NiagaraEmitterHandleViewModel.h"
+#include "ViewModels/NiagaraEmitterViewModel.h"
+#include "ViewModels/NiagaraOverviewGraphViewModel.h"
 #include "ViewModels/NiagaraScratchPadUtilities.h"
+#include "ViewModels/NiagaraSystemSelectionViewModel.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/Stack/NiagaraParameterHandle.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNiagaraParameterName.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "FNiagaraEditorUtilities"
 
@@ -121,7 +174,7 @@ void FNiagaraEditorUtilities::InitializeParameterInputNode(UNiagaraNodeInput& In
 	else if(Type.IsDataInterface())
 	{
 		InputNode.Input.AllocateData(); // Frees previously used memory if we're switching from a struct to a class type.
-		InputNode.SetDataInterface(NewObject<UNiagaraDataInterface>(&InputNode, const_cast<UClass*>(Type.GetClass()), NAME_None, RF_Transactional));
+		InputNode.SetDataInterface(NewObject<UNiagaraDataInterface>(&InputNode, const_cast<UClass*>(Type.GetClass()), NAME_None, RF_Transactional | RF_Public));
 	}
 }
 
@@ -131,7 +184,7 @@ void FNiagaraEditorUtilities::GetParameterVariablesFromSystem(UNiagaraSystem& Sy
 	UNiagaraScript* SystemScript = System.GetSystemSpawnScript();
 	if (SystemScript != nullptr)
 	{
-		UNiagaraScriptSource* ScriptSource = Cast<UNiagaraScriptSource>(SystemScript->GetSource());
+		UNiagaraScriptSource* ScriptSource = Cast<UNiagaraScriptSource>(SystemScript->GetLatestSource());
 		if (ScriptSource != nullptr)
 		{
 			UNiagaraGraph* SystemGraph = ScriptSource->NodeGraph;
@@ -288,6 +341,11 @@ void FNiagaraEditorUtilities::FixUpPastedNodes(UEdGraph* Graph, TSet<UEdGraphNod
 				FName ActualPastedFunctionCallName = *PastedFunctionCallNode->GetFunctionName();
 				ExistingNames.Add(ActualPastedFunctionCallName);
 				OldFunctionToNewFunctionNameMap.Add(FunctionCallName, ActualPastedFunctionCallName);
+			}
+			UNiagaraGraph* NiagaraGraph = CastChecked<UNiagaraGraph>(Graph);
+			for (const FNiagaraPropagatedVariable& PropagatedVariable : PastedFunctionCallNode->PropagatedStaticSwitchParameters)
+			{
+				NiagaraGraph->AddParameter(PropagatedVariable.ToVariable(), true);
 			}
 		}
 	}
@@ -652,9 +710,9 @@ void FNiagaraEditorUtilities::GatherChangeIds(UNiagaraEmitter& Emitter, TMap<FGu
 	// First gather all the graphs used by this emitter..
 	for (UNiagaraScript* Script : Scripts)
 	{
-		if (Script != nullptr && Script->GetSource() != nullptr)
+		if (Script != nullptr && Script->GetLatestSource() != nullptr)
 		{
-			UNiagaraScriptSource* ScriptSource = Cast<UNiagaraScriptSource>(Script->GetSource());
+			UNiagaraScriptSource* ScriptSource = Cast<UNiagaraScriptSource>(Script->GetLatestSource());
 			if (ScriptSource != nullptr)
 			{
 				Graphs.AddUnique(ScriptSource->NodeGraph);
@@ -663,7 +721,7 @@ void FNiagaraEditorUtilities::GatherChangeIds(UNiagaraEmitter& Emitter, TMap<FGu
 			if (bWriteToLogDir)
 			{
 				FNiagaraVMExecutableDataId Id;
-				Script->ComputeVMCompilationId(Id);
+				Script->ComputeVMCompilationId(Id, FGuid());
 				FString KeyString;
 				Id.AppendKeyString(KeyString);
 
@@ -1079,27 +1137,31 @@ void FNiagaraEditorUtilities::SetStaticSwitchConstants(UNiagaraGraph* Graph, TAr
 		// if there is a function node, it might have delegated some of the static switch values inside its script graph
 		// to be set by the next higher caller instead of directly by the user
 		UNiagaraNodeFunctionCall* FunctionNode = Cast<UNiagaraNodeFunctionCall>(Node);
-		if (FunctionNode && FunctionNode->PropagatedStaticSwitchParameters.Num() > 0)
+		if (FunctionNode)
 		{
-			for (const FNiagaraPropagatedVariable& SwitchValue : FunctionNode->PropagatedStaticSwitchParameters)
-			{
-				UEdGraphPin* ValuePin = FunctionNode->FindPin(SwitchValue.SwitchParameter.GetName(), EGPD_Input);
-				if (!ValuePin)
-				{
-					continue;
-				}
-				ValuePin->DefaultValue = FString();
-				FName PinName = SwitchValue.ToVariable().GetName();
-				for (UEdGraphPin* InputPin : CallInputs)
-				{
-					if (InputPin->GetFName().IsEqual(PinName) && InputPin->PinType == ValuePin->PinType)
-					{
-						ValuePin->DefaultValue = InputPin->DefaultValue;
-						break;
-					}
-				}				
-			}
+			FunctionNode->DebugState = FunctionNode->bInheritDebugStatus? ConstantResolver.GetDebugState() : ENiagaraFunctionDebugState::NoDebug;
 
+			if (FunctionNode->PropagatedStaticSwitchParameters.Num() > 0)
+			{
+				for (const FNiagaraPropagatedVariable& SwitchValue : FunctionNode->PropagatedStaticSwitchParameters)
+				{
+					UEdGraphPin* ValuePin = FunctionNode->FindPin(SwitchValue.SwitchParameter.GetName(), EGPD_Input);
+					if (!ValuePin)
+					{
+						continue;
+					}
+					ValuePin->DefaultValue = FString();
+					FName PinName = SwitchValue.ToVariable().GetName();
+					for (UEdGraphPin* InputPin : CallInputs)
+					{
+						if (InputPin->GetFName().IsEqual(PinName) && InputPin->PinType == ValuePin->PinType)
+						{
+							ValuePin->DefaultValue = InputPin->DefaultValue;
+							break;
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -1347,15 +1409,15 @@ void FNiagaraEditorUtilities::GetFilteredScriptAssets(FGetFilteredScriptAssetsOp
 		if (InFilter.bIncludeDeprecatedScripts == false)
 		{
 			bool bScriptIsDeprecated = false;
-			bool bFoundDeprecatedTag = FilteredScriptAssets[i].GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraScript, bDeprecated), bScriptIsDeprecated);
+			bool bFoundDeprecatedTag = FilteredScriptAssets[i].GetTagValue(GET_MEMBER_NAME_CHECKED(FVersionedNiagaraScriptData, bDeprecated), bScriptIsDeprecated);
 			if (bFoundDeprecatedTag == false)
 			{
 				if (FilteredScriptAssets[i].IsAssetLoaded())
 				{
 					UNiagaraScript* Script = static_cast<UNiagaraScript*>(FilteredScriptAssets[i].GetAsset());
-					if (Script != nullptr)
+					if (Script != nullptr && Script->GetLatestScriptData())
 					{
-						bScriptIsDeprecated = Script->bDeprecated;
+						bScriptIsDeprecated = Script->GetLatestScriptData()->bDeprecated;
 					}
 				}
 			}
@@ -1369,21 +1431,21 @@ void FNiagaraEditorUtilities::GetFilteredScriptAssets(FGetFilteredScriptAssetsOp
 		if (InFilter.TargetUsageToMatch.IsSet())
 		{
 			int32 BitfieldValue = 0;
+			FString BitfieldTagValue;
 			if (NiagaraVersion == INDEX_NONE || NiagaraVersion < FNiagaraCustomVersion::AddSimulationStageUsageEnum)
 			{
 				// If there is no custom version, or it's less than the simulation stage enum fix up, we need to load the 
 				// asset to get the correct bitmask since the shader stage enum broke the old ones.
 				UNiagaraScript* AssetScript = Cast<UNiagaraScript>(FilteredScriptAssets[i].GetAsset());
-				if (AssetScript != nullptr)
+				if (AssetScript != nullptr && AssetScript->GetLatestScriptData())
 				{
-					BitfieldValue = AssetScript->ModuleUsageBitmask;
+					BitfieldValue = AssetScript->GetLatestScriptData()->ModuleUsageBitmask;
 				}
 			}
 			else
 			{
 				// Otherwise the asset is new enough to have a valid bitmask.
-				FString BitfieldTagValue;
-				BitfieldTagValue = FilteredScriptAssets[i].GetTagValueRef<FString>(GET_MEMBER_NAME_CHECKED(UNiagaraScript, ModuleUsageBitmask));
+				BitfieldTagValue = FilteredScriptAssets[i].GetTagValueRef<FString>(GET_MEMBER_NAME_CHECKED(FVersionedNiagaraScriptData, ModuleUsageBitmask));
 				BitfieldValue = FCString::Atoi(*BitfieldTagValue);
 			}
 
@@ -1401,13 +1463,28 @@ void FNiagaraEditorUtilities::GetFilteredScriptAssets(FGetFilteredScriptAssetsOp
 			continue;
 		}
 
+		// Check suggested state
+		bool bSuggested = false;
+		const bool bFoundSuggested = FilteredScriptAssets[i].GetTagValue(GET_MEMBER_NAME_CHECKED(FVersionedNiagaraScriptData, bSuggested), bSuggested);
+		if(bFoundSuggested)
+		{
+			if(InFilter.SuggestedFiltering == FGetFilteredScriptAssetsOptions::OnlySuggested && !bSuggested)
+			{
+				continue;
+			}
+			else if(InFilter.SuggestedFiltering == FGetFilteredScriptAssetsOptions::NoSuggested && bSuggested)
+			{
+				continue;
+			}
+		}
+		
 		OutFilteredScriptAssets.Add(FilteredScriptAssets[i]);
 	}
 }
 
 UNiagaraNodeOutput* FNiagaraEditorUtilities::GetScriptOutputNode(UNiagaraScript& Script)
 {
-	UNiagaraScriptSource* Source = CastChecked<UNiagaraScriptSource>(Script.GetSource());
+	UNiagaraScriptSource* Source = CastChecked<UNiagaraScriptSource>(Script.GetLatestSource());
 	return Source->NodeGraph->FindEquivalentOutputNode(Script.GetUsage(), Script.GetUsageId());
 }
 
@@ -1477,7 +1554,7 @@ const FNiagaraEmitterHandle* FNiagaraEditorUtilities::GetEmitterHandleForEmitter
 ENiagaraScriptLibraryVisibility FNiagaraEditorUtilities::GetScriptAssetVisibility(const FAssetData& ScriptAssetData)
 {
 	FString Value;
-	bool bIsLibraryTagFound = ScriptAssetData.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraScript, LibraryVisibility), Value);
+	bool bIsLibraryTagFound = ScriptAssetData.GetTagValue(GET_MEMBER_NAME_CHECKED(FVersionedNiagaraScriptData, LibraryVisibility), Value);
 
 	ENiagaraScriptLibraryVisibility ScriptVisibility = ENiagaraScriptLibraryVisibility::Invalid;
 	if (bIsLibraryTagFound == false)
@@ -1487,7 +1564,7 @@ ENiagaraScriptLibraryVisibility FNiagaraEditorUtilities::GetScriptAssetVisibilit
 			UNiagaraScript* Script = static_cast<UNiagaraScript*>(ScriptAssetData.GetAsset());
 			if (Script != nullptr)
 			{
-				ScriptVisibility = Script->LibraryVisibility;
+				ScriptVisibility = Script->GetLatestScriptData()->LibraryVisibility;
 			}
 		}
 	}
@@ -1508,9 +1585,377 @@ ENiagaraScriptLibraryVisibility FNiagaraEditorUtilities::GetScriptAssetVisibilit
 	return ScriptVisibility;
 }
 
+// this function is used as an overload inside FAssetData.GetTagValue for the ENiagaraScriptTemplateSpecification enum
+void LexFromString(ENiagaraScriptTemplateSpecification& OutValue, const TCHAR* Buffer)
+{
+	OutValue = (ENiagaraScriptTemplateSpecification) StaticEnum<ENiagaraScriptTemplateSpecification>()->GetValueByName(FName(Buffer));
+}
+
+bool FNiagaraEditorUtilities::GetTemplateSpecificationFromTag(const FAssetData& Data, ENiagaraScriptTemplateSpecification& OutTemplateSpecification)
+{
+	ENiagaraScriptTemplateSpecification TemplateSpecification = ENiagaraScriptTemplateSpecification::None;
+	bool bTemplateEnumTagFound = Data.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraEmitter, TemplateSpecification), TemplateSpecification);
+
+	if(bTemplateEnumTagFound)
+	{
+		OutTemplateSpecification = TemplateSpecification;
+		return true;
+	}
+	else
+	{
+		bool bIsTemplateAsset = false;
+		bool bDeprecatedTemplateTagFound = Data.GetTagValue(FName(TEXT("bIsTemplateAsset")), bIsTemplateAsset);
+
+		if(bDeprecatedTemplateTagFound)
+		{
+			bIsTemplateAsset ? OutTemplateSpecification = ENiagaraScriptTemplateSpecification::Template : OutTemplateSpecification = ENiagaraScriptTemplateSpecification::None;
+			return true;
+		}		
+	}
+
+	return false;
+}
+
 bool FNiagaraEditorUtilities::IsScriptAssetInLibrary(const FAssetData& ScriptAssetData)
 {
 	return GetScriptAssetVisibility(ScriptAssetData) == ENiagaraScriptLibraryVisibility::Library;
+}
+
+int32 FNiagaraEditorUtilities::GetWeightForItem(const TSharedPtr<FNiagaraMenuAction_Generic>& InCurrentAction, const TArray<FString>& InFilterTerms)
+{
+	// The overall 'weight'
+	int32 TotalWeight = 0;
+
+	// Some simple weight figures to help find the most appropriate match
+	const float KeywordWeight = 3.f;
+	const float DisplayNameWeight = 30.f;
+	const float CategoryWeight = 40.f;
+	const int32 ConsecutiveMatchExponent = 3;
+	const int32 WholeMatchExponent = 4;
+
+	const float WordContainsTermBonusWeightMultiplier = 0.5f;
+	const float StartsWithBonusWeightMultiplier = 10.f;
+	const float EqualsBonusWeightMultiplier = 50.f;
+	const float ShorterWeight = 3.f;
+
+	FString FilterText;
+
+	for(const FString& FilterTerm : InFilterTerms)
+	{
+		FilterText += FilterTerm + TEXT(" ");
+	}
+
+	FilterText = FilterText.TrimStartAndEnd();
+
+	// the 'looser' this is set the larger the score
+	enum EWordMatchStyle
+	{
+		Contains,
+		StartsWith,
+		IsEqual
+	};
+	// Helper array
+	struct FArrayWithWeight
+	{
+		FArrayWithWeight(const TArray< FString >* InArray, int32 InWeight, int32 InFirstTermMultiplier = 1, EWordMatchStyle InConsecutiveMatchStyle = StartsWith)
+			: Array(InArray)
+			, Weight(InWeight)
+			, FirstTermMultiplier(InFirstTermMultiplier)
+			, ConsecutiveMatchStyle(InConsecutiveMatchStyle)
+		{
+		}
+
+		const TArray< FString >* Array;
+		int32 Weight;
+		int32 FirstTermMultiplier;
+		EWordMatchStyle ConsecutiveMatchStyle;
+	};
+
+	// Setup an array of arrays so we can do a weighted search			
+	TArray<FArrayWithWeight> WeightedArrayList;
+
+	// DisplayName
+	TArray<FString> DisplayNameArray;
+	InCurrentAction->DisplayName.ToString().ParseIntoArray(DisplayNameArray, TEXT(" "), true);
+	WeightedArrayList.Add(FArrayWithWeight(&DisplayNameArray, DisplayNameWeight, 10, StartsWith));
+
+	// Keywords
+	TArray<FString> KeywordsArray;
+	InCurrentAction->Keywords.ToString().ParseIntoArray(KeywordsArray, TEXT(" "), true);
+	WeightedArrayList.Add(FArrayWithWeight(&KeywordsArray, KeywordWeight));
+
+	// Category + DisplayName. Used so that exact hits can still be used for the display name alone, but category + displayname still results in a combo hit.
+	TArray<FString> CategoryDisplayNameArray = InCurrentAction->Categories;
+	CategoryDisplayNameArray.Append(DisplayNameArray);
+    WeightedArrayList.Add(FArrayWithWeight(&CategoryDisplayNameArray, CategoryWeight, 20, StartsWith));
+	
+	// Now iterate through all the filter terms and calculate a 'weight' using the values and multipliers
+	const FString* FilterTerm = nullptr;
+
+	// Now check the weighted lists	(We could further improve the hit weight by checking consecutive word matches)
+	for (int32 KeywordArrayIndex = 0; KeywordArrayIndex < WeightedArrayList.Num(); ++KeywordArrayIndex)
+	{
+		const TArray<FString>& KeywordArray = *WeightedArrayList[KeywordArrayIndex].Array;
+		float WeightPerList = 0.0f;
+		float KeywordArrayWeight = WeightedArrayList[KeywordArrayIndex].Weight;
+		int32 FirstTermMultiplier = WeightedArrayList[KeywordArrayIndex].FirstTermMultiplier;
+		EWordMatchStyle WordMatchStyle = WeightedArrayList[KeywordArrayIndex].ConsecutiveMatchStyle;
+
+		FString FullKeyword;
+
+		for (const FString& Keyword : KeywordArray)
+		{
+			FullKeyword += Keyword + TEXT(" ");
+		}
+
+		FullKeyword = FullKeyword.TrimStartAndEnd();
+		
+		int32 ConsecutiveWordMatchCount = 0;
+		// Count of how many words in this keyword array contain a filter(letter) that the user has typed in
+		int32 WordMatchCount = 0;
+		int32 LastMatchingIndex = INDEX_NONE;
+
+		auto CalculateConsecutive = [&](int32 FilterIndex)
+		{
+			int32 PreviousLastMatchingIndex = LastMatchingIndex;
+			LastMatchingIndex = FilterIndex;
+
+			// this calculation is not quite correct in case there are multiple sets of consecutive hits
+			if(LastMatchingIndex - PreviousLastMatchingIndex == 1)
+			{
+				ConsecutiveWordMatchCount++;
+			}			
+		};
+
+		// The number of characters in this keyword array
+		int32 KeywordArrayCharLength = 0;
+		
+		// Loop through every word that the user could be looking for
+		for (int32 FilterIndex = 0; FilterIndex < InFilterTerms.Num(); ++FilterIndex)
+		{
+			// we exclude any word from appearing more than once
+			TSet<FString> UsedWords;
+			
+			FilterTerm = &InFilterTerms[FilterIndex];
+
+			float MaxWeightOfKeywords = INDEX_NONE;
+			EWordMatchStyle MaxFoundMatchStyle = EWordMatchStyle::Contains;
+
+			auto CalculateSupersedingMatch = [&](float IterativeWeight, EWordMatchStyle IterativeFoundWordMatchStyle)
+			{
+				// for a superseding match, the found match style needs to at least be the word match style of the array
+				if(IterativeFoundWordMatchStyle >= WordMatchStyle)
+				{
+					// we only accept the new match if its iterative weight is actually higher
+					if(IterativeWeight >= MaxWeightOfKeywords)
+					{
+						MaxWeightOfKeywords = IterativeWeight;
+						MaxFoundMatchStyle = IterativeFoundWordMatchStyle;
+					}
+				}
+			};
+			
+			for (int32 KeywordIndex = 0; KeywordIndex < KeywordArray.Num(); ++KeywordIndex)
+			{
+				// Keep track of how long all the words in the array are
+
+				const FString& Keyword = KeywordArray[KeywordIndex];
+				KeywordArrayCharLength += Keyword.Len();
+				if(UsedWords.Contains(Keyword))
+				{
+					continue;
+				}
+
+				UsedWords.Add(Keyword);
+				
+				if (Keyword.Contains(*FilterTerm, ESearchCase::IgnoreCase))
+				{
+					CalculateSupersedingMatch(KeywordArrayWeight * WordContainsTermBonusWeightMultiplier, Contains);
+					
+					// If the word starts with the term, give it a little extra boost of weight
+					if (Keyword.StartsWith(*FilterTerm, ESearchCase::IgnoreCase))
+					{					
+						CalculateSupersedingMatch(KeywordArrayWeight * StartsWithBonusWeightMultiplier, StartsWith);						
+					}
+					
+					if(Keyword.Equals(*FilterTerm, ESearchCase::IgnoreCase))
+					{									
+						CalculateSupersedingMatch(KeywordArrayWeight * EqualsBonusWeightMultiplier, IsEqual);
+					}
+				}
+			}
+
+			if(MaxWeightOfKeywords != INDEX_NONE)
+			{
+				// if the match style that applies is 'stricter' than the required match style of the array, we consider it a hit
+				if(MaxFoundMatchStyle >= WordMatchStyle)
+				{
+					WordMatchCount++;
+					CalculateConsecutive(FilterIndex);
+					WeightPerList += MaxWeightOfKeywords;
+				}
+			}
+
+			// the first filter term can have special meaning, for example as a category. "Make" is a category, so if the user types "Make" we want to favor it
+			if(FilterIndex == 0)
+			{
+				WeightPerList *= FirstTermMultiplier;
+			}
+		}
+
+		if(WeightPerList > 0)
+		{
+			if (KeywordArrayCharLength > 0)
+			{			
+				// The longer the match is, the more points it loses
+				float ShortWeight = KeywordArrayCharLength * ShorterWeight;
+				WeightPerList -= ShortWeight;
+				// WeightPerList could be negative if the shortweight subtraction is executed
+				WeightPerList = FMath::Max(WeightPerList, 0.f);
+			}
+
+			WeightPerList += FMath::Pow(WordMatchCount * KeywordArrayWeight, 2);
+
+			WeightPerList += FMath::Pow(ConsecutiveWordMatchCount * KeywordArrayWeight, ConsecutiveMatchExponent);
+
+			if(FilterText.Equals(FullKeyword, ESearchCase::IgnoreCase))
+			{
+				WeightPerList += FMath::Pow(KeywordArrayWeight, WholeMatchExponent);
+			}
+
+			WeightPerList *= InCurrentAction->SearchWeightMultiplier;
+
+			
+			TotalWeight += WeightPerList;
+		}
+	}
+
+	// parameter actions get favored
+	if(InCurrentAction->GetParameterVariable().IsSet())
+	{
+		TotalWeight *= 2;
+	}
+
+	// suggested actions get favored massively
+	if(InCurrentAction->Section == ENiagaraMenuSections::Suggested)
+	{
+		//TotalWeight *= TotalWeight;
+		TotalWeight += FMath::Pow(10, 4);
+	}
+	
+	return TotalWeight > 0.f ? TotalWeight : INDEX_NONE;
+}
+
+bool FNiagaraEditorUtilities::DoesItemMatchFilterText(const FText& FilterText, const TSharedPtr<FNiagaraMenuAction_Generic>& Item)
+{
+	TArray<FString> FilterTerms;
+	FilterText.ToString().ParseIntoArray(FilterTerms, TEXT(" "), true);
+
+	int32 DisplayNameMatchCount = 0;
+	FString DisplayNameWithoutSpaces = Item->DisplayName.ToString().Replace(TEXT(" "), TEXT(""));
+	for(int32 FilterIndex = 0; FilterIndex < FilterTerms.Num(); FilterIndex++)
+	{
+		FString FilterTerm = FilterTerms[FilterIndex];
+		
+		if(Item->DisplayName.ToString().Contains(FilterTerm))
+		{
+			DisplayNameMatchCount++;
+		}
+	}
+
+	// we also want to include items that would match the filter text if the spaces are removed.
+	// i.e. typing "oneminus" should also allow the action "one minus"
+	if(DisplayNameWithoutSpaces.Contains(FilterText.ToString()))
+	{
+		return true;
+	}
+
+	if(DisplayNameMatchCount >= FilterTerms.Num() / 2.f)
+	{
+		return true;
+	}
+
+	TArray<FString> KeywordArray;
+	Item->Keywords.ToString().ParseIntoArray(KeywordArray, TEXT(" "));
+	for(int32 FilterIndex = 0; FilterIndex < FilterTerms.Num(); FilterIndex++)
+	{
+		FString FilterTerm = FilterTerms[FilterIndex];
+
+		for(const FString& Keyword : KeywordArray)
+		{
+			if(Keyword.Contains(FilterTerm))
+			{
+				return true;
+			}
+		}		
+	}
+	
+	for(const FString& Category : Item->Categories)
+	{
+		if(Category.Contains(FilterText.ToString()))
+		{
+			return true;
+		}
+	}	
+
+	return false;
+}
+
+TTuple<EScriptSource, FText> FNiagaraEditorUtilities::GetScriptSource(const FAssetData& ScriptAssetData)
+{
+	FString PackagePathLocal ="";
+	FPackageName::TryConvertGameRelativePackagePathToLocalPath(ScriptAssetData.PackagePath.ToString(), PackagePathLocal);
+
+	if(FPaths::IsUnderDirectory(PackagePathLocal, FPaths::EnginePluginsDir() / TEXT("FX/Niagara")))
+	{
+		int32 ContentFoundIndex = PackagePathLocal.Find(TEXT("/Content"));
+
+		if(ContentFoundIndex != INDEX_NONE)
+		{
+			FString LeftPart = PackagePathLocal.Left(ContentFoundIndex);
+			bool bFound = LeftPart.FindLastChar('/', ContentFoundIndex);
+
+			if(bFound)
+			{
+				FString PluginName = LeftPart.RightChop(ContentFoundIndex + 1);
+				return TTuple<EScriptSource, FText>(EScriptSource::Niagara, FText::FromString(PluginName));
+			}
+		}
+	}
+	
+	if(FPaths::IsUnderDirectory(PackagePathLocal, FPaths::EnginePluginsDir()) || FPaths::IsUnderDirectory(PackagePathLocal, FPaths::ProjectPluginsDir()))
+	{
+		int32 ContentFoundIndex = PackagePathLocal.Find(TEXT("/Content"));
+
+		if(ContentFoundIndex != INDEX_NONE)
+		{
+			FString LeftPart = PackagePathLocal.Left(ContentFoundIndex);
+			bool bFound = LeftPart.FindLastChar('/', ContentFoundIndex);
+
+			if(bFound)
+			{
+				FString PluginName = LeftPart.RightChop(ContentFoundIndex + 1);
+				return TTuple<EScriptSource, FText>(EScriptSource::Plugins, FText::FromString(PluginName));
+			}
+		}
+	}
+
+	if(FPaths::IsUnderDirectory(PackagePathLocal, FPaths::GameDevelopersDir()))
+	{
+		return TTuple<EScriptSource, FText>(EScriptSource::Developer, FText::FromString("Developer"));
+	}
+	
+	if(FPaths::IsUnderDirectory(PackagePathLocal, FPaths::ProjectContentDir()))
+	{
+		return TTuple<EScriptSource, FText>(EScriptSource::Game, FText::FromString("Game"));
+	}		
+
+	return TTuple<EScriptSource, FText>(EScriptSource::Unknown, FText::FromString(""));
+}
+
+FLinearColor FNiagaraEditorUtilities::GetScriptSourceColor(EScriptSource ScriptData)
+{
+	return GetDefault<UNiagaraEditorSettings>()->GetSourceColor(ScriptData);	
 }
 
 NIAGARAEDITOR_API FText FNiagaraEditorUtilities::FormatScriptName(FName Name, bool bIsInLibrary)
@@ -1606,7 +2051,7 @@ TArray<UNiagaraComponent*> FNiagaraEditorUtilities::GetComponentsThatReferenceSy
 	return ReferencingComponents;
 }
 
-const FGuid FNiagaraEditorUtilities::AddEmitterToSystem(UNiagaraSystem& InSystem, UNiagaraEmitter& InEmitterToAdd)
+const FGuid FNiagaraEditorUtilities::AddEmitterToSystem(UNiagaraSystem& InSystem, UNiagaraEmitter& InEmitterToAdd, bool bCreateCopy)
 {
 	// Kill all system instances before modifying the emitter handle list to prevent accessing deleted data.
 	KillSystemInstances(InSystem);
@@ -1624,13 +2069,18 @@ const FGuid FNiagaraEditorUtilities::AddEmitterToSystem(UNiagaraSystem& InSystem
 		InSystem.Modify();
 		EmitterHandle = InSystem.AddEmitterHandle(InEmitterToAdd, FNiagaraUtilities::GetUniqueName(InEmitterToAdd.GetFName(), EmitterHandleNames));
 	}
-	else
+	else if (bCreateCopy)
 	{
 		// When editing an emitter asset we add the emitter as a duplicate so that the parent emitter is duplicated, but it's parent emitter
 		// information is maintained.
 		checkf(InSystem.GetNumEmitters() == 0, TEXT("Can not add multiple emitters to a system being edited in emitter asset mode."));
 		FNiagaraEmitterHandle TemporaryEmitterHandle(InEmitterToAdd);
 		EmitterHandle = InSystem.DuplicateEmitterHandle(TemporaryEmitterHandle, *InEmitterToAdd.GetUniqueEmitterName());
+	}
+	else
+	{
+		EmitterHandle = FNiagaraEmitterHandle(InEmitterToAdd);
+		InSystem.AddEmitterHandleDirect(EmitterHandle);		
 	}
 	
 	FNiagaraStackGraphUtilities::RebuildEmitterNodes(InSystem);
@@ -1665,8 +2115,16 @@ void FNiagaraEditorUtilities::KillSystemInstances(const UNiagaraSystem& System)
 	}
 }
 
-bool FNiagaraEditorUtilities::VerifyNameChangeForInputOrOutputNode(const UNiagaraNode& NodeBeingChanged, FName OldName, FName NewName, FText& OutErrorMessage)
+bool FNiagaraEditorUtilities::VerifyNameChangeForInputOrOutputNode(const UNiagaraNode& NodeBeingChanged, FName OldName, FString NewNameString, FText& OutErrorMessage)
 {
+	if (NewNameString.Len() >= FNiagaraConstants::MaxParameterLength)
+	{
+		OutErrorMessage = FText::FormatOrdered(LOCTEXT("EmptyNameError", "Name cannot exceed {0} characters."), FNiagaraConstants::MaxParameterLength);
+		return false;
+	}
+
+	FName NewName = *NewNameString;
+
 	if (NewName == NAME_None)
 	{
 		OutErrorMessage = LOCTEXT("EmptyNameError", "Name can not be empty.");
@@ -1919,60 +2377,6 @@ void FNiagaraEditorUtilities::CreateAssetFromEmitter(TSharedRef<FNiagaraEmitterH
 	}
 }
 
-void FNiagaraEditorUtilities::GetScriptRunAndExecutionIndexFromUsage(const ENiagaraScriptUsage& InUsage, int32& OutRunIndex, int32&OutExecutionIndex)
-{
-	switch (InUsage)
-	{
-	case ENiagaraScriptUsage::SystemSpawnScript:
-		OutRunIndex = 0;
-		OutExecutionIndex = 0;
-		break;
-	case ENiagaraScriptUsage::EmitterSpawnScript:
-		OutRunIndex = 0;
-		OutExecutionIndex = 1;
-		break;
-	case ENiagaraScriptUsage::ParticleSpawnScript:
-	case ENiagaraScriptUsage::ParticleSpawnScriptInterpolated:
-		OutRunIndex = 2;
-		OutExecutionIndex = 2;
-		break;
-	case ENiagaraScriptUsage::SystemUpdateScript:
-		OutRunIndex = 1;
-		OutExecutionIndex = 0;
-		break;
-	case ENiagaraScriptUsage::EmitterUpdateScript:
-		OutRunIndex = 1;
-		OutExecutionIndex = 1;
-		break;
-	case ENiagaraScriptUsage::ParticleUpdateScript:
-	case ENiagaraScriptUsage::ParticleGPUComputeScript:
-		OutRunIndex = 2;
-		OutExecutionIndex = 3;
-		break;
-	case ENiagaraScriptUsage::ParticleEventScript:
-		OutRunIndex = 2;
-		OutExecutionIndex = 4;
-		break;
-	case ENiagaraScriptUsage::ParticleSimulationStageScript:
-		//@todo(ng) implement getter for shader stages; for now same as particle update
-		
-		OutRunIndex = 2;
-		OutExecutionIndex = 4;
-		break;
-	case ENiagaraScriptUsage::DynamicInput:
-	case ENiagaraScriptUsage::Function:
-	case ENiagaraScriptUsage::Module:
-		OutRunIndex = INDEX_NONE;
-		OutExecutionIndex = INDEX_NONE;
-		break;
-	default:
-		checkf(false, TEXT("No execution index implemented for usage!"));
-		OutRunIndex = INDEX_NONE;
-		OutExecutionIndex = INDEX_NONE;
-		break;
-	}
-}
-
 bool FNiagaraEditorUtilities::AddEmitterContextMenuActions(FMenuBuilder& MenuBuilder, const TSharedPtr<FNiagaraEmitterHandleViewModel>& EmitterHandleViewModelPtr)
 {
 	if (EmitterHandleViewModelPtr.IsValid())
@@ -2157,107 +2561,6 @@ FName FNiagaraEditorUtilities::GetUniqueObjectName(UObject* Outer, UClass* Objec
 	}
 }
 
-bool FNiagaraEditorUtilities::GetVariableMetaDataScope(const FNiagaraVariableMetaData& MetaData, ENiagaraParameterScope& OutScope)
-{
-	if (MetaData.GetIsUsingLegacyNameString())
-	{
-		OutScope = ENiagaraParameterScope::Custom;
-		return false;
-	}
-
-	const FName& MetaDataScopeName = MetaData.GetScopeName();
-	const FNiagaraParameterScopeInfo* ScopeInfo = FNiagaraEditorModule::FindParameterScopeInfo(MetaDataScopeName);
-	if (ensureMsgf(ScopeInfo != nullptr, TEXT("Failed to find registered parameter scope info for scope name %s!"), *MetaDataScopeName.ToString()))
-	{
-		OutScope = ScopeInfo->GetScope();
-		return true;
-	}
-	OutScope = ENiagaraParameterScope::Custom;
-	return false;
-}
-
-bool FNiagaraEditorUtilities::GetVariableMetaDataNamespaceString(const FNiagaraVariableMetaData& MetaData, FString& OutNamespaceString)
-{
-	if (MetaData.GetIsUsingLegacyNameString())
-	{
-		return false;
-	}
-
-	const FName& MetaDataScopeName = MetaData.GetScopeName();
-	const FNiagaraParameterScopeInfo* ScopeInfo = FNiagaraEditorModule::FindParameterScopeInfo(MetaDataScopeName);
-	if (ScopeInfo == nullptr)
-	{
-		ensureMsgf(false, TEXT("Failed to find registered parameter scope info for scope name %s!"), *MetaDataScopeName.ToString());
-		return false;
-	}
-
-	FString NamespaceString = ScopeInfo->GetNamespaceString();
-	if (MetaData.GetUsage() == ENiagaraScriptParameterUsage::InitialValueInput)
-	{
-		NamespaceString.Append(PARAM_MAP_INITIAL_STR);
-	}
-	OutNamespaceString = NamespaceString;
-	return true;
-}
-
-bool FNiagaraEditorUtilities::GetVariableMetaDataNamespaceStringForNewScope(const FNiagaraVariableMetaData& MetaData, const FName& NewScopeName, FString& OutNamespaceString)
-{
-	if (MetaData.GetIsUsingLegacyNameString())
-	{
-		return false;
-	}
-
-	const FNiagaraParameterScopeInfo* ScopeInfo = FNiagaraEditorModule::FindParameterScopeInfo(NewScopeName);
-	if (ScopeInfo == nullptr)
-	{
-		ensureMsgf(false, TEXT("Failed to find registered parameter scope info for scope name %s!"), *NewScopeName.ToString());
-		return false;
-	}
-
-	FString NamespaceString = ScopeInfo->GetNamespaceString();
-	if (MetaData.GetUsage() == ENiagaraScriptParameterUsage::InitialValueInput)
-	{
-		NamespaceString.Append(PARAM_MAP_INITIAL_STR);
-	}
-	OutNamespaceString = NamespaceString;
-
-	return true;
-}
-
-FName FNiagaraEditorUtilities::GetScopeNameForParameterScope(ENiagaraParameterScope InScope)
-{
-	switch (InScope) {
-	case ENiagaraParameterScope::User:
-		return FNiagaraConstants::UserNamespace;
-	case ENiagaraParameterScope::Engine:
-		return FNiagaraConstants::EngineNamespace;
-	case ENiagaraParameterScope::Owner:
-		return FNiagaraConstants::EngineOwnerScopeName;
-	case ENiagaraParameterScope::System:
-		return FNiagaraConstants::SystemNamespace;
-	case ENiagaraParameterScope::Emitter:
-		return FNiagaraConstants::EmitterNamespace;
-	case ENiagaraParameterScope::Particles:
-		return FNiagaraConstants::ParticleAttributeNamespace;
-	case ENiagaraParameterScope::Local:
-		return FNiagaraConstants::LocalNamespace;
-	case ENiagaraParameterScope::Input:
-		return FNiagaraConstants::InputScopeName;
-	case ENiagaraParameterScope::Custom:
-		return FNiagaraConstants::CustomScopeName;
-	case ENiagaraParameterScope::ScriptPersistent:
-		return FNiagaraConstants::ScriptPersistentScopeName;
-	case ENiagaraParameterScope::ScriptTransient:
-		return FNiagaraConstants::ScriptTransientScopeName; 
-	case ENiagaraParameterScope::Output:
-		return FNiagaraConstants::OutputScopeName;
-	default:
-		ensureMsgf(false, TEXT("Tried to get scope name for unknown parameter scope!"));
-	}
-	return FNiagaraConstants::ParticleAttributeNamespace;
-}
-
-
 TArray<FName> FNiagaraEditorUtilities::DecomposeVariableNamespace(const FName& InVarNameToken, FName& OutName)
 {
 	int32 DotIndex;
@@ -2281,187 +2584,6 @@ void  FNiagaraEditorUtilities::RecomposeVariableNamespace(const FName& InVarName
 	}
 	VarNameString += InVarNameToken.ToString();
 	OutName = FName(*VarNameString);
-}
-
-bool FNiagaraEditorUtilities::IsScopeEditable(const FName& InScopeName)
-{
-	if (InScopeName == FNiagaraConstants::EngineNamespace || InScopeName == FNiagaraConstants::EngineOwnerScopeName || InScopeName == FNiagaraConstants::EngineSystemScopeName || InScopeName == FNiagaraConstants::EngineEmitterScopeName)
-	{
-		return false;
-	}
-	return true;
-}
-
-bool FNiagaraEditorUtilities::IsScopeUserAssignable(const FName& InScopeName)
-{
-	if (InScopeName == FNiagaraConstants::EngineNamespace || InScopeName == FNiagaraConstants::EngineOwnerScopeName || InScopeName == FNiagaraConstants::EngineSystemScopeName || InScopeName == FNiagaraConstants::EngineEmitterScopeName)
-	{
-		return false;
-	}
-	return true;
-}
-
-
-void FNiagaraEditorUtilities::GetParameterMetaDataFromName(const FName& InVarNameToken, FNiagaraVariableMetaData& OutMetaData)
-{
-	auto MarkAsLegacyCustomName = [&OutMetaData]() {
-		OutMetaData.SetScopeName(FNiagaraConstants::CustomScopeName);
-		OutMetaData.SetIsUsingLegacyNameString(true);
-	};
-
-	auto GetMetaDataForFirstNamespace = [MarkAsLegacyCustomName](const FName& Namespace, FNiagaraVariableMetaData& OutMetaData)-> bool /*bNextNamespaceCanBeValid*/ {
-		if (Namespace == FNiagaraConstants::LocalNamespace)
-		{
-			OutMetaData.SetScopeName(Namespace);
-			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Local);
-			return true;
-		}
-		else if (Namespace == FNiagaraConstants::ModuleNamespace)
-		{
-			OutMetaData.SetScopeName(FNiagaraConstants::InputScopeName);
-			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
-			return false;
-		}
-		else if (Namespace == FNiagaraConstants::UserNamespace)
-		{
-			OutMetaData.SetScopeName(Namespace);
-			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
-			return false;
-		}
-		else if (Namespace == FNiagaraConstants::EngineNamespace)
-		{
-			OutMetaData.SetScopeName(Namespace);
-			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
-			return true;
-		}
-		else if (Namespace == FNiagaraConstants::SystemNamespace)
-		{
-			OutMetaData.SetScopeName(Namespace);
-			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
-			return true;
-		}
-		else if (Namespace == FNiagaraConstants::EmitterNamespace)
-		{
-			OutMetaData.SetScopeName(Namespace);
-			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
-			return true;
-		}
-		else if (Namespace == FNiagaraConstants::ParticleAttributeNamespace)
-		{
-			OutMetaData.SetScopeName(Namespace);
-			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
-			return true;
-		}
-		else if (Namespace == FNiagaraConstants::OutputScopeName)
-		{
-			OutMetaData.SetScopeName(Namespace);
-			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Output);
-			return true;
-		}
-
-		MarkAsLegacyCustomName();
-		return false;
-	};
-
-	auto GetMetaDataForInitialNamespace = [](const FName& Namespace, FNiagaraVariableMetaData& OutMetaData)-> bool /*bFoundInitialNamespace*/ {
-		if (Namespace == FNiagaraConstants::InitialNamespace)
-		{
-			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::InitialValueInput);
-			return true;
-		}
-		return false;
-	};
-
-	auto GetScopeCanHaveInitialNamespaceSuffix = [](ENiagaraParameterScope InScope)-> bool /*bCanHaveInitialNamespaceSuffix*/ {
-		switch (InScope) {
-		case ENiagaraParameterScope::System:
-		case ENiagaraParameterScope::Emitter:
-		case ENiagaraParameterScope::Particles:
-			return true;
-		default:
-			return false;
-		};
-		return false;
-	};
-
-	auto GetMetaDataForEngineSubNamespace = [](const FName& Namespace, FNiagaraVariableMetaData& OutMetaData)-> bool /*bFoundValidEngineSubNamespace*/ {
-		if (Namespace == FNiagaraConstants::OwnerNamespace)
-		{
-			OutMetaData.SetScopeName(FNiagaraConstants::EngineOwnerScopeName);
-			return true;
-		}
-		else if (Namespace == FNiagaraConstants::SystemNamespace)
-		{
-			OutMetaData.SetScopeName(FNiagaraConstants::EngineSystemScopeName);
-			return true;
-		}
-		else if (Namespace == FNiagaraConstants::EmitterNamespace)
-		{
-			OutMetaData.SetScopeName(FNiagaraConstants::EngineEmitterScopeName);
-			return true;
-		}
-		return false;
-	};
-
-	FName NamespacelessName;
-	TArray<FName> DecomposedNamespaces = FNiagaraEditorUtilities::DecomposeVariableNamespace(InVarNameToken, NamespacelessName);
-	OutMetaData.SetCachedNamespacelessVariableName(NamespacelessName);
-	if (DecomposedNamespaces.Num() == 0)
-	{
-		UE_LOG(LogNiagaraEditor, Display, TEXT("Unexpected parameter encountered without a namespace: %s"), *InVarNameToken.ToString());
-		MarkAsLegacyCustomName();
-		return;
-	}
-	else if (DecomposedNamespaces.Num() == 1)
-	{
-		GetMetaDataForFirstNamespace(DecomposedNamespaces[0], OutMetaData);
-		return;
-	}
-	else if (DecomposedNamespaces.Num() == 2)
-	{
-		bool bNextNamespaceCanBeValid = GetMetaDataForFirstNamespace(DecomposedNamespaces[0], OutMetaData);
-		if (bNextNamespaceCanBeValid)
-		{
-			ENiagaraParameterScope FirstNamespaceScope;
-			FNiagaraEditorUtilities::GetVariableMetaDataScope(OutMetaData, FirstNamespaceScope);
-			if (FirstNamespaceScope == ENiagaraParameterScope::Local)
-			{
-				// "local.module." namespaces may be handled as local scopes and do not need to be marked as legacy namespaces.
-				if (DecomposedNamespaces[1] == FNiagaraConstants::ModuleNamespace)
-				{
-					return;
-				}
-			}
-			else if (FirstNamespaceScope == ENiagaraParameterScope::Engine)
-			{
-				bool bFoundEngineSubNamespace = GetMetaDataForEngineSubNamespace(DecomposedNamespaces[1], OutMetaData);
-				if (bFoundEngineSubNamespace)
-				{
-					return;
-				}
-			}
-			else if (DecomposedNamespaces[0] == FNiagaraConstants::OutputScopeName)
-			{
-				if (DecomposedNamespaces[1] == FNiagaraConstants::ModuleNamespace)
-				{
-					OutMetaData.SetScopeName(FNiagaraConstants::UniqueOutputScopeName);
-					return;
-				}
-			}
-			else if (GetScopeCanHaveInitialNamespaceSuffix(FirstNamespaceScope))
-			{
-				bool bFoundInitialNamespace = GetMetaDataForInitialNamespace(DecomposedNamespaces[1], OutMetaData);
-				if (bFoundInitialNamespace)
-				{
-					return;
-				}
-			}
-		}
-		MarkAsLegacyCustomName();
-		return;
-	}
-
-	MarkAsLegacyCustomName();
 }
 
 FString FNiagaraEditorUtilities::GetNamespacelessVariableNameString(const FName& InVarName)
@@ -2564,6 +2686,393 @@ const FNiagaraNamespaceMetadata FNiagaraEditorUtilities::GetNamespaceMetaDataFor
 	const FNiagaraParameterHandle VarHandle = FNiagaraParameterHandle(VarName);
 	const TArray<FName> VarHandleNameParts = VarHandle.GetHandleParts();
 	return GetDefault<UNiagaraEditorSettings>()->GetMetaDataForNamespaces(VarHandleNameParts);
+}
+
+const FNiagaraNamespaceMetadata FNiagaraEditorUtilities::GetNamespaceMetaDataForId(const FGuid& NamespaceId)
+{
+	return GetDefault<UNiagaraEditorSettings>()->GetMetaDataForId(NamespaceId);
+}
+
+const FGuid& FNiagaraEditorUtilities::GetNamespaceIdForUsage(ENiagaraScriptUsage Usage)
+{
+	return GetDefault<UNiagaraEditorSettings>()->GetIdForUsage(Usage);
+}
+
+TArray<UNiagaraParameterDefinitions*> FNiagaraEditorUtilities::GetAllParameterDefinitions()
+{
+	TArray<UNiagaraParameterDefinitions*> OutParameterDefinitions;
+
+	TArray<FAssetData> ParameterDefinitionsAssetData;
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	AssetRegistryModule.GetRegistry().GetAssetsByClass(UNiagaraParameterDefinitions::StaticClass()->GetFName(), ParameterDefinitionsAssetData);
+	for (const FAssetData& ParameterDefinitionsAssetDatum : ParameterDefinitionsAssetData)
+	{
+		UNiagaraParameterDefinitions* ParameterDefinitions = Cast<UNiagaraParameterDefinitions>(ParameterDefinitionsAssetDatum.GetAsset());
+		if (ParameterDefinitions == nullptr)
+		{
+			ensureMsgf(false, TEXT("Failed to load parameter definition from asset registry!"));
+			continue;
+		}
+		OutParameterDefinitions.Add(ParameterDefinitions);
+	}
+	return OutParameterDefinitions;
+}
+
+bool FNiagaraEditorUtilities::GetAvailableParameterDefinitions(const TArray<FString>& ExternalPackagePaths, TArray<FAssetData>& OutParameterDefinitionsAssetData)
+{
+	//@todo(ng) consider linking to out of package libraries if necessary for use with content plugins
+
+	// Gather asset registry filter args
+	FARFilter ARFilter;
+	ARFilter.ClassNames.Add(UNiagaraParameterDefinitions::StaticClass()->GetFName());
+	ARFilter.bRecursivePaths = true;
+	ARFilter.bIncludeOnlyOnDiskAssets = true;
+
+	// Always get parameter libraries from the Niagara plugin content directory
+	TSharedPtr<IPlugin> NiagaraPlugin = IPluginManager::Get().FindPlugin("Niagara");
+	checkf(NiagaraPlugin, TEXT("Failed to find the Niagara plugin! Did we rename it!?"));
+	FString NiagaraPluginContentMountPoint = NiagaraPlugin->GetMountedAssetPath();
+	NiagaraPluginContentMountPoint.RemoveFromEnd(TEXT("/"), ESearchCase::CaseSensitive);
+	ARFilter.PackagePaths.Add(*NiagaraPluginContentMountPoint);
+
+	// Always get parameter libraries in the project content as well
+	ARFilter.PackagePaths.Add(TEXT("/Game"));
+
+	// Add external package paths
+	ARFilter.PackagePaths.Append(ExternalPackagePaths);
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	return AssetRegistryModule.GetRegistry().GetAssets(ARFilter, OutParameterDefinitionsAssetData);
+}
+
+TSharedPtr<INiagaraParameterDefinitionsSubscriberViewModel> FNiagaraEditorUtilities::GetOwningLibrarySubscriberViewModelForGraph(const UNiagaraGraph* Graph)
+{
+	if (UNiagaraScript* BaseScript = Graph->GetTypedOuter<UNiagaraScript>())
+	{
+		TSharedPtr<FNiagaraScriptViewModel> BaseScriptViewModel = TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptViewModel>::GetExistingViewModelForObject(BaseScript);
+		if (ensureMsgf(BaseScriptViewModel.IsValid(), TEXT("Failed to find valid script view model for outer script of variable being customized!")))
+		{
+			return BaseScriptViewModel;
+		}
+	}
+	else if (UNiagaraEmitter* BaseEmitter = Graph->GetTypedOuter<UNiagaraEmitter>())
+	{
+		TSharedPtr<FNiagaraEmitterViewModel> BaseEmitterViewModel = TNiagaraViewModelManager<UNiagaraEmitter, FNiagaraEmitterViewModel>::GetExistingViewModelForObject(BaseEmitter);
+		if (ensureMsgf(BaseEmitterViewModel.IsValid(), TEXT("Failed to find valid emitter view model for outer emitter of variable being customized!")))
+		{
+			return BaseEmitterViewModel;
+		}
+	}
+	else if (UNiagaraSystem* BaseSystem = Graph->GetTypedOuter<UNiagaraSystem>())
+	{
+		TSharedPtr<FNiagaraSystemViewModel> BaseSystemViewModel = TNiagaraViewModelManager<UNiagaraSystem, FNiagaraSystemViewModel>::GetExistingViewModelForObject(BaseSystem);
+		if (ensureMsgf(BaseSystemViewModel.IsValid(), TEXT("Failed to find valid script view model for outer script of variable being customized!")))
+		{
+			return BaseSystemViewModel;
+		}
+	}
+	else
+	{
+		ensureMsgf(false, TEXT("Tried to find valid outer to Graph but could not find outered Script, Emitter or System!"));
+	}
+	return TSharedPtr<INiagaraParameterDefinitionsSubscriberViewModel>();
+}
+
+TArray<UNiagaraParameterDefinitions*> FNiagaraEditorUtilities::DowncastParameterDefinitionsBaseArray(const TArray<UNiagaraParameterDefinitionsBase*> BaseArray)
+{
+	TArray<UNiagaraParameterDefinitions*> OutArray;
+	OutArray.AddUninitialized(BaseArray.Num());
+	for (int32 i = 0; i < BaseArray.Num(); ++i)
+	{
+		OutArray[i] = Cast<UNiagaraParameterDefinitions>(BaseArray[i]);
+	}
+	return OutArray;
+}
+
+void FNiagaraEditorUtilities::RefreshAllScriptsFromExternalChanges(FRefreshAllScriptsFromExternalChangesArgs Args)
+{
+	UNiagaraScript* OriginatingScript = Args.OriginatingScript;
+	UNiagaraGraph* OriginatingGraph = Args.OriginatingGraph;
+	UNiagaraParameterDefinitions* OriginatingParameterDefinitions = Args.OriginatingParameterDefinitions;
+	bool bMatchOriginatingScript = OriginatingScript != nullptr;
+	bool bMatchOriginatingGraph = OriginatingGraph != nullptr;
+	bool bMatchOriginatingParameterDefinitions = OriginatingParameterDefinitions != nullptr;
+	TArray<UNiagaraScript*> AffectedScripts;
+
+	for (TObjectIterator<UNiagaraScript> It; It; ++It)
+	{
+		if (*It == OriginatingScript || It->IsPendingKillOrUnreachable())
+		{
+			continue;
+		}
+
+		// First see if it is directly called, as this will force a need to refresh from external changes...
+		UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(It->GetLatestSource());
+		if (!Source || !Source->NodeGraph)
+		{
+			continue;
+		}
+
+		bool bMatchedOriginatingParameterDefinitions = false;
+		if (bMatchOriginatingParameterDefinitions)
+		{
+			// Check if the script itself is subscribed to the originating parameter definitions, and if so, mark it as having matched.
+			bool bSkipSystemEmitterCheck = false;
+			if (const FVersionedNiagaraScriptData* VersionedScriptData = It->GetLatestScriptData())
+			{
+				FVersionedNiagaraScript TempVersionedScript = FVersionedNiagaraScript(*It, VersionedScriptData->Version.VersionGuid);
+				if (TempVersionedScript.GetIsSubscribedToParameterDefinitions(OriginatingParameterDefinitions))
+				{
+					bSkipSystemEmitterCheck = true;
+					TempVersionedScript.SynchronizeWithParameterDefinitions();
+				}
+			}
+
+			// If the script itself is not subscribed to the originating parameter definitions, check if the script is a system/emitter/particle script,
+			// and if so, check if the outer Emitter or System is subscribed to the originating parameter definitions. If so, mark the match.
+			if (bSkipSystemEmitterCheck == false)
+			{
+				UNiagaraScript* Script = *It;
+				if (Script->IsParticleScript() || Script->IsEmitterSpawnScript() || Script->IsEmitterUpdateScript())
+				{
+					UNiagaraEmitter* Emitter = Cast<UNiagaraEmitter>(Script->GetTypedOuter<UNiagaraEmitter>());
+					if (Emitter && Emitter->GetIsSubscribedToParameterDefinitions(OriginatingParameterDefinitions))
+					{
+						Emitter->SynchronizeWithParameterDefinitions();
+						bMatchedOriginatingParameterDefinitions = true;
+					}
+				}
+				else if (Script->IsSystemSpawnScript() || Script->IsSystemUpdateScript())
+				{
+					UNiagaraSystem* System = Cast<UNiagaraSystem>(Script->GetTypedOuter<UNiagaraSystem>());
+					if(System && System->GetIsSubscribedToParameterDefinitions(OriginatingParameterDefinitions))
+					{
+						System->SynchronizeWithParameterDefinitions();
+						bMatchedOriginatingParameterDefinitions = true;
+					}
+				}
+			}
+		}
+
+		// Iterate over each node in the script
+		TArray<UNiagaraNode*> NiagaraNodes;
+		Source->NodeGraph->GetNodesOfClass<UNiagaraNode>(NiagaraNodes);
+		bool bRefreshed = false;
+		for (UNiagaraNode* NiagaraNode : NiagaraNodes)
+		{
+			// If the node references the originating script, refresh. Also, refresh if the originating parameter definitions were matched prior.
+			UObject* ReferencedAsset = NiagaraNode->GetReferencedAsset();
+			if ((bMatchOriginatingScript && ReferencedAsset == OriginatingScript) ||
+				(bMatchedOriginatingParameterDefinitions))
+			{
+				NiagaraNode->RefreshFromExternalChanges();
+				bRefreshed = true;
+			}
+			// If originating parameter definitions were not subscribed to the script or its potential outer emitter or system, check each node for a 
+			// function call node and check whether the function call associated script is subscribed to the originating definition. If so, refresh.
+			else if (bMatchOriginatingParameterDefinitions && ReferencedAsset != nullptr && NiagaraNode->IsA<UNiagaraNodeFunctionCall>())
+			{
+				UNiagaraScript* FunctionCallScript = CastChecked<UNiagaraScript>(ReferencedAsset);
+				FVersionedNiagaraScript VersionedNiagaraScriptAdapter = FVersionedNiagaraScript(FunctionCallScript, FunctionCallScript->GetExposedVersion().VersionGuid);
+				if (VersionedNiagaraScriptAdapter.GetIsSubscribedToParameterDefinitions(OriginatingParameterDefinitions))
+				{
+					NiagaraNode->RefreshFromExternalChanges();
+					bRefreshed = true;
+				}
+			}
+		}
+
+		if (bRefreshed)
+		{
+			//Source->NodeGraph->NotifyGraphNeedsRecompile();
+			AffectedScripts.AddUnique(*It);
+		}
+		else
+		{
+			// Now check to see if our graph is anywhere in the dependency chain for a given graph. If it is, 
+			// then it will need to be recompiled against the latest version.
+			TArray<const UNiagaraGraph*> ReferencedGraphs;
+			Source->NodeGraph->GetAllReferencedGraphs(ReferencedGraphs);
+			for (const UNiagaraGraph* Graph : ReferencedGraphs)
+			{
+				if (bMatchOriginatingGraph && Graph == OriginatingGraph)
+				{
+					//Source->NodeGraph->NotifyGraphNeedsRecompile();
+					AffectedScripts.AddUnique(*It);
+					break;
+				}
+			}
+		}
+	}
+
+	// Now determine if any of these scripts were in Emitters. If so, those emitters should be compiled together. If not, go ahead and compile individually.
+	// Use the existing view models if they exist,as they are already wired into the correct UI.
+	TArray<UNiagaraEmitter*> AffectedEmitters;
+	for (UNiagaraScript* Script : AffectedScripts)
+	{
+		if (Script->IsParticleScript() || Script->IsEmitterSpawnScript() || Script->IsEmitterUpdateScript())
+		{
+			UNiagaraEmitter* Emitter = Cast<UNiagaraEmitter>(Script->GetTypedOuter<UNiagaraEmitter>());
+			if (Emitter)
+			{
+				AffectedEmitters.AddUnique(Emitter);
+			}
+		}
+		else if (Script->IsSystemSpawnScript() || Script->IsSystemUpdateScript())
+		{
+			UNiagaraSystem* System = Cast<UNiagaraSystem>(Script->GetTypedOuter<UNiagaraSystem>());
+			if (System)
+			{
+				for (int32 i = 0; i < System->GetNumEmitters(); i++)
+				{
+					AffectedEmitters.AddUnique(System->GetEmitterHandle(i).GetInstance());
+					AffectedEmitters.AddUnique((UNiagaraEmitter*)System->GetEmitterHandle(i).GetInstance()->GetParent());
+				}
+			}
+		}
+		else
+		{
+			TSharedPtr<FNiagaraScriptViewModel> AffectedScriptViewModel = FNiagaraScriptViewModel::GetExistingViewModelForObject(Script);
+			if (!AffectedScriptViewModel.IsValid())
+			{
+				bool bIsForDataProcessingOnly = true;
+				AffectedScriptViewModel = MakeShareable(new FNiagaraScriptViewModel(FText::FromString(Script->GetName()), ENiagaraParameterEditMode::EditValueOnly, bIsForDataProcessingOnly));
+				AffectedScriptViewModel->SetScript(FVersionedNiagaraScript(Script));
+			}
+			AffectedScriptViewModel->CompileStandaloneScript();
+		}
+	}
+
+	FNiagaraEditorUtilities::CompileExistingEmitters(AffectedEmitters);
+}
+
+TArray<UNiagaraPythonScriptModuleInput*> GetFunctionCallInputs(const FNiagaraScriptVersionUpgradeContext& UpgradeContext)
+{
+	TArray<UNiagaraPythonScriptModuleInput*> ScriptInputs;
+	UNiagaraClipboardContent* ClipboardContent = UNiagaraClipboardContent::Create();
+	UpgradeContext.CreateClipboardCallback(ClipboardContent);
+	for (const UNiagaraClipboardFunctionInput* FunctionInput : ClipboardContent->FunctionInputs)
+	{
+		UNiagaraPythonScriptModuleInput* ScriptInput = NewObject<UNiagaraPythonScriptModuleInput>();
+		ScriptInput->Input = FunctionInput;
+		ScriptInputs.Add(ScriptInput);
+	}
+	return ScriptInputs;
+}
+
+void AddStackWarning(const FNiagaraAssetVersion& FromVersion, const FNiagaraAssetVersion& ToVersion, const FString& ToAdd, bool& bLoggedWarning, FString& OutWarnings)
+{
+	if (!bLoggedWarning)
+	{
+		OutWarnings.Appendf(TEXT("%i.%i -> %i.%i:\n"), FromVersion.MajorVersion, FromVersion.MinorVersion, ToVersion.MajorVersion, ToVersion.MinorVersion);
+	}
+	bLoggedWarning = true;
+	OutWarnings.Appendf(TEXT("  * %s\n"), *ToAdd);
+}
+
+const FString PythonUpgradeScriptStub = TEXT(
+	"import sys\n"
+	"import unreal as ue\n"
+	"upgrade_context = ue.load_object(None, '{0}')\n"
+	"### User Upgrade Script ###\n"
+	"{1}\n"
+	"### End User Script ###\n"
+	"upgrade_context.cancelled_by_python_error = False\n");
+
+void FNiagaraEditorUtilities::RunPythonUpgradeScripts(UNiagaraNodeFunctionCall* SourceNode,	const TArray<FVersionedNiagaraScriptData*>& UpgradeVersionData, const FNiagaraScriptVersionUpgradeContext& UpgradeContext, FString& OutWarnings)
+{
+	UUpgradeNiagaraScriptResults* Results = NewObject<UUpgradeNiagaraScriptResults>();
+	FGuid SavedVersion = SourceNode->SelectedScriptVersion;
+	
+	for (int i = 1; i < UpgradeVersionData.Num(); i++)
+	{
+		FVersionedNiagaraScriptData* PreviousData = UpgradeVersionData[i - 1];
+		FVersionedNiagaraScriptData* NewData = UpgradeVersionData[i];
+		if (NewData == nullptr || PreviousData == nullptr)
+		{
+			continue;
+		}
+
+		FString PythonScript;
+		if (NewData->UpdateScriptExecution == ENiagaraPythonUpdateScriptReference::DirectTextEntry)
+		{
+			PythonScript = NewData->PythonUpdateScript;
+		}
+		else if (NewData->UpdateScriptExecution == ENiagaraPythonUpdateScriptReference::ScriptAsset && !NewData->ScriptAsset.FilePath.IsEmpty())
+		{
+			FFileHelper::LoadFileToString(PythonScript, *NewData->ScriptAsset.FilePath);
+		}
+
+		bool bLoggedWarning = false;
+		if (!PythonScript.IsEmpty())
+		{
+			// set up script context
+			if (SourceNode->SelectedScriptVersion != PreviousData->Version.VersionGuid)
+			{
+				SourceNode->SelectedScriptVersion = PreviousData->Version.VersionGuid;
+				SourceNode->RefreshFromExternalChanges();
+			}
+			Results->OldInputs = GetFunctionCallInputs(UpgradeContext);
+			SourceNode->SelectedScriptVersion = NewData->Version.VersionGuid;
+			SourceNode->RefreshFromExternalChanges();
+			Results->NewInputs = GetFunctionCallInputs(UpgradeContext);
+			Results->Init();
+			
+			// save python script to a temp file to execute
+			FString TempScriptFile = FPaths::CreateTempFilename(*FPaths::ProjectIntermediateDir(), TEXT("VersionUpgrade-"), TEXT(".py"));
+			IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+			ON_SCOPE_EXIT
+			{
+				// Delete temp script file
+				PlatformFile.DeleteFile(*TempScriptFile);
+			};
+			if (!FFileHelper::SaveStringToFile(FString::Format(*PythonUpgradeScriptStub, {Results->GetPathName(), PythonScript}), *TempScriptFile))
+			{
+				UE_LOG(LogNiagaraEditor, Error, TEXT("Unable to save python script to file %s"), *TempScriptFile);
+				AddStackWarning(PreviousData->Version, NewData->Version, "Cannot create python script file!", bLoggedWarning, OutWarnings);
+				continue;
+			}
+
+			Results->bCancelledByPythonError = true;
+			FPythonCommandEx PythonCommand = FPythonCommandEx();
+			PythonCommand.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
+			PythonCommand.Command = TempScriptFile;
+
+			// execute python script
+			IPythonScriptPlugin::Get()->ExecPythonCommandEx(PythonCommand);
+
+			if (Results->bCancelledByPythonError)
+			{
+				UE_LOG(LogNiagaraEditor, Error, TEXT("%s\n\nPython script:\n%s"), *PythonCommand.CommandResult, *PythonCommand.Command);
+				AddStackWarning(PreviousData->Version, NewData->Version, "Python script ended with error!", bLoggedWarning, OutWarnings);
+			}
+			else
+			{
+				UNiagaraClipboardContent* ClipboardContent = UNiagaraClipboardContent::Create();
+				for (UNiagaraPythonScriptModuleInput* ModuleInput : Results->NewInputs)
+				{
+					ClipboardContent->FunctionInputs.Add(ModuleInput->Input);	
+				}
+				if (ClipboardContent->FunctionInputs.Num() > 0)
+				{
+					FText Warnings;
+					UpgradeContext.ApplyClipboardCallback(ClipboardContent, Warnings);
+					if (!Warnings.IsEmpty())
+					{
+						AddStackWarning(PreviousData->Version, NewData->Version, Warnings.ToString(), bLoggedWarning, OutWarnings);
+					}
+				}
+			}
+			if (PythonCommand.LogOutput.Num() > 0)
+			{
+				for (FPythonLogOutputEntry& Entry : PythonCommand.LogOutput)
+				{
+					AddStackWarning(PreviousData->Version, NewData->Version, Entry.Output, bLoggedWarning, OutWarnings);
+				}
+			}
+		}
+	}
+	SourceNode->SelectedScriptVersion = SavedVersion;
 }
 
 bool FNiagaraParameterUtilities::DoesParameterNameMatchSearchText(FName ParameterName, const FString& SearchTextString)

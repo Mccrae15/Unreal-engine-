@@ -53,6 +53,7 @@ DEFINE_STAT(STAT_GatherCollisionEvent)
 DEFINE_STAT(STAT_GatherBreakingEvent)
 DEFINE_STAT(STAT_GatherTrailingEvent)
 DEFINE_STAT(STAT_GatherSleepingEvent)
+DEFINE_STAT(STAT_AccelerationStructureReset);
 
 DEFINE_STAT(STAT_ParamUpdateObject);
 DEFINE_STAT(STAT_ParamUpdateField);
@@ -68,7 +69,10 @@ DEFINE_STAT(STAT_Scene_StartFrame);
 DEFINE_STAT(STAT_Scene_EndFrame);
 
 DEFINE_STAT(STAT_ParamUpdateField_Object);
+DEFINE_STAT(STAT_ForceUpdateField_Object);
+DEFINE_STAT(STAT_NiagaraUpdateField_Object);
 DEFINE_STAT(STAT_ParamUpdateField_DynamicState);
+DEFINE_STAT(STAT_ParamUpdateField_ActivateDisabled);
 DEFINE_STAT(STAT_ParamUpdateField_ExternalClusterStrain);
 DEFINE_STAT(STAT_ParamUpdateField_Kill);
 DEFINE_STAT(STAT_ParamUpdateField_LinearVelocity);
@@ -76,9 +80,13 @@ DEFINE_STAT(STAT_ParamUpdateField_AngularVelocity);
 DEFINE_STAT(STAT_ParamUpdateField_SleepingThreshold);
 DEFINE_STAT(STAT_ParamUpdateField_DisableThreshold);
 DEFINE_STAT(STAT_ParamUpdateField_InternalClusterStrain);
+DEFINE_STAT(STAT_ParamUpdateField_CollisionGroup);
 DEFINE_STAT(STAT_ParamUpdateField_PositionStatic);
 DEFINE_STAT(STAT_ParamUpdateField_PositionTarget);
 DEFINE_STAT(STAT_ParamUpdateField_PositionAnimated);
 DEFINE_STAT(STAT_ParamUpdateField_DynamicConstraint);
+DEFINE_STAT(STAT_ForceUpdateField_LinearForce);
+DEFINE_STAT(STAT_ForceUpdateField_AngularTorque);
+
 
 // Field update stats

@@ -58,7 +58,7 @@ public:
 		// Zero the buffer memory.
 		void* Data = RHILockVertexBuffer(Buffer, 0, NumBytes, RLM_WriteOnly);
 		FMemory::Memset(Data, 0, NumBytes);
-		
+
 		if (PixelFormat == PF_R8G8B8A8)
 		{
 			*reinterpret_cast<uint32*>(Data) = DefaultValue;
@@ -79,10 +79,18 @@ public:
 class FNiagaraEmptyTextureSRV : public FRenderResource
 {
 public:
-	FNiagaraEmptyTextureSRV(EPixelFormat InPixelFormat, const FString& InDebugName) : PixelFormat(InPixelFormat), DebugName(InDebugName) {}
+	enum ETextureType
+	{
+		Texture2D,
+		Texture2DArray,
+		Texture3D
+	};
+
+	FNiagaraEmptyTextureSRV(EPixelFormat InPixelFormat, const FString& InDebugName, ETextureType InType) : PixelFormat(InPixelFormat), DebugName(InDebugName), Type(InType) {}
 	EPixelFormat PixelFormat;
 	FString DebugName;
-	FTexture2DRHIRef Texture;
+	ETextureType Type;
+	FTextureRHIRef Texture;
 	FShaderResourceViewRHIRef SRV;
 
 	virtual void InitRHI() override
@@ -90,13 +98,40 @@ public:
 		// Create a 1x1 texture.
 		FRHIResourceCreateInfo CreateInfo;
 		CreateInfo.DebugName = *DebugName;
-		Texture = RHICreateTexture2D(1, 1, PixelFormat, 1, 1, TexCreate_ShaderResource, CreateInfo);
 
-		// Zero the texture memory (there's only 1 row, so we can use the stride).
 		uint32 Stride;
-		void* Pixels = RHILockTexture2D(Texture, 0, RLM_WriteOnly, Stride, false);
-		FMemory::Memset(Pixels, 0, Stride);
-		RHIUnlockTexture2D(Texture, 0, false);
+		switch (Type)
+		{
+			case Texture2D:
+			{
+				FTexture2DRHIRef Tex2D = RHICreateTexture2D(1, 1, PixelFormat, 1, 1, TexCreate_ShaderResource, CreateInfo);
+				void* Pixels = RHILockTexture2D(Tex2D, 0, RLM_WriteOnly, Stride, false);
+				FMemory::Memset(Pixels, 0, Stride);
+				RHIUnlockTexture2D(Tex2D, 0, 0, false);
+				Texture = Tex2D;
+				break;
+			}
+
+			case Texture2DArray:
+			{
+				FTexture2DArrayRHIRef Tex2DArray = RHICreateTexture2DArray(1, 1, 1, PixelFormat, 1, 1, TexCreate_ShaderResource, CreateInfo);
+				void* Pixels = RHILockTexture2DArray(Tex2DArray, 0, 0, RLM_WriteOnly, Stride, false);
+				FMemory::Memset(Pixels, 0, Stride);
+				RHIUnlockTexture2DArray(Tex2DArray, 0, 0, false);
+				Texture = Tex2DArray;
+				break;
+			}
+
+			case Texture3D:
+			{
+				Texture = RHICreateTexture3D(1, 1, 1, PixelFormat, 1, TexCreate_ShaderResource, CreateInfo);
+				break;
+			}
+
+			default:
+				checkNoEntry();
+				return;
+		}
 
 		SRV = RHICreateShaderResourceView(Texture, 0);
 	}
@@ -161,8 +196,22 @@ FRHIShaderResourceView* FNiagaraRenderer::GetDummyUInt4Buffer()
 FRHIShaderResourceView* FNiagaraRenderer::GetDummyTextureReadBuffer2D()
 {
 	check(IsInRenderingThread());
-	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer2D(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer2D"));
+	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer2D(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer2D"), FNiagaraEmptyTextureSRV::Texture2D);
 	return DummyTextureReadBuffer2D.SRV;
+}
+
+FRHIShaderResourceView* FNiagaraRenderer::GetDummyTextureReadBuffer2DArray()
+{
+	check(IsInRenderingThread());
+	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer2DArray(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer2DArray"), FNiagaraEmptyTextureSRV::Texture2DArray);
+	return DummyTextureReadBuffer2DArray.SRV;
+}
+
+FRHIShaderResourceView* FNiagaraRenderer::GetDummyTextureReadBuffer3D()
+{
+	check(IsInRenderingThread());
+	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer3D(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer3D"), FNiagaraEmptyTextureSRV::Texture3D);
+	return DummyTextureReadBuffer3D.SRV;
 }
 
 FRHIShaderResourceView* FNiagaraRenderer::GetDummyHalfBuffer()
@@ -172,16 +221,21 @@ FRHIShaderResourceView* FNiagaraRenderer::GetDummyHalfBuffer()
 	return DummyHalfBuffer.SRV;
 }
 
-FParticleRenderData FNiagaraRenderer::TransferDataToGPU(FGlobalDynamicReadBuffer& DynamicReadBuffer, const FNiagaraRendererLayout* RendererLayout, FNiagaraDataBuffer* SrcData)
+FParticleRenderData FNiagaraRenderer::TransferDataToGPU(FGlobalDynamicReadBuffer& DynamicReadBuffer, const FNiagaraRendererLayout* RendererLayout, TConstArrayView<uint32> IntComponents, const FNiagaraDataBuffer* SrcData)
 {
-	const int32 TotalFloatSize = RendererLayout->GetTotalFloatComponents_RenderThread() * SrcData->GetNumInstances();
-	const int32 TotalHalfSize = RendererLayout->GetTotalHalfComponents_RenderThread() * SrcData->GetNumInstances();
+	const int32 NumInstances = SrcData->GetNumInstances();
+	const int32 TotalFloatSize = RendererLayout->GetTotalFloatComponents_RenderThread() * NumInstances;
+	const int32 TotalHalfSize = RendererLayout->GetTotalHalfComponents_RenderThread() * NumInstances;
+	const int32 TotalIntSize = IntComponents.Num() * NumInstances;
 
-	const int32 ComponentHalfStrideDest = SrcData->GetNumInstances() * sizeof(FFloat16);
-	const int32 ComponentFloatStrideDest = SrcData->GetNumInstances() * sizeof(float);
+	FParticleRenderData Allocation;
+	Allocation.FloatData = TotalFloatSize ? DynamicReadBuffer.AllocateFloat(TotalFloatSize) : FGlobalDynamicReadBuffer::FAllocation();
+	Allocation.HalfData = TotalHalfSize ? DynamicReadBuffer.AllocateHalf(TotalHalfSize) : FGlobalDynamicReadBuffer::FAllocation();
+	Allocation.IntData = TotalIntSize ? DynamicReadBuffer.AllocateInt32(TotalIntSize) : FGlobalDynamicReadBuffer::FAllocation();
 
-	FGlobalDynamicReadBuffer::FAllocation FloatAllocation = TotalFloatSize ? DynamicReadBuffer.AllocateFloat(TotalFloatSize) : FGlobalDynamicReadBuffer::FAllocation();
-	FGlobalDynamicReadBuffer::FAllocation HalfAllocation = TotalHalfSize ? DynamicReadBuffer.AllocateHalf(TotalHalfSize) : FGlobalDynamicReadBuffer::FAllocation();
+	Allocation.FloatStride = TotalFloatSize ? NumInstances * sizeof(float) : 0;
+	Allocation.HalfStride = TotalHalfSize ? NumInstances * sizeof(FFloat16) : 0;
+	Allocation.IntStride = TotalIntSize ? NumInstances * sizeof(int32) : 0;
 
 	for (const FNiagaraRendererVariableInfo& VarInfo : RendererLayout->GetVFVariables_RenderThread())
 	{
@@ -193,23 +247,34 @@ FParticleRenderData FNiagaraRenderer::TransferDataToGPU(FGlobalDynamicReadBuffer
 				GpuOffset &= ~(1 << 31);
 				for (int32 CompIdx = 0; CompIdx < VarInfo.NumComponents; ++CompIdx)
 				{
-					FFloat16* SrcComponent = (FFloat16*)SrcData->GetComponentPtrHalf(VarInfo.DatasetOffset + CompIdx);
-					void* Dest = HalfAllocation.Buffer + ComponentHalfStrideDest * (GpuOffset + CompIdx);
-					FMemory::Memcpy(Dest, SrcComponent, ComponentHalfStrideDest);
+					const uint8* SrcComponent = SrcData->GetComponentPtrHalf(VarInfo.DatasetOffset + CompIdx);
+					void* Dest = Allocation.HalfData.Buffer + Allocation.HalfStride * (GpuOffset + CompIdx);
+					FMemory::Memcpy(Dest, SrcComponent, Allocation.HalfStride);
 				}
 			}
 			else
 			{
 				for (int32 CompIdx = 0; CompIdx < VarInfo.NumComponents; ++CompIdx)
 				{
-					float* SrcComponent = (float*)SrcData->GetComponentPtrFloat(VarInfo.DatasetOffset + CompIdx);
-					void* Dest = FloatAllocation.Buffer + ComponentFloatStrideDest * (GpuOffset + CompIdx);
-					FMemory::Memcpy(Dest, SrcComponent, ComponentFloatStrideDest);
+					const uint8* SrcComponent = SrcData->GetComponentPtrFloat(VarInfo.DatasetOffset + CompIdx);
+					void* Dest = Allocation.FloatData.Buffer + Allocation.FloatStride * (GpuOffset + CompIdx);
+					FMemory::Memcpy(Dest, SrcComponent, Allocation.FloatStride);
 				}
 			}
 		}
 	}
-	return FParticleRenderData{ FloatAllocation, HalfAllocation };
+
+	if (TotalIntSize > 0)
+	{
+		for (int i=0; i < IntComponents.Num(); ++i )
+		{
+			uint8* Dst = Allocation.IntData.Buffer + Allocation.IntStride * i;
+			const uint8* Src = SrcData->GetComponentPtrInt32(IntComponents[i]);
+			FMemory::Memcpy(Dst, Src, Allocation.IntStride);
+		}
+	}
+
+	return Allocation;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -272,9 +337,8 @@ FNiagaraRenderer::FNiagaraRenderer(ERHIFeatureLevel::Type InFeatureLevel, const 
 	: DynamicDataRender(nullptr)
 	, bLocalSpace(Emitter->GetCachedEmitter()->bLocalSpace)
 	, bHasLights(false)
-	, bMotionBlurEnabled(InProps ? InProps->bMotionBlurEnabled : false)
+	, bMotionBlurEnabled(InProps ? InProps->MotionVectorSetting != ENiagaraRendererMotionVectorSetting::Disable : false)
 	, SimTarget(Emitter->GetCachedEmitter()->SimTarget)
-	, NumIndicesPerInstance(InProps ? InProps->GetNumIndicesPerInstance() : 0)
 	, FeatureLevel(InFeatureLevel)
 {
 #if STATS
@@ -306,7 +370,7 @@ void FNiagaraRenderer::Initialize(const UNiagaraRendererProperties *InProps, con
 					{
 						Mat = Override.Material;
 						continue;
-					}					
+					}
 				}
 			}
 		}
@@ -323,34 +387,13 @@ FNiagaraRenderer::~FNiagaraRenderer()
 	SetDynamicData_RenderThread(nullptr);
 }
 
-void FNiagaraRenderer::CreateRenderThreadResources(NiagaraEmitterInstanceBatcher* Batcher) 
-{
-	if (Batcher)
-	{
-		NumRegisteredGPURenderers = Batcher->GetGPUInstanceCounterManager().GetGPURendererCount();
-		if (NumRegisteredGPURenderers)
-		{
-			NumRegisteredGPURenderers->Value += GetMaxIndirectArgs();
-		}
-	}
-}
-
-void FNiagaraRenderer::ReleaseRenderThreadResources()
-{
-	if (NumRegisteredGPURenderers)
-	{
-		NumRegisteredGPURenderers->Value -= GetMaxIndirectArgs();
-		NumRegisteredGPURenderers.SafeRelease();
-	}
-}
-
 FPrimitiveViewRelevance FNiagaraRenderer::GetViewRelevance(const FSceneView* View, const FNiagaraSceneProxy *SceneProxy)const
 {
 	FPrimitiveViewRelevance Result;
 	bool bHasDynamicData = HasDynamicData();
 
 	//Always draw so our LastRenderTime is updated. We may not have dynamic data if we're disabled from visibility culling.
-	Result.bDrawRelevance =/* bHasDynamicData && */SceneProxy->IsShown(View) && View->Family->EngineShowFlags.Particles;
+	Result.bDrawRelevance =/* bHasDynamicData && */SceneProxy->IsShown(View) && View->Family->EngineShowFlags.Particles && View->Family->EngineShowFlags.Niagara;
 	Result.bShadowRelevance = bHasDynamicData && SceneProxy->IsShadowCast(View);
 	Result.bDynamicRelevance = bHasDynamicData;
 	if (bHasDynamicData)
@@ -379,7 +422,7 @@ struct FParticleOrderAsUint
 	int32 Index;
 
 	template <bool bStrictlyPositive, bool bAscending>
-	FORCEINLINE void SetAsUint(int32 InIndex, float InOrder) 
+	FORCEINLINE void SetAsUint(int32 InIndex, float InOrder)
 	{
 		const uint32 SortKeySignBit = 0x80000000;
 		uint32 InOrderAsUint = reinterpret_cast<uint32&>(InOrder);
@@ -390,7 +433,7 @@ struct FParticleOrderAsUint
 	}
 
 	template <bool bStrictlyPositive, bool bAscending>
-	FORCEINLINE_DEBUGGABLE void SetAsUint(int32 InIndex, FFloat16 InOrder) 
+	FORCEINLINE_DEBUGGABLE void SetAsUint(int32 InIndex, FFloat16 InOrder)
 	{
 		const uint32 SortKeySignBit = 0x8000;
 		uint32 InOrderAsUint = InOrder.Encoded;
@@ -399,7 +442,7 @@ struct FParticleOrderAsUint
 		OrderAsUint &= 0xFFFF;
 		Index = InIndex;
 	}
-		
+
 	FORCEINLINE operator uint32() const { return OrderAsUint; }
 };
 
@@ -614,4 +657,188 @@ void FNiagaraRenderer::SortIndices(const FNiagaraGPUSortInfo& SortInfo, const FN
 			IndexBuffer[i] = ParticleOrderResult[i].Index;
 		}
 	}
+}
+
+//-TODO: We don't perform distance / frustum culling in here yet
+template<bool bWithInstanceCull>
+struct FNiagaraSortCullHelper
+{
+private:
+	FNiagaraSortCullHelper(const FNiagaraGPUSortInfo& InSortInfo, const FNiagaraDataBuffer& Buffer)
+		: SortInfo(InSortInfo)
+	{
+		if (bWithInstanceCull)
+		{
+			VisibilityTag = SortInfo.RendererVisTagAttributeOffset == INDEX_NONE ? nullptr : (int32*)Buffer.GetComponentPtrInt32(SortInfo.RendererVisTagAttributeOffset);
+			VisibilityValue = SortInfo.RendererVisibility;
+
+			MeshIndexTag = SortInfo.MeshIndexAttributeOffset == INDEX_NONE ? nullptr : (int32*)Buffer.GetComponentPtrInt32(SortInfo.MeshIndexAttributeOffset);
+			MeshIndexValue = SortInfo.MeshIndex;
+		}
+	}
+
+	bool IsVisibile(int32 i) const
+	{
+		if (bWithInstanceCull)
+		{
+			if (VisibilityTag && (VisibilityTag[i] != VisibilityValue))
+			{
+				return false;
+			}
+			if (MeshIndexTag && (MeshIndexTag[i] != MeshIndexValue))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	template<bool bStrictlyPositive, bool bAscending, typename TSortKey>
+	int32 BuildParticleOrder_Inner2(const int32 NumInstances, FParticleOrderAsUint* RESTRICT ParticleOrder, TSortKey GetSortKey)
+	{
+		int32 OutInstances = 0;
+		for ( int32 i=0; i < NumInstances; ++i )
+		{
+			if (IsVisibile(i))
+			{
+				ParticleOrder[OutInstances++].SetAsUint<bStrictlyPositive, bAscending>(i, GetSortKey(i));
+			}
+		}
+		return OutInstances;
+	}
+
+	template<typename TComponentType, typename TGetComponent>
+	int32 BuildParticleOrder_Inner1(const int32 NumInstances, const uint32 SortVariableOffset, TGetComponent GetComponent, FParticleOrderAsUint* RESTRICT ParticleOrder)
+	{
+		switch (SortInfo.SortMode)
+		{
+			case ENiagaraSortMode::ViewDepth:
+			{
+				TComponentType* RESTRICT PositionX = GetComponent(SortVariableOffset + 0);
+				TComponentType* RESTRICT PositionY = GetComponent(SortVariableOffset + 1);
+				TComponentType* RESTRICT PositionZ = GetComponent(SortVariableOffset + 2);
+				return BuildParticleOrder_Inner2<true, false>(NumInstances, ParticleOrder, [&](int32 i) { return FVector::DotProduct(FVector(PositionX[i], PositionY[i], PositionZ[i]) - SortInfo.ViewOrigin, SortInfo.ViewDirection); });
+			}
+			case ENiagaraSortMode::ViewDistance:
+			{
+				TComponentType* RESTRICT PositionX = GetComponent(SortVariableOffset + 0);
+				TComponentType* RESTRICT PositionY = GetComponent(SortVariableOffset + 1);
+				TComponentType* RESTRICT PositionZ = GetComponent(SortVariableOffset + 2);
+				return BuildParticleOrder_Inner2<true, false>(NumInstances, ParticleOrder, [&](int32 i) { return (FVector(PositionX[i], PositionY[i], PositionZ[i]) - SortInfo.ViewOrigin).SizeSquared(); });
+			}
+			case ENiagaraSortMode::CustomAscending:
+			{
+				TComponentType* RESTRICT CustomSorting = GetComponent(SortVariableOffset);
+				return BuildParticleOrder_Inner2<false, true>(NumInstances, ParticleOrder, [&](int32 i) { return CustomSorting[i]; });
+			}
+			case ENiagaraSortMode::CustomDecending:
+			{
+				TComponentType* RESTRICT CustomSorting = GetComponent(SortVariableOffset);
+				return BuildParticleOrder_Inner2<false, false>(NumInstances, ParticleOrder, [&](int32 i) { return CustomSorting[i]; });
+			}
+		}
+		checkf(false, TEXT("Unknown sort mode"));
+		return 0;
+	}
+
+	int32 CullInstances_Inner(int32 NumInstances, int32* RESTRICT OutIndexBuffer)
+	{
+		int32 OutInstances = 0;
+		for ( int32 i=0; i < NumInstances; ++i )
+		{
+			if (IsVisibile(i))
+			{
+				OutIndexBuffer[OutInstances++] = i;
+			}
+		}
+		return OutInstances;
+	}
+
+public:
+	static int32 BuildParticleOrder(const FNiagaraGPUSortInfo& SortInfo, const FNiagaraDataBuffer& Buffer, FParticleOrderAsUint* RESTRICT ParticleOrder)
+	{
+		const uint32 SortVariableOffset = SortInfo.SortAttributeOffset & ~(1 << 31);
+		const bool bSortIsHalf = SortVariableOffset != SortInfo.SortAttributeOffset;
+		const int32 NumInstances = Buffer.GetNumInstances();
+
+		if (bSortIsHalf)
+		{
+			return FNiagaraSortCullHelper(SortInfo, Buffer).BuildParticleOrder_Inner1<FFloat16>(NumInstances, SortVariableOffset, [&](int i) { return (FFloat16*)Buffer.GetComponentPtrHalf(i); }, ParticleOrder);
+		}
+		else
+		{
+			return FNiagaraSortCullHelper(SortInfo, Buffer).BuildParticleOrder_Inner1<float>(NumInstances, SortVariableOffset, [&](int i) { return (float*)Buffer.GetComponentPtrFloat(i); }, ParticleOrder);
+		}
+	}
+
+	static int32 CullInstances(const FNiagaraGPUSortInfo& SortInfo, const FNiagaraDataBuffer& Buffer, int32* RESTRICT OutIndexBuffer)
+	{
+		return FNiagaraSortCullHelper(SortInfo, Buffer).CullInstances_Inner(Buffer.GetNumInstances(), OutIndexBuffer);
+	}
+
+private:
+	const FNiagaraGPUSortInfo& SortInfo;
+
+	int32* RESTRICT	VisibilityTag = nullptr;
+	int32			VisibilityValue = 0;
+
+	int32* RESTRICT	MeshIndexTag = nullptr;
+	int32			MeshIndexValue = 0;
+};
+
+int32 FNiagaraRenderer::SortAndCullIndices(const FNiagaraGPUSortInfo& SortInfo, const FNiagaraDataBuffer& Buffer, FGlobalDynamicReadBuffer::FAllocation& OutIndices)
+{
+	SCOPE_CYCLE_COUNTER(STAT_NiagaraSortParticles);
+
+	int32 OutNumInstances = 0;
+	int32* RESTRICT IndexBuffer = (int32*)(OutIndices.Buffer);
+
+	if ((SortInfo.SortMode != ENiagaraSortMode::None) && (SortInfo.SortAttributeOffset != INDEX_NONE))
+	{
+		const int32 SrcNumInstances = Buffer.GetNumInstances();
+
+		FMemMark Mark(FMemStack::Get());
+		FParticleOrderAsUint* RESTRICT ParticleOrder = (FParticleOrderAsUint*)FMemStack::Get().Alloc(sizeof(FParticleOrderAsUint) * SrcNumInstances, alignof(FParticleOrderAsUint));
+
+		// Cull and prepare for sort
+		if ( SortInfo.bEnableCulling )
+		{
+			OutNumInstances = FNiagaraSortCullHelper<true>::BuildParticleOrder(SortInfo, Buffer, ParticleOrder);
+		}
+		else
+		{
+			OutNumInstances = FNiagaraSortCullHelper<false>::BuildParticleOrder(SortInfo, Buffer, ParticleOrder);
+		}
+
+		// Perform the sort
+		const bool bUseRadixSort = GNiagaraRadixSortThreshold != -1 && (int32)OutNumInstances > GNiagaraRadixSortThreshold;
+		if (!bUseRadixSort)
+		{
+			Sort(ParticleOrder, OutNumInstances, [](const FParticleOrderAsUint& A, const FParticleOrderAsUint& B) { return A.OrderAsUint < B.OrderAsUint; });
+
+			for (int32 i = 0; i < OutNumInstances; ++i)
+			{
+				IndexBuffer[i] = ParticleOrder[i].Index;
+			}
+		}
+		else
+		{
+			FParticleOrderAsUint* RESTRICT ParticleOrderResult = (FParticleOrderAsUint*)FMemStack::Get().Alloc(sizeof(FParticleOrderAsUint) * OutNumInstances, alignof(FParticleOrderAsUint));
+			RadixSort32(ParticleOrderResult, ParticleOrder, OutNumInstances);
+
+			for (int32 i = 0; i < OutNumInstances; ++i)
+			{
+				IndexBuffer[i] = ParticleOrderResult[i].Index;
+			}
+		}
+	}
+	else if ( SortInfo.bEnableCulling )
+	{
+		OutNumInstances = FNiagaraSortCullHelper<true>::CullInstances(SortInfo, Buffer, IndexBuffer);
+	}
+	else
+	{
+		checkf(false, TEXT("Either sorting or culling must be enabled or we don't generate output buffers"));
+	}
+	return OutNumInstances;
 }

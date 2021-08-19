@@ -74,7 +74,7 @@ half3 GetEnvBRDF(half3 SpecularColor, half Roughness, half NoV)
 
 void InitShadingModelContext(inout FMobileShadingModelContext ShadingModelContext, inout FGBufferData GBuffer, float4 SvPosition, half3 CameraVector, half CustomData0, half CustomData1)
 {
-#if !FULLY_ROUGH
+#if !FULLY_ROUGH || MATERIAL_SHADINGMODEL_CLEAR_COAT
 	half NoV = max(dot(GBuffer.WorldNormal, CameraVector), 0);
 #endif
 
@@ -231,9 +231,10 @@ return ShadowMap;
 // Add fading CSM plane:
 #define FADE_CSM 1
 
-half MobileDirectionalLightCSM(float2 ScreenPosition, float SceneDepth)
+half MobileDirectionalLightCSM(float2 ScreenPosition, float SceneDepth, out float ShadowPositionZ)
 {
 	half ShadowMap = 1;
+	ShadowPositionZ = 0;
 	FPCFSamplerSettings Settings;
 	Settings.ShadowDepthTexture = MobileDirectionalLight.DirectionalLightShadowTexture;
 	Settings.ShadowDepthTextureSampler = MobileDirectionalLight.DirectionalLightShadowSampler;
@@ -255,6 +256,7 @@ half MobileDirectionalLightCSM(float2 ScreenPosition, float SceneDepth)
 		#else
 			ShadowPosition = mul(float4(ScreenPosition.x, ScreenPosition.y, SceneDepth, 1), MobileDirectionalLight.DirectionalLightScreenToShadow[i]);
 		#endif
+			ShadowPositionZ = ShadowPosition.z;
 			break; // position found.
 		}
 	}

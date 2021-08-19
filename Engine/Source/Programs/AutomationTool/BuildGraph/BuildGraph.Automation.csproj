@@ -81,9 +81,11 @@
     <Compile Include="Tasks\AgeStoreTask.cs" />
     <Compile Include="Tasks\CommandletTask.cs" />
     <Compile Include="Tasks\CsCompileTask.cs" />
+    <Compile Include="Tasks\ModifyJsonValue.cs" />
     <Compile Include="Tasks\MoveTask.cs" />
     <Compile Include="Tasks\MsBuildTask.cs" />
     <Compile Include="Tasks\SanitizeReceiptTask.cs" />
+    <Compile Include="Tasks\WaitTask.cs" />
     <Compile Include="Tasks\SymStoreTask.cs" />
     <Compile Include="Tasks\TagReceiptTask.cs" />
     <Compile Include="Tasks\PakFileTask.cs" />
@@ -97,6 +99,7 @@
     <Compile Include="Tasks\CookTask.cs" />
     <Compile Include="Tasks\CopyTask.cs" />
     <Compile Include="Tasks\DeleteTask.cs" />
+    <Compile Include="Tasks\NotarizeTask.cs" />
     <Compile Include="Tasks\SignTask.cs" />
     <Compile Include="Tasks\StageTask.cs" />
     <Compile Include="Tasks\StripTask.cs" />

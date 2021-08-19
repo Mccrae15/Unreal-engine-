@@ -6,12 +6,16 @@
 
 #include "RenderTargetPool.h"
 #include "RHIStaticStates.h"
+#include "Misc/OutputDeviceRedirector.h"
 #include "Hash/CityHash.h"
 
 /** The global render targets pool. */
 TGlobalResource<FRenderTargetPool> GRenderTargetPool;
 
 DEFINE_LOG_CATEGORY_STATIC(LogRenderTargetPool, Warning, All);
+
+CSV_DEFINE_CATEGORY(RenderTargetPool, true);
+
 
 TRefCountPtr<IPooledRenderTarget> CreateRenderTarget(FRHITexture* Texture, const TCHAR* Name)
 {
@@ -214,11 +218,14 @@ FRenderTargetPool::FRenderTargetPool()
 	, bEventRecordingActive(false)
 	, bEventRecordingStarted(false)
 	, CurrentEventRecordingTime(0)
+#if LOG_MAX_RENDER_TARGET_POOL_USAGE
+	, MaxUsedRenderTargetInKB(0)
+#endif
 {
 }
 
 // Logic for determining whether to make a rendertarget transient
-bool FRenderTargetPool::DoesTargetNeedTransienceOverride(const FPooledRenderTargetDesc& InputDesc, ERenderTargetTransience TransienceHint) const
+bool FRenderTargetPool::DoesTargetNeedTransienceOverride(ETextureCreateFlags Flags, ERenderTargetTransience TransienceHint)
 {
 	if (!GSupportsTransientResourceAliasing)
 	{
@@ -227,14 +234,12 @@ bool FRenderTargetPool::DoesTargetNeedTransienceOverride(const FPooledRenderTarg
 	int32 AliasingMode = CVarRtPoolTransientMode.GetValueOnRenderThread();
 
 	// We only override transience if aliasing is supported and enabled, the format is suitable, and the target is not already transient
-	if (AliasingMode > 0 &&
-	  	(InputDesc.TargetableFlags & (TexCreate_RenderTargetable | TexCreate_DepthStencilTargetable | TexCreate_UAV)) && 
-		((InputDesc.Flags & TexCreate_Transient) == 0) )
+	if (AliasingMode > 0 && EnumHasAnyFlags(Flags, TexCreate_RenderTargetable | TexCreate_DepthStencilTargetable | TexCreate_UAV) && !EnumHasAnyFlags(Flags, TexCreate_Transient))
 	{
 		if (AliasingMode == 1)
 		{
 			// Mode 1: Only make FastVRAM rendertargets transient
-			if (InputDesc.Flags & TexCreate_FastVRAM)
+			if (EnumHasAnyFlags(Flags, TexCreate_FastVRAM))
 			{
 				return true;
 			}
@@ -242,7 +247,7 @@ bool FRenderTargetPool::DoesTargetNeedTransienceOverride(const FPooledRenderTarg
 		else if (AliasingMode == 2)
 		{
 			// Mode 2: Make fastvram and ERenderTargetTransience::Transient rendertargets transient
-			if (InputDesc.Flags & TexCreate_FastVRAM || TransienceHint == ERenderTargetTransience::Transient)
+			if (EnumHasAnyFlags(Flags, TexCreate_FastVRAM) || TransienceHint == ERenderTargetTransience::Transient)
 			{
 				return true;
 			}
@@ -596,7 +601,7 @@ Done:
 	if (bDoAcquireTransientTexture)
 	{
 		// Only referenced by the pool, map the physical pages
-		if (OriginalNumRefs == 1 && Found->GetRenderTargetItem().TargetableTexture != nullptr)
+		if (Found->IsTransient() && OriginalNumRefs == 1 && Found->GetRenderTargetItem().TargetableTexture != nullptr)
 		{
 			RHIAcquireTransientResource(Found->GetRenderTargetItem().TargetableTexture);
 		}
@@ -642,7 +647,7 @@ bool FRenderTargetPool::FindFreeElement(
 
 	// If we're doing aliasing, we may need to override Transient flags, depending on the input format and mode
 	FPooledRenderTargetDesc ModifiedDesc;
-	bool bMakeTransient = DoesTargetNeedTransienceOverride(InputDesc, TransienceHint);
+	bool bMakeTransient = DoesTargetNeedTransienceOverride(InputDesc.Flags | InputDesc.TargetableFlags, TransienceHint);
 	if (bMakeTransient)
 	{
 		ModifiedDesc = InputDesc;
@@ -1008,6 +1013,13 @@ void FRenderTargetPool::AddAllocEventsFromCurrentState()
 
 void FRenderTargetPool::TickPoolElements()
 {
+	// gather stats on deferred allocs before calling WaitForTransitionFence
+	uint32 DeferredAllocationLevelInKB = 0;
+	for (FPooledRenderTarget* Element : DeferredDeleteArray)
+	{
+		DeferredAllocationLevelInKB += ComputeSizeInKB(*Element);
+	}
+
 	check(IsInRenderingThread());
 	WaitForTransitionFence();
 
@@ -1026,6 +1038,7 @@ void FRenderTargetPool::TickPoolElements()
 
 	CompactPool();
 
+	uint32 UnusedAllocationLevelInKB = 0;
 	for (uint32 i = 0; i < (uint32)PooledRenderTargets.Num(); ++i)
 	{
 		FPooledRenderTarget* Element = PooledRenderTargets[i];
@@ -1034,9 +1047,31 @@ void FRenderTargetPool::TickPoolElements()
 		{
 			check(!Element->IsSnapshot());
 			Element->OnFrameStart();
+			if (Element->UnusedForNFrames > 2)
+			{
+				UnusedAllocationLevelInKB += ComputeSizeInKB(*Element);
+			}
 		}
 	}
 
+	uint32 TotalFrameUsageInKb = AllocationLevelInKB + DeferredAllocationLevelInKB ;
+
+#if LOG_MAX_RENDER_TARGET_POOL_USAGE
+	if (TotalFrameUsageInKb > MaxUsedRenderTargetInKB)
+	{
+		MaxUsedRenderTargetInKB = TotalFrameUsageInKb;
+
+		if (MaxUsedRenderTargetInKB > MinimumPoolSizeInKB)
+		{
+			DumpMemoryUsage(*GLog);
+		}
+	}
+#endif
+
+	CSV_CUSTOM_STAT(RenderTargetPool, UnusedMB, UnusedAllocationLevelInKB / 1024.0f, ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(RenderTargetPool, PeakUsedMB, (TotalFrameUsageInKb - UnusedAllocationLevelInKB) / 1024.f, ECsvCustomStatOp::Set);
+
+	
 	// we need to release something, take the oldest ones first
 	while (AllocationLevelInKB > MinimumPoolSizeInKB)
 	{
@@ -1193,10 +1228,16 @@ void FRenderTargetPool::FreeUnusedResources()
 	}
 
 	VerifyAllocationLevel();
+
+#if LOG_MAX_RENDER_TARGET_POOL_USAGE
+	MaxUsedRenderTargetInKB = 0;
+#endif
 }
 
 void FRenderTargetPool::DumpMemoryUsage(FOutputDevice& OutputDevice)
 {
+	uint32 UnusedAllocationInKB = 0;
+
 	OutputDevice.Logf(TEXT("Pooled Render Targets:"));
 	for (int32 i = 0; i < PooledRenderTargets.Num(); ++i)
 	{
@@ -1204,10 +1245,16 @@ void FRenderTargetPool::DumpMemoryUsage(FOutputDevice& OutputDevice)
 
 		if (Element)
 		{
+			uint32 ElementAllocationInKB = ComputeSizeInKB(*Element);
+			if (Element->UnusedForNFrames > 2)
+			{
+				UnusedAllocationInKB += ElementAllocationInKB;
+			}
+
 			check(!Element->IsSnapshot());
 			OutputDevice.Logf(
-				TEXT("  %6.3fMB %4dx%4d%s%s %2dmip(s) %s (%s) %s %s"),
-				ComputeSizeInKB(*Element) / 1024.0f,
+				TEXT("  %6.3fMB %4dx%4d%s%s %2dmip(s) %s (%s) %s %s Unused frames: %d"),
+				ElementAllocationInKB / 1024.0f,
 				Element->Desc.Extent.X,
 				Element->Desc.Extent.Y,
 				Element->Desc.Depth > 1 ? *FString::Printf(TEXT("x%3d"), Element->Desc.Depth) : (Element->Desc.IsCubemap() ? TEXT("cube") : TEXT("    ")),
@@ -1216,7 +1263,8 @@ void FRenderTargetPool::DumpMemoryUsage(FOutputDevice& OutputDevice)
 				Element->Desc.DebugName,
 				GPixelFormats[Element->Desc.Format].Name,
 				Element->IsTransient() ? TEXT("(transient)") : TEXT(""),
-				GSupportsTransientResourceAliasing ? *FString::Printf(TEXT("Frames since last discard: %d"), GFrameNumberRenderThread - Element->FrameNumberLastDiscard) : TEXT("")
+				GSupportsTransientResourceAliasing ? *FString::Printf(TEXT("Frames since last discard: %d"), GFrameNumberRenderThread - Element->FrameNumberLastDiscard) : TEXT(""),
+				Element->UnusedForNFrames
 				);
 		}
 	}
@@ -1224,7 +1272,7 @@ void FRenderTargetPool::DumpMemoryUsage(FOutputDevice& OutputDevice)
 	uint32 UsedKB=0;
 	uint32 PoolKB=0;
 	GetStats(NumTargets,PoolKB,UsedKB);
-	OutputDevice.Logf(TEXT("%.3fMB total, %.3fMB used, %d render targets"), PoolKB / 1024.f, UsedKB / 1024.f, NumTargets);
+	OutputDevice.Logf(TEXT("%.3fMB total, %.3fMB used, %.3fMB unused, %d render targets"), PoolKB / 1024.f, UsedKB / 1024.f, UnusedAllocationInKB / 1024.f, NumTargets);
 
 	uint32 DeferredTotal = 0;
 	OutputDevice.Logf(TEXT("Deferred Render Targets:"));
@@ -1303,6 +1351,7 @@ uint32 FPooledRenderTarget::Release()
 				RHIDiscardTransientResource(RenderTargetItem.TargetableTexture);
 			}
 			FrameNumberLastDiscard = GFrameNumberRenderThread;
+			bAutoDiscard = true;
 		}
 		return Refs;
 	}
@@ -1367,7 +1416,7 @@ void FRenderTargetPool::VerifyAllocationLevel() const
 
 void FRenderTargetPool::CompactPool()
 {
-	for (uint32 i = 0, Num = (uint32)PooledRenderTargets.Num(); i < Num; ++i)
+	for (uint32 i = 0, Num = (uint32)PooledRenderTargets.Num(); i < Num; )
 	{
 		FPooledRenderTarget* Element = PooledRenderTargets[i];
 
@@ -1376,6 +1425,10 @@ void FRenderTargetPool::CompactPool()
 			PooledRenderTargets.RemoveAtSwap(i);
 			PooledRenderTargetHashes.RemoveAtSwap(i);
 			--Num;
+		}
+		else
+		{
+			++i;
 		}
 	}
 }
@@ -1406,7 +1459,7 @@ bool FPooledRenderTarget::OnFrameStart()
 uint32 FPooledRenderTarget::ComputeMemorySize() const
 {
 	uint32 Size = 0;
-	if (!bSnapshot)
+	if (!bSnapshot && !IsTransient())
 	{
 		if (Desc.Is2DTexture())
 		{

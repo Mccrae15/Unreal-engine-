@@ -9,7 +9,8 @@
 #include "Algo/Transform.h"
 #include "LevelEditor.h"
 #include "Modules/ModuleManager.h"
-#endif
+#include "WaterIconHelper.h"
+#endif // WITH_EDITOR
 
 AWaterMeshActor::AWaterMeshActor(const FObjectInitializer& Initializer)
 {
@@ -17,12 +18,14 @@ AWaterMeshActor::AWaterMeshActor(const FObjectInitializer& Initializer)
 	SetRootComponent(WaterMesh);
 
 #if	WITH_EDITOR
-	if (!IsTemplate())
+	if (GIsEditor && !IsTemplate())
 	{
 		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 		LevelEditorModule.OnActorSelectionChanged().AddUObject(this, &AWaterMeshActor::OnActorSelectionChanged);
 	}
-#endif
+
+	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterMeshActorSprite"));
+#endif // WITH_EDITOR
 }
 
 void AWaterMeshActor::PostLoadSubobjects(FObjectInstancingGraph* OuterInstanceGraph)
@@ -79,4 +82,4 @@ void AWaterMeshActor::OnActorSelectionChanged(const TArray<UObject*>& NewSelecti
 		MarkWaterMeshComponentForRebuild();
 	}
 }
-#endif
+#endif // WITH_EDITOR

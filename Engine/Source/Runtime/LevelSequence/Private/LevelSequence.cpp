@@ -37,8 +37,8 @@
 	#include "UObject/ObjectRedirector.h"
 #endif
 
-static TAutoConsoleVariable<int32> CVarDefaultEvaluationType(
-	TEXT("LevelSequence.DefaultEvaluationType"),
+static TAutoConsoleVariable<int32> CVarDefaultLockEngineToDisplayRate(
+	TEXT("LevelSequence.DefaultLockEngineToDisplayRate"),
 	0,
 	TEXT("0: Playback locked to playback frames\n1: Unlocked playback with sub frame interpolation"),
 	ECVF_Default);
@@ -46,13 +46,19 @@ static TAutoConsoleVariable<int32> CVarDefaultEvaluationType(
 static TAutoConsoleVariable<FString> CVarDefaultTickResolution(
 	TEXT("LevelSequence.DefaultTickResolution"),
 	TEXT("24000fps"),
-	TEXT("Specifies default a tick resolution for newly created level sequences. Examples: 30 fps, 120/1 (120 fps), 30000/1001 (29.97), 0.01s (10ms)."),
+	TEXT("Specifies the default tick resolution for newly created level sequences. Examples: 30 fps, 120/1 (120 fps), 30000/1001 (29.97), 0.01s (10ms)."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<FString> CVarDefaultDisplayRate(
 	TEXT("LevelSequence.DefaultDisplayRate"),
 	TEXT("30fps"),
-	TEXT("Specifies default a display frame rate for newly created level sequences; also defines frame locked frame rate where sequences are set to be frame locked. Examples: 30 fps, 120/1 (120 fps), 30000/1001 (29.97), 0.01s (10ms)."),
+	TEXT("Specifies the default display frame rate for newly created level sequences; also defines frame locked frame rate where sequences are set to be frame locked. Examples: 30 fps, 120/1 (120 fps), 30000/1001 (29.97), 0.01s (10ms)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarDefaultClockSource(
+	TEXT("LevelSequence.DefaultClockSource"),
+	0,
+	TEXT("Specifies the default clock source for newly created level sequences. 0: Tick, 1: Platform, 2: Audio, 3: RelativeTimecode, 4: Timecode, 5: Custom"),
 	ECVF_Default);
 
 ULevelSequence::ULevelSequence(const FObjectInitializer& ObjectInitializer)
@@ -66,7 +72,7 @@ void ULevelSequence::Initialize()
 {
 	MovieScene = NewObject<UMovieScene>(this, NAME_None, RF_Transactional);
 
-	const bool bFrameLocked = CVarDefaultEvaluationType.GetValueOnGameThread() != 0;
+	const bool bFrameLocked = CVarDefaultLockEngineToDisplayRate.GetValueOnGameThread() != 0;
 
 	MovieScene->SetEvaluationType( bFrameLocked ? EMovieSceneEvaluationType::FrameLocked : EMovieSceneEvaluationType::WithSubFrames );
 
@@ -77,36 +83,14 @@ void ULevelSequence::Initialize()
 	FFrameRate DisplayRate(30, 1);
 	TryParseString(DisplayRate, *CVarDefaultDisplayRate.GetValueOnGameThread());
 	MovieScene->SetDisplayRate(DisplayRate);
+
+	int32 ClockSource = CVarDefaultClockSource.GetValueOnGameThread();
+	MovieScene->SetClockSource((EUpdateClockSource)ClockSource);
 }
 
 UObject* ULevelSequence::MakeSpawnableTemplateFromInstance(UObject& InSourceObject, FName ObjectName)
 {
-	UObject* NewInstance = NewObject<UObject>(MovieScene, InSourceObject.GetClass(), ObjectName);
-
-	UEngine::FCopyPropertiesForUnrelatedObjectsParams CopyParams;
-	CopyParams.bNotifyObjectReplacement = false;
-	CopyParams.bPreserveRootComponent = false;
-	UEngine::CopyPropertiesForUnrelatedObjects(&InSourceObject, NewInstance, CopyParams);
-
-	AActor* Actor = CastChecked<AActor>(NewInstance);
-	if (Actor->GetAttachParentActor() != nullptr)
-	{
-		// We don't support spawnables and attachments right now
-		// @todo: map to attach track?
-		Actor->DetachFromActor(FDetachmentTransformRules(FAttachmentTransformRules(EAttachmentRule::KeepRelative, false), false));
-	}
-
-	// The spawnable source object was created with RF_Transient. The object generated from that needs its 
-	// component flags cleared of RF_Transient so that the template object can be saved to the level sequence.
-	for (UActorComponent* Component : Actor->GetComponents())
-	{
-		if (Component)
-		{
-			Component->ClearFlags(RF_Transient);
-		}
-	}
-
-	return NewInstance;
+	return MovieSceneHelpers::MakeSpawnableTemplateFromInstance(InSourceObject, MovieScene, ObjectName);
 }
 
 bool ULevelSequence::CanAnimateObject(UObject& InObject) const 
@@ -291,13 +275,8 @@ void ULevelSequence::PostLoad()
 		if (!Spawnable.GetObjectTemplate())
 		{
 			InvalidSpawnables.Add(Spawnable.GetGuid());
-			UE_LOG(LogLevelSequence, Warning, TEXT("Discarding spawnable with ID '%s' since its generated class could not produce to a template actor"), *Spawnable.GetGuid().ToString());
+			UE_LOG(LogLevelSequence, Warning, TEXT("Spawnable '%s' with ID '%s' does not have a valid object template"), *Spawnable.GetName(), *Spawnable.GetGuid().ToString());
 		}
-	}
-
-	for (FGuid& ID : InvalidSpawnables)
-	{
-		MovieScene->RemoveSpawnable(ID);
 	}
 
 	if (GetLinkerCustomVersion(FSequencerObjectVersion::GUID) < FSequencerObjectVersion::PurgeSpawnableBlueprints)
@@ -633,7 +612,7 @@ FGuid ULevelSequence::CreateSpawnable(UObject* ObjectToSpawn)
 
 #endif // WITH_EDITOR
 
-UObject* ULevelSequence::CreateDirectorInstance(IMovieScenePlayer& Player)
+UObject* ULevelSequence::CreateDirectorInstance(IMovieScenePlayer& Player, FMovieSceneSequenceID SequenceID)
 {
 	ULevelSequencePlayer* LevelSequencePlayer = Cast<ULevelSequencePlayer>(Player.AsUObject());
 	UObject*              DirectorOuter       = LevelSequencePlayer ? LevelSequencePlayer : Player.GetPlaybackContext();
@@ -649,6 +628,8 @@ UObject* ULevelSequence::CreateDirectorInstance(IMovieScenePlayer& Player)
 
 		ULevelSequenceDirector* NewDirector = NewObject<ULevelSequenceDirector>(DirectorOuter, DirectorClass, DirectorName, RF_Transient);
 		NewDirector->Player = LevelSequencePlayer;
+		NewDirector->MovieScenePlayerIndex = Player.GetUniqueIndex();
+		NewDirector->SubSequenceID = SequenceID.GetInternalValue();
 		NewDirector->OnCreated();
 		return NewDirector;
 	}

@@ -37,6 +37,8 @@
 #include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
 #include "EntitySystem/Interrogation/MovieSceneInterrogatedPropertyInstantiator.h"
 #include "Systems/MovieScenePropertyInstantiator.h"
+#include "Tracks/MovieScenePropertyTrack.h"
+#include "MovieSceneSpawnableAnnotation.h"
 #include "ISequencerModule.h"
 #include "MovieSceneTracksComponentTypes.h"
 
@@ -111,11 +113,27 @@ FKeyHandle AddOrUpdateKey(FMovieSceneFloatChannel* Channel, UMovieSceneSection* 
 
 			UMovieSceneTrack* TrackToKey = SectionToKey->GetTypedOuter<UMovieSceneTrack>();
 
-			Interrogator.ImportTrack(TrackToKey, FInterrogationChannel::Default());
+			// If we are keying something for a property track, give the interrogator all the info it needs
+			// to know about the bound object. This will let it, for instance, cache the correct initial values
+			// for that property.
+			FInterrogationKey InterrogationKey(FInterrogationKey::Default());
+			UMovieScenePropertyTrack* PropertyTrackToKey = Cast<UMovieScenePropertyTrack>(TrackToKey);
+			if (PropertyTrackToKey != nullptr)
+			{
+				const FInterrogationChannel InterrogationChannel = Interrogator.AllocateChannel(FirstBoundObject, PropertyTrackToKey->GetPropertyBinding());
+				InterrogationKey.Channel = InterrogationChannel;
+				Interrogator.ImportTrack(TrackToKey, InterrogationChannel);
+			}
+			else
+			{
+				Interrogator.ImportTrack(TrackToKey, FInterrogationChannel::Default());
+			}
+
+			// Interrogate!
 			Interrogator.AddInterrogation(InTime);
 			Interrogator.Update();
 
-			const FMovieSceneEntityID EntityID = Interrogator.FindEntityFromOwner(FInterrogationKey::Default(), SectionToKey, 0);
+			const FMovieSceneEntityID EntityID = Interrogator.FindEntityFromOwner(InterrogationKey, SectionToKey, 0);
 
 			UMovieSceneInterrogatedPropertyInstantiatorSystem* System = Interrogator.GetLinker()->FindSystem<UMovieSceneInterrogatedPropertyInstantiatorSystem>();
 
@@ -182,11 +200,21 @@ FKeyHandle AddOrUpdateKey(FMovieSceneActorReferenceData* Channel, UMovieSceneSec
 				AActor* CurrentActor = Cast<AActor>(PropertyBindings->GetCurrentValue<UObject*>(*Object));
 				if (CurrentActor)
 				{
-					FGuid ThisGuid = Sequencer.FindObjectId(*CurrentActor, Sequencer.GetFocusedTemplateID());
+					FMovieSceneObjectBindingID Binding;
 
-					FMovieSceneObjectBindingID NewValue(ThisGuid, MovieSceneSequenceID::Root, EMovieSceneObjectBindingSpace::Local);
+					TOptional<FMovieSceneSpawnableAnnotation> Spawnable = FMovieSceneSpawnableAnnotation::Find(CurrentActor);
+					if (Spawnable.IsSet())
+					{
+						// Check whether the spawnable is underneath the current sequence, if so, we can remap it to a local sequence ID
+						Binding = UE::MovieScene::FRelativeObjectBindingID(Sequencer.GetFocusedTemplateID(), Spawnable->SequenceID, Spawnable->ObjectBindingID, Sequencer);
+					}
+					else
+					{
+						FGuid ThisGuid = Sequencer.GetHandleToObject(CurrentActor);
+						Binding = UE::MovieScene::FRelativeObjectBindingID(ThisGuid);
+					}
 
-					int32 NewIndex = Channel->GetData().AddKey(InTime, NewValue);
+					int32 NewIndex = Channel->GetData().AddKey(InTime, Binding);
 
 					return Channel->GetData().GetHandle(NewIndex);
 				}
@@ -383,18 +411,30 @@ public:
 
 		ChildSlot
 		[
-			SNew(SComboButton)
-			.OnGetMenuContent(this, &SActorReferenceBox::GetPickerMenu)
-			.ContentPadding(FMargin(0.0, 0.0))
-			.ButtonStyle(FEditorStyle::Get(), "PropertyEditor.AssetComboStyle")
-			.ForegroundColor(FEditorStyle::GetColor("PropertyEditor.AssetName.ColorAndOpacity"))
-			.ButtonContent()
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
 			[
-				GetCurrentItemWidget(
-					SNew(STextBlock)
-					.TextStyle(FEditorStyle::Get(), "PropertyEditor.AssetClass")
-					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-				)
+				SNew(SComboButton)
+				.OnGetMenuContent(this, &SActorReferenceBox::GetPickerMenu)
+				.ContentPadding(FMargin(0.0, 0.0))
+				.ButtonStyle(FEditorStyle::Get(), "PropertyEditor.AssetComboStyle")
+				.ForegroundColor(FEditorStyle::GetColor("PropertyEditor.AssetName.ColorAndOpacity"))
+				.ButtonContent()
+				[
+					GetCurrentItemWidget(
+						SNew(STextBlock)
+						.TextStyle(FEditorStyle::Get(), "PropertyEditor.AssetClass")
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+					)
+				]
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+			[
+				GetWarningWidget()
 			]
 		];
 
@@ -478,10 +518,9 @@ TSharedRef<SWidget> CreateKeyEditor(const TMovieSceneChannelHandle<FMovieSceneAc
 
 		// Look for components to choose
 		ISequencer* Sequencer = KeyEditor.GetSequencer();
-		FMovieSceneEvaluationOperand ObjectOperand(ActorKey.Object.GetSequenceID(), ActorKey.Object.GetGuid());
 		TArray<USceneComponent*> ComponentsWithSockets;
 		AActor* Actor = nullptr;
-		for (TWeakObjectPtr<> WeakObject : Sequencer->FindBoundObjects(ObjectOperand))
+		for (TWeakObjectPtr<> WeakObject : ActorKey.Object.ResolveBoundObjects(MovieSceneSequenceID::Root, *Sequencer))
 		{
 			Actor = Cast<AActor>(WeakObject.Get());
 			if (Actor)

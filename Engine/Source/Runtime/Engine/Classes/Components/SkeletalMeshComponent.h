@@ -51,7 +51,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAnimInitialized);
 DECLARE_MULTICAST_DELEGATE(FOnSkelMeshTeleportedMultiCast);
 typedef FOnSkelMeshTeleportedMultiCast::FDelegate FOnSkelMeshTeleported;
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnBoneTransformsFinalized);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnBoneTransformsFinalized);  // Deprecated, use FOnBoneTransformsFinalizedMultiCast instead
+
+DECLARE_MULTICAST_DELEGATE(FOnBoneTransformsFinalizedMultiCast);
 
 #if PHYSICS_INTERFACE_PHYSX
 namespace physx
@@ -71,15 +73,6 @@ enum class EAnimCurveType : uint8
 };
 
 ENUM_RANGE_BY_COUNT(EAnimCurveType, EAnimCurveType::MaxAnimCurveType);
-
-UENUM()
-enum class EClothMassMode : uint8
-{
-	UniformMass,
-	TotalMass,
-	Density,
-	MaxClothMassMode UMETA(Hidden)
-};
 
 /** Method used when retrieving a Custom Attribute value*/
 UENUM()
@@ -711,21 +704,6 @@ public:
 	UPROPERTY()
 	uint8 bEnableLineCheckWithBounds:1;
 
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	uint8 bUseBendingElements_DEPRECATED :1;
-	
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	uint8 bUseTetrahedralConstraints_DEPRECATED :1;
-	
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	uint8 bUseThinShellVolumeConstraints_DEPRECATED :1;
-	
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	uint8 bUseSelfCollisions_DEPRECATED :1;
-	
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	uint8 bUseContinuousCollisionDetection_DEPRECATED :1;
-
 	/** If true, propagates calls to ApplyAnimationCurvesToComponent for slave components, only needed if slave components do not tick themselves */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MasterPoseComponent)
 	uint8 bPropagateCurvesToSlaves : 1;
@@ -768,52 +746,12 @@ public:
 	UPROPERTY(transient)
 	uint16 CachedAnimCurveUidVersion;
 
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	EClothMassMode MassMode_DEPRECATED;
-
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float UniformMass_DEPRECATED;
-
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float TotalMass_DEPRECATED;
-	
-	/**
-	 * Water: 1.0
-	 * Cotton: 0.155
-	 * Wool: 0.13
-	 * Silk: 0.133
-	 */
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float Density_DEPRECATED;
-
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float MinPerParticleMass_DEPRECATED;
-
-
 	/**
 	 * weight to blend between simulated results and key-framed positions
 	 * if weight is 1.0, shows only cloth simulation results and 0.0 will show only skinned results
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = Clothing)
 	float ClothBlendWeight;
-
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float EdgeStiffness_DEPRECATED;
-	
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float BendingStiffness_DEPRECATED;
-	
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float AreaStiffness_DEPRECATED;
-	
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float VolumeStiffness_DEPRECATED;
-	
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float StrainLimitingStiffness_DEPRECATED;
-	
-	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
-	float ShapeTargetStiffness_DEPRECATED;
 
 	/** Whether we should stall the Cloth tick task until the cloth simulation is complete. This is required if we want up-to-date
 	 * cloth data on the game thread, for example if we want to generate particles at cloth vertices.
@@ -1450,17 +1388,17 @@ private:
 	/** Helper struct used to store info about a cloth collision source */
 	struct FClothCollisionSource
 	{
-		FClothCollisionSource(USkeletalMeshComponent* InSourceComponent, UPhysicsAsset* InSourcePhysicsAsset)
-			: SourceComponent(InSourceComponent)
-			, SourcePhysicsAsset(InSourcePhysicsAsset)
-			, bCached(false)
-		{}
+		FClothCollisionSource(USkeletalMeshComponent* InSourceComponent, UPhysicsAsset* InSourcePhysicsAsset, const FOnBoneTransformsFinalizedMultiCast::FDelegate& InOnBoneTransformsFinalizedDelegate);
+		~FClothCollisionSource();
 
 		/** Component that collision data will be copied from */
 		TWeakObjectPtr<USkeletalMeshComponent> SourceComponent;
 
 		/** Physics asset to use to generate collision against the source component */
 		TWeakObjectPtr<UPhysicsAsset> SourcePhysicsAsset;
+
+		/** Callback used to remove the cloth transform updates delegate */
+		FDelegateHandle OnBoneTransformsFinalizedHandle;
 
 		/** Cached skeletal mesh used to invalidate the cache if the skeletal mesh has changed */
 		TWeakObjectPtr<USkeletalMesh> CachedSkeletalMesh;
@@ -1831,6 +1769,7 @@ protected:
 public:
 	//~ Begin USkinnedMeshComponent Interface
 	virtual bool UpdateLODStatus() override;
+	virtual void SetPredictedLODLevel(int32 InPredictedLODLevel) override;
 	virtual void UpdateVisualizeLODString(FString& DebugString) override;
 	virtual void RefreshBoneTransforms( FActorComponentTickFunction* TickFunction = NULL ) override;
 protected:
@@ -1851,8 +1790,8 @@ public:
 	static FVector GetSkinnedVertexPosition(USkeletalMeshComponent* Component, int32 VertexIndex, const FSkeletalMeshLODRenderData& Model, const FSkinWeightVertexBuffer& SkinWeightBuffer, TArray<FMatrix>& CachedRefToLocals);
 	static void ComputeSkinnedPositions(USkeletalMeshComponent* Component, TArray<FVector> & OutPositions, TArray<FMatrix>& CachedRefToLocals, const FSkeletalMeshLODRenderData& Model, const FSkinWeightVertexBuffer& SkinWeightBuffer);
 
-	static void GetSkinnedTangentBasis(USkeletalMeshComponent* Component, int32 VertexIndex, const FSkeletalMeshLODRenderData& Model, const FSkinWeightVertexBuffer& SkinWeightBuffer, TArray<FMatrix>& CachedRefToLocals, FVector& OutTangentX, FVector& OutTangentZ);
-	static void ComputeSkinnedTangentBasis(USkeletalMeshComponent* Component, TArray<FVector>& OutTangenXZ, TArray<FMatrix>& CachedRefToLocals, const FSkeletalMeshLODRenderData& Model, const FSkinWeightVertexBuffer& SkinWeightBuffer);
+	static void GetSkinnedTangentBasis(USkeletalMeshComponent* Component, int32 VertexIndex, const FSkeletalMeshLODRenderData& Model, const FSkinWeightVertexBuffer& SkinWeightBuffer, TArray<FMatrix>& CachedRefToLocals, FVector& OutTangentX, FVector& OutTangentY, FVector& OutTangentZ);
+	static void ComputeSkinnedTangentBasis(USkeletalMeshComponent* Component, TArray<FVector>& OutTangenXYZ, TArray<FMatrix>& CachedRefToLocals, const FSkeletalMeshLODRenderData& Model, const FSkinWeightVertexBuffer& SkinWeightBuffer);
 
 	void SetSkeletalMeshWithoutResettingAnimation(class USkeletalMesh* NewMesh);
 
@@ -1864,6 +1803,7 @@ public:
 	virtual void ClearRefPoseOverride() override;
 	//~ End USkinnedMeshComponent Interface
 
+	UE_DEPRECATED(4.27, "Use RegisterOnBoneTransformsFinalizedDelegate/UnregisterOnBoneTransformsFinalizedDelegate instead")
 	FOnBoneTransformsFinalized OnBoneTransformsFinalized;
 
 	void GetCurrentRefToLocalMatrices(TArray<FMatrix>& OutRefToLocals, int32 InLodIdx) const;
@@ -2153,6 +2093,9 @@ public:
 	 */
 	void UpdateClothTransform(ETeleportType TeleportType);
 
+	/** Set the cloth transform update to trigger with no teleport option. */
+	void UpdateClothTransform() { UpdateClothTransform(ETeleportType::None); }
+
 	/**
 	 * Updates cloth collision inside the cloth asset (from a physics asset).
 	 * Should be called when the physics asset changes and the effects are needed straight away.
@@ -2296,6 +2239,12 @@ public:
 
 protected:
 
+	// Prep anim instances for evaluation
+	void DoInstancePreEvaluation();
+
+	// Handle post evaluation on all anim instances
+	void DoInstancePostEvaluation();
+
 	// Returns whether we need to run the Cloth Tick or not
 	virtual bool ShouldRunClothTick() const;
 
@@ -2430,6 +2379,10 @@ public:
 	FDelegateHandle RegisterOnTeleportDelegate(const FOnSkelMeshTeleported& Delegate);
 	void UnregisterOnTeleportDelegate(const FDelegateHandle& DelegateHandle);
 
+	/** Register/Unregister for OnBoneTransformsFinalized callback */
+	FDelegateHandle RegisterOnBoneTransformsFinalizedDelegate(const FOnBoneTransformsFinalizedMultiCast::FDelegate& Delegate);
+	void UnregisterOnBoneTransformsFinalizedDelegate(const FDelegateHandle& DelegateHandle);
+
 private:
 
 	/** Multicaster fired when this component creates physics state (in case external objects rely on physics state)*/
@@ -2438,7 +2391,10 @@ private:
 	/** Multicaster fired when this component teleports */
 	FOnSkelMeshTeleportedMultiCast OnSkelMeshPhysicsTeleported;
 
-	/** Mark current anim UID version to up-to-date. Called when it's recalcualted */
+	/** Multicaster fired when this component bone transforms are finalized */
+	FOnBoneTransformsFinalizedMultiCast OnBoneTransformsFinalizedMC;
+
+	/** Mark current anim UID version to up-to-date. Called when it's recalculated */
 	void MarkRequiredCurveUpToDate();
 	
 	/* This will check if the required curves are up-to-date by checking version number with skeleton. 

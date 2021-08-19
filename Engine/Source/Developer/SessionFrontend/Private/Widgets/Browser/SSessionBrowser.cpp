@@ -265,6 +265,7 @@ void SSessionBrowser::HandleSessionManagerInstanceSelectionChanged(const TShared
 
 	if (InstanceItem.IsValid())
 	{
+		SessionTreeView->ClearSelection();
 		SessionTreeView->SetItemSelection(InstanceItem, Selected);
 	}
 }
@@ -403,7 +404,8 @@ TSharedRef<ITableRow> SSessionBrowser::HandleSessionTreeViewGenerateRow(TSharedP
 
 	return SNew(SSessionBrowserTreeInstanceRow, OwnerTable)
 		.Item(StaticCastSharedRef<FSessionBrowserInstanceTreeItem>(Item.ToSharedRef()))
-		.ToolTipText(this, &SSessionBrowser::HandleSessionTreeRowGetToolTipText, Item);
+		.ToolTipText(this, &SSessionBrowser::HandleSessionTreeRowGetToolTipText, Item)
+		.ShowSelection(true);
 }
 
 

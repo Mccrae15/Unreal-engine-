@@ -33,9 +33,11 @@ namespace Audio
 		}
 		else
 		{
-			// cancel ourselves (no source manager is bad news)
-			check(SourceManager);
-			OwningClockPtr->CancelQuantizedCommand(TSharedPtr<IQuartzQuantizedCommand>(this));
+			// cancel ourselves (no source manager may mean we are running without an audio device)
+			if (ensure(OwningClockPtr))
+			{
+				OwningClockPtr->CancelQuantizedCommand(TSharedPtr<IQuartzQuantizedCommand>(this));
+			}
 		}
 		
 	}
@@ -45,7 +47,7 @@ namespace Audio
 	void FQuantizedPlayCommand::OnFinalCallbackCustom(int32 InNumFramesLeft)
 	{
 		// Access source manager through owning clock (via clock manager)
-		check(OwningClockPtr && OwningClockPtr->GetMixerDevice() && OwningClockPtr->GetMixerDevice()->GetSourceManager());
+		check(OwningClockPtr && OwningClockPtr->GetSourceManager());
 
 		// access source manager through owning clock (via clock manager)
 		// Owning Clock Ptr may be nullptr if this command was canceled.
@@ -59,7 +61,7 @@ namespace Audio
 			}
 			else
 			{
-				// cancel ourselves
+				// cancel ourselves (no source manager may mean we are running without an audio device)
 				OwningClockPtr->CancelQuantizedCommand(TSharedPtr<IQuartzQuantizedCommand>(this));
 			}
 		}
@@ -68,8 +70,17 @@ namespace Audio
 
 	void FQuantizedPlayCommand::CancelCustom()
 	{
-		// release hold on pending source
-		OnFinalCallbackCustom(0);
+		if (OwningClockPtr && OwningClockPtr->GetSourceManager())
+		{
+			// release hold on pending source
+			OnFinalCallbackCustom(0);
+		}
+	}
+
+	static const FName PlayCommandName("Play Command");
+	FName FQuantizedPlayCommand::GetCommandName() const
+	{
+		return PlayCommandName;
 	}
 
 	TSharedPtr<IQuartzQuantizedCommand> FQuantizedTickRateChange::GetDeepCopyOfDerivedObject() const
@@ -92,6 +103,12 @@ namespace Audio
 		OwningClockPtr->ChangeTickRate(TickRate, InNumFramesLeft);
 	}
 
+	static const FName TickRateChangeCommandName("Tick Rate Change Command");
+	FName FQuantizedTickRateChange::GetCommandName() const
+	{
+		return TickRateChangeCommandName;
+	}
+
 	TSharedPtr<IQuartzQuantizedCommand> FQuantizedTransportReset::GetDeepCopyOfDerivedObject() const
 	{
 		TSharedPtr<FQuantizedTransportReset> NewCopy = MakeShared<FQuantizedTransportReset>();
@@ -109,6 +126,61 @@ namespace Audio
 	void FQuantizedTransportReset::OnFinalCallbackCustom(int32 InNumFramesLeft)
 	{
 		OwningClockPtr->ResetTransport();
+	}
+
+	static const FName TransportResetCommandName("Transport Reset Command");
+	FName FQuantizedTransportReset::GetCommandName() const
+	{
+		return TransportResetCommandName;
+	}
+
+
+	TSharedPtr<IQuartzQuantizedCommand> FQuantizedOtherClockStart::GetDeepCopyOfDerivedObject() const
+	{
+		TSharedPtr<FQuantizedOtherClockStart> NewCopy = MakeShared<FQuantizedOtherClockStart>();
+
+		NewCopy->OwningClockPtr = OwningClockPtr;
+		NewCopy->NameOfClockToStart = NameOfClockToStart;
+
+		return NewCopy;
+	}
+
+	void FQuantizedOtherClockStart::OnQueuedCustom(const FQuartzQuantizedCommandInitInfo& InCommandInitInfo)
+	{
+		OwningClockPtr = InCommandInitInfo.OwningClockPointer;
+		check(OwningClockPtr.IsValid());
+
+		NameOfClockToStart = InCommandInitInfo.OtherClockName;
+	}
+
+	void FQuantizedOtherClockStart::OnFinalCallbackCustom(int32 InNumFramesLeft)
+	{
+		if (!ensureMsgf(OwningClockPtr.IsValid(), TEXT("Quantized Other Clock Start is early exiting (invalid/missing Owning Clock Pointer)")))
+		{
+			return;
+		}
+
+		// get access to the clock manager
+		FQuartzClockManager* ClockManager = OwningClockPtr->GetClockManager();
+
+		bool bShouldStart = ClockManager && !ClockManager->IsClockRunning(NameOfClockToStart);
+
+		if (bShouldStart)
+		{
+			// ...start the clock
+			ClockManager->ResumeClock(NameOfClockToStart, InNumFramesLeft);
+
+			if (ClockManager->HasClockBeenTickedThisUpdate(NameOfClockToStart))
+			{
+				ClockManager->UpdateClock(NameOfClockToStart, ClockManager->GetLastUpdateSizeInFrames());
+			}
+		}
+	}
+
+	static const FName StartOtherClockName("Start Other Clock Command");
+	FName FQuantizedOtherClockStart::GetCommandName() const
+	{
+		return StartOtherClockName;
 	}
 
 } // namespace Audio

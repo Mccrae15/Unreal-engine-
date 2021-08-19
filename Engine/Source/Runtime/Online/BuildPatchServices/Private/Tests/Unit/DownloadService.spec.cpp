@@ -98,7 +98,7 @@ void FDownloadServiceSpec::Define()
 
 			Describe("when given a FileUri not starting with http", [this]()
 			{
-				It("should use the file manager to process the request.", [this]()
+				xIt("should use the file manager to process the request.", [this]()
 				{
 					DownloadService->RequestFile(NetworkFileUrl, DownloadComplete, DownloadProgress);
 					DoTicksUntilComplete(50, 1);
@@ -136,7 +136,7 @@ void FDownloadServiceSpec::Define()
 					MockFileSystem->ReadFile = {1,2,3,4,5,6,7,8,9,10};
 				});
 
-				It("should provide an IDownload with access to success status.", [this]()
+				xIt("should provide an IDownload with access to success status.", [this]()
 				{
 					DownloadService->RequestFile(NetworkFileUrl, DownloadComplete, DownloadProgress);
 					DoTicksUntilComplete();
@@ -176,7 +176,7 @@ void FDownloadServiceSpec::Define()
 					}
 				});
 
-				It("should cancel if it had already started.", [this]()
+				xIt("should cancel if it had already started.", [this]()
 				{
 					DoTicksUntilCreated();
 					DownloadService->RequestCancel(MadeRequestId);

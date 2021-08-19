@@ -32,6 +32,7 @@
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "RHI.h"
 #include "SceneInterface.h"
 #include "SEditorViewportToolBarMenu.h"
 #include "Settings/LevelEditorViewportSettings.h"
@@ -326,9 +327,6 @@ void SDataprepEditorViewport::UpdateScene()
 
 	ClearScene();
 
-	RenderingMaterialType = ERenderingMaterialType::OriginalRenderingMaterial;
-	bWireframeRenderingMode = false;
-
 	ViewportDebug::FTimeLogger TimeLogger( TEXT("Updating viewport") );
 
 	SceneBounds = FBox( FVector::ZeroVector, FVector(100.0f) );
@@ -345,7 +343,7 @@ void SDataprepEditorViewport::UpdateScene()
 		{
 			if( UStaticMesh* StaticMesh = MeshComponent->GetStaticMesh() )
 			{
-				if( !StaticMesh->RenderData.IsValid() || !StaticMesh->RenderData->IsInitialized())
+				if( !StaticMesh->GetRenderData() || !StaticMesh->GetRenderData()->IsInitialized())
 				{
 					++InvalidStaticMeshesCount;
 					MeshComponent = nullptr;
@@ -363,7 +361,25 @@ void SDataprepEditorViewport::UpdateScene()
 			FScopedSlowTask SlowTask( 100.0f, LOCTEXT("UpdateMeshes_Title", "Updating 3D viewport ...") );
 			SlowTask.MakeDialog(false);
 
+			// Unregister all actors components to avoid excessive refresh in the 3D engine while updating materials.
+			for (TObjectIterator<AActor> ActorIterator; ActorIterator; ++ActorIterator)
+			{
+				if (ActorIterator->GetWorld())
+				{
+					ActorIterator->UnregisterAllComponents( /* bForReregister = */true);
+				}
+			}
+
 			InitializeDefaultMaterials();
+
+			// Materials have been updated, we can register everything back.
+			for (TObjectIterator<AActor> ActorIterator; ActorIterator; ++ActorIterator)
+			{
+				if (ActorIterator->GetWorld())
+				{
+					ActorIterator->RegisterAllComponents();
+				}
+			}
 
 			PreviewMeshComponents.Empty( SceneMeshComponents.Num() );
 
@@ -376,7 +392,7 @@ void SDataprepEditorViewport::UpdateScene()
 				{
 					const UStaticMesh* StaticMesh = SceneMeshComponent->GetStaticMesh();
 					const FTransform& ComponentToWorldTransform = SceneMeshComponent->GetComponentTransform();
-					SceneBounds += StaticMesh->ExtendedBounds.GetBox().TransformBy( ComponentToWorldTransform );
+					SceneBounds += StaticMesh->GetExtendedBounds().GetBox().TransformBy( ComponentToWorldTransform );
 				}
 			}
 
@@ -434,13 +450,13 @@ void SDataprepEditorViewport::UpdateScene()
 						PreviewMeshComponent->SetRelativeTransform( ComponentToWorldTransform );
 
 						// Apply preview material to preview static mesh component
-						for(int32 Index = 0; Index < StaticMesh->StaticMaterials.Num(); ++Index)
+						for(int32 Index = 0; Index < StaticMesh->GetStaticMaterials().Num(); ++Index)
 						{
 							UMaterialInterface* MaterialInterface = SceneMeshComponent->GetMaterial(Index);
 
 							if(MaterialInterface == nullptr)
 							{
-								MaterialInterface = StaticMesh->StaticMaterials[Index].MaterialInterface;
+								MaterialInterface = StaticMesh->GetStaticMaterials()[Index].MaterialInterface;
 							}
 
 							PreviewMeshComponent->SetMaterial( Index, MaterialInterface );
@@ -513,6 +529,11 @@ void SDataprepEditorViewport::UpdateScene()
 
 	UpdateOverlayText();
 
+	if (RenderingMaterialType != ERenderingMaterialType::OriginalRenderingMaterial)
+	{
+		ApplyRenderingMaterial();
+	}
+
 	SceneViewport->Invalidate();
 }
 
@@ -557,9 +578,11 @@ void SDataprepEditorViewport::PopulateViewportOverlays(TSharedRef<SOverlay> Over
 {
 	SEditorViewport::PopulateViewportOverlays(Overlay);
 
-	ScreenSizeText = SNew(STextBlock)
-	.Text( LOCTEXT( "ScreenSize", "Current Screen Size:"))
-	.TextStyle(FEditorStyle::Get(), "TextBlock.ShadowedText");
+	FPSText = SNew(STextBlock)
+		.TextStyle(FEditorStyle::Get(), "TextBlock.ShadowedText");
+
+	DrawCallsText = SNew(STextBlock)
+		.TextStyle(FEditorStyle::Get(), "TextBlock.ShadowedText");
 
 	Overlay->AddSlot()
 	.VAlign(VAlign_Top)
@@ -592,27 +615,21 @@ void SDataprepEditorViewport::UpdateOverlayText()
 		if(UStaticMeshComponent* MeshComponent = PreviewMeshComponent.Get())
 		{
 			UStaticMesh* StaticMesh = MeshComponent->GetStaticMesh();
-			TrianglesCount += StaticMesh->RenderData->LODResources[0].GetNumTriangles();
-			VerticesCount += StaticMesh->RenderData->LODResources[0].GetNumVertices();
+			TrianglesCount += StaticMesh->GetRenderData()->LODResources[0].GetNumTriangles();
+			VerticesCount += StaticMesh->GetRenderData()->LODResources[0].GetNumVertices();
 			StaticMeshes.Add(StaticMesh);
 		}
 	}
 
 	TextItems.Add(FOverlayTextItem(
-		FText::Format( LOCTEXT( "Meshes", "#Static Meshes:  {0}"), FText::AsNumber( StaticMeshes.Num() ) ) ) );
+		FText::Format(LOCTEXT( "Triangles_F", "#Triangles:  {0}"), FText::AsNumber(TrianglesCount))));
 
 	TextItems.Add(FOverlayTextItem(
-		FText::Format( LOCTEXT( "DrawnMeshes", "#Meshes drawn:  {0}"), FText::AsNumber(PreviewMeshComponents.Num()))));
-
-	TextItems.Add(FOverlayTextItem(
-		FText::Format( LOCTEXT( "Triangles_F", "#Triangles To Draw:  {0}"), FText::AsNumber(TrianglesCount))));
-
-	TextItems.Add(FOverlayTextItem(
-		FText::Format( LOCTEXT( "Vertices_F", "#Vertices Used:  {0}"), FText::AsNumber(VerticesCount))));
+		FText::Format(LOCTEXT( "Vertices_F", "#Vertices:  {0}"), FText::AsNumber(VerticesCount))));
 
 	FVector SceneExtents = SceneBounds.GetExtent();
 	TextItems.Add(FOverlayTextItem(
-		FText::Format( LOCTEXT( "ApproxSize_F", "Approx Size: {0}x{1}x{2}"),
+		FText::Format(LOCTEXT( "ApproxSize_F", "Approx Size: {0}x{1}x{2}"),
 		FText::AsNumber(int32(SceneExtents.X * 2.0f)), // x2 as artists wanted length not radius
 		FText::AsNumber(int32(SceneExtents.Y * 2.0f)),
 		FText::AsNumber(int32(SceneExtents.Z * 2.0f)))));
@@ -621,7 +638,12 @@ void SDataprepEditorViewport::UpdateOverlayText()
 
 	OverlayTextVerticalBox->AddSlot()
 	[
-		ScreenSizeText.ToSharedRef()
+		FPSText.ToSharedRef()
+	];
+
+	OverlayTextVerticalBox->AddSlot()
+	[
+		DrawCallsText.ToSharedRef()
 	];
 
 	for (const auto& TextItem : TextItems)
@@ -635,9 +657,26 @@ void SDataprepEditorViewport::UpdateOverlayText()
 	}
 }
 
-void SDataprepEditorViewport::UpdateScreenSizeText( FText Text )
+void SDataprepEditorViewport::UpdatePerfStats()
 {
-	ScreenSizeText->SetText( Text );
+	FNumberFormattingOptions FormatOptions;
+	FormatOptions.MinimumFractionalDigits = 0;
+	FormatOptions.MaximumFractionalDigits = 0;
+
+	extern ENGINE_API float GAverageFPS;
+
+	DrawCallsAccumulator += GNumDrawCallsRHI[0];
+	++CurrentDrawCalls;
+
+	if (CurrentDrawCalls >= DrawCallsUpdateInterval)
+	{
+		AverageDrawCalls = DrawCallsAccumulator / CurrentDrawCalls;
+		CurrentDrawCalls = 0;
+		DrawCallsAccumulator = 0;
+	}
+
+	FPSText->SetText(FText::Format(LOCTEXT( "FPS_F", "FPS:  {0}"), FText::AsNumber(GAverageFPS, &FormatOptions)));
+	DrawCallsText->SetText(FText::Format(LOCTEXT( "DrawCalls_F", "Num Draw Calls:  {0}"), AverageDrawCalls));
 }
 
 void SDataprepEditorViewport::BindCommands()
@@ -740,7 +779,7 @@ void SDataprepEditorViewport::OnFocusViewportToSelection()
 		{
 			const UStaticMesh* StaticMesh = SelectedComponent->GetStaticMesh();
 			const FTransform& ComponentToWorldTransform = SelectedComponent->GetComponentTransform();
-			SelectionBounds += StaticMesh->ExtendedBounds.GetBox().TransformBy( ComponentToWorldTransform );
+			SelectionBounds += StaticMesh->GetExtendedBounds().GetBox().TransformBy( ComponentToWorldTransform );
 		}
 	}
 
@@ -939,7 +978,7 @@ void SDataprepEditorViewport::SelectActors(const TArray< AActor* >& SelectedActo
 
 	SelectedPreviewComponents.Append( MoveTemp( NewSelectedPreviewComponents ) );
 
-	UpdateSelection();
+	UpdateSelection(false);
 }
 
 void SDataprepEditorViewport::SetActorVisibility(AActor* SceneActor, bool bInVisibility)
@@ -956,7 +995,7 @@ void SDataprepEditorViewport::SetActorVisibility(AActor* SceneActor, bool bInVis
 	}
 }
 
-void SDataprepEditorViewport::UpdateSelection()
+void SDataprepEditorViewport::UpdateSelection(bool bNotify)
 {
 	TSharedPtr<FDataprepEditor> DataprepEditorPtr = DataprepEditor.Pin();
 
@@ -984,7 +1023,7 @@ void SDataprepEditorViewport::UpdateSelection()
 		SelectedActors.Emplace(SceneMeshComponent->GetOwner());
 	}
 
-	if(DataprepEditorPtr.IsValid())
+	if(DataprepEditorPtr.IsValid() && bNotify)
 	{
 		DataprepEditorPtr->SetWorldObjectsSelection( MoveTemp(SelectedActors), FDataprepEditor::EWorldSelectionFrom::Viewport );
 	}
@@ -1080,13 +1119,13 @@ void SDataprepEditorViewport::ApplyRenderingMaterial()
 
 		UStaticMesh* StaticMesh = SceneMeshComponent->GetStaticMesh();
 
-		for(int32 Index = 0; Index < StaticMesh->StaticMaterials.Num(); ++Index)
+		for(int32 Index = 0; Index < StaticMesh->GetStaticMaterials().Num(); ++Index)
 		{
 			UMaterialInterface* MaterialInterface = SceneMeshComponent->GetMaterial(Index);
 
 			if(MaterialInterface == nullptr)
 			{
-				MaterialInterface = StaticMesh->StaticMaterials[Index].MaterialInterface;
+				MaterialInterface = StaticMesh->GetStaticMaterials()[Index].MaterialInterface;
 			}
 
 			PreviewMeshComponent->SetMaterial( Index, RenderingMaterial ? RenderingMaterial : MaterialInterface );
@@ -1108,7 +1147,7 @@ void SDataprepEditorViewport::ApplyRenderingMaterial()
 					{
 						UStaticMesh* StaticMesh = PreviewMeshComponent->GetStaticMesh();
 
-						for(int32 Index = 0; Index < StaticMesh->StaticMaterials.Num(); ++Index)
+						for(int32 Index = 0; Index < StaticMesh->GetStaticMaterials().Num(); ++Index)
 						{
 							PreviewMeshComponent->SetMaterial( Index, TransparentMaterial.Get() );
 						}
@@ -1302,17 +1341,7 @@ void FDataprepEditorViewportClient::ProcessClick(FSceneView& View, HHitProxy* Hi
 
 void FDataprepEditorViewportClient::DrawCanvas(FViewport& InViewport, FSceneView& View, FCanvas& Canvas)
 {
-	FBoxSphereBounds SphereBounds(DataprepEditorViewport->SceneBounds);
-	float CurrentScreenSize = ComputeBoundsScreenSize(SphereBounds.Origin, SphereBounds.SphereRadius, View);
-
-	FNumberFormattingOptions FormatOptions;
-	FormatOptions.MinimumFractionalDigits = 3;
-	FormatOptions.MaximumFractionalDigits = 6;
-	FormatOptions.MaximumIntegralDigits = 6;
-
-	DataprepEditorViewport->UpdateScreenSizeText(
-		FText::Format( LOCTEXT( "ScreenSize_F", "Current Screen Size:  {0}"), FText::AsNumber(CurrentScreenSize, &FormatOptions)));
-
+	DataprepEditorViewport->UpdatePerfStats();
 	FEditorViewportClient::DrawCanvas(InViewport, View, Canvas);
 }
 
@@ -1542,13 +1571,13 @@ void FDataprepEditorViewportCommands::RegisterCommands()
 // Copied from UStaticMeshComponent::CreateSceneProxy
 FPrimitiveSceneProxy* UCustomStaticMeshComponent::CreateSceneProxy()
 {
-	if (GetStaticMesh() == nullptr || GetStaticMesh()->RenderData == nullptr)
+	if (GetStaticMesh() == nullptr || GetStaticMesh()->GetRenderData() == nullptr)
 	{
 		return nullptr;
 	}
 
-	const FStaticMeshLODResourcesArray& LODResources = GetStaticMesh()->RenderData->LODResources;
-	if (LODResources.Num() == 0	|| LODResources[FMath::Clamp<int32>(GetStaticMesh()->MinLOD.Default, 0, LODResources.Num()-1)].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
+	const FStaticMeshLODResourcesArray& LODResources = GetStaticMesh()->GetRenderData()->LODResources;
+	if (LODResources.Num() == 0	|| LODResources[FMath::Clamp<int32>(GetStaticMesh()->GetMinLOD().Default, 0, LODResources.Num()-1)].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
 	{
 		return nullptr;
 	}
@@ -1575,7 +1604,7 @@ namespace DataprepEditor3DPreviewUtils
 
 		for(UStaticMesh* StaticMesh : StaticMeshes)
 		{
-			if(StaticMesh && (!StaticMesh->RenderData.IsValid() || !StaticMesh->RenderData->IsInitialized()))
+			if(StaticMesh && (!StaticMesh->GetRenderData() || !StaticMesh->GetRenderData()->IsInitialized()))
 			{
 				BuiltMeshes.Add( StaticMesh );
 			}
@@ -1645,7 +1674,7 @@ namespace DataprepEditor3DPreviewUtils
 					SourceModels[SourceModelIndex].BuildSettings = PrevBuildSettings[SourceModelIndex];
 				}
 
-				for ( FStaticMeshLODResources& LODResources : StaticMesh->RenderData->LODResources )
+				for ( FStaticMeshLODResources& LODResources : StaticMesh->GetRenderData()->LODResources )
 				{
 					LODResources.bHasColorVertexData = true;
 				}

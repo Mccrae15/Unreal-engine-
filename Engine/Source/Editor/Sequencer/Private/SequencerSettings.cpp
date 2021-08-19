@@ -10,7 +10,6 @@ USequencerSettings::USequencerSettings( const FObjectInitializer& ObjectInitiali
 	AutoChangeMode = EAutoChangeMode::None;
 	AllowEditsMode = EAllowEditsMode::AllEdits;
 	KeyGroupMode = EKeyGroupMode::KeyChanged;
-	bKeyInterpPropertiesOnly = false;
 	KeyInterpolation = EMovieSceneKeyInterpolation::Auto;
 	bAutoSetTrackDefaults = false;
 	SpawnPosition = SSP_Origin;
@@ -38,10 +37,10 @@ USequencerSettings::USequencerSettings( const FObjectInitializer& ObjectInitiali
 	LoopMode = ESequencerLoopMode::SLM_NoLoop;
 	bSnapKeysAndSectionsToPlayRange = false;
 	bKeepCursorInPlayRangeWhileScrubbing = false;
-	bKeepCursorInPlayRange = true;
 	bKeepPlayRangeInSectionBounds = true;
 	bCompileDirectorOnEvaluate = true;
 	ZeroPadFrames = 0;
+	JumpFrameIncrement = FFrameNumber(5);
 	bShowCombinedKeyframes = true;
 	bInfiniteKeyAreas = false;
 	bShowChannelColors = false;
@@ -103,20 +102,6 @@ void USequencerSettings::SetKeyGroupMode(EKeyGroupMode InKeyGroupMode)
 	if (KeyGroupMode != InKeyGroupMode)
 	{
 		KeyGroupMode = InKeyGroupMode;
-		SaveConfig();
-	}
-}
-
-bool USequencerSettings::GetKeyInterpPropertiesOnly() const
-{
-	return bKeyInterpPropertiesOnly;
-}
-
-void USequencerSettings::SetKeyInterpPropertiesOnly(bool InbKeyInterpPropertiesOnly)
-{
-	if ( bKeyInterpPropertiesOnly != InbKeyInterpPropertiesOnly )
-	{
-		bKeyInterpPropertiesOnly = InbKeyInterpPropertiesOnly;
 		SaveConfig();
 	}
 }
@@ -446,20 +431,6 @@ void USequencerSettings::SetKeepCursorInPlayRangeWhileScrubbing(bool bInKeepCurs
 	}
 }
 
-bool USequencerSettings::ShouldKeepCursorInPlayRange() const
-{
-	return bKeepCursorInPlayRange;
-}
-
-void USequencerSettings::SetKeepCursorInPlayRange(bool bInKeepCursorInPlayRange)
-{
-	if (bKeepCursorInPlayRange != bInKeepCursorInPlayRange)
-	{
-		bKeepCursorInPlayRange = bInKeepCursorInPlayRange;
-		SaveConfig();
-	}
-}
-
 bool USequencerSettings::ShouldKeepPlayRangeInSectionBounds() const
 {
 	return bKeepPlayRangeInSectionBounds;
@@ -517,6 +488,20 @@ void USequencerSettings::SetZeroPadFrames(uint8 InZeroPadFrames)
 	if (ZeroPadFrames != InZeroPadFrames)
 	{
 		ZeroPadFrames = InZeroPadFrames;
+		SaveConfig();
+	}
+}
+
+FFrameNumber USequencerSettings::GetJumpFrameIncrement() const
+{
+	return JumpFrameIncrement;
+}
+
+void USequencerSettings::SetJumpFrameIncrement(FFrameNumber InJumpFrameIncrement)
+{
+	if (JumpFrameIncrement != InJumpFrameIncrement)
+	{
+		JumpFrameIncrement = InJumpFrameIncrement;
 		SaveConfig();
 	}
 }
@@ -747,6 +732,15 @@ void USequencerSettings::SetTimeDisplayFormat(EFrameNumberDisplayFormats InForma
 	if (InFormat != FrameNumberDisplayFormat)
 	{
 		FrameNumberDisplayFormat = InFormat;
+		SaveConfig();
+	}
+}
+
+void USequencerSettings::SetMovieRendererName(const FString& InMovieRendererName)
+{
+	if (InMovieRendererName != MovieRendererName)
+	{
+		MovieRendererName = InMovieRendererName;
 		SaveConfig();
 	}
 }

@@ -2114,6 +2114,13 @@ static TAutoConsoleVariable<int32> CVarMobileEnableMovableLightCSMShaderCulling(
 	TEXT("1: Primitives lit by movable directional light render with the CSM shader when determined to be within CSM range. (default)"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
+static TAutoConsoleVariable<int32> CVarMobileUseCSMShaderBranch(
+	TEXT("r.Mobile.UseCSMShaderBranch"),
+	0,
+	TEXT("0: Use two shader permutations for CSM and non-CSM shading. (default)\n")
+	TEXT("1: Use a single shader pemutation with a branch in a shader to apply CSM (only with r.AllowStaticLighting=0)"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
 static TAutoConsoleVariable<float> CVarsCSMDebugHint(
 	TEXT("r.Mobile.Shadow.CSMDebugHint"),
 	0.0f,
@@ -2808,3 +2815,11 @@ static TAutoConsoleVariable<int32> CVarSkyLightingQuality(
 	TEXT("  1: on\n"),
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
+
+static TAutoConsoleVariable<int32> CVarMobileSupportsGen4TAA(
+	TEXT("r.Mobile.SupportsGen4TAA"),
+	0,
+	TEXT("Support desktop Gen4 TAA with mobile rendering\n")
+	TEXT("0: Fallback to Mobile TAA (default)")
+	TEXT("1: Support Desktop Gen4 TAA"),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);

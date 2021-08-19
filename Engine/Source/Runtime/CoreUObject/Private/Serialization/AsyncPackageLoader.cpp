@@ -4,21 +4,49 @@
 #include "HAL/IConsoleManager.h"
 #include "Serialization/AsyncLoadingThread.h"
 #include "Serialization/AsyncLoading2.h"
+#include "Serialization/EditorPackageLoader.h"
 #include "UObject/GCObject.h"
 #include "UObject/LinkerLoad.h"
+#include "UObject/PackageId.h"
 #include "Misc/CoreDelegates.h"
 #include "IO/IoDispatcher.h"
 #include "HAL/IConsoleManager.h"
 
 volatile int32 GIsLoaderCreated;
 TUniquePtr<IAsyncPackageLoader> GPackageLoader;
+bool GAsyncLoadingAllowed = true;
+
+FThreadSafeCounter IAsyncPackageLoader::NextPackageRequestId;
+
+int32 IAsyncPackageLoader::GetNextRequestId()
+{
+	 return NextPackageRequestId.Increment();
+}
 
 #if !UE_BUILD_SHIPPING
 static void LoadPackageCommand(const TArray<FString>& Args)
 {
 	for (const FString& PackageName : Args)
 	{
-		LoadPackageAsync(PackageName);
+		UE_LOG(LogStreaming, Display, TEXT("LoadPackageCommand: %s - Requested"), *PackageName);
+		UPackage* Package = LoadPackage(nullptr, *PackageName, LOAD_None);
+		UE_LOG(LogStreaming, Display, TEXT("LoadPackageCommand: %s - %s"),
+			*PackageName, (Package != nullptr) ? TEXT("Loaded") : TEXT("Failed"));
+	}
+}
+
+static void LoadPackageAsyncCommand(const TArray<FString>& Args)
+{
+	for (const FString& PackageName : Args)
+	{
+		UE_LOG(LogStreaming, Display, TEXT("LoadPackageAsyncCommand: %s - Requested"), *PackageName);
+		LoadPackageAsync(PackageName, FLoadPackageAsyncDelegate::CreateLambda(
+			[](const FName& PackageName, UPackage* Package, EAsyncLoadingResult::Type Result)
+		{
+			UE_LOG(LogStreaming, Display, TEXT("LoadPackageAsyncCommand: %s - %s"),
+				*PackageName.ToString(), (Package != nullptr) ? TEXT("Loaded") : TEXT("Failed"));
+		}
+		));
 	}
 }
 
@@ -26,6 +54,11 @@ static FAutoConsoleCommand CVar_LoadPackageCommand(
 	TEXT("LoadPackage"),
 	TEXT("Loads packages by names. Usage: LoadPackage <package name> [<package name> ...]"),
 	FConsoleCommandWithArgsDelegate::CreateStatic(LoadPackageCommand));
+
+static FAutoConsoleCommand CVar_LoadPackageAsyncCommand(
+	TEXT("LoadPackageAsync"),
+	TEXT("Loads packages async by names. Usage: LoadPackageAsync <package name> [<package name> ...]"),
+	FConsoleCommandWithArgsDelegate::CreateStatic(LoadPackageAsyncCommand));
 #endif
 
 const FName PrestreamPackageClassNameLoad = FName("PrestreamPackage");
@@ -528,6 +561,11 @@ IAsyncPackageLoader& GetAsyncPackageLoader()
 	return *GPackageLoader;
 }
 
+void SetAsyncLoadingAllowed(bool bAllowAsyncLoading)
+{
+	GAsyncLoadingAllowed = bAllowAsyncLoading;
+}
+
 void InitAsyncThread()
 {
 	LLM_SCOPE(ELLMTag::AsyncLoading);
@@ -535,7 +573,11 @@ void InitAsyncThread()
 	if (FIoDispatcher::IsInitialized())
 	{
 		GetGEDLBootNotificationManager().Disable();
+#if WITH_IOSTORE_IN_EDITOR
+		GPackageLoader = MakeEditorPackageLoader(FIoDispatcher::Get(), GetGEDLBootNotificationManager());
+#else
 		GPackageLoader.Reset(MakeAsyncPackageLoader2(FIoDispatcher::Get()));
+#endif
 	}
 	else
 #endif
@@ -653,6 +695,7 @@ bool IsAsyncLoadingSuspendedInternal()
 int32 LoadPackageAsync(const FString& InName, const FGuid* InGuid /*= nullptr*/, const TCHAR* InPackageToLoadFrom /*= nullptr*/, FLoadPackageAsyncDelegate InCompletionDelegate /*= FLoadPackageAsyncDelegate()*/, EPackageFlags InPackageFlags /*= PKG_None*/, int32 InPIEInstanceID /*= INDEX_NONE*/, int32 InPackagePriority /*= 0*/, const FLinkerInstancingContext* InstancingContext /*=nullptr*/)
 {
 	LLM_SCOPE(ELLMTag::AsyncLoading);
+	UE_CLOG(!GAsyncLoadingAllowed && !IsInAsyncLoadingThread(), LogStreaming, Fatal, TEXT("Requesting async load of \"%s\" when async loading is not allowed (after shutdown). Please fix higher level code."), *InName);
 	return GetAsyncPackageLoader().LoadPackage(InName, InGuid, InPackageToLoadFrom, InCompletionDelegate, InPackageFlags, InPIEInstanceID, InPackagePriority, InstancingContext);
 }
 
@@ -717,6 +760,19 @@ void NotifyUnreachableObjects(const TArrayView<FUObjectItem*>& UnreachableObject
 	LLM_SCOPE(ELLMTag::AsyncLoading);
 	GetAsyncPackageLoader().NotifyUnreachableObjects(UnreachableObjects);
 }
+
+#if WITH_IOSTORE_IN_EDITOR
+bool DoesPackageExistInIoStore(FName InPackageName)
+{
+	if (FIoDispatcher::IsInitialized())
+	{
+		FIoChunkId PackageChunkId = CreateIoChunkId(FPackageId::FromName(InPackageName).Value(), 0, EIoChunkType::ExportBundleData);
+		return FIoDispatcher::Get().DoesChunkExist(PackageChunkId);
+	}
+
+	return false;
+}
+#endif
 
 double GFlushAsyncLoadingTime = 0.0;
 uint32 GFlushAsyncLoadingCount = 0;

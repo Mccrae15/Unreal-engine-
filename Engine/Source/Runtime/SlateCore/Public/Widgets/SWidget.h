@@ -22,6 +22,7 @@
 #include "Input/PopupMethodReply.h"
 #include "Types/ISlateMetaData.h"
 #include "Types/WidgetActiveTimerDelegate.h"
+#include "Types/WidgetMouseEventsDelegate.h"
 #include "Textures/SlateShaderResource.h"
 #include "SlateGlobals.h"
 #include "Types/PaintArgs.h"
@@ -39,6 +40,7 @@ class FWeakWidgetPath;
 class FWidgetPath;
 class IToolTip;
 class SWidget;
+struct FSlateBaseNamedArgs;
 struct FSlateBrush;
 struct FSlatePaintElementLists;
 
@@ -48,31 +50,11 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("SWidget::Tick (Count)"), STAT_SlateNumTi
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Execute Active Timers"), STAT_SlateExecuteActiveTimers, STATGROUP_Slate, SLATECORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Tick Widgets"), STAT_SlateTickWidgets, STATGROUP_Slate, SLATECORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("SlatePrepass"), STAT_SlatePrepass, STATGROUP_Slate, SLATECORE_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("SWidget MetaData"), STAT_SlateGetMetaData, STATGROUP_Slate, SLATECORE_API);
 
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Total Widgets"), STAT_SlateTotalWidgets, STATGROUP_SlateMemory, SLATECORE_API);
 DECLARE_MEMORY_STAT_EXTERN(TEXT("SWidget Total Allocated Size"), STAT_SlateSWidgetAllocSize, STATGROUP_SlateMemory, SLATECORE_API);
 
-/** Delegate type for handling mouse events */
-DECLARE_DELEGATE_RetVal_TwoParams(
-	FReply, FPointerEventHandler,
-	/** The geometry of the widget*/
-	const FGeometry&,
-	/** The Mouse Event that we are processing */
-	const FPointerEvent&)
-
-DECLARE_DELEGATE_TwoParams(
-	FNoReplyPointerEventHandler,
-	/** The geometry of the widget*/
-	const FGeometry&,
-	/** The Mouse Event that we are processing */
-	const FPointerEvent&)
-
-DECLARE_DELEGATE_OneParam(
-	FSimpleNoReplyPointerEventHandler,
-	/** The Mouse Event that we are processing */
-	const FPointerEvent&)
-
-enum class EPopupMethod : uint8;
 
 namespace SharedPointerInternals
 {
@@ -212,17 +194,16 @@ class SLATECORE_API SWidget
 	friend struct FCurveSequence;
 	friend class FWidgetProxy;
 	friend class FSlateInvalidationRoot;
+	friend class FSlateInvalidationWidgetList;
 	friend class FSlateWindowElementList;
 	friend class SWindow;
 	friend struct FSlateCachedElementList;
-#if WITH_SLATE_DEBUGGING
-	friend struct FInvalidatedWidgetDrawer;
-#endif
+	template<class WidgetType, typename RequiredArgsPayloadType>
+	friend struct TSlateDecl;
 public:
 
-	/**
-	 * Construct a SWidget based on initial parameters.
-	 */
+	/** Construct a SWidget based on initial parameters. */
+	 UE_DEPRECATED(4.27, "SWidget::Construct should not be called directly. Use SNew or SAssignNew to create a SWidget")
 	void Construct(
 		const TAttribute<FText>& InToolTipText,
 		const TSharedPtr<IToolTip>& InToolTip,
@@ -239,6 +220,7 @@ public:
 		const TOptional<FAccessibleWidgetData>& InAccessibleData,
 		const TArray<TSharedRef<ISlateMetaData>>& InMetaData);
 
+	UE_DEPRECATED(4.27, "SWidget::SWidgetConstruct should not be called directly. Use SNew or SAssignNew to create a SWidget")
 	void SWidgetConstruct(const TAttribute<FText>& InToolTipText,
 		const TSharedPtr<IToolTip>& InToolTip,
 		const TAttribute< TOptional<EMouseCursor::Type> >& InCursor,
@@ -689,7 +671,6 @@ public:
 
 protected:
 	virtual bool CustomPrepass(float LayoutScaleMultiplier) { return false; }
-	bool AssignIndicesToChildren(FSlateInvalidationRoot& Root, int32 ParentIndex, TArray<FWidgetProxy, TMemStackAllocator<>>& FastPathList, bool bParentVisible, bool bParentVolatile);
 
 	/**
 	 * The system calls this method. It performs a breadth-first traversal of every visible widget and asks
@@ -718,6 +699,9 @@ protected:
 	}
 
 private:
+	void SetFastPathProxyHandle(const FWidgetProxyHandle& Handle) { FastPathProxyHandle = Handle; }
+	void SetFastPathProxyHandle(const FWidgetProxyHandle& Handle, bool bInvisibleDueToParentOrSelfVisibility, bool bParentVolatile);
+	void SetFastPathSortOrder(const FSlateInvalidationWidgetSortOrder SortOrder);
 
 	void UpdateFastPathVisibility(bool bParentVisible, bool bWidgetRemoved, FHittestGrid* ParentHittestGrid);
 
@@ -739,19 +723,13 @@ private:
 	void AddUpdateFlags(EWidgetUpdateFlags FlagsToAdd)
 	{
 		UpdateFlags |= FlagsToAdd;
-		if (FastPathProxyHandle.IsValid())
-		{
-			FastPathProxyHandle.UpdateWidgetFlags(UpdateFlags);
-		}
+		FastPathProxyHandle.UpdateWidgetFlags(this, UpdateFlags);
 	}
 
 	void RemoveUpdateFlags(EWidgetUpdateFlags FlagsToRemove)
 	{
 		UpdateFlags &= (~FlagsToRemove);
-		if (FastPathProxyHandle.IsValid())
-		{
-			FastPathProxyHandle.UpdateWidgetFlags(UpdateFlags);
-		}
+		FastPathProxyHandle.UpdateWidgetFlags(this, UpdateFlags);
 
 #if WITH_SLATE_DEBUGGING
 		if (EnumHasAnyFlags(FlagsToRemove, EWidgetUpdateFlags::NeedsRepaint))
@@ -763,8 +741,11 @@ private:
 
 	void UpdateWidgetProxy(int32 NewLayerId, FSlateCachedElementsHandle& CacheHandle);
 
+public:
+
 #if WITH_SLATE_DEBUGGING
 	uint32 Debug_GetLastPaintFrame() const { return LastPaintFrame; }
+private:
 	void Debug_UpdateLastPaintFrame() { LastPaintFrame = GFrameNumber; }
 #endif
 
@@ -937,11 +918,19 @@ public:
 	/** @return True if this widget is directly hovered */
 	virtual bool IsDirectlyHovered() const;
 
-	/** @return is this widget visible, hidden or collapsed */
+	/**
+	 * @return is this widget visible, hidden or collapsed.
+	 * @note this widget can be visible but if a parent is hidden or collapsed, it would not show on screen. */
 	FORCEINLINE EVisibility GetVisibility() const { return Visibility.Get(); }
 
 	/** @param InVisibility  should this widget be */
 	virtual void SetVisibility(TAttribute<EVisibility> InVisibility);
+
+	/**
+	 * @return is the widget visible and his parents also visible.
+	 * @note only valid if the widget is contained by an InvalidationRoot (the proxy is valid).
+	 */
+	bool IsFastPathVisible() const { return !bInvisibleDueToParentOrSelfVisibility; }
 
 #if WITH_ACCESSIBILITY
 	/**
@@ -1012,6 +1001,7 @@ public:
 
 	/**
 	 * This widget is volatile because its parent or some ancestor is volatile
+	 * @note only valid if the widget is contained by an InvalidationRoot (the proxy is valid).
 	 */
 	FORCEINLINE bool IsVolatileIndirectly() const { return bInheritedVolatility; }
 
@@ -1216,32 +1206,28 @@ public:
 	/** Gets the desired flow direction for the layout. */
 	EFlowDirectionPreference GetFlowDirectionPreference() const { return FlowDirectionPreference; }
 
-	/**
-	 * Set the tool tip that should appear when this widget is hovered.
-	 *
-	 * @param InToolTipText  the text that should appear in the tool tip
-	 */
+	/** Set the tool tip that should appear when this widget is hovered. */
 	void SetToolTipText(const TAttribute<FText>& ToolTipText);
 
+	/** Set the tool tip that should appear when this widget is hovered. */
 	void SetToolTipText( const FText& InToolTipText );
 
-	/**
-	 * Set the tool tip that should appear when this widget is hovered.
-	 *
-	 * @param InToolTip  the widget that should appear in the tool tip
-	 */
-	void SetToolTip( const TSharedPtr<IToolTip>& InToolTip );
+	/** Set the tool tip that should appear when this widget is hovered. */
+	void SetToolTip(const TAttribute<TSharedPtr<IToolTip>>& InToolTip);
 
-	/**
-	 * Set the cursor that should appear when this widget is hovered
-	 */
+	/** Set the cursor that should appear when this widget is hovered  */
 	void SetCursor( const TAttribute< TOptional<EMouseCursor::Type> >& InCursor );
 
-	/**
-	 * Used by Slate to set the runtime debug info about this widget.
-	 */
+protected:
+
+	/** Used by Slate to set the runtime debug info about this widget. */
 	void SetDebugInfo( const ANSICHAR* InType, const ANSICHAR* InFile, int32 OnLine, size_t InAllocSize );
-	
+
+	/** The cursor to show when the mouse is hovering over this widget. */
+	TOptional<EMouseCursor::Type> GetCursor() const;
+
+public:
+
 	/**
 	 * Get the metadata of the type provided.
 	 * @return the first metadata of the type supplied that we encounter
@@ -1249,6 +1235,7 @@ public:
 	template<typename MetaDataType>
 	TSharedPtr<MetaDataType> GetMetaData() const
 	{
+		SCOPE_CYCLE_COUNTER(STAT_SlateGetMetaData);
 		for (const auto& MetaDataEntry : MetaData)
 		{
 			if (MetaDataEntry->IsOfType<MetaDataType>())
@@ -1266,6 +1253,7 @@ public:
 	template<typename MetaDataType>
 	TArray<TSharedRef<MetaDataType>> GetAllMetaData() const
 	{
+		SCOPE_CYCLE_COUNTER(STAT_SlateGetMetaData);
 		TArray<TSharedRef<MetaDataType>> FoundMetaData;
 		for (const auto& MetaDataEntry : MetaData)
 		{
@@ -1287,9 +1275,49 @@ public:
 		AddMetadataInternal(AddMe);
 	}
 
+	/**
+	 * Remove metadata to this widget.
+	 * @returns Number of removed elements.
+	 */
+	template<typename MetaDataType>
+	int32 RemoveMetaData(const TSharedRef<MetaDataType>& RemoveMe)
+	{
+		return MetaData.RemoveSingleSwap(RemoveMe);
+	}
+
 private:
 
 	void AddMetadataInternal(const TSharedRef<ISlateMetaData>& AddMe);
+
+	template<typename MetaDataType>
+	int32 RemoveAllMetaData()
+	{
+		int32 NumBefore = MetaData.Num();
+		for (int32 Index = NumBefore - 1; Index >= 0; --Index)
+		{
+			const auto& MetaDataEntry = MetaData[Index];
+			if (MetaDataEntry->IsOfType<MetaDataType>())
+			{
+				MetaData.RemoveAtSwap(Index);
+			}
+		}
+		return NumBefore - MetaData.Num();
+	}
+
+	template<typename MetaDataType>
+	bool RemoveMetaData()
+	{
+		for (int32 Index = MetaData.Num() - 1; Index >= 0; --Index)
+		{
+			const auto& MetaDataEntry = MetaData[Index];
+			if (MetaDataEntry->IsOfType<MetaDataType>())
+			{
+				MetaData.RemoveAtSwap(Index);
+				return true;
+			}
+		}
+		return false;
+	}
 
 public:
 
@@ -1367,6 +1395,8 @@ public:
 	/** Is this widget derivative of SWindow */
 	virtual bool Advanced_IsWindow() const { return false; }
 	virtual bool Advanced_IsInvalidationRoot() const { return false; }
+	virtual const FSlateInvalidationRoot* Advanced_AsInvalidationRoot() const { return nullptr; }
+
 protected:
 
 	/**
@@ -1377,6 +1407,9 @@ protected:
 	 * @see SNew
 	 */
 	SWidget();
+
+	/** Construct a SWidget based on initial parameters. */
+	void SWidgetConstruct(const FSlateBaseNamedArgs& Args);
 
 	/** 
 	 * Find the geometry of a descendant widget. This method assumes that WidgetsToFind are a descendants of this widget.
@@ -1485,6 +1518,9 @@ private:
 protected:
 
 	float GetPrepassLayoutScaleMultiplier() const { return PrepassLayoutScaleMultiplier.Get(1.0f); }
+	
+	void Prepass_ChildLoop(float InLayoutScaleMultiplier, FChildren* MyChildren);
+
 public:
 	/**
 	 * Registers an "active timer" delegate that will execute at some regular interval. TickFunction will not be called until the specified interval has elapsed once.
@@ -1524,9 +1560,6 @@ private:
 	/** Iterates over the active timer handles on the widget and executes them if their interval has elapsed. */
 	void ExecuteActiveTimers(double CurrentTime, float DeltaTime);
 
-	const FPointerEventHandler* GetPointerEvent(const FName EventName) const;
-	void SetPointerEvent(const FName EventName, FPointerEventHandler& InEvent);
-
 protected:
 	/**
 	 * Performs the attribute assignment and invalidates the widget minimally based on what actually changed.  So if the boundness of the attribute didn't change
@@ -1543,9 +1576,9 @@ protected:
 	virtual ~SWidget();
 
 private:
-
 	/** Handle to the proxy when on the fast path */
 	mutable FWidgetProxyHandle FastPathProxyHandle;
+
 protected:
 	/** Is this widget hovered? */
 	uint8 bIsHovered : 1;
@@ -1566,6 +1599,7 @@ protected:
 	  * really do the clipping.
 	  */
 	uint8 bClippingProxy : 1;
+
 private:
 	/**
 	 * Whether this widget is a "tool tip force field".  That is, tool-tips should never spawn over the area
@@ -1588,8 +1622,6 @@ private:
 	/** Are we currently updating the desired size? */
 	uint8 bNeedsPrepass : 1;
 
-	uint8 bNeedsDesiredSize : 1;
-
 	/** Are we currently updating the desired size? */
 	mutable uint8 bUpdatingDesiredSize : 1;
 
@@ -1600,11 +1632,6 @@ protected:
 	
 	/** if this widget should always invalidate the prepass step when volatile */
 	uint8 bVolatilityAlwaysInvalidatesPrepass : 1;
-
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	UE_DEPRECATED(4.21, "Setting bCanTick on a widget directly is deprecated and will not function.  Call SetCanTick instead")
-	uint8 bCanTick : 1;
-#endif
 
 #if WITH_ACCESSIBILITY
 	/** All variables surrounding how this widget is exposed to the platform's accessibility API. */
@@ -1672,7 +1699,7 @@ protected:
 	/** Is this widget visible, hidden or collapsed */
 	TAttribute< EVisibility > Visibility;
 
-	/** The opacity of the widget.  Automatically applied during rendering. */
+	/** The opacity of the widget. Automatically applied during rendering. */
 	float RenderOpacity;
 
 	/** Render transform of this widget. TOptional<> to allow code to skip expensive overhead if there is no render transform applied. */
@@ -1681,38 +1708,31 @@ protected:
 	/** Render transform pivot of this widget (in normalized local space) */
 	TAttribute< FVector2D > RenderTransformPivot;
 
+private:
+	/** Metadata associated with this widget. */
+	TArray<TSharedRef<ISlateMetaData>> MetaData;
+
+	/** Pointer to this widgets parent widget.  If it is null this is a root widget or it is not in the widget tree */
+	TWeakPtr<SWidget> ParentWidgetPtr;
+
 	/** Debugging information on the type of widget we're creating for the Widget Reflector. */
 	FName TypeOfWidget;
 
 #if !UE_BUILD_SHIPPING
-
 	/** Full file path (and line) in which this widget was created */
 	FName CreatedInLocation;
-
 #endif
 
 	/** Tag for this widget */
 	FName Tag;
 
-	/** Metadata associated with this widget */
-	TArray<TSharedRef<ISlateMetaData>> MetaData;
-
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	UE_DEPRECATED(4.27, "Access to SWidget::Cursor is deprecated and will not function. Call SetCursor/GetCursor instead")
 	/** The cursor to show when the mouse is hovering over this widget. */
-	TAttribute< TOptional<EMouseCursor::Type> > Cursor;
+	TAttribute<TOptional<EMouseCursor::Type>> Cursor;
+#endif
 
 private:
-
-	/** Tool tip content for this widget */
-	TSharedPtr<IToolTip> ToolTip;
-
-	/** Pointer to this widgets parent widget.  If it is null this is a root widget or it is not in the widget tree */
-	TWeakPtr<SWidget> ParentWidgetPtr;
-
-	// Events
-	TArray<TPair<FName, FPointerEventHandler>> PointerEvents;
-
-	FNoReplyPointerEventHandler MouseEnterHandler;
-	FSimpleNoReplyPointerEventHandler MouseLeaveHandler;
 
 #if UE_SLATE_WITH_WIDGET_UNIQUE_IDENTIFIER
 	/** The widget's id */

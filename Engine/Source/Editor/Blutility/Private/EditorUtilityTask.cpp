@@ -34,6 +34,9 @@ UWorld* UEditorUtilityTask::GetWorld() const
 
 void UEditorUtilityTask::StartExecutingTask()
 {
+	Cached_GIsRunningUnattendedScript = GIsRunningUnattendedScript;
+	GIsRunningUnattendedScript = true;
+
 	CreateNotification();
 
 	BeginExecution();
@@ -52,6 +55,8 @@ void UEditorUtilityTask::FinishExecutingTask()
 		TaskNotification->SetComplete(true);
 		TaskNotification.Reset();
 	}
+
+	GIsRunningUnattendedScript = Cached_GIsRunningUnattendedScript;
 }
 
 void UEditorUtilityTask::CreateNotification()
@@ -59,8 +64,26 @@ void UEditorUtilityTask::CreateNotification()
 	FAsyncTaskNotificationConfig NotificationConfig;
 	NotificationConfig.TitleText = FText::Format(LOCTEXT("NotificationEditorUtilityTaskTitle", "Task {0}"), GetClass()->GetDisplayNameText());
 	NotificationConfig.ProgressText = LOCTEXT("Running", "Running");
-	NotificationConfig.bCanCancel = false; // TODO Add canceling support.
+	NotificationConfig.bCanCancel = true;
 	TaskNotification = MakeUnique<FAsyncTaskNotification>(NotificationConfig);
+}
+
+void UEditorUtilityTask::RequestCancel()
+{
+	bCancelRequested = true;
+}
+
+bool UEditorUtilityTask::WasCancelRequested() const
+{
+	if (TaskNotification.IsValid())
+	{
+		if (TaskNotification->GetPromptAction() == EAsyncTaskNotificationPromptAction::Cancel)
+		{
+			return true;
+		}
+	}
+
+	return bCancelRequested;
 }
 
 void UEditorUtilityTask::SetTaskNotificationText(const FText& Text)

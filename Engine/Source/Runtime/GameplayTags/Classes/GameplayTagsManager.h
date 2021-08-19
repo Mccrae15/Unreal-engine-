@@ -9,11 +9,13 @@
 #include "UObject/ScriptMacros.h"
 #include "GameplayTagContainer.h"
 #include "Engine/DataTable.h"
+#include "Templates/UniquePtr.h"
 
 #include "GameplayTagsManager.generated.h"
 
 class UGameplayTagsList;
 struct FStreamableHandle;
+class FNativeGameplayTag;
 
 /** Simple struct for a table row in the gameplay tag table and element in the ini list */
 USTRUCT()
@@ -114,6 +116,9 @@ struct GAMEPLAYTAGS_API FGameplayTagSource
 	{
 	}
 
+	/** Returns the config file that created this source, if valid */
+	FString GetConfigFileName() const;
+
 	static FName GetNativeName();
 
 	static FName GetDefaultName();
@@ -125,6 +130,35 @@ struct GAMEPLAYTAGS_API FGameplayTagSource
 
 	static FName GetTransientEditorName();
 #endif
+};
+
+/** Struct describing the places to look for ini search paths */
+struct FGameplayTagSearchPathInfo
+{
+	/** Which sources should be loaded from this path */
+	TArray<FName> SourcesInPath;
+
+	/** Config files to load from, will normally correspond to FoundSources */
+	TArray<FString> TagIniList;
+
+	/** True if this path has already been searched */
+	bool bWasSearched = false;
+
+	/** True if the tags in sources have been added to the current tree */
+	bool bWasAddedToTree = false;
+
+	FORCEINLINE void Reset()
+	{
+		SourcesInPath.Reset();
+		TagIniList.Reset();
+		bWasSearched = false;
+		bWasAddedToTree = false;
+	}
+
+	FORCEINLINE bool IsValid()
+	{
+		return bWasSearched && bWasAddedToTree;
+	}
 };
 
 /** Simple tree node for gameplay tags, this stores metadata about specific tags */
@@ -182,7 +216,7 @@ struct FGameplayTagNode
 	*
 	* @return The net index of this node
 	*/
-	FORCEINLINE FGameplayTagNetIndex GetNetIndex() const { return NetIndex; }
+	FORCEINLINE FGameplayTagNetIndex GetNetIndex() const { check(NetIndex != INVALID_TAGNETINDEX); return NetIndex; }
 
 	/** Reset the node of all of its values */
 	GAMEPLAYTAGS_API void ResetNode();
@@ -326,6 +360,11 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	 */
 	FGameplayTag AddNativeGameplayTag(FName TagName, const FString& TagDevComment = TEXT("(Native)"));
 
+private:
+	void AddNativeGameplayTag(FNativeGameplayTag* TagSource);
+	void RemoveNativeGameplayTag(const FNativeGameplayTag* TagSource);
+
+public:
 	/** Call to flush the list of native tags, once called it is unsafe to add more */
 	void DoneAddingNativeTags();
 
@@ -362,11 +401,29 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	 */
 	FORCEINLINE_DEBUGGABLE const FGameplayTagContainer* GetSingleTagContainer(const FGameplayTag& GameplayTag) const
 	{
-		TSharedPtr<FGameplayTagNode> TagNode = FindTagNode(GameplayTag);
-		if (TagNode.IsValid())
+		// Doing this with pointers to avoid a shared ptr reference count change
+		const TSharedPtr<FGameplayTagNode>* Node = GameplayTagNodeMap.Find(GameplayTag);
+
+		if (Node)
 		{
-			return &(TagNode->GetSingleTagContainer());
+			return &(*Node)->GetSingleTagContainer();
 		}
+#if WITH_EDITOR
+		// Check redirector
+		if (GIsEditor && GameplayTag.IsValid())
+		{
+			FGameplayTag RedirectedTag = GameplayTag;
+
+			RedirectSingleGameplayTag(RedirectedTag, nullptr);
+
+			Node = GameplayTagNodeMap.Find(RedirectedTag);
+
+			if (Node)
+			{
+				return &(*Node)->GetSingleTagContainer();
+			}
+		}
+#endif
 		return nullptr;
 	}
 
@@ -423,6 +480,9 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	/** Loads tag inis contained in the specified path */
 	void AddTagIniSearchPath(const FString& RootDir);
 
+	/** Gets all the current directories to look for tag sources in */
+	void GetTagSourceSearchPaths(TArray<FString>& OutPaths);
+
 	/** Helper function to construct the gameplay tag tree */
 	void ConstructGameplayTagTree();
 
@@ -457,6 +517,12 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	 */
 	int32 GameplayTagsMatchDepth(const FGameplayTag& GameplayTagOne, const FGameplayTag& GameplayTagTwo) const;
 
+	/** Returns the number of parents a particular gameplay tag has.  Useful as a quick way to determine which tags may
+	 * be more "specific" than other tags without comparing whether they are in the same hierarchy or anything else.
+	 * Example: "TagA.SubTagA" has 2 Tag Nodes.  "TagA.SubTagA.LeafTagA" has 3 Tag Nodes.
+	 */ 
+	int32 GetNumberOfTagNodes(const FGameplayTag& GameplayTag) const;
+
 	/** Returns true if we should import tags from UGameplayTagsSettings objects (configured by INI files) */
 	bool ShouldImportTagsFromINI() const;
 
@@ -466,6 +532,12 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 		return bShouldWarnOnInvalidTags;
 	}
 
+	/** Should we clear references to invalid tags loaded/saved in the editor */
+	bool ShouldClearInvalidTags() const
+	{
+		return bShouldClearInvalidTags;
+	}
+
 	/** Should use fast replication */
 	bool ShouldUseFastReplication() const
 	{
@@ -473,7 +545,7 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	}
 
 	/** Returns the hash of NetworkGameplayTagNodeIndex */
-	uint32 GetNetworkGameplayTagNodeIndexHash() const {	return NetworkGameplayTagNodeIndexHash;	}
+	uint32 GetNetworkGameplayTagNodeIndexHash() const { VerifyNetworkIndex(); return NetworkGameplayTagNodeIndexHash; }
 
 	/** Returns a list of the ini files that contain restricted tags */
 	void GetRestrictedTagConfigFiles(TArray<FString>& RestrictedConfigFiles) const;
@@ -497,30 +569,40 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	void RedirectSingleGameplayTag(FGameplayTag& Tag, FProperty* SerializingProperty) const;
 
 	/** Handles establishing a single tag from an imported tag name (accounts for redirects too). Called when tags are imported via text. */
-	bool ImportSingleGameplayTag(FGameplayTag& Tag, FName ImportedTagName) const;
+	bool ImportSingleGameplayTag(FGameplayTag& Tag, FName ImportedTagName, bool bImportFromSerialize = false) const;
 
 	/** Gets a tag name from net index and vice versa, used for replication efficiency */
 	FName GetTagNameFromNetIndex(FGameplayTagNetIndex Index) const;
 	FGameplayTagNetIndex GetNetIndexFromTag(const FGameplayTag &InTag) const;
 
 	/** Cached number of bits we need to replicate tags. That is, Log2(Number of Tags). Will always be <= 16. */
-	int32 NetIndexTrueBitNum;
-	
+	int32 GetNetIndexTrueBitNum() const { VerifyNetworkIndex(); return NetIndexTrueBitNum; }
+
 	/** The length in bits of the first segment when net serializing tags. We will serialize NetIndexFirstBitSegment + 1 bit to indicatore "more" (more = second segment that is NetIndexTrueBitNum - NetIndexFirstBitSegment) */
-	int32 NetIndexFirstBitSegment;
+	int32 GetNetIndexFirstBitSegment() const { VerifyNetworkIndex(); return NetIndexFirstBitSegment; }
+
+	/** This is the actual value for an invalid tag "None". This is computed at runtime as (Total number of tags) + 1 */
+	FGameplayTagNetIndex GetInvalidTagNetIndex() const { VerifyNetworkIndex(); return InvalidTagNetIndex; }
+
+	const TArray<TSharedPtr<FGameplayTagNode>>& GetNetworkGameplayTagNodeIndex() const { VerifyNetworkIndex(); return NetworkGameplayTagNodeIndex; }
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnGameplayTagLoaded, const FGameplayTag& /*Tag*/)
+	FOnGameplayTagLoaded OnGameplayTagLoadedDelegate;
 
 	/** Numbers of bits to use for replicating container size. This can be set via config. */
 	int32 NumBitsForContainerSize;
 
+private:
+	/** Cached number of bits we need to replicate tags. That is, Log2(Number of Tags). Will always be <= 16. */
+	int32 NetIndexTrueBitNum;
+
+	/** The length in bits of the first segment when net serializing tags. We will serialize NetIndexFirstBitSegment + 1 bit to indicatore "more" (more = second segment that is NetIndexTrueBitNum - NetIndexFirstBitSegment) */
+	int32 NetIndexFirstBitSegment;
+
 	/** This is the actual value for an invalid tag "None". This is computed at runtime as (Total number of tags) + 1 */
 	FGameplayTagNetIndex InvalidTagNetIndex;
 
-	const TArray<TSharedPtr<FGameplayTagNode>>& GetNetworkGameplayTagNodeIndex() const { return NetworkGameplayTagNodeIndex; }
-
-	bool IsNativelyAddedTag(FGameplayTag Tag) const;
-
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnGameplayTagLoaded, const FGameplayTag& /*Tag*/)
-	FOnGameplayTagLoaded OnGameplayTagLoadedDelegate;
+public:
 
 #if WITH_EDITOR
 	/** Gets a Filtered copy of the GameplayRootTags Array based on the comma delimited filter string passed in */
@@ -583,6 +665,24 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	/** Allows dynamic hiding of gameplay tags in SGameplayTagWidget. Allows higher order structs to dynamically change which tags are visible based on its own data */
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnFilterGameplayTagChildren, const FString&  /** FilterString */, TSharedPtr<FGameplayTagNode>& /* TagNode */, bool& /* OUT OutShouldHide */)
 	FOnFilterGameplayTagChildren OnFilterGameplayTagChildren;
+
+	struct FFilterGameplayTagContext
+	{
+		const FString& FilterString;
+		const TSharedPtr<FGameplayTagNode>& TagNode;
+		const FGameplayTagSource* TagSource;
+		const TSharedPtr<IPropertyHandle>& ReferencingPropertyHandle;
+
+		FFilterGameplayTagContext(const FString& InFilterString, const TSharedPtr<FGameplayTagNode>& InTagNode, const FGameplayTagSource* InTagSource, const TSharedPtr<IPropertyHandle>& InReferencingPropertyHandle)
+			: FilterString(InFilterString), TagNode(InTagNode), TagSource(InTagSource), ReferencingPropertyHandle(InReferencingPropertyHandle)
+		{}
+	};
+	/*
+	 * Allows dynamic hiding of gameplay tags in SGameplayTagWidget. Allows higher order structs to dynamically change which tags are visible based on its own data
+	 * Applies to all tags, and has more context than OnFilterGameplayTagChildren
+	 */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnFilterGameplayTag, const FFilterGameplayTagContext& /** InContext */, bool& /* OUT OutShouldHide */)
+	FOnFilterGameplayTag OnFilterGameplayTag;
 	
 	void NotifyGameplayTagDoubleClickedEditor(FString TagName);
 	
@@ -643,6 +743,7 @@ private:
 	friend class FGameplayTagsEditorModule;
 	friend class UGameplayTagsSettings;
 	friend class SAddNewGameplayTagSourceWidget;
+	friend class FNativeGameplayTag;
 
 	/**
 	 * Helper function to insert a tag into a tag node array
@@ -682,16 +783,34 @@ private:
 	void GetAllParentNodeNames(TSet<FName>& NamesList, TSharedPtr<FGameplayTagNode> GameplayTag) const;
 
 	/** Returns the tag source for a given tag source name, or null if not found */
-	FGameplayTagSource* FindOrAddTagSource(FName TagSourceName, EGameplayTagSourceType SourceType);
+	FGameplayTagSource* FindOrAddTagSource(FName TagSourceName, EGameplayTagSourceType SourceType, const FString& RootDirToUse = FString());
 
 	/** Constructs the net indices for each tag */
 	void ConstructNetIndex();
 
-	/** Reads the restricted config info from the specified ini */
-	void GetRestrictedConfigsFromIni(const FString& IniFilePath, TArray<struct FRestrictedConfigInfo>& OutRestrictedConfigs) const;
-
 	/** Marks all of the nodes that descend from CurNode as having an ancestor node that has a source conflict. */
 	void MarkChildrenOfNodeConflict(TSharedPtr<FGameplayTagNode> CurNode);
+
+	void VerifyNetworkIndex() const
+	{
+		if (bNetworkIndexInvalidated)
+		{
+			const_cast<UGameplayTagsManager*>(this)->ConstructNetIndex();
+		}
+	}
+
+	void InvalidateNetworkIndex() { bNetworkIndexInvalidated = true; }
+
+	// Tag Sources
+	///////////////////////////////////////////////////////
+
+	/** These are the old native tags that use to be resisted via a function call with no specific site/ownership. */
+	TSet<FName> LegacyNativeTags;
+
+	/** Map of all config directories to load tag inis from */
+	TMap<FString, FGameplayTagSearchPathInfo> RegisteredSearchPaths;
+
+
 
 	/** Roots of gameplay tag nodes */
 	TSharedPtr<FGameplayTagNode> GameplayRootTag;
@@ -702,16 +821,11 @@ private:
 	/** Our aggregated, sorted list of commonly replicated tags. These tags are given lower indices to ensure they replicate in the first bit segment. */
 	TArray<FGameplayTag> CommonlyReplicatedTags;
 
-	/** List of gameplay tag sources */
+	/** Map of gameplay tag source names to source objects */
 	UPROPERTY()
-	TArray<FGameplayTagSource> TagSources;
-
-	/** List of native tags to add when reconstructing tree */
-	TSet<FName> NativeTagsToAdd;
+	TMap<FName, FGameplayTagSource> TagSources;
 
 	TSet<FName> RestrictedGameplayTagSourceNames;
-
-	TArray<FString> ExtraTagIniList;
 
 	bool bIsConstructingGameplayTagTree = false;
 
@@ -720,6 +834,9 @@ private:
 
 	/** Cached runtime value for whether we should warn when loading invalid tags */
 	bool bShouldWarnOnInvalidTags;
+
+	/** Cached runtime value for whether we should warn when loading invalid tags */
+	bool bShouldClearInvalidTags;
 
 	/** True if native tags have all been added and flushed */
 	bool bDoneAddingNativeTags;
@@ -741,12 +858,11 @@ private:
 
 	uint32 NetworkGameplayTagNodeIndexHash;
 
+	bool bNetworkIndexInvalidated = true;
+
 	/** Holds all of the valid gameplay-related tags that can be applied to assets */
 	UPROPERTY()
 	TArray<UDataTable*> GameplayTagTables;
-
-	/** The map of ini-configured tag redirectors */
-	TMap<FName, FGameplayTag> TagRedirects;
 
 	const static FName NAME_Categories;
 	const static FName NAME_GameplayTagFilter;

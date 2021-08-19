@@ -14,6 +14,7 @@
 #include "SelectionSystem/DataprepFetcher.h"
 #include "SelectionSystem/DataprepFilter.h"
 #include "SelectionSystem/DataprepSelectionTransform.h"
+#include "Parameterization/DataprepParameterization.h"
 
 // Engine include
 #include "ActorEditorUtils.h"
@@ -123,6 +124,13 @@ void UDataprepActionAsset::Execute(const TArray<UObject*>& InObjects)
 				TArray<UObject*>& Objects = OperationContext->Context->Objects;
 				OperationContext->Context->Objects = Filter->FilterObjects( TArrayView<UObject*>( Objects.GetData(), Objects.Num() ) );
 			}
+			else if ( StepType == UDataprepFilterNoFetcher::StaticClass() )
+			{
+				UDataprepFilterNoFetcher* Filter = static_cast<UDataprepFilterNoFetcher*>( StepObject );
+
+				TArray<UObject*>& Objects = OperationContext->Context->Objects;
+				OperationContext->Context->Objects = Filter->FilterObjects( TArrayView<UObject*>( Objects.GetData(), Objects.Num() ) );
+			}
 			else if ( StepType == UDataprepSelectionTransform::StaticClass() )
 			{
 				UDataprepSelectionTransform* SelectionTransform = static_cast<UDataprepSelectionTransform*>(StepObject);
@@ -198,6 +206,18 @@ int32 UDataprepActionAsset::AddStep(TSubclassOf<UDataprepParameterizableObject> 
 				UE_LOG(LogDataprepCore, Error, TEXT("The fetcher type (%s) is not used by a filter."), *StepType->GetPathName() )
 			}
 		}
+		else if ( ValidRootClass == UDataprepFilterNoFetcher::StaticClass() )
+		{
+			Modify();
+			UDataprepActionStep* ActionStep = NewObject< UDataprepActionStep >( this, UDataprepActionStep::StaticClass(), NAME_None, RF_Transactional );
+			UDataprepFilterNoFetcher* Filter = NewObject< UDataprepFilterNoFetcher >( ActionStep, StepType.Get(), NAME_None, RF_Transactional );
+			ActionStep->StepObject = Filter;
+			ActionStep->PathOfStepObjectClass = ActionStep->StepObject->GetClass();
+			ActionStep->bIsEnabled = true;
+			Steps.Add( ActionStep );
+			OnStepsOrderChanged.Broadcast();
+			return Steps.Num() - 1;
+		}
 
 		// Please keep this function up to date with FDataprepCoreUtils::IsClassValidForStepCreation
 		check( false );
@@ -208,12 +228,33 @@ int32 UDataprepActionAsset::AddStep(TSubclassOf<UDataprepParameterizableObject> 
 	return INDEX_NONE;
 }
 
+UDataprepActionStep* UDataprepActionAsset::DuplicateStep(const UDataprepActionStep* InActionStep)
+{
+	UDataprepActionStep* NewActionStep = DuplicateObject<UDataprepActionStep>( InActionStep, this );
+
+	UDataprepAsset* DataprepAsset = FDataprepCoreUtils::GetDataprepAssetOfObject(this);
+	check(DataprepAsset);
+
+	NewActionStep->StepObject = DuplicateObject<UDataprepParameterizableObject>(InActionStep->GetStepObject(), NewActionStep);
+	NewActionStep->PathOfStepObjectClass = NewActionStep->StepObject->GetClass();
+
+	if (const UDataprepParameterizableObject* OriginalObject = InActionStep->GetStepObject())
+	{
+		if (UDataprepParameterization* Parameterization = DataprepAsset->GetDataprepParameterization())
+		{
+			Parameterization->DuplicateObjectParamaterization(InActionStep->GetStepObject(), NewActionStep->GetStepObject());
+		}
+	}
+	
+	return NewActionStep;
+}
+
 int32 UDataprepActionAsset::AddStep(const UDataprepActionStep* InActionStep)
 {
 	if ( InActionStep )
 	{
 		Modify();
-		UDataprepActionStep* ActionStep = DuplicateObject<UDataprepActionStep>( InActionStep, this );
+		UDataprepActionStep* ActionStep = DuplicateStep(InActionStep);
 		ActionStep->SetFlags(EObjectFlags::RF_Transactional);
 		Steps.Add( ActionStep );
 		OnStepsOrderChanged.Broadcast();
@@ -238,7 +279,7 @@ int32 UDataprepActionAsset::AddSteps(const TArray<const UDataprepActionStep*>& I
 		{
 			if(InActionStep)
 			{
-				UDataprepActionStep* ActionStep = DuplicateObject<UDataprepActionStep>( InActionStep, this );
+				UDataprepActionStep* ActionStep = DuplicateStep( InActionStep );
 				ActionStep->SetFlags(EObjectFlags::RF_Transactional);
 				Steps.Add( ActionStep );
 			}
@@ -292,7 +333,7 @@ bool UDataprepActionAsset::InsertStep(const UDataprepActionStep* InActionStep, i
 	if ( InActionStep )
 	{
 		Modify();
-		UDataprepActionStep* ActionStep = DuplicateObject<UDataprepActionStep>( InActionStep, this);
+		UDataprepActionStep* ActionStep = DuplicateStep( InActionStep );
 		ActionStep->SetFlags(EObjectFlags::RF_Transactional);
 		Steps.Insert( ActionStep, Index );
 		OnStepsOrderChanged.Broadcast();
@@ -324,7 +365,7 @@ bool UDataprepActionAsset::InsertSteps(const TArray<const UDataprepActionStep*>&
 		{
 			if(InActionStep)
 			{
-				UDataprepActionStep* ActionStep = DuplicateObject<UDataprepActionStep>( InActionStep, this );
+				UDataprepActionStep* ActionStep = DuplicateStep( InActionStep );
 				ActionStep->SetFlags(EObjectFlags::RF_Transactional);
 				Steps.Insert( ActionStep, Index );
 			}
@@ -446,18 +487,18 @@ bool UDataprepActionAsset::SwapSteps(int32 FirstIndex, int32 SecondIndex)
 	return false;
 }
 
-bool UDataprepActionAsset::RemoveStep(int32 Index)
+bool UDataprepActionAsset::RemoveStep(int32 Index, bool bDiscardParametrization)
 {
 	if ( Steps.IsValidIndex( Index ) )
 	{
-		return RemoveSteps({ Index });
+		return RemoveSteps({ Index }, bDiscardParametrization);
 	}
 
 	UE_LOG( LogDataprepCore, Error, TEXT("UDataprepActionAsset::RemoveStep: The Index is out of range") );
 	return false;
 }
 
-bool UDataprepActionAsset::RemoveSteps(const TArray<int32>& Indices)
+bool UDataprepActionAsset::RemoveSteps(const TArray<int32>& Indices, bool bDiscardParametrization)
 {
 	if(Indices.Num() == 0)
 	{
@@ -469,27 +510,37 @@ bool UDataprepActionAsset::RemoveSteps(const TArray<int32>& Indices)
 
 	Modify();
 
-	for(int32 Index : Indices)
+	// Remove steps back to front so array indices stay valid
+	TArray<int32> SortedIndices( Indices );
+	SortedIndices.Sort( []( int32 Idx0, int32 Idx1 ) -> bool
+	{
+		return Idx0 > Idx1;
+	});
+
+	for(int32 Index : SortedIndices)
 	{
 		if ( Steps.IsValidIndex( Index ) )
 		{
 			bSuccesfulRemoval = true;
 
-			if ( UDataprepAsset* DataprepAsset = FDataprepCoreUtils::GetDataprepAssetOfObject( this ) )
+			if ( bDiscardParametrization )
 			{
-				TArray< UObject* > Objects;
-				GetObjectsWithOuter( Steps[Index], Objects );
-				TArray< UDataprepParameterizableObject* > ParameterizableObjects;
-				ParameterizableObjects.Reserve( Objects.Num() );
-				for ( UObject* Object : Objects )
+				if ( UDataprepAsset* DataprepAsset = FDataprepCoreUtils::GetDataprepAssetOfObject( this ) )
 				{
-					if (UDataprepParameterizableObject* ParameterizableObject = Cast<UDataprepParameterizableObject>( Object ) )
+					TArray< UObject* > Objects;
+					GetObjectsWithOuter( Steps[Index], Objects );
+					TArray< UDataprepParameterizableObject* > ParameterizableObjects;
+					ParameterizableObjects.Reserve( Objects.Num() );
+					for ( UObject* Object : Objects )
 					{
-						ParameterizableObjects.Add( ParameterizableObject );
+						if (UDataprepParameterizableObject* ParameterizableObject = Cast<UDataprepParameterizableObject>( Object ) )
+						{
+							ParameterizableObjects.Add( ParameterizableObject );
+						}
 					}
-				}
 
-				UDataprepAsset::FRestrictedToActionAsset::NotifyAssetOfTheRemovalOfSteps( *DataprepAsset, MakeArrayView<UDataprepParameterizableObject*>( ParameterizableObjects.GetData(), ParameterizableObjects.Num() ) );
+					UDataprepAsset::FRestrictedToActionAsset::NotifyAssetOfTheRemovalOfSteps( *DataprepAsset, MakeArrayView<UDataprepParameterizableObject*>( ParameterizableObjects.GetData(), ParameterizableObjects.Num() ) );
+				}
 			}
 
 			OnStepsAboutToBeRemoved.Broadcast( Steps[Index]->GetStepObject() );
@@ -520,6 +571,19 @@ FOnStepAboutToBeRemoved& UDataprepActionAsset::GetOnStepAboutToBeRemoved()
 FOnStepWasEdited& UDataprepActionAsset::GetOnStepWasEdited()
 {
 	return OnStepWasEdited;
+}
+
+UDataprepActionAppearance* UDataprepActionAsset::GetAppearance()
+{
+	if (nullptr == Appearance)
+	{
+		Appearance = NewObject<UDataprepActionAppearance>(this, UDataprepActionAppearance::StaticClass(), NAME_None, RF_Transactional);
+		Appearance->bIsExpanded = true;
+		Appearance->GroupId = INDEX_NONE;
+		GetOutermost()->SetDirtyFlag(true);
+	}
+
+	return Appearance;
 }
 
 void UDataprepActionAsset::NotifyDataprepSystemsOfRemoval()
@@ -610,6 +674,11 @@ void UDataprepActionAsset::ExecuteAction(const TSharedPtr<FDataprepActionContext
 		else if ( StepType == UDataprepFilter::StaticClass() )
 		{
 			UDataprepFilter* Filter = static_cast<UDataprepFilter*>( StepObject );
+			SelectedObjects = Filter->FilterObjects( SelectedObjects );
+		}
+		else if ( StepType == UDataprepFilterNoFetcher::StaticClass() )
+		{
+			UDataprepFilterNoFetcher* Filter = static_cast<UDataprepFilterNoFetcher*>( StepObject );
 			SelectedObjects = Filter->FilterObjects( SelectedObjects );
 		}
 		else if ( StepType == UDataprepSelectionTransform::StaticClass() )

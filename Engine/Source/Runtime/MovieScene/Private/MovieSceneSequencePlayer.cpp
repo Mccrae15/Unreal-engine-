@@ -84,6 +84,7 @@ UMovieSceneSequencePlayer::UMovieSceneSequencePlayer(const FObjectInitializer& I
 	, bPendingOnStartedPlaying(false)
 	, bIsEvaluating(false)
 	, bIsMainLevelUpdate(false)
+	, bSkipNextUpdate(false)
 	, Sequence(nullptr)
 	, StartTime(0)
 	, DurationFrames(0)
@@ -204,6 +205,9 @@ void UMovieSceneSequencePlayer::PlayInternal()
 
 	if (!IsPlaying() && Sequence && CanPlay())
 	{
+		// Set playback status to playing before any calls to update the position
+		Status = EMovieScenePlayerStatus::Playing;
+
 		float PlayRate = bReversePlayback ? -PlaybackSettings.PlayRate : PlaybackSettings.PlayRate;
 
 		// If at the end and playing forwards, rewind to beginning
@@ -234,7 +238,7 @@ void UMovieSceneSequencePlayer::PlayInternal()
 		// Update now
 		if (PlaybackSettings.bRestoreState)
 		{
-			PreAnimatedState.EnableGlobalCapture();
+			RootTemplateInstance.EnableGlobalPreAnimatedStateCapture();
 		}
 
 		bPendingOnStartedPlaying = true;
@@ -419,6 +423,14 @@ void UMovieSceneSequencePlayer::StopInternal(FFrameTime TimeToResetTo)
 
 		RunLatentActions();
 	}
+	else if (RootTemplateInstance.IsValid() && RootTemplateInstance.HasEverUpdated())
+	{
+		if (PlaybackSettings.bRestoreState)
+		{
+			RestorePreAnimatedState();
+		}
+		RootTemplateInstance.Finish(*this);
+	}
 }
 
 void UMovieSceneSequencePlayer::GoToEndAndStop()
@@ -545,6 +557,16 @@ void UMovieSceneSequencePlayer::SetPlaybackPosition(FMovieSceneSequencePlaybackP
 	}
 }
 
+void UMovieSceneSequencePlayer::RestoreState()
+{
+	if (!PlaybackSettings.bRestoreState)
+	{
+		UE_LOG(LogMovieScene, Warning, TEXT("Attempting to restore pre-animated state for a player that was not set to capture pre-animated state. Please enable PlaybackSettings.bRestoreState"));
+	}
+
+	RestorePreAnimatedState();
+}
+
 bool UMovieSceneSequencePlayer::IsPlaying() const
 {
 	return Status == EMovieScenePlayerStatus::Playing;
@@ -613,11 +635,11 @@ bool UMovieSceneSequencePlayer::ShouldPause(FFrameTime NewPosition) const
 	{
 		if (!bReversePlayback)
 		{
-			bShouldPause = PauseOnFrame.GetValue() <= PlayPosition.GetCurrentPosition();
+			bShouldPause = PauseOnFrame.GetValue() <= NewPosition;
 		}
 		else
 		{
-			bShouldPause = PauseOnFrame.GetValue() >= PlayPosition.GetCurrentPosition();
+			bShouldPause = PauseOnFrame.GetValue() >= NewPosition;
 		}
 	}
 
@@ -632,6 +654,15 @@ UMovieSceneEntitySystemLinker* UMovieSceneSequencePlayer::ConstructEntitySystemL
 	}
 
 	return UMovieSceneEntitySystemLinker::CreateLinker(GetPlaybackContext());
+}
+
+void UMovieSceneSequencePlayer::InitializeForTick(UObject* Context)
+{
+	// Store a reference to the global tick manager to keep it alive while there are sequence players active.
+	if (ensure(Context))
+	{
+		TickManager = UMovieSceneSequenceTickManager::Get(Context);
+	}
 }
 
 void UMovieSceneSequencePlayer::Initialize(UMovieSceneSequence* InSequence, const FMovieSceneSequencePlaybackSettings& InSettings)
@@ -719,15 +750,14 @@ void UMovieSceneSequencePlayer::Initialize(UMovieSceneSequence* InSequence, cons
 		}
 	}
 
-
-	// Store a reference to the global tick manager to keep it alive while there are sequence players active.
-	UObject* PlaybackContext = GetPlaybackContext();
-	if (ensure(PlaybackContext))
+	if (!TickManager)
 	{
-		TickManager = UMovieSceneSequenceTickManager::Get(PlaybackContext);
+		InitializeForTick(GetPlaybackContext());
 	}
 
 	RootTemplateInstance.Initialize(*Sequence, *this, nullptr);
+
+	LatentActionManager.ClearLatentActions();
 
 	// Set up playback position (with offset) after Stop(), which will reset the starting time to StartTime
 	PlayPosition.Reset(StartTimeWithOffset);
@@ -750,11 +780,6 @@ void UMovieSceneSequencePlayer::Update(const float DeltaSeconds)
 
 		float DeltaTimeForFunction = DeltaSeconds;
 
-		if (LastTickGameTimeSeconds.IsSet() && LastTickGameTimeSeconds.GetValue() >= 0.f)
-		{
-			DeltaTimeForFunction = CurrentWorldTime - LastTickGameTimeSeconds.GetValue();
-		}
-
 		TimeController->Tick(DeltaTimeForFunction, PlayRate);
 
 		if (World)
@@ -762,13 +787,18 @@ void UMovieSceneSequencePlayer::Update(const float DeltaSeconds)
 			PlayRate *= World->GetWorldSettings()->GetEffectiveTimeDilation();
 		}
 
-		check(!bIsMainLevelUpdate && !bIsEvaluating);
-		bIsMainLevelUpdate = true;
+		if (!bSkipNextUpdate)
+		{
+			check(!bIsMainLevelUpdate && !bIsEvaluating);
+			bIsMainLevelUpdate = true;
 
-		FFrameTime NewTime = TimeController->RequestCurrentTime(GetCurrentTime(), PlayRate);
-		UpdateTimeCursorPosition(NewTime, EUpdatePositionMethod::Play);
+			FFrameTime NewTime = TimeController->RequestCurrentTime(GetCurrentTime(), PlayRate);
+			UpdateTimeCursorPosition(NewTime, EUpdatePositionMethod::Play);
 
-		bIsMainLevelUpdate = false;
+			bIsMainLevelUpdate = false;
+		}
+
+		bSkipNextUpdate = false;
 
 		// CAREFUL with stateful changes after this... in 95% of cases, the sequence evaluation was
 		// only queued up, and hasn't run yet!
@@ -971,6 +1001,9 @@ void UMovieSceneSequencePlayer::UpdateMovieSceneInstance(FMovieSceneEvaluationRa
 	UE_LOG(LogMovieScene, VeryVerbose, TEXT("Evaluating sequence %s at frame %d, subframe %f (%f fps)."), *MovieSceneSequence->GetName(), CurrentTime.Time.FrameNumber.Value, CurrentTime.Time.GetSubFrame(), CurrentTime.Rate.AsDecimal());
 #endif
 
+	// Once we have updated we must no longer skip updates
+	bSkipNextUpdate = false;
+
 	// We shouldn't be asked to run an async update if we have a blocking sequence.
 	check(!Args.bIsAsync || !EnumHasAnyFlags(MovieSceneSequence->GetFlags(), EMovieSceneSequenceFlags::BlockingEvaluation));
 	// We shouldn't be asked to run an async update if we don't have a tick manager.
@@ -1047,7 +1080,8 @@ void UMovieSceneSequencePlayer::SetTimeController(TSharedPtr<FMovieSceneTimeCont
 TArray<UObject*> UMovieSceneSequencePlayer::GetBoundObjects(FMovieSceneObjectBindingID ObjectBinding)
 {
 	TArray<UObject*> Objects;
-	for (TWeakObjectPtr<> WeakObject : FindBoundObjects(ObjectBinding.GetGuid(), ObjectBinding.GetSequenceID()))
+
+	for (TWeakObjectPtr<> WeakObject : ObjectBinding.ResolveBoundObjects(MovieSceneSequenceID::Root, *this))
 	{
 		if (UObject* Object = WeakObject.Get())
 		{
@@ -1255,6 +1289,10 @@ void UMovieSceneSequencePlayer::PostNetReceive()
 	{
 		if (bHasChangedTime)
 		{
+			// Treat all net updates as the main level update - this ensures they get evaluated as part of the 
+			// main tick manager
+			bIsMainLevelUpdate = true;
+
 			// Make sure the client time matches the server according to the client's current status
 			if (Status == EMovieScenePlayerStatus::Playing)
 			{
@@ -1307,6 +1345,9 @@ void UMovieSceneSequencePlayer::PostNetReceive()
 					{
 						SetPlaybackPosition(FMovieSceneSequencePlaybackParams(NetSyncProps.LastKnownPosition + PingLag, EUpdatePositionMethod::Jump));
 					}
+
+					// When playing back we skip this sequence's ticked update to avoid queuing 2 updates this frame
+					bSkipNextUpdate = true;
 				}
 			}
 			else if (Status == EMovieScenePlayerStatus::Stopped)
@@ -1317,6 +1358,8 @@ void UMovieSceneSequencePlayer::PostNetReceive()
 			{
 				SetPlaybackPosition(FMovieSceneSequencePlaybackParams(NetSyncProps.LastKnownPosition, EUpdatePositionMethod::Scrub));
 			}
+
+			bIsMainLevelUpdate = false;
 		}
 
 		if (bHasChangedStatus)
@@ -1372,16 +1415,29 @@ bool UMovieSceneSequencePlayer::NeedsQueueLatentAction() const
 	return bIsEvaluating;
 }
 
-void UMovieSceneSequencePlayer::QueueLatentAction(FMovieSceneSequenceLatentActionDelegate Delegate) const
+void UMovieSceneSequencePlayer::QueueLatentAction(FMovieSceneSequenceLatentActionDelegate Delegate)
 {
-	if (ensure(TickManager))
+	if (ensure(TickManager) && !EnumHasAnyFlags(Sequence->GetFlags(), EMovieSceneSequenceFlags::BlockingEvaluation))
 	{
+		// Queue latent actions on the global tick manager.
 		TickManager->AddLatentAction(Delegate);
+	}
+	else
+	{
+		// Queue latent actions locally.
+		LatentActionManager.AddLatentAction(Delegate);
 	}
 }
 
 void UMovieSceneSequencePlayer::RunLatentActions()
 {
-	TickManager->RunLatentActions(this, RootTemplateInstance.GetEntitySystemRunner());
+	if (ensure(TickManager) && !EnumHasAnyFlags(Sequence->GetFlags(), EMovieSceneSequenceFlags::BlockingEvaluation))
+	{
+		TickManager->RunLatentActions();
+	}
+	else
+	{
+		LatentActionManager.RunLatentActions(RootTemplateInstance.GetEntitySystemRunner());
+	}
 }
 

@@ -8,7 +8,6 @@
 #include "DMXEditorStyle.h"
 #include "Library/DMXEntityReference.h"
 #include "Library/DMXEntity.h"
-#include "Library/DMXEntityController.h"
 #include "Library/DMXEntityFixtureType.h"
 #include "Library/DMXEntityFixturePatch.h"
 #include "Widgets/SDMXEntityDropdownMenu.h"
@@ -137,226 +136,6 @@ void FDMXCustomization::OnEntityNameCommitted(const FText& InNewText, ETextCommi
 	}
 
 	NameEditableTextBox->SetError(FText::GetEmpty());
-}
-
-void FDMXControllersDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLayout)
-{
-	FDMXCustomization::CustomizeDetails(DetailLayout);
-
-	// Store detailLayout to force refresh the panel when protocol changed
-	DetailBuilder = &DetailLayout;
-
-	// Hide Universes for Controllers because the user should set them by range.
-	DetailLayout.HideProperty(GET_MEMBER_NAME_CHECKED(UDMXEntityUniverseManaged, Endpoints), UDMXEntityUniverseManaged::StaticClass());
-	// Hide device protocol to move it to top
-	DetailLayout.HideProperty(GET_MEMBER_NAME_CHECKED(UDMXEntityUniverseManaged, DeviceProtocol), UDMXEntityUniverseManaged::StaticClass());
-	
-	// Get and check device protocol property
-	ProtocolHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXEntityUniverseManaged, DeviceProtocol), UDMXEntityUniverseManaged::StaticClass());
-	check(ProtocolHandle.IsValid());
-	check(ProtocolHandle->IsValidHandle());
-
-	// Get and check communication mode property
-	CommunicationModeHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXEntityController, CommunicationMode));
-	check(CommunicationModeHandle.IsValid());
-	check(CommunicationModeHandle->IsValidHandle());
-	
-	// Add list of communication modes and labels to a map
-	CommunicationModeLabels.Add(EDMXCommunicationTypes::Broadcast, FString("Broadcast"));
-	CommunicationModeLabels.Add(EDMXCommunicationTypes::Unicast, FString("Unicast"));
-	CommunicationModeLabels.Add(EDMXCommunicationTypes::Multicast, FString("Multicast"));
-	
-	// Create widget for each communication mode
-	CommunicationModeWidgets.Add(EDMXCommunicationTypes::Broadcast, 
-		SNew(STextBlock)
-		.Text(FText::FromString(CommunicationModeLabels[EDMXCommunicationTypes::Broadcast])));
-
-	CommunicationModeWidgets.Add(EDMXCommunicationTypes::Unicast, 
-		SNew(STextBlock)
-		.Text(FText::FromString(CommunicationModeLabels[EDMXCommunicationTypes::Unicast])));
-
-	CommunicationModeWidgets.Add(EDMXCommunicationTypes::Multicast, 
-		SNew(STextBlock)
-		.Text(FText::FromString(CommunicationModeLabels[EDMXCommunicationTypes::Multicast])));
-	
-	// Device protocol change event
-	FSimpleDelegate OnProtocolChangedDelegate = FSimpleDelegate::CreateSP(this, &FDMXControllersDetails::OnProtocolChanged);
-	ProtocolHandle->SetOnPropertyValueChanged(OnProtocolChangedDelegate);
-	
-	// Device protocol
-	DetailLayout.EditCategory("DMX")
-		.AddProperty(ProtocolHandle);
-	
-	CreateCommunicationTypeComboBox(DetailLayout);
-}
-
-void FDMXControllersDetails::CreateCommunicationTypeComboBox(IDetailLayoutBuilder& DetailLayout)
-{
-	DetailLayout.HideProperty(GET_MEMBER_NAME_CHECKED(UDMXEntityController, CommunicationMode), UDMXEntityController::StaticClass());
-	DetailLayout.EditCategory("DMX")
-		.AddCustomRow(LOCTEXT("CommunicationMode", "Communication Mode"))
-		.NameContent()
-		[
-			CommunicationModeHandle->CreatePropertyNameWidget()
-		]
-		.ValueContent()
-		[
-			SAssignNew(CommunicationModeComboBox, SComboBox<TSharedPtr<EDMXCommunicationTypes>>)
-			.OptionsSource(&CommunicationModeOptions)
-			.OnGenerateWidget(this, &FDMXControllersDetails::OnCommunicationModeGenerateWidget)
-			.OnSelectionChanged(this, &FDMXControllersDetails::OnCommunicationModeChanged)
-			[
-				SNew(STextBlock)
-				.Text(this, &FDMXControllersDetails::GetCommunicationModeLabel)
-			]
-		];
-
-	UpdateCommunicationModeOptions();
-}
-
-void FDMXControllersDetails::OnCommunicationModeChanged(const TSharedPtr<EDMXCommunicationTypes> InSelectedMode, ESelectInfo::Type SelectInfo)
-{
-	if (InSelectedMode)
-	{
-		CommunicationModeHandle->SetValue(static_cast<uint8>(*InSelectedMode));
-	}
-}
-
-void FDMXControllersDetails::OnProtocolChanged()
-{
-	UpdateCommunicationModeOptions();
-}
-
-void FDMXControllersDetails::UpdateCommunicationModeOptions()
-{
-	const FDMXProtocolName ProtocolName = GetProtocolNameSelected();
-
-	TArray<EDMXCommunicationTypes> SupportedOptions = GetSupportedCommunicationTypes(ProtocolName);
-	CommunicationModeOptions.Empty();
-	for(EDMXCommunicationTypes Elem : SupportedOptions)
-	{
-		TSharedPtr<EDMXCommunicationTypes> SelectableOption = MakeShared<EDMXCommunicationTypes>(Elem);
-		CommunicationModeOptions.Add(SelectableOption);
-
-		// SComboBox expects the selected item to be an element of OptionsArray
-		if(GetCommunicationModeSelected() == Elem)
-		{
-			CommunicationModeComboBox->SetSelectedItem(SelectableOption);
-		}
-	}
-	CommunicationModeComboBox->RefreshOptions();
-
-	EnsureProtocolSupportsSelectedCommuncationType();
-}
-
-TArray<EDMXCommunicationTypes> FDMXControllersDetails::GetSupportedCommunicationTypes(FName ForProtocol)
-{
-	if (ForProtocol == DMX_PROTOCOLNAME_SACN)
-	{
-		return {EDMXCommunicationTypes::Unicast, EDMXCommunicationTypes::Multicast};
-
-	}
-	else if (ForProtocol == DMX_PROTOCOLNAME_ARTNET)
-	{
-		return {EDMXCommunicationTypes::Unicast, EDMXCommunicationTypes::Broadcast};
-	}
-	else
-	{
-		// Unhandled protocol type: add it above
-		checkNoEntry();
-		return {};
-	}
-}
-
-void FDMXControllersDetails::EnsureProtocolSupportsSelectedCommuncationType()
-{
-	const bool bIsCurrentCommunicationModeCompatibeWithProtocol =
-		CommunicationModeOptions.ContainsByPredicate([=](const TSharedPtr<EDMXCommunicationTypes>& Elem)
-			{
-				return *Elem.Get() == GetCommunicationModeSelected();
-			});
-	if (!bIsCurrentCommunicationModeCompatibeWithProtocol)
-	{
-		// SComboBox expects the selected item to be an element of OptionsArray
-		auto ExtractElementFromOptions = [=](EDMXCommunicationTypes ValueToFind) -> TSharedPtr<EDMXCommunicationTypes>
-		{
-			return *CommunicationModeOptions.FindByPredicate([ValueToFind](const TSharedPtr<EDMXCommunicationTypes>& Elem)
-				{
-					return *Elem.Get() == ValueToFind;
-				});
-		};
-		EDMXCommunicationTypes DefaultValueForMode = GetDefaultCommunicationMode(GetProtocolNameSelected());
-		CommunicationModeComboBox->SetSelectedItem(
-			ExtractElementFromOptions(DefaultValueForMode)
-		);
-	}
-}
-
-EDMXCommunicationTypes FDMXControllersDetails::GetDefaultCommunicationMode(FName ForProtocol)
-{
-	
-	if (ForProtocol == DMX_PROTOCOLNAME_SACN)
-	{
-		return EDMXCommunicationTypes::Multicast;
-
-	}
-	else if (ForProtocol == DMX_PROTOCOLNAME_ARTNET)
-	{
-		return EDMXCommunicationTypes::Broadcast;
-	}
-	else
-	{
-		// Unhandled protocol type: add it above
-		checkNoEntry();
-		return {};
-	}
-}
-
-TSharedRef<SWidget> FDMXControllersDetails::OnCommunicationModeGenerateWidget(const TSharedPtr<EDMXCommunicationTypes> InMode) const
-{
-	return CommunicationModeWidgets[*InMode];
-}
-
-FText FDMXControllersDetails::GetCommunicationModeLabel() const
-{
-	uint8 CommunicationModeValue = static_cast<uint8>(EDMXCommunicationTypes::Unicast);
-	if (CommunicationModeHandle->GetValue(CommunicationModeValue) == FPropertyAccess::Success)
-	{
-		return FText::FromString(CommunicationModeLabels[static_cast<EDMXCommunicationTypes>(CommunicationModeValue)]);
-	}
-	return FText();
-}
-
-EDMXCommunicationTypes FDMXControllersDetails::GetCommunicationModeSelected() const
-{
-	uint8 Result;
-	const bool bDidGetValue =
-		CommunicationModeHandle->GetValue(Result) == FPropertyAccess::Success;
-	
-	check(bDidGetValue);
-	return static_cast<EDMXCommunicationTypes>(Result);
-}
-
-void FDMXControllersDetails::SetCommunicationModeSelected(EDMXCommunicationTypes NewValue)
-{
-	CommunicationModeHandle->SetValue(static_cast<uint8>(NewValue));
-}
-
-FDMXProtocolName FDMXControllersDetails::GetProtocolNameSelected() const
-{
-	TArray<const void*> RawData;
-	ProtocolHandle->AccessRawData(RawData);
-	for (const void* NamePtr : RawData)
-	{
-		if (NamePtr != nullptr)
-		{
-			const FDMXProtocolName* ProtocolNamePtr = reinterpret_cast<const FDMXProtocolName*>(NamePtr);
-			return *ProtocolNamePtr;
-		}
-	}
-	
-	checkNoEntry();
-	return FDMXProtocolName();
 }
 
 FDMXFixtureTypeFunctionsDetails::FDMXFixtureTypeFunctionsDetails(TWeakPtr<FDMXEditor> InDMXEditorPtr)
@@ -837,15 +616,20 @@ void FDMXFixturePatchesDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLay
 {
 	FDMXCustomization::CustomizeDetails(DetailLayout);
 
+	PropertyUtilities = DetailLayout.GetPropertyUtilities();
+
 	// Bind to auto assign address changes to assign channels when it gets enabled
-	AutoAssignAddressHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, bAutoAssignAddress));
+	AutoAssignAddressHandle = DetailLayout.GetProperty(UDMXEntityFixturePatch::GetAutoAssignAddressPropertyNameChecked());
 	check(AutoAssignAddressHandle.IsValid() && AutoAssignAddressHandle->IsValidHandle());
 	
 	FSimpleDelegate OnAutoAssignAddressChangedDelegate = FSimpleDelegate::CreateSP(this, &FDMXFixturePatchesDetails::OnAutoAssignAddressChanged);
 	AutoAssignAddressHandle->SetOnPropertyValueChanged(OnAutoAssignAddressChangedDelegate);
 
+	// Handle mode changes of the parent fixture type
+	UDMXEntityFixtureType::GetDataTypeChangeDelegate().AddSP(this, &FDMXFixturePatchesDetails::OnModesChanged);
+
 	// Make a Fixture Types dropdown for the Fixture Type template property
-	ParentFixtureTypeHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, ParentFixtureTypeTemplate));
+	ParentFixtureTypeHandle = DetailLayout.GetProperty(UDMXEntityFixturePatch::GetParentFixtureTypeTemplatePropertyNameChecked());
 	check(ParentFixtureTypeHandle.IsValid() && ParentFixtureTypeHandle->IsValidHandle());
 
 	DetailLayout.EditDefaultProperty(ParentFixtureTypeHandle)->CustomWidget(false)
@@ -865,22 +649,22 @@ void FDMXFixturePatchesDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLay
 		];
 
 	// Make a modes dropdown to select the active Fixture Type Mode, if a valid Fixture Type is selected
-	ActiveModeHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, ActiveMode));
+	ActiveModeHandle = DetailLayout.GetProperty(UDMXEntityFixturePatch::GetActiveModePropertyNameChecked());
 	check(ActiveModeHandle->IsValidHandle());
 
 	TSharedPtr<uint32> DefaultSelectedActiveMode = nullptr;
 	GenerateActiveModeOptions();
-	if (ActiveModeOptions.Num() > 0)
+
+	int32 ActiveMode;
+	if (ensure(ActiveModeHandle->GetValue(ActiveMode)))
 	{
-		// Test if we have a single valid type of Fixture selected as Template
-		UObject* Object = nullptr;
-		if (ParentFixtureTypeHandle->GetValue(Object) == FPropertyAccess::Success && Object != nullptr)
+		const bool bActiveModeExists = ActiveModeOptions.ContainsByPredicate([ActiveMode](TSharedPtr<uint32> Option) {
+			return Option.IsValid() && *Option == ActiveMode;
+			});
+
+		if (!bActiveModeExists)
 		{
-			int32 ActiveModeValue = 0;
-			if (ActiveModeHandle->GetValue(ActiveModeValue) == FPropertyAccess::Success)
-			{
-				DefaultSelectedActiveMode = ActiveModeOptions[ActiveModeValue];
-			}
+			SetFixturePatchActiveMode(0);
 		}
 	}
 
@@ -897,7 +681,6 @@ void FDMXFixturePatchesDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLay
 			.OptionsSource(&ActiveModeOptions)
 			.OnGenerateWidget(this, &FDMXFixturePatchesDetails::GenerateActiveModeOptionWidget)
 			.OnSelectionChanged(this, &FDMXFixturePatchesDetails::OnActiveModeChanged)
-			.OnComboBoxOpening(this, &FDMXFixturePatchesDetails::OnActiveComboBoxOpening)
 			.InitiallySelectedItem(DefaultSelectedActiveMode)
 			[
 				SNew(STextBlock)
@@ -908,21 +691,48 @@ void FDMXFixturePatchesDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLay
 		];
 }
 
-void FDMXFixturePatchesDetails::OnAutoAssignAddressChanged()
+void FDMXFixturePatchesDetails::SetFixturePatchActiveMode(int32 ModeIndex)
 {
-	check(AutoAssignAddressHandle.IsValid() && AutoAssignAddressHandle->IsValidHandle());
+	check(ActiveModeHandle.IsValid());
 
 	TArray<UObject*> OuterObjects;
-	AutoAssignAddressHandle->GetOuterObjects(OuterObjects);
+	ActiveModeHandle->GetOuterObjects(OuterObjects);
 
 	TArray<UDMXEntityFixturePatch*> FixturePatches;
 	for (UObject* Object : OuterObjects)
 	{
 		UDMXEntityFixturePatch* Patch = CastChecked<UDMXEntityFixturePatch>(Object);
-		FixturePatches.Add(Patch);
+		Patch->SetActiveModeIndex(ModeIndex);
 	}
+}
 
-	FDMXEditorUtils::AutoAssignedAddresses(FixturePatches);
+void FDMXFixturePatchesDetails::OnAutoAssignAddressChanged()
+{
+	check(AutoAssignAddressHandle.IsValid());
+
+	bool bAutoAssignAddress;
+	if (ensure(AutoAssignAddressHandle->GetValue(bAutoAssignAddress)))
+	{
+		if (bAutoAssignAddress)
+		{
+			TArray<UObject*> OuterObjects;
+			AutoAssignAddressHandle->GetOuterObjects(OuterObjects);
+
+			TArray<UDMXEntityFixturePatch*> FixturePatches;
+			for (UObject* Object : OuterObjects)
+			{
+				UDMXEntityFixturePatch* Patch = CastChecked<UDMXEntityFixturePatch>(Object);
+				FixturePatches.Add(Patch);
+			}
+
+			FDMXEditorUtils::AutoAssignedAddresses(FixturePatches);
+		}
+	}
+}
+
+void FDMXFixturePatchesDetails::OnModesChanged(const UDMXEntityFixtureType* FixtureType, const FDMXFixtureMode& Mode)
+{
+	PropertyUtilities->ForceRefresh();
 }
 
 void FDMXFixturePatchesDetails::GenerateActiveModeOptions()
@@ -985,8 +795,12 @@ TSharedRef<SWidget> FDMXFixturePatchesDetails::GenerateActiveModeOptionWidget(co
 	{
 		if (UDMXEntityFixtureType* Patch = Cast<UDMXEntityFixtureType>(Object))
 		{
-			return SNew(STextBlock)
-				.Text(FText::FromString(Patch->Modes[*InMode].ModeName));
+			if (InMode.IsValid() && 
+				Patch->Modes.IsValidIndex(*InMode))
+			{
+				return SNew(STextBlock)
+					.Text(FText::FromString(Patch->Modes[*InMode].ModeName));
+			}
 		}
 	}
 
@@ -999,13 +813,6 @@ void FDMXFixturePatchesDetails::OnActiveModeChanged(const TSharedPtr<uint32> InS
 	{
 		ActiveModeHandle->SetValue(*InSelectedMode);
 	}
-}
-
-void FDMXFixturePatchesDetails::OnActiveComboBoxOpening()
-{
-	GenerateActiveModeOptions();
-
-	ActiveModeOptionsWidget->RefreshOptions();
 }
 
 FText FDMXFixturePatchesDetails::GetCurrentActiveModeLabel() const
@@ -1301,12 +1108,14 @@ FReply FDMXPixelMappingDistributionCustomization::OnGridButtonClicked(int32 Grid
 	if (PropertyHandle.IsValid())
 	{
 		uint8 ChoosenDistribution = (GridIndexX * DistributionGridNumXPanels + GridIndexY);
+
+		PropertyHandle->NotifyPreChange();
 		PropertyHandle->SetValue(ChoosenDistribution);
+		PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	}
 
 	return FReply::Handled();
 }
-
 
 FSlateColor FDMXPixelMappingDistributionCustomization::GetButtonColorAndOpacity(int32 GridIndexX, int32 GridIndexY)
 {

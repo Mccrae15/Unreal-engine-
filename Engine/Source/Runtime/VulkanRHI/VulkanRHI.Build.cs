@@ -6,6 +6,8 @@ using System.IO;
 
 public class VulkanRHI : ModuleRules
 {
+	protected virtual bool bShouldIncludePlatformPrivate { get { return true; } }
+
 	public VulkanRHI(ReadOnlyTargetRules Target) : base(Target)
 	{
 		bLegalToDistributeObjectCode = true;
@@ -15,7 +17,6 @@ public class VulkanRHI : ModuleRules
 		{
 			PrivateIncludePaths.Add("Runtime/VulkanRHI/Private/Windows");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "AMD_AGS");
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
@@ -24,7 +25,7 @@ public class VulkanRHI : ModuleRules
 				PrivateIncludePaths.Add("Runtime/VulkanRHI/Private/Linux");
 			}
 		}
-		else
+		else if (bShouldIncludePlatformPrivate)
 		{
 			PrivateIncludePaths.Add("Runtime/VulkanRHI/Private/" + Target.Platform);
 		}
@@ -43,6 +44,11 @@ public class VulkanRHI : ModuleRules
 				"BuildSettings"
             }
         );
+
+		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
+		{
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
+		}
 
 		if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64
 			|| Target.Platform == UnrealTargetPlatform.Android || Target.Platform == UnrealTargetPlatform.Lumin)

@@ -12,11 +12,14 @@ struct CHAOSSOLVERENGINE_API FChaosPhysicsCollisionInfo
 {
 	GENERATED_BODY()
 public:
+
+	FChaosPhysicsCollisionInfo();
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos")
-	UPrimitiveComponent* Component;
+	UPrimitiveComponent* Component = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chaos")
-	UPrimitiveComponent* OtherComponent;
+	UPrimitiveComponent* OtherComponent = nullptr;
 
 	/** Location of the impact */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chaos")

@@ -24,7 +24,7 @@
 DEFINE_LOG_CATEGORY_STATIC(LogApexDestructibleAssetImport, Log, All);
 
 #include "PhysicsPublic.h"
-#include "SkelImport.h"
+#include "ImportUtils/SkeletalMeshImportUtils.h"
 #include "PhysXIncludes.h"
 #include "MeshUtilities.h"
 #include "UObject/UObjectHash.h"
@@ -33,6 +33,9 @@ DEFINE_LOG_CATEGORY_STATIC(LogApexDestructibleAssetImport, Log, All);
 #include "Rendering/SkeletalMeshModel.h"
 #include "DestructibleMesh.h"
 #include "Factories/FbxSkeletalMeshImportData.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Misc/CoreMisc.h"
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
@@ -239,7 +242,7 @@ TSharedPtr<FExistingDestMeshData> SaveExistingDestMeshData(UDestructibleMesh* Ex
 		ExistingDestMeshDataPtr = MakeShared<FExistingDestMeshData>();
 
 		// Only save off SkelMeshData if it's been created
-		ExistingDestMeshDataPtr->SkelMeshData = SkeletalMeshHelper::SaveExistingSkelMeshData(ExistingDestructibleMesh, true, INDEX_NONE);
+		ExistingDestMeshDataPtr->SkelMeshData = SkeletalMeshImportUtils::SaveExistingSkelMeshData(ExistingDestructibleMesh, true, INDEX_NONE);
 		ExistingDestMeshDataPtr->BodySetup = ExistingDestructibleMesh->BodySetup;
 		ExistingDestMeshDataPtr->FractureEffects = ExistingDestructibleMesh->FractureEffects;
 	}
@@ -254,7 +257,7 @@ static void RestoreExistingDestMeshData(const TSharedPtr<FExistingDestMeshData>&
 		// Restore old settings, but resize arrays to make sense with the new NxDestructibleAsset
 		if (MeshData->SkelMeshData)
 		{
-			SkeletalMeshHelper::RestoreExistingSkelMeshData(MeshData->SkelMeshData, DestructibleMesh, INDEX_NONE, false, false, false);
+			SkeletalMeshImportUtils::RestoreExistingSkelMeshData(MeshData->SkelMeshData, DestructibleMesh, INDEX_NONE, false, false, false);
 		}
 		DestructibleMesh->BodySetup =  MeshData->BodySetup;
 		DestructibleMesh->FractureEffects = MeshData->FractureEffects;
@@ -762,7 +765,7 @@ apex::DestructibleAsset* CreateApexDestructibleAssetFromFile(const FString& File
 
 bool SetApexDestructibleAsset(UDestructibleMesh& DestructibleMesh, apex::DestructibleAsset& ApexDestructibleAsset, FSkeletalMeshImportData* OutData, EDestructibleImportOptions::Type Options)
 {
-	using namespace SkeletalMeshHelper;
+	using namespace SkeletalMeshImportUtils;
 	DestructibleMesh.PreEditChange(NULL);
 
 	DestructibleMesh.InvalidateDeriveDataCacheGUID();
@@ -910,6 +913,7 @@ bool SetApexDestructibleAsset(UDestructibleMesh& DestructibleMesh, apex::Destruc
 		BuildOptions.bComputeTangents = !bHaveTangents;
 		BuildOptions.bUseMikkTSpace = true;
 		BuildOptions.bComputeWeightedNormals = true;
+		BuildOptions.TargetPlatform = GetTargetPlatformManagerRef().GetRunningTargetPlatform();
 
 		// Create actual rendering data.
 		if (!MeshUtilities.BuildSkeletalMesh(DestructibleMeshResource.LODModels[0], DestructibleMesh.GetPathName(), DestructibleMesh.RefSkeleton, LODInfluences,LODWedges,LODFaces,LODPoints,LODPointToRawMap,BuildOptions))

@@ -2,23 +2,20 @@
 
 #include "ComposureBlueprintLibrary.h"
 
-#include "UObject/Package.h"
-#include "Public/Slate/SceneViewport.h"
-#include "Classes/Components/SceneCaptureComponent2D.h"
-#include "Classes/Camera/PlayerCameraManager.h"
-#include "Classes/GameFramework/PlayerController.h"
-#include "Classes/Engine/LocalPlayer.h"
-
-#include "ComposureLayersEditor/Private/ICompElementManager.h"
-#include "ComposureLayersEditor/Private/CompElementManager.h"
-
+#include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
+#include "CameraCalibrationSubsystem.h"
+#include "CineCameraComponent.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "ComposureLayersEditor/Public/ICompElementManager.h"
+#include "ComposureLayersEditor/Public/CompElementEditorModule.h"
 #include "ComposurePlayerCompositingTarget.h"
 #include "ComposureUtils.h"
-
-#include "Camera/CameraComponent.h"
-#include "Components/SceneCaptureComponent2D.h"
+#include "Engine/LocalPlayer.h"
+#include "GameFramework/PlayerController.h"
+#include "LensDistortionModelHandlerBase.h"
 #include "Modules/ModuleManager.h"
-#include "ComposureLayersEditor/Public/CompElementEditorModule.h"
+#include "Slate/SceneViewport.h"
 
 UComposureBlueprintLibrary::UComposureBlueprintLibrary(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -75,15 +72,34 @@ void UComposureBlueprintLibrary::GetPlayerDisplayGamma(const APlayerCameraManage
 	DisplayGamma = SceneViewport ? SceneViewport->GetDisplayGamma() : 0.0;
 }
 
-void UComposureBlueprintLibrary::CopyCameraSettingsToSceneCapture(UCameraComponent* Src, USceneCaptureComponent2D* Dst)
+void UComposureBlueprintLibrary::CopyCameraSettingsToSceneCapture(UCameraComponent* Src, USceneCaptureComponent2D* Dst, float OriginalFocalLength, float OverscanFactor)
 {
 	if (Src && Dst)
 	{
 		Dst->SetWorldLocationAndRotation(Src->GetComponentLocation(), Src->GetComponentRotation());
-		Dst->FOVAngle = Src->FieldOfView;
 
 		FMinimalViewInfo CameraViewInfo;
 		Src->GetCameraView(/*DeltaTime =*/0.0f, CameraViewInfo);
+
+		// Use the input overscan factor to augment the destination component's FOV angle
+		// Note: The math relies on the filmback and focal length of the input camera component, which necessitates that it be a CineCameraComponet
+		if (UCineCameraComponent* SrcCineCameraComponent = Cast<UCineCameraComponent>(Src))
+		{ 			
+			// Guard against divide-by-zero
+			if (SrcCineCameraComponent->CurrentFocalLength <= 0.0f)
+			{
+				Dst->FOVAngle = 0.0f;
+			}
+			else
+			{
+				const float OverscanSensorWidth = SrcCineCameraComponent->Filmback.SensorWidth * OverscanFactor;
+				Dst->FOVAngle = FMath::RadiansToDegrees(2.0f * FMath::Atan(OverscanSensorWidth / (2.0f * OriginalFocalLength)));
+			}
+		}
+		else
+		{
+			Dst->FOVAngle = Src->FieldOfView;
+		}
 
 		const FPostProcessSettings& SrcPPSettings = CameraViewInfo.PostProcessSettings;
 		FPostProcessSettings& DstPPSettings = Dst->PostProcessSettings;

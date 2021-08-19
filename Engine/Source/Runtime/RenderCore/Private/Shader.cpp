@@ -140,7 +140,7 @@ FArchive& operator<<(FArchive& Ar, const FShaderPipelineType*& TypeRef)
 }
 
 
-void FShaderParameterMap::VerifyBindingsAreComplete(const TCHAR* ShaderTypeName, FShaderTarget Target, FVertexFactoryType* InVertexFactoryType) const
+void FShaderParameterMap::VerifyBindingsAreComplete(const TCHAR* ShaderTypeName, FShaderTarget Target, const FVertexFactoryType* InVertexFactoryType) const
 {
 #if WITH_EDITORONLY_DATA
 	// Only people working on shaders (and therefore have LogShaders unsuppressed) will want to see these errors
@@ -480,12 +480,12 @@ void FShaderMapPointerTable::LoadFromArchive(FArchive& Ar, void* FrozenContent, 
 }
 
 FShaderCompiledShaderInitializerType::FShaderCompiledShaderInitializerType(
-	FShaderType* InType,
+	const FShaderType* InType,
 	int32 InPermutationId,
 	const FShaderCompilerOutput& CompilerOutput,
 	const FSHAHash& InMaterialShaderMapHash,
 	const FShaderPipelineType* InShaderPipeline,
-	FVertexFactoryType* InVertexFactoryType
+	const FVertexFactoryType* InVertexFactoryType
 ) :
 	Type(InType),
 	Target(CompilerOutput.Target),
@@ -522,8 +522,8 @@ FShader::FShader()
  * Construct a shader from shader compiler output.
  */
 FShader::FShader(const CompiledShaderInitializerType& Initializer)
-	: Type(Initializer.Type)
-	, VFType(Initializer.VertexFactoryType)
+	: Type(const_cast<FShaderType*>(Initializer.Type)) // TODO - remove const_cast, make TIndexedPtr work with 'const'
+	, VFType(const_cast<FVertexFactoryType*>(Initializer.VertexFactoryType))
 	, Target(Initializer.Target)
 	, ResourceIndex(INDEX_NONE)
 #if WITH_EDITORONLY_DATA
@@ -571,11 +571,9 @@ FShader::~FShader()
 
 void FShader::Finalize(const FShaderMapResourceCode* Code)
 {
-	// Finalize may be called multiple times, as a given shader may be in shader list, as well as pipeline
 	const FSHAHash& Hash = GetOutputHash();
 	const int32 NewResourceIndex = Code->FindShaderIndex(Hash);
 	checkf(NewResourceIndex != INDEX_NONE, TEXT("Missing shader code %s"), *Hash.ToString());
-	checkf(ResourceIndex == INDEX_NONE || ResourceIndex == NewResourceIndex, TEXT("Incoming index %d, existing index %d for shader %s"), NewResourceIndex, ResourceIndex, *Hash.ToString());
 	ResourceIndex = NewResourceIndex;
 }
 
@@ -729,6 +727,7 @@ const FSHAHash& FShader::GetVertexFactoryHash() const
 const FTypeLayoutDesc& GetTypeLayoutDesc(const FPointerTableBase* PtrTable, const FShader& Shader)
 {
 	const FShaderType* Type = Shader.GetType(PtrTable);
+	checkf(Type, TEXT("FShaderType is missing"));
 	return Type->GetLayout();
 }
 
@@ -763,7 +762,7 @@ void FShader::DumpDebugInfo(const FShaderMapPointerTable& InPtrTable)
 void FShader::SaveShaderStableKeys(const FShaderMapPointerTable& InPtrTable, EShaderPlatform TargetShaderPlatform, int32 PermutationId, const FStableShaderKeyAndValue& InSaveKeyVal)
 {
 	if ((TargetShaderPlatform == EShaderPlatform::SP_NumPlatforms || GetShaderPlatform() == TargetShaderPlatform) 
-		&& FShaderCodeLibrary::NeedsShaderStableKeys(TargetShaderPlatform))
+		&& FShaderLibraryCooker::NeedsShaderStableKeys(TargetShaderPlatform))
 	{
 		FShaderType* ShaderType = GetType(InPtrTable);
 		FVertexFactoryType* VertexFactoryType = GetVertexFactoryType(InPtrTable);
@@ -778,7 +777,7 @@ void FShader::SaveShaderStableKeys(const FShaderMapPointerTable& InPtrTable, ESh
 		{
 			ShaderType->GetShaderStableKeyParts(SaveKeyVal);
 		}
-		FShaderCodeLibrary::AddShaderStableKeyValue(GetShaderPlatform(), SaveKeyVal);
+		FShaderLibraryCooker::AddShaderStableKeyValue(GetShaderPlatform(), SaveKeyVal);
 	}
 }
 #endif // WITH_EDITOR
@@ -1003,6 +1002,22 @@ void FShaderPipeline::AddShader(FShader* Shader, int32 PermutationId)
 	check(Shaders[Frequency].IsNull());
 	Shaders[Frequency] = Shader;
 	PermutationIds[Frequency] = PermutationId;
+}
+
+FShader* FShaderPipeline::FindOrAddShader(FShader* Shader, int32 PermutationId)
+{
+	const EShaderFrequency Frequency = Shader->GetFrequency();
+	FShader* PrevShader = Shaders[Frequency];
+	if (PrevShader && PermutationIds[Frequency] == PermutationId)
+	{
+		delete Shader;
+		return PrevShader;
+	}
+
+	Shaders[Frequency].SafeDelete();
+	Shaders[Frequency] = Shader;
+	PermutationIds[Frequency] = PermutationId;
+	return Shader;
 }
 
 FShaderPipeline::~FShaderPipeline()
@@ -1269,7 +1284,7 @@ void DispatchIndirectComputeShader(
 
 bool IsDxcEnabledForPlatform(EShaderPlatform Platform)
 {
-	if (IsD3DPlatform(Platform, false))
+	if (IsD3DPlatform(Platform) && IsPCPlatform(Platform))
 	{
 		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.D3D.ForceDXC"));
 		return (CVar && CVar->GetInt() != 0);
@@ -1427,7 +1442,7 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		KeyString += TEXT("_NoPDO");
 	}
 	
-	if (IsD3DPlatform(Platform, false))
+	if (IsD3DPlatform(Platform) && IsPCPlatform(Platform))
 	{
 		{
 			static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.D3D.RemoveUnusedInterpolators"));
@@ -1466,13 +1481,24 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 			KeyString += (CVar && CVar->GetInt() != 0) ? TEXT("_NoUB") : TEXT("");
 		}
 
+		if (IsVulkanPlatform(Platform))
 		{
-			static IConsoleVariable* CVarMobileEnableMovableSpotlights = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.EnableMovableSpotlights"));
-			bool bMobileEnableMovableSpotlights = CVarMobileEnableMovableSpotlights ? (CVarMobileEnableMovableSpotlights->GetInt() != 0) : false;
+			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Vulkan.UseRealUBs"));
+			if ((CVar && CVar->GetInt() == 0) || 
+				Platform == SP_VULKAN_ES3_1_ANDROID) // we force eUB on mobile Android
+			{
+				KeyString += TEXT("_NoUB");
+			}
+		}
+
+		{
+			static FShaderPlatformCachedIniValue<bool> MobileEnableMovableSpotlightsIniValue(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.EnableMovableSpotlights"));
+			static FShaderPlatformCachedIniValue<bool> MobileEnableMovableSpotlightsShadowIniValue(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.EnableMovableSpotlightsShadow"));
+
+			bool bMobileEnableMovableSpotlights = (MobileEnableMovableSpotlightsIniValue.Get(Platform) != 0);
 			KeyString += (bMobileEnableMovableSpotlights) ? TEXT("_MSPTL") : TEXT("");
 
-			static IConsoleVariable* CVarMobileEnableMovableSpotlightsShadow = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.EnableMovableSpotlightsShadow"));
-			bool bMobileEnableMovableSpotlightsShadow = CVarMobileEnableMovableSpotlightsShadow ? (CVarMobileEnableMovableSpotlightsShadow->GetInt() != 0) : false;
+			bool bMobileEnableMovableSpotlightsShadow = (MobileEnableMovableSpotlightsShadowIniValue.Get(Platform) != 0);
 			KeyString += (bMobileEnableMovableSpotlights && bMobileEnableMovableSpotlightsShadow) ? TEXT("S") : TEXT("");
 		}
 		
@@ -1516,6 +1542,24 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 			static IConsoleVariable* MobileHDRCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MobileHDR"));
 			int32 GTAOPreIntegratedTextureType = MobileGTAOPreIntegratedTextureTypeCVar ? MobileGTAOPreIntegratedTextureTypeCVar->GetInt() : 0;
 			KeyString += ((MobileAmbientOcclusionCVar && MobileAmbientOcclusionCVar->GetInt() != 0) && (MobileHDRCVar && MobileHDRCVar->GetInt() !=0)) ? FString::Printf(TEXT("_MobileAO_%d"), GTAOPreIntegratedTextureType) : TEXT("");
+		}
+
+		{
+			KeyString += IsMobileDistanceFieldEnabled(Platform) ? TEXT("_MobSDF") : TEXT("");
+		}
+	}
+	else
+	{
+		if (IsOpenGLPlatform(Platform))
+		{
+			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("OpenGL.UseEmulatedUBs"));
+			KeyString += (CVar && CVar->GetInt() != 0) ? TEXT("_NoUB") : TEXT("");
+		}
+
+		if (IsVulkanPlatform(Platform))
+		{
+			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Vulkan.UseRealUBs"));
+			KeyString += (CVar && CVar->GetInt() == 0) ? TEXT("_NoUB") : TEXT("");
 		}
 	}
 
@@ -1734,7 +1778,7 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		KeyString += TEXT("_RTWM");
 	}
 
-	if (IsUsingPerPixelDBufferMask(Platform))
+	if (FDataDrivenShaderPlatformInfo::GetSupportsPerPixelDBufferMask(Platform))
 	{
 		KeyString += TEXT("_PPDBM");
 	}
@@ -1754,5 +1798,15 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	if (ForceSimpleSkyDiffuse(Platform))
 	{
 		KeyString += TEXT("_SSD");
+	}
+
+	if (VelocityEncodeDepth(Platform))
+	{
+		KeyString += TEXT("_VED");
+	}
+
+	{
+		const bool bSupportsAnisotropicMaterials = FDataDrivenShaderPlatformInfo::GetSupportsAnisotropicMaterials(Platform);
+		KeyString += FString::Printf(TEXT("_Aniso-%d"), bSupportsAnisotropicMaterials ? 1 : 0);
 	}
 }

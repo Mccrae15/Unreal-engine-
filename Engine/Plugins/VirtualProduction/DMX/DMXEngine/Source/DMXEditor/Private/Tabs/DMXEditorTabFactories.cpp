@@ -2,11 +2,10 @@
 
 #include "Tabs/DMXEditorTabFactories.h"
 
-#include "DMXEditorTabs.h"
 #include "DMXEditor.h"
+#include "DMXEditorTabNames.h"
 #include "Library/DMXEntityFixtureType.h"
-#include "Widgets/SDMXEntityEditor.h"
-#include "Widgets/Controller/SDMXControllerEditor.h"
+#include "LibraryEditorTab/SDMXLibraryEditorTab.h"
 #include "Widgets/FixtureType/SDMXFixtureTypeEditor.h"
 #include "Widgets/FixturePatch/SDMXFixturePatchEditor.h"
 
@@ -26,19 +25,19 @@ TSharedRef<SDockTab> FDMXEditorPropertyTabSummoner::SpawnTab(const FWorkflowTabS
 	return NewTab;
 }
 
-FDMXEditorControllersSummoner::FDMXEditorControllersSummoner(TSharedPtr<FAssetEditorToolkit> InHostingApp)
-	: FDMXEditorPropertyTabSummoner(FDMXEditorTabs::DMXControllersId, InHostingApp)
+FDMXLibraryEditorTabSummoner::FDMXLibraryEditorTabSummoner(TSharedPtr<FAssetEditorToolkit> InHostingApp)
+	: FDMXEditorPropertyTabSummoner(FDMXEditorTabNames::DMXLibraryEditor, InHostingApp)
 {
-	TabLabel = LOCTEXT("DMXControllersTabLabel", "Controllers");
+	TabLabel = LOCTEXT("DMXLibraryEditorTabName", "Library Settings");
 	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.Tabs.BlueprintDefaults");
 
 	bIsSingleton = true;
 
-	ViewMenuDescription = LOCTEXT("DMXControllersView", "Controllers");
-	ViewMenuTooltip = LOCTEXT("DMXControllersViewTooltip", "Show the controllers view");
+	ViewMenuDescription = LOCTEXT("DMXLibraryEditorTabView", "Library Settings");
+	ViewMenuTooltip = LOCTEXT("DMXLibraryEditorTabMenuTooltip", "Show the Library Settings view");
 }
 
-TSharedRef<SWidget> FDMXEditorControllersSummoner::CreateTabBody(const FWorkflowTabSpawnInfo& Info) const
+TSharedRef<SWidget> FDMXLibraryEditorTabSummoner::CreateTabBody(const FWorkflowTabSpawnInfo& Info) const
 {
 	TSharedPtr<FDMXEditor> DMXEditor = StaticCastSharedPtr<FDMXEditor>(HostingApp.Pin());
 
@@ -46,12 +45,17 @@ TSharedRef<SWidget> FDMXEditorControllersSummoner::CreateTabBody(const FWorkflow
 		.HAlign(HAlign_Fill)
 		.VAlign(VAlign_Fill)
 		[
-			DMXEditor->GetControllerEditor()
+			DMXEditor->GetDMXLibraryEditorTab()
 		];
 }
 
+FText FDMXLibraryEditorTabSummoner::GetTabToolTipText(const FWorkflowTabSpawnInfo& Info) const
+{
+	return LOCTEXT("DMXLibraryEditorTabTooltip", "Settings specific to this Library");
+}
+
 FDMXEditorFixtureTypesSummoner::FDMXEditorFixtureTypesSummoner(TSharedPtr<FAssetEditorToolkit> InHostingApp)
-	: FDMXEditorPropertyTabSummoner(FDMXEditorTabs::DMXFixtureTypesEditorTabId, InHostingApp)
+	: FDMXEditorPropertyTabSummoner(FDMXEditorTabNames::DMXFixtureTypesEditor, InHostingApp)
 {
 	TabLabel = LOCTEXT("DMXFixtureTypesTabLabel", "Fixture Types");
 	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.Tabs.BlueprintDefaults");
@@ -75,7 +79,7 @@ TSharedRef<SWidget> FDMXEditorFixtureTypesSummoner::CreateTabBody(const FWorkflo
 }
 
 FDMXEditorFixturePatchSummoner::FDMXEditorFixturePatchSummoner(TSharedPtr<FAssetEditorToolkit> InHostingApp)
-	: FDMXEditorPropertyTabSummoner(FDMXEditorTabs::DMXFixturePatchEditorTabId, InHostingApp)
+	: FDMXEditorPropertyTabSummoner(FDMXEditorTabNames::DMXFixturePatchEditor, InHostingApp)
 {
 	TabLabel = LOCTEXT("DMXFixturePatchTabLabel", "Fixture Patch");
 	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.Tabs.BlueprintDefaults");

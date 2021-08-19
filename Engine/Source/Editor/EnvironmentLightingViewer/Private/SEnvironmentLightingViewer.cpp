@@ -33,17 +33,6 @@ void SEnvironmentLightingViewer::Construct(const FArguments& InArgs)
 {
 	UWorld* World = GEditor->GetEditorWorldContext().World();
 
-	bool bFoundSkyAtmosphere = false;
-	USkyAtmosphereComponent* SkyAtmosphereComp = nullptr;
-	for (TObjectIterator<USkyAtmosphereComponent> ComponentIt; ComponentIt; ++ComponentIt)
-	{
-		if (ComponentIt->GetWorld() == World)
-		{
-			SkyAtmosphereComp = *ComponentIt;
-			bFoundSkyAtmosphere = true;
-		}
-	}
-
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	FDetailsViewArgs DetailsViewArgs;
 	DetailsViewArgs.bAllowSearch = true;
@@ -63,7 +52,7 @@ void SEnvironmentLightingViewer::Construct(const FArguments& InArgs)
 
 	ComboBoxDetailFilterOptions.Add(MakeShared<FString>(TEXT("Minimal")));
 	ComboBoxDetailFilterOptions.Add(MakeShared<FString>(TEXT("Normal")));
-	ComboBoxDetailFilterOptions.Add(MakeShared<FString>(TEXT("Normal+Avanced")));
+	ComboBoxDetailFilterOptions.Add(MakeShared<FString>(TEXT("Normal+Advanced")));
 
 	SelectedComboBoxDetailFilterOptions = 0;
 	ComboBoxDetailFilter =	SNew(SComboBox<TSharedPtr<FString>>)
@@ -300,7 +289,6 @@ void SEnvironmentLightingViewer::Tick(const FGeometry& AllottedGeometry, const d
 		if (InComponent)
 		{
 			DetailsViews[NumDetailsView]->SetObject(InComponent);
-			//DetailsViews[NumDetailsView]->SetColorAndOpacity(ColorAndOpacity);	// This helps to identify the different types. Check with UX team.
 			NumDetailsView++;
 		}
 	};
@@ -384,6 +372,8 @@ FReply SEnvironmentLightingViewer::OnButtonCreateAtmosphericLight(uint32 Index)
 #if WITH_EDITORONLY_DATA
 	DirectionalLight->GetComponent()->bUsedAsAtmosphereSunLight = 1;
 	DirectionalLight->GetComponent()->AtmosphereSunLightIndex = Index;
+	// The render proxy is create right after AddActor, so we need to mark the render state as dirty again to get the new values set on the render side too.
+	DirectionalLight->MarkComponentsRenderStateDirty();
 #endif
 
 	return FReply::Handled();
@@ -456,6 +446,7 @@ FText SEnvironmentLightingViewer::GetSelectedComboBoxDetailFilterTextLabel() con
 bool SEnvironmentLightingViewer::GetIsPropertyVisible(const FPropertyAndParent& PropertyAndParent) const
 {
 	const UClass* OwnerClass = PropertyAndParent.Property.GetOwner<UClass>();
+	const UStruct* OwnerStruct = PropertyAndParent.Property.GetOwner<UStruct>();
 
 	bool bShowAdvanced = SelectedComboBoxDetailFilterOptions == 0 || SelectedComboBoxDetailFilterOptions == 2;
 	bool bShowMinimalOnly = SelectedComboBoxDetailFilterOptions == 0;
@@ -487,6 +478,15 @@ bool SEnvironmentLightingViewer::GetIsPropertyVisible(const FPropertyAndParent& 
 				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("CloudAmbientOcclusionStrength"))
 				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("CloudAmbientOcclusionApertureScale"))
 				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("bCloudAmbientOcclusion"));
+		}
+		return true;
+	}
+	else if (OwnerStruct && OwnerStruct->GetName().Equals(TEXT("TentDistribution")))
+	{
+		// This is only used to control the atmosphere absorption only layer in the atmosphere. So we trivially show according to the filter option.
+		if (bShowMinimalOnly)
+		{
+			return false;
 		}
 		return true;
 	}

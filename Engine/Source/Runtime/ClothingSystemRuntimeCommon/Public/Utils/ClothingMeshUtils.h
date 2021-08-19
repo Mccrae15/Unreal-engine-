@@ -21,7 +21,7 @@ namespace ClothingMeshUtils
 
 			bool HasBoundingBox() const { return true; }
 
-			Chaos::TAABB<float, 3> BoundingBox() const
+			Chaos::FAABB3 BoundingBox() const
 			{
 				int32 TriBaseIdx = Index * 3;
 
@@ -33,7 +33,7 @@ namespace ClothingMeshUtils
 				const FVector& B = TmData->Positions[IB];
 				const FVector& C = TmData->Positions[IC];
 
-				Chaos::TAABB<float,3> Bounds(A, A);
+				Chaos::FAABB3 Bounds(A, A);
 
 				Bounds.GrowToInclude(B);
 				Bounds.GrowToInclude(C);
@@ -66,40 +66,14 @@ namespace ClothingMeshUtils
 			return Positions.Num() == Normals.Num() && Indices.Num() % 3 == 0;
 		}
 
-		TArray<int32> FindCandidateTriangles(const FVector Point)
-		{
-			ensure(HasValidMesh());
-			const int32 NumTris = Indices.Num() / 3;
-			if (NumTris > 100)
-			{
-				// This is not thread safe
-				if (!bHasValidBVH)
-				{
-					TArray<FClothBvEntry> BVEntries;
-					BVEntries.Reset(NumTris);
-
-					for (int Tri = 0; Tri < NumTris; Tri++)
-					{
-						BVEntries.Add({ this, Tri });
-					}
-					BVH.Reinitialize(BVEntries);
-					bHasValidBVH = true;
-				}
-				Chaos::TAABB<float, 3> TmpAABB(Point, Point);
-				return BVH.FindAllIntersections(TmpAABB);
-			}
-			else
-			{
-				return TArray<int32>();
-			}
-		}
+		TArray<int32> FindCandidateTriangles(const FVector Point);
 
 		TArrayView<const FVector> Positions;
 		TArrayView<const FVector> Normals;
 		TArrayView<const uint32> Indices;
 
 		bool bHasValidBVH;
-		Chaos::TAABBTree<int32, Chaos::TAABBTreeLeafArray<int32, float, false>, float, false> BVH;
+		Chaos::TAABBTree<int32, Chaos::TAABBTreeLeafArray<int32, false>, false> BVH;
 	};
 
 	// Static method for calculating a skinned mesh result from source data

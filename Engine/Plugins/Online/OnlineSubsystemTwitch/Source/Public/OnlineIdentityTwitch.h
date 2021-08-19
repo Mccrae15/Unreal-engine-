@@ -11,7 +11,9 @@ typedef TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> FHttpRequestPtr;
 typedef TSharedPtr<class IHttpResponse, ESPMode::ThreadSafe> FHttpResponsePtr;
 class FUserOnlineAccountTwitch;
 class FOnlineSubsystemTwitch;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 typedef TMap<FString, TSharedRef<FUserOnlineAccountTwitch> > FUserOnlineAccountTwitchMap;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /** This string will be followed by space separated permissions that are missing, so use FString.StartsWith to check for this error */
 #define TWITCH_LOGIN_ERROR_MISSING_PERMISSIONS TEXT("errors.com.epicgames.oss.twitch.identity.missing_permissions")
@@ -28,9 +30,11 @@ typedef TMap<FString, TSharedRef<FUserOnlineAccountTwitch> > FUserOnlineAccountT
 /**
  * Contains URL details for Twitch interaction
  */
-struct ONLINESUBSYSTEMTWITCH_API FTwitchLoginURL
+struct ONLINESUBSYSTEMTWITCH_API UE_DEPRECATED(4.27, "OnlineSubsystemTwitch has been deprecated and will be removed") FTwitchLoginURL
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FTwitchLoginURL(FOnlineSubsystemTwitch* InSubsystem)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		: Subsystem(InSubsystem)
 	{
 	}
@@ -92,8 +96,10 @@ struct ONLINESUBSYSTEMTWITCH_API FTwitchLoginURL
 	TArray<FString> GetScopeFields() const;
 
 private:
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Owning subsystem */
 	FOnlineSubsystemTwitch* Subsystem;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Overridden StatePrefix */
 	FString StatePrefixOverride;
@@ -102,7 +108,7 @@ private:
 /**
  * Twitch service implementation of the online identity interface
  */
-class ONLINESUBSYSTEMTWITCH_API FOnlineIdentityTwitch :
+class ONLINESUBSYSTEMTWITCH_API UE_DEPRECATED(4.27, "OnlineSubsystemTwitch has been deprecated and will be removed") FOnlineIdentityTwitch :
 	public IOnlineIdentity,
 	public TSharedFromThis<FOnlineIdentityTwitch, ESPMode::ThreadSafe>
 {
@@ -115,9 +121,9 @@ public:
 	virtual bool AutoLogin(int32 LocalUserNum) override;
 	virtual TSharedPtr<FUserOnlineAccount> GetUserAccount(const FUniqueNetId& UserId) const override;
 	virtual TArray<TSharedPtr<FUserOnlineAccount> > GetAllUserAccounts() const override;
-	virtual TSharedPtr<const FUniqueNetId> GetUniquePlayerId(int32 LocalUserNum) const override;
-	virtual TSharedPtr<const FUniqueNetId> CreateUniquePlayerId(uint8* Bytes, int32 Size) override;
-	virtual TSharedPtr<const FUniqueNetId> CreateUniquePlayerId(const FString& Str) override;
+	virtual FUniqueNetIdPtr GetUniquePlayerId(int32 LocalUserNum) const override;
+	virtual FUniqueNetIdPtr CreateUniquePlayerId(uint8* Bytes, int32 Size) override;
+	virtual FUniqueNetIdPtr CreateUniquePlayerId(const FString& Str) override;
 	virtual ELoginStatus::Type GetLoginStatus(int32 LocalUserNum) const override;
 	virtual ELoginStatus::Type GetLoginStatus(const FUniqueNetId& UserId) const override;
 	virtual FString GetPlayerNickname(int32 LocalUserNum) const override;
@@ -143,6 +149,7 @@ PACKAGE_SCOPE:
 	 *
 	 * @param InSubsystem Twitch subsystem being used
 	 */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FOnlineIdentityTwitch(FOnlineSubsystemTwitch* InSubsystem);
 
 	/** Default constructor unavailable */
@@ -151,13 +158,14 @@ PACKAGE_SCOPE:
 	/**
 	 * Destructor
 	 */
-	virtual ~FOnlineIdentityTwitch() = default;
+	virtual ~FOnlineIdentityTwitch() {}
 
 	/** @return the Twitch user account for the specified user id */
 	TSharedPtr<FUserOnlineAccountTwitch> GetUserAccountTwitch(const FUniqueNetId& UserId) const;
 
 	/** @return the login configuration details */
 	const FTwitchLoginURL& GetLoginURLDetails() const { return LoginURLDetails; }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** @return the current login attempt's nonce */
 	const FString& GetCurrentLoginNonce() const { return CurrentLoginNonce; }
@@ -182,7 +190,9 @@ private:
 	 * @param OnlineAccount online account if successfully parsed
 	 * @param ErrorStr error associated with the request
 	 */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	DECLARE_DELEGATE_FourParams(FOnValidateAuthTokenComplete, int32 /*LocalUserNum*/, const FOnlineAccountCredentials& /*AccountCredentials*/, TSharedPtr<FUserOnlineAccountTwitch> /*User*/, const FString& /*ErrorStr*/);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** 
 	 * Validate a Twitch auth token
@@ -201,7 +211,9 @@ private:
 	/** 
 	 * Delegate fired when the call to ValidateAuthToken completes
 	 */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	void OnValidateAuthTokenComplete(int32 LocalUserNum, const FOnlineAccountCredentials& AccountCredentials, TSharedPtr<FUserOnlineAccountTwitch> User, const FString& ErrorStr, const FOnLoginCompleteDelegate InCompletionDelegate);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Delegate fired when the internal call to Login with AccessToken is specified
@@ -216,7 +228,7 @@ private:
 	/**
 	 * Delegate fired when the call to ShowLoginUI completes
 	 */
-	void OnExternalUILoginComplete(TSharedPtr<const FUniqueNetId> UniqueId, const int ControllerIndex, const FOnlineError& Error);
+	void OnExternalUILoginComplete(FUniqueNetIdPtr UniqueId, const int ControllerIndex, const FOnlineError& Error);
 
 	/** 
 	 * Function called after logging out has completed, or if the user revoked their auth token
@@ -235,7 +247,7 @@ private:
 	/** 
 	 * Delegate fired when the http request from RevokeAuthToken completes
 	 */
-	void RevokeAuthToken_HttpRequestComplete(FHttpRequestPtr HttpRequest, FHttpResponsePtr HttpResponse, bool bSucceeded, TSharedRef<const FUniqueNetId> UserId, const FOnRevokeAuthTokenCompleteDelegate InCompletionDelegate);
+	void RevokeAuthToken_HttpRequestComplete(FHttpRequestPtr HttpRequest, FHttpResponsePtr HttpResponse, bool bSucceeded, FUniqueNetIdRef UserId, const FOnRevokeAuthTokenCompleteDelegate InCompletionDelegate);
 
 	/** 
 	 * Get the controller number associated with the specified user id
@@ -247,17 +259,22 @@ private:
 	/** Users that have been registered */
 	FUserOnlineAccountTwitchMap UserAccounts;
 	/** Ids mapped to locally registered users */
-	TMap<int32, TSharedPtr<const FUniqueNetId>> UserIds;
+	TMap<int32, FUniqueNetIdPtr> UserIds;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Reference to the main subsystem */
 	FOnlineSubsystemTwitch* Subsystem;
 
 	/** Const details about communicating with twitch API */
 	FTwitchLoginURL LoginURLDetails;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	/** Nonce for current login attempt */
 	FString CurrentLoginNonce;
 	/** Whether we have a registration in flight or not */
 	bool bHasLoginOutstanding;
 };
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 typedef TSharedPtr<FOnlineIdentityTwitch, ESPMode::ThreadSafe> FOnlineIdentityTwitchPtr;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

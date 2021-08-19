@@ -59,11 +59,6 @@ public class FDatasmithFacadeMaterialExpression : global::System.IDisposable {
     return ret;
   }
 
-  public bool IsA(EDatasmithFacadeMaterialExpressionType ExpressionType) {
-    bool ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeMaterialExpression_IsA(swigCPtr, (int)ExpressionType);
-    return ret;
-  }
-
   public void ConnectExpression(FDatasmithFacadeExpressionInput ExpressionInput) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeMaterialExpression_ConnectExpression__SWIG_0(swigCPtr, FDatasmithFacadeExpressionInput.getCPtr(ExpressionInput));
     if (DatasmithFacadeCSharpPINVOKE.SWIGPendingException.Pending) throw DatasmithFacadeCSharpPINVOKE.SWIGPendingException.Retrieve();
@@ -98,6 +93,10 @@ public class FDatasmithFacadeMaterialExpression : global::System.IDisposable {
 
   public void SetDefaultOutputIndex(int OutputIndex) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeMaterialExpression_SetDefaultOutputIndex(swigCPtr, OutputIndex);
+  }
+
+  public void ResetExpression() {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeMaterialExpression_ResetExpression(swigCPtr);
   }
 
 }

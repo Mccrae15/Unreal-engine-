@@ -26,13 +26,17 @@
 #include "DetailCategoryBuilder.h"
 #include "SplineComponentVisualizer.h"
 #include "Widgets/Input/SVectorInputBox.h"
+#include "Widgets/Input/SRotatorInputBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "ScopedTransaction.h"
+#include "Editor.h"
 #include "LevelEditorViewport.h"
 #include "Engine/Blueprint.h"
 #include "BlueprintEditor.h"
 #include "BlueprintEditorModule.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 
 #define LOCTEXT_NAMESPACE "SplineComponentDetails"
 DEFINE_LOG_CATEGORY_STATIC(LogSplineComponentDetails, Log, All)
@@ -179,11 +183,11 @@ private:
 	TOptional<float> GetScaleY() const { return Scale.Y; }
 	TOptional<float> GetScaleZ() const { return Scale.Z; }
 	void OnSetInputKey(float NewValue, ETextCommit::Type CommitInfo);
-	void OnSetPosition(float NewValue, ETextCommit::Type CommitInfo, int32 Axis);
-	void OnSetArriveTangent(float NewValue, ETextCommit::Type CommitInfo, int32 Axis);
-	void OnSetLeaveTangent(float NewValue, ETextCommit::Type CommitInfo, int32 Axis);
-	void OnSetRotation(float NewValue, ETextCommit::Type CommitInfo, int32 Axis);
-	void OnSetScale(float NewValue, ETextCommit::Type CommitInfo, int32 Axis);
+	void OnSetPosition(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis);
+	void OnSetArriveTangent(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis);
+	void OnSetLeaveTangent(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis);
+	void OnSetRotation(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis);
+	void OnSetScale(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis);
 	FText GetPointType() const;
 	void OnSplinePointTypeChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo);
 	TSharedRef<SWidget> OnGenerateComboWidget(TSharedPtr<FString> InComboString);
@@ -196,6 +200,33 @@ private:
 	USplineComponent* GetSplineComponentToVisualize() const;
 
 	void UpdateValues();
+
+	enum class ESplinePointProperty
+	{
+		Location,
+		Rotation,
+		Scale,
+		ArriveTangent,
+		LeaveTangent
+	};
+
+	TSharedRef<SWidget> BuildSplinePointPropertyLabel(ESplinePointProperty SplinePointProp);
+	void OnSetTransformEditingAbsolute(ESplinePointProperty SplinePointProp, bool bIsAbsolute);
+	bool IsTransformEditingAbsolute(ESplinePointProperty SplinePointProperty) const;
+	bool IsTransformEditingRelative(ESplinePointProperty SplinePointProperty) const;
+	FText GetSplinePointPropertyText(ESplinePointProperty SplinePointProp) const;
+	void SetSplinePointProperty(ESplinePointProperty SplinePointProp, FVector NewValue, EAxisList::Type Axis, bool bCommitted);
+
+	FUIAction CreateCopyAction(ESplinePointProperty SplinePointProp);
+	FUIAction CreatePasteAction(ESplinePointProperty SplinePointProp);
+
+	bool OnCanCopy(ESplinePointProperty SplinePointProp) const { return true; }
+	void OnCopy(ESplinePointProperty SplinePointProp);
+	void OnPaste(ESplinePointProperty SplinePointProp);
+
+	void OnBeginPositionSlider();
+	void OnBeginScaleSlider();
+	void OnEndSlider(float);
 
 	USplineComponent* SplineComp;
 	USplineComponent* SplineCompArchetype;
@@ -214,6 +245,11 @@ private:
 	TArray<TSharedPtr<FString>> SplinePointTypes;
 	TSharedPtr<ISplineMetadataDetails> SplineMetaDataDetails;
 	FSimpleDelegate OnRegenerateChildren;
+
+	bool bEditingLocationAbsolute = false;
+	bool bEditingRotationAbsolute = false;
+
+	bool bInSliderTransaction = false;
 };
 
 bool FSplinePointDetails::bAlreadyWarnedInvalidIndex = false;
@@ -227,11 +263,17 @@ FSplinePointDetails::FSplinePointDetails(USplineComponent* InOwningSplineCompone
 
 	SplineCurvesProperty = FindFProperty<FProperty>(USplineComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(USplineComponent, SplineCurves));
 
+	const TArray<ESplinePointType::Type> EnabledSplinePointTypes = InOwningSplineComponent->GetEnabledSplinePointTypes();
+
 	UEnum* SplinePointTypeEnum = StaticEnum<ESplinePointType::Type>();
 	check(SplinePointTypeEnum);
 	for (int32 EnumIndex = 0; EnumIndex < SplinePointTypeEnum->NumEnums() - 1; ++EnumIndex)
 	{
-		SplinePointTypes.Add(MakeShareable(new FString(SplinePointTypeEnum->GetNameStringByIndex(EnumIndex))));
+		const int32 Value = SplinePointTypeEnum->GetValueByIndex(EnumIndex);
+		if (EnabledSplinePointTypes.Contains(Value))
+		{
+			SplinePointTypes.Add(MakeShareable(new FString(SplinePointTypeEnum->GetNameStringByIndex(EnumIndex))));
+		}
 	}
 
 	check(InOwningSplineComponent);
@@ -380,6 +422,11 @@ void FSplinePointDetails::GenerateChildContent(IDetailChildrenBuilder& ChildrenB
 		]
 	];
 
+	if (!SplineComp)
+	{
+		return;
+	}
+
 	// Input key
 	ChildrenBuilder.AddCustomRow(LOCTEXT("InputKey", "Input Key"))
 	.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
@@ -404,167 +451,208 @@ void FSplinePointDetails::GenerateChildContent(IDetailChildrenBuilder& ChildrenB
 	];
 
 	// Position
-	ChildrenBuilder.AddCustomRow(LOCTEXT("Position", "Position"))
-	.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-	.NameContent()
-	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Center)
-	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("Position", "Position"))
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	]
-	.ValueContent()
-	.MinDesiredWidth(375.0f)
-	.MaxDesiredWidth(375.0f)
-	[
-		SNew(SVectorInputBox)
-		.X(this, &FSplinePointDetails::GetPositionX)
-		.Y(this, &FSplinePointDetails::GetPositionY)
-		.Z(this, &FSplinePointDetails::GetPositionZ)
-		.AllowResponsiveLayout(true)
-		.AllowSpin(false)
-		.OnXCommitted(this, &FSplinePointDetails::OnSetPosition, 0)
-		.OnYCommitted(this, &FSplinePointDetails::OnSetPosition, 1)
-		.OnZCommitted(this, &FSplinePointDetails::OnSetPosition, 2)
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	];
-
-	// ArriveTangent
-	ChildrenBuilder.AddCustomRow(LOCTEXT("ArriveTangent", "Arrive Tangent"))
-	.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-	.NameContent()
-	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Center)
-	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("ArriveTangent", "Arrive Tangent"))
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	]
-	.ValueContent()
-	.MinDesiredWidth(375.0f)
-	.MaxDesiredWidth(375.0f)
-	[
-		SNew(SVectorInputBox)
-		.X(this, &FSplinePointDetails::GetArriveTangentX)
-		.Y(this, &FSplinePointDetails::GetArriveTangentY)
-		.Z(this, &FSplinePointDetails::GetArriveTangentZ)
-		.AllowResponsiveLayout(true)
-		.AllowSpin(false)
-		.OnXCommitted(this, &FSplinePointDetails::OnSetArriveTangent, 0)
-		.OnYCommitted(this, &FSplinePointDetails::OnSetArriveTangent, 1)
-		.OnZCommitted(this, &FSplinePointDetails::OnSetArriveTangent, 2)
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	];
-
-	// LeaveTangent
-	ChildrenBuilder.AddCustomRow(LOCTEXT("LeaveTangent", "Leave Tangent"))
-	.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-	.NameContent()
-	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Center)
-	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("LeaveTangent", "Leave Tangent"))
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	]
-	.ValueContent()
-	.MinDesiredWidth(375.0f)
-	.MaxDesiredWidth(375.0f)
-	[
-		SNew(SVectorInputBox)
-		.X(this, &FSplinePointDetails::GetLeaveTangentX)
-		.Y(this, &FSplinePointDetails::GetLeaveTangentY)
-		.Z(this, &FSplinePointDetails::GetLeaveTangentZ)
-		.AllowResponsiveLayout(true)
-		.AllowSpin(false)
-		.OnXCommitted(this, &FSplinePointDetails::OnSetLeaveTangent, 0)
-		.OnYCommitted(this, &FSplinePointDetails::OnSetLeaveTangent, 1)
-		.OnZCommitted(this, &FSplinePointDetails::OnSetLeaveTangent, 2)
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	];
+	if (SplineComp->AllowsSpinePointLocationEditing())
+	{
+		ChildrenBuilder.AddCustomRow(LOCTEXT("Location", "Location"))
+		.CopyAction(CreateCopyAction(ESplinePointProperty::Location))
+		.PasteAction(CreatePasteAction(ESplinePointProperty::Location))
+		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+		.NameContent()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
+		[
+			BuildSplinePointPropertyLabel(ESplinePointProperty::Location)
+		]
+		.ValueContent()
+		.MinDesiredWidth(375.0f)
+		.MaxDesiredWidth(375.0f)
+		[
+			SNew(SVectorInputBox)
+			.X(this, &FSplinePointDetails::GetPositionX)
+			.Y(this, &FSplinePointDetails::GetPositionY)
+			.Z(this, &FSplinePointDetails::GetPositionZ)
+			.AllowResponsiveLayout(true)
+			.AllowSpin(true)
+			.bColorAxisLabels(true)
+			.SpinDelta(1.f)
+			.OnXChanged(this, &FSplinePointDetails::OnSetPosition, ETextCommit::Default, EAxis::X)
+			.OnYChanged(this, &FSplinePointDetails::OnSetPosition, ETextCommit::Default, EAxis::Y)
+			.OnZChanged(this, &FSplinePointDetails::OnSetPosition, ETextCommit::Default, EAxis::Z)
+			.OnXCommitted(this, &FSplinePointDetails::OnSetPosition, EAxis::X)
+			.OnYCommitted(this, &FSplinePointDetails::OnSetPosition, EAxis::Y)
+			.OnZCommitted(this, &FSplinePointDetails::OnSetPosition, EAxis::Z)
+			.OnBeginSliderMovement(this, &FSplinePointDetails::OnBeginPositionSlider)
+			.OnEndSliderMovement(this, &FSplinePointDetails::OnEndSlider)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		];
+	}
 
 	// Rotation
-	ChildrenBuilder.AddCustomRow(LOCTEXT("Rotation", "Rotation"))
-	.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-	.NameContent()
-	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Center)
-	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("Rotation", "Rotation"))
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	]
-	.ValueContent()
-	.MinDesiredWidth(375.0f)
-	.MaxDesiredWidth(375.0f)
-	[
-		SNew(SVectorInputBox)
-		.X(this, &FSplinePointDetails::GetRotationRoll)
-		.Y(this, &FSplinePointDetails::GetRotationPitch)
-		.Z(this, &FSplinePointDetails::GetRotationYaw)
-		.AllowResponsiveLayout(true)
-		.AllowSpin(false)
-		.OnXCommitted(this, &FSplinePointDetails::OnSetRotation, 0)
-		.OnYCommitted(this, &FSplinePointDetails::OnSetRotation, 1)
-		.OnZCommitted(this, &FSplinePointDetails::OnSetRotation, 2)
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	];
+	if (SplineComp->AllowsSplinePointRotationEditing())
+	{
+		ChildrenBuilder.AddCustomRow(LOCTEXT("Rotation", "Rotation"))
+		.CopyAction(CreateCopyAction(ESplinePointProperty::Rotation))
+		.PasteAction(CreatePasteAction(ESplinePointProperty::Rotation))
+		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+		.NameContent()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
+		[
+			BuildSplinePointPropertyLabel(ESplinePointProperty::Rotation)
+		]
+		.ValueContent()
+		.MinDesiredWidth(375.0f)
+		.MaxDesiredWidth(375.0f)
+		[
+			SNew(SRotatorInputBox)
+			.Roll(this, &FSplinePointDetails::GetRotationRoll)
+			.Pitch(this, &FSplinePointDetails::GetRotationPitch)
+			.Yaw(this, &FSplinePointDetails::GetRotationYaw)
+			.AllowResponsiveLayout(true)
+			.AllowSpin(false)
+			.bColorAxisLabels(false)
+			.OnRollCommitted(this, &FSplinePointDetails::OnSetRotation, EAxis::X)
+			.OnPitchCommitted(this, &FSplinePointDetails::OnSetRotation, EAxis::Y)
+			.OnYawCommitted(this, &FSplinePointDetails::OnSetRotation, EAxis::Z)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		];
+	}
 
 	// Scale
-	ChildrenBuilder.AddCustomRow(LOCTEXT("Scale", "Scale"))
-	.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-	.NameContent()
-	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Center)
-	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("Scale", "Scale"))
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	]
-	.ValueContent()
-	.MinDesiredWidth(375.0f)
-	.MaxDesiredWidth(375.0f)
-	[
-		SNew(SVectorInputBox)
-		.X(this, &FSplinePointDetails::GetScaleX)
-		.Y(this, &FSplinePointDetails::GetScaleY)
-		.Z(this, &FSplinePointDetails::GetScaleZ)
-		.AllowSpin(false)
-		.AllowResponsiveLayout(true)
-		.OnXCommitted(this, &FSplinePointDetails::OnSetScale, 0)
-		.OnYCommitted(this, &FSplinePointDetails::OnSetScale, 1)
-		.OnZCommitted(this, &FSplinePointDetails::OnSetScale, 2)
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	];
-
-	// Type
-	ChildrenBuilder.AddCustomRow(LOCTEXT("Type", "Type"))
-	.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-	.NameContent()
-	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Center)
-	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("Type", "Type"))
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	]
-	.ValueContent()
-	.MinDesiredWidth(125.0f)
-	.MaxDesiredWidth(125.0f)
-	[
-		SNew(SComboBox<TSharedPtr<FString>>)
-		.OptionsSource(&SplinePointTypes)
-		.OnGenerateWidget(this, &FSplinePointDetails::OnGenerateComboWidget)
-		.OnSelectionChanged(this, &FSplinePointDetails::OnSplinePointTypeChanged)
+	if (SplineComp->AllowsSplinePointScaleEditing())
+	{
+		ChildrenBuilder.AddCustomRow(LOCTEXT("Scale", "Scale"))
+		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+		.CopyAction(CreateCopyAction(ESplinePointProperty::Scale))
+		.PasteAction(CreatePasteAction(ESplinePointProperty::Scale))
+		.NameContent()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
 		[
 			SNew(STextBlock)
+			.Text(LOCTEXT("ScaleLabel", "Scale"))
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.Text(this, &FSplinePointDetails::GetPointType)
 		]
-	];
+		.ValueContent()
+		.MinDesiredWidth(375.0f)
+		.MaxDesiredWidth(375.0f)
+		[
+			SNew(SVectorInputBox)
+			.X(this, &FSplinePointDetails::GetScaleX)
+			.Y(this, &FSplinePointDetails::GetScaleY)
+			.Z(this, &FSplinePointDetails::GetScaleZ)
+			.AllowResponsiveLayout(true)
+			.AllowSpin(true)
+			.bColorAxisLabels(true)
+			.OnXChanged(this, &FSplinePointDetails::OnSetScale, ETextCommit::Default, EAxis::X)
+			.OnYChanged(this, &FSplinePointDetails::OnSetScale, ETextCommit::Default, EAxis::Y)
+			.OnZChanged(this, &FSplinePointDetails::OnSetScale, ETextCommit::Default, EAxis::Z)
+			.OnXCommitted(this, &FSplinePointDetails::OnSetScale, EAxis::X)
+			.OnYCommitted(this, &FSplinePointDetails::OnSetScale, EAxis::Y)
+			.OnZCommitted(this, &FSplinePointDetails::OnSetScale, EAxis::Z)
+			.OnBeginSliderMovement(this, &FSplinePointDetails::OnBeginScaleSlider)
+			.OnEndSliderMovement(this, &FSplinePointDetails::OnEndSlider)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		];
+	}
+	
+	// ArriveTangent
+	if (SplineComp->AllowsSplinePointArriveTangentEditing())
+	{
+		ChildrenBuilder.AddCustomRow(LOCTEXT("ArriveTangent", "Arrive Tangent"))
+		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+		.CopyAction(CreateCopyAction(ESplinePointProperty::ArriveTangent))
+		.PasteAction(CreatePasteAction(ESplinePointProperty::ArriveTangent))
+		.NameContent()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("ArriveTangent", "Arrive Tangent"))
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		]
+		.ValueContent()
+		.MinDesiredWidth(375.0f)
+		.MaxDesiredWidth(375.0f)
+		[
+			SNew(SVectorInputBox)
+			.X(this, &FSplinePointDetails::GetArriveTangentX)
+			.Y(this, &FSplinePointDetails::GetArriveTangentY)
+			.Z(this, &FSplinePointDetails::GetArriveTangentZ)
+			.AllowResponsiveLayout(true)
+			.AllowSpin(false)
+			.bColorAxisLabels(false)
+			.OnXCommitted(this, &FSplinePointDetails::OnSetArriveTangent, EAxis::X)
+			.OnYCommitted(this, &FSplinePointDetails::OnSetArriveTangent, EAxis::Y)
+			.OnZCommitted(this, &FSplinePointDetails::OnSetArriveTangent, EAxis::Z)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		];
+	}
+	
 
-	if (SplineComp && SplineVisualizer.IsValid() && SplineVisualizer->GetSelectedKeys().Num() > 0)
+	// LeaveTangent
+	if (SplineComp->AllowsSplinePointLeaveTangentEditing())
+	{
+		ChildrenBuilder.AddCustomRow(LOCTEXT("LeaveTangent", "Leave Tangent"))
+		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+		.CopyAction(CreateCopyAction(ESplinePointProperty::LeaveTangent))
+		.PasteAction(CreatePasteAction(ESplinePointProperty::LeaveTangent))
+		.NameContent()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("LeaveTangent", "Leave Tangent"))
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		]
+		.ValueContent()
+		.MinDesiredWidth(375.0f)
+		.MaxDesiredWidth(375.0f)
+		[
+			SNew(SVectorInputBox)
+			.X(this, &FSplinePointDetails::GetLeaveTangentX)
+			.Y(this, &FSplinePointDetails::GetLeaveTangentY)
+			.Z(this, &FSplinePointDetails::GetLeaveTangentZ)
+			.AllowResponsiveLayout(true)
+			.AllowSpin(false)
+			.bColorAxisLabels(false)
+			.OnXCommitted(this, &FSplinePointDetails::OnSetLeaveTangent, EAxis::X)
+			.OnYCommitted(this, &FSplinePointDetails::OnSetLeaveTangent, EAxis::Y)
+			.OnZCommitted(this, &FSplinePointDetails::OnSetLeaveTangent, EAxis::Z)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		];
+	}
+
+	// Type
+	if (SplineComp->GetEnabledSplinePointTypes().Num() > 1)
+	{
+		ChildrenBuilder.AddCustomRow(LOCTEXT("Type", "Type"))
+		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+		.NameContent()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("Type", "Type"))
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		]
+		.ValueContent()
+		.MinDesiredWidth(125.0f)
+		.MaxDesiredWidth(125.0f)
+		[
+			SNew(SComboBox<TSharedPtr<FString>>)
+			.OptionsSource(&SplinePointTypes)
+			.OnGenerateWidget(this, &FSplinePointDetails::OnGenerateComboWidget)
+			.OnSelectionChanged(this, &FSplinePointDetails::OnSplinePointTypeChanged)
+			[
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.Text(this, &FSplinePointDetails::GetPointType)
+			]
+		];
+	}
+
+	if (SplineVisualizer.IsValid() && SplineVisualizer->GetSelectedKeys().Num() > 0)
 	{
 		for (TObjectIterator<UClass> ClassIterator; ClassIterator; ++ClassIterator)
 		{
@@ -591,12 +679,22 @@ void FSplinePointDetails::Tick(float DeltaTime)
 
 void FSplinePointDetails::UpdateValues()
 {
-	// Always update the spline component based on the spline component visualizer's currently edited component.
-	SplineComp = SplineVisualizer.IsValid() ? SplineVisualizer->GetEditedSplineComponent() : nullptr;
+	// If this is a blueprint spline, always update the spline component based on 
+	// the spline component visualizer's currently edited spline component.
+	if (SplineCompArchetype)
+	{
+		USplineComponent* EditedSplineComp = SplineVisualizer.IsValid() ? SplineVisualizer->GetEditedSplineComponent() : nullptr;
+
+		if (!EditedSplineComp || (EditedSplineComp->GetArchetype() != SplineCompArchetype))
+		{
+			return;
+		}
+
+		SplineComp = EditedSplineComp;
+	}
 
 	if (!SplineComp || !SplineVisualizer.IsValid())
 	{
-		SplineComp = nullptr;
 		return;
 	}
 
@@ -649,12 +747,32 @@ void FSplinePointDetails::UpdateValues()
 		{
 			for (int32 Index : SelectedKeys)
 			{
+				const FTransform SplineToWorld = SplineComp->GetComponentToWorld();
+
+				if (bEditingLocationAbsolute)
+				{
+					const FVector AbsoluteLocation = SplineToWorld.TransformPosition(SplineComp->GetSplinePointsPosition().Points[Index].OutVal);
+					Position.Add(AbsoluteLocation);
+				}
+				else
+				{
+					Position.Add(SplineComp->GetSplinePointsPosition().Points[Index].OutVal);
+				}
+
+				if (bEditingRotationAbsolute)
+				{
+					const FQuat AbsoluteRotation = SplineToWorld.TransformRotation(SplineComp->GetSplinePointsRotation().Points[Index].OutVal);
+					Rotation.Add(AbsoluteRotation.Rotator());
+				}
+				else
+				{
+					Rotation.Add(SplineComp->GetSplinePointsRotation().Points[Index].OutVal.Rotator());
+				}
+
 				InputKey.Add(SplineComp->GetSplinePointsPosition().Points[Index].InVal);
-				Position.Add(SplineComp->GetSplinePointsPosition().Points[Index].OutVal);
+				Scale.Add(SplineComp->GetSplinePointsScale().Points[Index].OutVal);
 				ArriveTangent.Add(SplineComp->GetSplinePointsPosition().Points[Index].ArriveTangent);
 				LeaveTangent.Add(SplineComp->GetSplinePointsPosition().Points[Index].LeaveTangent);
-				Rotation.Add(SplineComp->GetSplinePointsRotation().Points[Index].OutVal.Rotator());
-				Scale.Add(SplineComp->GetSplinePointsScale().Points[Index].OutVal);
 				PointType.Add(ConvertInterpCurveModeToSplinePointType(SplineComp->GetSplinePointsPosition().Points[Index].InterpMode));
 			}
 
@@ -749,14 +867,14 @@ void FSplinePointDetails::OnSetInputKey(float NewValue, ETextCommit::Type Commit
 	GEditor->RedrawLevelEditingViewports(true);
 }
 
-void FSplinePointDetails::OnSetPosition(float NewValue, ETextCommit::Type CommitInfo, int32 Axis)
+void FSplinePointDetails::OnSetPosition(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis)
 {
 	if (!SplineComp)
 	{
 		return;
 	}
 
-	const FScopedTransaction Transaction(LOCTEXT("SetSplinePointPosition", "Set spline point position"));
+	const FScopedTransaction Transaction(LOCTEXT("SetSplinePointPosition", "Set spline point position"), !bInSliderTransaction);
 	SplineComp->Modify();
 
 	for (int32 Index : SelectedKeys)
@@ -768,20 +886,36 @@ void FSplinePointDetails::OnSetPosition(float NewValue, ETextCommit::Type Commit
 			continue;
 		}
 
-		FVector PointPosition = SplineComp->GetSplinePointsPosition().Points[Index].OutVal;
-		PointPosition.Component(Axis) = NewValue;
-		SplineComp->GetSplinePointsPosition().Points[Index].OutVal = PointPosition;
+		if (bEditingLocationAbsolute)
+		{
+			const FTransform SplineToWorld = SplineComp->GetComponentToWorld();
+			const FVector RelativePos = SplineComp->GetSplinePointsPosition().Points[Index].OutVal;
+			FVector AbsolutePos = SplineToWorld.TransformPosition(RelativePos);
+			AbsolutePos.SetComponentForAxis(Axis, NewValue);
+			FVector PointPosition = SplineToWorld.InverseTransformPosition(AbsolutePos);
+
+			SplineComp->GetSplinePointsPosition().Points[Index].OutVal = PointPosition;
+		}
+		else
+		{
+			FVector PointPosition = SplineComp->GetSplinePointsPosition().Points[Index].OutVal;
+			PointPosition.SetComponentForAxis(Axis, NewValue);
+			SplineComp->GetSplinePointsPosition().Points[Index].OutVal = PointPosition;
+		}
 	}
 
-	SplineComp->UpdateSpline();
-	SplineComp->bSplineHasBeenEdited = true;
-	FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty);
-	UpdateValues();
+	if (CommitInfo == ETextCommit::OnEnter || CommitInfo == ETextCommit::OnUserMovedFocus)
+	{
+		SplineComp->UpdateSpline();
+		SplineComp->bSplineHasBeenEdited = true;
+		FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty, EPropertyChangeType::ValueSet);
+		UpdateValues();
+	}
 
 	GEditor->RedrawLevelEditingViewports(true);
 }
 
-void FSplinePointDetails::OnSetArriveTangent(float NewValue, ETextCommit::Type CommitInfo, int32 Axis)
+void FSplinePointDetails::OnSetArriveTangent(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis)
 {
 	if (!SplineComp)
 	{
@@ -801,20 +935,23 @@ void FSplinePointDetails::OnSetArriveTangent(float NewValue, ETextCommit::Type C
 		}
 
 		FVector PointTangent = SplineComp->GetSplinePointsPosition().Points[Index].ArriveTangent;
-		PointTangent.Component(Axis) = NewValue;
+		PointTangent.SetComponentForAxis(Axis, NewValue);
 		SplineComp->GetSplinePointsPosition().Points[Index].ArriveTangent = PointTangent;
 		SplineComp->GetSplinePointsPosition().Points[Index].InterpMode = CIM_CurveUser;
 	}
 
-	SplineComp->UpdateSpline();
-	SplineComp->bSplineHasBeenEdited = true;
-	FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty);
-	UpdateValues();
+	if (CommitInfo == ETextCommit::OnEnter || CommitInfo == ETextCommit::OnUserMovedFocus)
+	{
+		SplineComp->UpdateSpline();
+		SplineComp->bSplineHasBeenEdited = true;
+		FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty, EPropertyChangeType::ValueSet);
+		UpdateValues();
+	}
 
 	GEditor->RedrawLevelEditingViewports(true);
 }
 
-void FSplinePointDetails::OnSetLeaveTangent(float NewValue, ETextCommit::Type CommitInfo, int32 Axis)
+void FSplinePointDetails::OnSetLeaveTangent(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis)
 {
 	if (!SplineComp)
 	{
@@ -834,29 +971,32 @@ void FSplinePointDetails::OnSetLeaveTangent(float NewValue, ETextCommit::Type Co
 		}
 
 		FVector PointTangent = SplineComp->GetSplinePointsPosition().Points[Index].LeaveTangent;
-		PointTangent.Component(Axis) = NewValue;
+		PointTangent.SetComponentForAxis(Axis, NewValue);
 		SplineComp->GetSplinePointsPosition().Points[Index].LeaveTangent = PointTangent;
 		SplineComp->GetSplinePointsPosition().Points[Index].InterpMode = CIM_CurveUser;
 	}
 
-	SplineComp->UpdateSpline();
-	SplineComp->bSplineHasBeenEdited = true;
-	FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty);
-	UpdateValues();
+	if (CommitInfo == ETextCommit::OnEnter || CommitInfo == ETextCommit::OnUserMovedFocus)
+	{
+		SplineComp->UpdateSpline();
+		SplineComp->bSplineHasBeenEdited = true;
+		FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty, EPropertyChangeType::ValueSet);
+		UpdateValues();
+	}
 
 	GEditor->RedrawLevelEditingViewports(true);
 }
 
-void FSplinePointDetails::OnSetRotation(float NewValue, ETextCommit::Type CommitInfo, int32 Axis)
+void FSplinePointDetails::OnSetRotation(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis)
 {
 	if (!SplineComp)
 	{
 		return;
 	}
-
 	const FScopedTransaction Transaction(LOCTEXT("SetSplinePointRotation", "Set spline point rotation"));
 	SplineComp->Modify();
-
+	FQuat SplineComponentRotation = SplineComp->GetComponentQuat();
+	FQuat NewRotationRelative;
 	for (int32 Index : SelectedKeys)
 	{
 		if (Index < 0 || Index >= SplineComp->GetSplinePointsRotation().Points.Num())
@@ -866,27 +1006,61 @@ void FSplinePointDetails::OnSetRotation(float NewValue, ETextCommit::Type Commit
 			continue;
 		}
 
-		FRotator PointRotation = SplineComp->GetSplinePointsRotation().Points[Index].OutVal.Rotator();
+		FInterpCurvePoint<FVector>& EditedPoint = SplineComp->GetSplinePointsPosition().Points[Index];
+		FInterpCurvePoint<FQuat>& EditedRotPoint = SplineComp->GetSplinePointsRotation().Points[Index];
+		const FQuat CurrentRotationRelative = EditedRotPoint.OutVal;
 
-		switch (Axis)
+		if (bEditingRotationAbsolute)
 		{
-			case 0: PointRotation.Roll = NewValue; break;
-			case 1: PointRotation.Pitch = NewValue; break;
-			case 2: PointRotation.Yaw = NewValue; break;
+			FRotator AbsoluteRot = (SplineComponentRotation * CurrentRotationRelative).Rotator();
+
+			switch (Axis)
+			{
+			case EAxis::X: AbsoluteRot.Roll = NewValue; break;
+			case EAxis::Y: AbsoluteRot.Pitch = NewValue; break;
+			case EAxis::Z: AbsoluteRot.Yaw = NewValue; break;
+			}
+
+			NewRotationRelative = SplineComponentRotation.Inverse() * AbsoluteRot.Quaternion();
+		}
+		else
+		{
+			FRotator NewRotationRotator(CurrentRotationRelative);
+
+			switch (Axis)
+			{
+			case EAxis::X: NewRotationRotator.Roll = NewValue; break;
+			case EAxis::Y: NewRotationRotator.Pitch = NewValue; break;
+			case EAxis::Z: NewRotationRotator.Yaw = NewValue; break;
+			}
+			
+			NewRotationRelative = NewRotationRotator.Quaternion();
 		}
 
-		SplineComp->GetSplinePointsRotation().Points[Index].OutVal = PointRotation.Quaternion();
+		SplineComp->GetSplinePointsRotation().Points[Index].OutVal = NewRotationRelative;
+
+		FQuat DeltaRotate(NewRotationRelative * CurrentRotationRelative.Inverse());
+		// Rotate tangent according to delta rotation
+		FVector NewTangent = SplineComponentRotation.RotateVector(EditedPoint.LeaveTangent); // convert local-space tangent vector to world-space
+		NewTangent = DeltaRotate.RotateVector(NewTangent); // apply world-space delta rotation to world-space tangent
+		NewTangent = SplineComponentRotation.Inverse().RotateVector(NewTangent); // convert world-space tangent vector back into local-space
+		EditedPoint.LeaveTangent = NewTangent;
+		EditedPoint.ArriveTangent = NewTangent;
 	}
 
-	SplineComp->UpdateSpline();
-	SplineComp->bSplineHasBeenEdited = true;
-	FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty);
-	UpdateValues();
+	SplineVisualizer->SetCachedRotation(NewRotationRelative);
 
+	if (CommitInfo == ETextCommit::OnEnter || CommitInfo == ETextCommit::OnUserMovedFocus)
+	{
+		SplineComp->UpdateSpline();
+		SplineComp->bSplineHasBeenEdited = true;
+		FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty, EPropertyChangeType::ValueSet);
+		UpdateValues();
+	}
 	GEditor->RedrawLevelEditingViewports(true);
 }
 
-void FSplinePointDetails::OnSetScale(float NewValue, ETextCommit::Type CommitInfo, int32 Axis)
+void FSplinePointDetails::OnSetScale(float NewValue, ETextCommit::Type CommitInfo, EAxis::Type Axis)
 {
 	if (!SplineComp)
 	{
@@ -906,14 +1080,17 @@ void FSplinePointDetails::OnSetScale(float NewValue, ETextCommit::Type CommitInf
 		}
 
 		FVector PointScale = SplineComp->GetSplinePointsScale().Points[Index].OutVal;
-		PointScale.Component(Axis) = NewValue;
+		PointScale.SetComponentForAxis(Axis, NewValue);
 		SplineComp->GetSplinePointsScale().Points[Index].OutVal = PointScale;
 	}
 
-	SplineComp->UpdateSpline();
-	SplineComp->bSplineHasBeenEdited = true;
-	FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty);
-	UpdateValues();
+	if (CommitInfo == ETextCommit::OnEnter || CommitInfo == ETextCommit::OnUserMovedFocus)
+	{
+		SplineComp->UpdateSpline();
+		SplineComp->bSplineHasBeenEdited = true;
+		FComponentVisualizer::NotifyPropertyModified(SplineComp, SplineCurvesProperty, EPropertyChangeType::ValueSet);
+		UpdateValues();
+	}
 
 	GEditor->RedrawLevelEditingViewports(true);
 }
@@ -922,7 +1099,9 @@ FText FSplinePointDetails::GetPointType() const
 {
 	if (PointType.Value.IsSet())
 	{
-		return FText::FromString(*SplinePointTypes[PointType.Value.GetValue()]);
+		const UEnum* SplinePointTypeEnum = StaticEnum<ESplinePointType::Type>();
+		check(SplinePointTypeEnum);
+		return SplinePointTypeEnum->GetDisplayNameTextByValue(PointType.Value.GetValue());
 	}
 
 	return LOCTEXT("MultipleTypes", "Multiple Types");
@@ -1078,6 +1257,309 @@ TSharedRef<SWidget> FSplinePointDetails::OnGenerateComboWidget(TSharedPtr<FStrin
 	return SNew(STextBlock)
 		.Text(FText::FromString(*InComboString))
 		.Font(IDetailLayoutBuilder::GetDetailFont());
+}
+
+TSharedRef<SWidget> FSplinePointDetails::BuildSplinePointPropertyLabel(ESplinePointProperty SplinePointProp)
+{
+	FText Label;
+	switch (SplinePointProp)
+	{
+	case ESplinePointProperty::Rotation:
+		Label = LOCTEXT("RotationLabel", "Rotation");
+		break;
+	case ESplinePointProperty::Location:
+		Label = LOCTEXT("LocationLabel", "Location");
+		break;
+	default:
+		return SNullWidget::NullWidget;
+	}
+
+	FMenuBuilder MenuBuilder(true, NULL, NULL);
+
+	FUIAction SetRelativeLocationAction
+	(
+		FExecuteAction::CreateSP(this, &FSplinePointDetails::OnSetTransformEditingAbsolute, SplinePointProp, false),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &FSplinePointDetails::IsTransformEditingRelative, SplinePointProp)
+	);
+
+	FUIAction SetWorldLocationAction
+	(
+		FExecuteAction::CreateSP(this, &FSplinePointDetails::OnSetTransformEditingAbsolute, SplinePointProp, true),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &FSplinePointDetails::IsTransformEditingAbsolute, SplinePointProp)
+	);
+
+	MenuBuilder.BeginSection(TEXT("TransformType"), FText::Format(LOCTEXT("TransformType", "{0} Type"), Label));
+
+	MenuBuilder.AddMenuEntry
+	(
+		FText::Format(LOCTEXT("RelativeLabel", "Relative"), Label),
+		FText::Format(LOCTEXT("RelativeLabel_ToolTip", "{0} is relative to its parent"), Label),
+		FSlateIcon(),
+		SetRelativeLocationAction,
+		NAME_None,
+		EUserInterfaceActionType::RadioButton
+	);
+
+	MenuBuilder.AddMenuEntry
+	(
+		FText::Format(LOCTEXT("WorldLabel", "World"), Label),
+		FText::Format(LOCTEXT("WorldLabel_ToolTip", "{0} is relative to the world"), Label),
+		FSlateIcon(),
+		SetWorldLocationAction,
+		NAME_None,
+		EUserInterfaceActionType::RadioButton
+	);
+
+	MenuBuilder.EndSection();
+
+
+	return
+		SNew(SComboButton)
+		.ContentPadding(0)
+		.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+		.ForegroundColor(FSlateColor::UseForeground())
+		.MenuContent()
+		[
+			MenuBuilder.MakeWidget()
+		]
+		.ButtonContent()
+		[
+			SNew(SBox)
+			.Padding(FMargin(0.0f, 0.0f, 2.0f, 0.0f))
+			[
+				SNew(STextBlock)
+				.Text(this, &FSplinePointDetails::GetSplinePointPropertyText, SplinePointProp)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			]
+		];
+}
+
+void FSplinePointDetails::OnSetTransformEditingAbsolute(ESplinePointProperty SplinePointProp, bool bIsAbsolute)
+{
+	if (SplinePointProp == ESplinePointProperty::Location)
+	{
+		bEditingLocationAbsolute = bIsAbsolute;
+	}
+	else if (SplinePointProp == ESplinePointProperty::Rotation)
+	{
+		bEditingRotationAbsolute = bIsAbsolute;
+	}
+	else
+	{
+		return;
+	}
+
+	UpdateValues();
+}
+
+bool FSplinePointDetails::IsTransformEditingAbsolute(ESplinePointProperty SplinePointProp) const
+{
+	if (SplinePointProp == ESplinePointProperty::Location)
+	{
+		return bEditingLocationAbsolute;
+	}
+	else if (SplinePointProp == ESplinePointProperty::Rotation)
+	{
+		return bEditingRotationAbsolute;
+	}
+
+	return false;
+}
+
+bool FSplinePointDetails::IsTransformEditingRelative(ESplinePointProperty SplinePointProp) const
+{
+	if (SplinePointProp == ESplinePointProperty::Location)
+	{
+		return !bEditingLocationAbsolute;
+	}
+	else if (SplinePointProp == ESplinePointProperty::Rotation)
+	{
+		return !bEditingRotationAbsolute;
+	}
+
+	return false;
+}
+
+
+FText FSplinePointDetails::GetSplinePointPropertyText(ESplinePointProperty SplinePointProp) const
+{
+	if (SplinePointProp == ESplinePointProperty::Location)
+	{
+		return bEditingLocationAbsolute ? LOCTEXT("AbsoluteLocation", "Absolute Location") : LOCTEXT("Location", "Location");
+	}
+	else if (SplinePointProp == ESplinePointProperty::Rotation)
+	{
+		return bEditingRotationAbsolute ? LOCTEXT("AbsoluteRotation", "Absolute Rotation") : LOCTEXT("Rotation", "Rotation");
+	}
+
+	return FText::GetEmpty();
+}
+
+void FSplinePointDetails::SetSplinePointProperty(ESplinePointProperty SplinePointProp, FVector NewValue, EAxisList::Type Axis, bool bCommitted)
+{
+	switch (SplinePointProp)
+	{
+	case ESplinePointProperty::Location:
+		OnSetPosition(NewValue.X, ETextCommit::Default, EAxis::X);
+		OnSetPosition(NewValue.Y, ETextCommit::Default, EAxis::Y);
+		OnSetPosition(NewValue.Z, ETextCommit::OnEnter, EAxis::Z);
+		break;
+	case ESplinePointProperty::Rotation:
+		OnSetRotation(NewValue.X, ETextCommit::Default, EAxis::X);
+		OnSetRotation(NewValue.Y, ETextCommit::Default, EAxis::Y);
+		OnSetRotation(NewValue.Z, ETextCommit::OnEnter, EAxis::Z);
+		break;
+	case ESplinePointProperty::Scale:
+		OnSetScale(NewValue.X, ETextCommit::Default, EAxis::X);
+		OnSetScale(NewValue.Y, ETextCommit::Default, EAxis::Y);
+		OnSetScale(NewValue.Z, ETextCommit::OnEnter, EAxis::Z);
+		break;
+	case ESplinePointProperty::ArriveTangent:
+		OnSetArriveTangent(NewValue.X, ETextCommit::Default, EAxis::X);
+		OnSetArriveTangent(NewValue.Y, ETextCommit::Default, EAxis::Y);
+		OnSetArriveTangent(NewValue.Z, ETextCommit::OnEnter, EAxis::Z);
+		break;
+	case ESplinePointProperty::LeaveTangent:
+		OnSetLeaveTangent(NewValue.X, ETextCommit::Default, EAxis::X);
+		OnSetLeaveTangent(NewValue.Y, ETextCommit::Default, EAxis::Y);
+		OnSetLeaveTangent(NewValue.Z, ETextCommit::OnEnter, EAxis::Z);
+		break;
+	default:
+		break;
+	}
+}
+
+FUIAction FSplinePointDetails::CreateCopyAction(ESplinePointProperty SplinePointProp)
+{
+	return
+		FUIAction
+		(
+			FExecuteAction::CreateSP(this, &FSplinePointDetails::OnCopy, SplinePointProp),
+			FCanExecuteAction::CreateSP(this, &FSplinePointDetails::OnCanCopy, SplinePointProp)
+		);
+}
+
+FUIAction FSplinePointDetails::CreatePasteAction(ESplinePointProperty SplinePointProp)
+{
+	return
+		FUIAction(FExecuteAction::CreateSP(this, &FSplinePointDetails::OnPaste, SplinePointProp));
+}
+
+void FSplinePointDetails::OnCopy(ESplinePointProperty SplinePointProp)
+{
+	FString CopyStr;
+	switch (SplinePointProp)
+	{
+	case ESplinePointProperty::Location:
+		CopyStr = FString::Printf(TEXT("(X=%f,Y=%f,Z=%f)"), Position.X.GetValue(), Position.Y.GetValue(), Position.Z.GetValue());
+		break;
+	case ESplinePointProperty::Rotation:
+		CopyStr = FString::Printf(TEXT("(Pitch=%f,Yaw=%f,Roll=%f)"), Rotation.Pitch.GetValue(), Rotation.Yaw.GetValue(), Rotation.Roll.GetValue());
+		break;
+	case ESplinePointProperty::Scale:
+		CopyStr = FString::Printf(TEXT("(X=%f,Y=%f,Z=%f)"), Scale.X.GetValue(), Scale.Y.GetValue(), Scale.Z.GetValue());
+		break; 
+	case ESplinePointProperty::ArriveTangent:
+		CopyStr = FString::Printf(TEXT("(X=%f,Y=%f,Z=%f)"), ArriveTangent.X.GetValue(), ArriveTangent.Y.GetValue(), ArriveTangent.Z.GetValue());
+		break;
+	case ESplinePointProperty::LeaveTangent:
+		CopyStr = FString::Printf(TEXT("(X=%f,Y=%f,Z=%f)"), LeaveTangent.X.GetValue(), LeaveTangent.Y.GetValue(), LeaveTangent.Z.GetValue());
+		break;
+	default:
+		break;
+	}
+
+	if (!CopyStr.IsEmpty())
+	{
+		FPlatformApplicationMisc::ClipboardCopy(*CopyStr);
+	}
+}
+
+void FSplinePointDetails::OnPaste(ESplinePointProperty SplinePointProp)
+{
+	FString PastedText;
+	FPlatformApplicationMisc::ClipboardPaste(PastedText);
+
+	switch (SplinePointProp)
+	{
+	case ESplinePointProperty::Location:
+	{
+		FVector NewLocation;
+		if (NewLocation.InitFromString(PastedText))
+		{
+			FScopedTransaction Transaction(LOCTEXT("PasteLocation", "Paste Location"));
+			SetSplinePointProperty(ESplinePointProperty::Location, NewLocation, EAxisList::All, true);
+		}
+		break;
+	}
+	case ESplinePointProperty::Rotation:
+	{
+		FVector NewRotation;
+		PastedText.ReplaceInline(TEXT("Pitch="), TEXT("X="));
+		PastedText.ReplaceInline(TEXT("Yaw="), TEXT("Y="));
+		PastedText.ReplaceInline(TEXT("Roll="), TEXT("Z="));
+		if (NewRotation.InitFromString(PastedText))
+		{
+			FScopedTransaction Transaction(LOCTEXT("PasteRotation", "Paste Rotation"));
+			SetSplinePointProperty(ESplinePointProperty::Rotation, NewRotation, EAxisList::All, true);
+		}
+		break;
+	}
+	case ESplinePointProperty::Scale:
+	{
+		FVector NewScale;
+		if (NewScale.InitFromString(PastedText))
+		{
+			FScopedTransaction Transaction(LOCTEXT("PasteScale", "Paste Scale"));
+			SetSplinePointProperty(ESplinePointProperty::Scale, NewScale, EAxisList::All, true);
+		}
+		break;
+	}
+	case ESplinePointProperty::ArriveTangent:
+	{
+		FVector NewArrive;
+		if (NewArrive.InitFromString(PastedText))
+		{
+			FScopedTransaction Transaction(LOCTEXT("PasteArriveTangent", "Paste Arrive Tangent"));
+			SetSplinePointProperty(ESplinePointProperty::ArriveTangent, NewArrive, EAxisList::All, true);
+		}
+		break;
+	}
+	case ESplinePointProperty::LeaveTangent:
+	{
+		FVector NewLeave;
+		if (NewLeave.InitFromString(PastedText))
+		{
+			FScopedTransaction Transaction(LOCTEXT("PasteLeaveTangent", "Paste Leave Tangent"));
+			SetSplinePointProperty(ESplinePointProperty::LeaveTangent, NewLeave, EAxisList::All, true);
+		}
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+void FSplinePointDetails::OnBeginPositionSlider()
+{
+	bInSliderTransaction = true;
+	SplineComp->Modify();
+	GEditor->BeginTransaction(LOCTEXT("SetSplinePointPosition", "Set spline point position"));
+}
+
+void FSplinePointDetails::OnBeginScaleSlider()
+{
+	bInSliderTransaction = true;
+	SplineComp->Modify();
+	GEditor->BeginTransaction(LOCTEXT("SetSplinePointScale", "Set spline point scale"));
+}
+
+void FSplinePointDetails::OnEndSlider(float)
+{
+	bInSliderTransaction = false;
+	GEditor->EndTransaction();
 }
 
 ////////////////////////////////////

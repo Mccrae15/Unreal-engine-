@@ -842,7 +842,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 	if (bHadDeferredActions)
 	{
 		TArray<FSimpleDelegate> DeferredActionsCopy;
-
+		
 		do
 		{
 			DeferredActionsCopy = MoveTemp(DeferredActions);
@@ -969,7 +969,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 	if (FilteredNodesRequestingExpansionState.Num() > 0)
 	{
 		// change expansion state on the nodes that request it
-		for (TMap<TWeakPtr<FDetailTreeNode>, bool >::TConstIterator It(FilteredNodesRequestingExpansionState); It; ++It)
+		for (TMap<TWeakPtr<FDetailTreeNode>, bool>::TConstIterator It(FilteredNodesRequestingExpansionState); It; ++It)
 		{
 			TWeakPtr<FDetailTreeNode> DetailTreeNode = It.Key();
 			if (DetailTreeNode.IsValid())

@@ -62,7 +62,7 @@ namespace Audio
 	private:
 
 		/** Initializes the bus sends. */
-		void SetupBusData(TArray<FInitAudioBusSend>* OutAudioBusSends = nullptr);
+		void SetupBusData(TArray<FInitAudioBusSend>* OutAudioBusSends = nullptr, bool bEnableBusSends = true);
 
 		/** Frees any resources for this sound source. */
 		void FreeResources();
@@ -116,6 +116,9 @@ namespace Audio
 		TSharedPtr<FMixerSourceBuffer, ESPMode::ThreadSafe> MixerSourceBuffer;
 		FMixerSourceVoice* MixerSourceVoice;
 
+		uint32 bPreviousBusEnablement;
+		uint32 bPreviousBaseSubmixEnablement;
+
 		// This holds data copied from FSoundSourceBusSendInfo when a new sound starts playing
 		// so that distance-based level control can be calculated during rendering
 		struct FDynamicBusSendInfo
@@ -134,6 +137,7 @@ namespace Audio
 
 		// Mapping of channel map types to channel maps. Determined by what submixes this source sends its audio to.
 		Audio::AlignedFloatBuffer ChannelMap;
+		FRWLock ChannelMapLock;
 
 		float PreviousAzimuth;
 		mutable float PreviousPlaybackPercent;

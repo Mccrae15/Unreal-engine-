@@ -564,78 +564,24 @@ void FPyWrapperTypeRegistry::NotifyModulesDirtied(const TSet<FName>& InDirtyModu
 	}
 }
 
-void FPyWrapperTypeRegistry::UpdateGenerateWrappedTypeForRename(const FName InOldName, const UObject* InObj)
+void FPyWrapperTypeRegistry::UpdateGenerateWrappedTypeForRename(const FName InOldTypeRegistryName, const UObject* InObj)
 {
-	FName TypeRegistryName;
-	{
-		if (const UClass* Class = Cast<const UClass>(InObj))
-		{
-			TypeRegistryName = PyGenUtil::GetTypeRegistryName(Class);
-		}
+	const FName TypeRegistryName = PyGenUtil::GetAssetTypeRegistryName(InObj);
 
-		if (const UScriptStruct* Struct = Cast<const UScriptStruct>(InObj))
-		{
-			TypeRegistryName = PyGenUtil::GetTypeRegistryName(Struct);
-		}
-
-		if (const UEnum* Enum = Cast<const UEnum>(InObj))
-		{
-			TypeRegistryName = PyGenUtil::GetTypeRegistryName(Enum);
-		}
-
-		if (const UFunction* Func = Cast<const UFunction>(InObj))
-		{
-			if (Func->HasAnyFunctionFlags(FUNC_Delegate))
-			{
-				TypeRegistryName = PyGenUtil::GetTypeRegistryName(Func);
-			}
-		}
-	}
-
-	TSharedPtr<PyGenUtil::FGeneratedWrappedType> GeneratedWrappedType = GeneratedWrappedTypes.FindAndRemoveChecked(InOldName);
+	TSharedPtr<PyGenUtil::FGeneratedWrappedType> GeneratedWrappedType = GeneratedWrappedTypes.FindAndRemoveChecked(InOldTypeRegistryName);
 	check(!TypeRegistryName.IsNone() && !GeneratedWrappedTypes.Contains(TypeRegistryName));
 	GeneratedWrappedTypes.Add(TypeRegistryName, GeneratedWrappedType);
 }
 
-void FPyWrapperTypeRegistry::RemoveGenerateWrappedTypeForDelete(const UObject* InObj)
+void FPyWrapperTypeRegistry::RemoveGenerateWrappedTypeForDelete(const FName InTypeRegistryName)
 {
-	FName TypeRegistryName;
-	FString PythonTypeName;
-	{
-		if (const UClass* Class = Cast<const UClass>(InObj))
-		{
-			TypeRegistryName = PyGenUtil::GetTypeRegistryName(Class);
-			PythonTypeName = PyGenUtil::GetClassPythonName(Class);
-		}
-
-		if (const UScriptStruct* Struct = Cast<const UScriptStruct>(InObj))
-		{
-			TypeRegistryName = PyGenUtil::GetTypeRegistryName(Struct);
-			PythonTypeName = PyGenUtil::GetStructPythonName(Struct);
-		}
-
-		if (const UEnum* Enum = Cast<const UEnum>(InObj))
-		{
-			TypeRegistryName = PyGenUtil::GetTypeRegistryName(Enum);
-			PythonTypeName = PyGenUtil::GetEnumPythonName(Enum);
-		}
-
-		if (const UFunction* Func = Cast<const UFunction>(InObj))
-		{
-			if (Func->HasAnyFunctionFlags(FUNC_Delegate))
-			{
-				TypeRegistryName = PyGenUtil::GetTypeRegistryName(Func);
-				PythonTypeName = PyGenUtil::GetDelegatePythonName(Func);
-			}
-		}
-	}
-
-	TSharedPtr<PyGenUtil::FGeneratedWrappedType> GeneratedWrappedType = GeneratedWrappedTypes.FindRef(TypeRegistryName);
+	TSharedPtr<PyGenUtil::FGeneratedWrappedType> GeneratedWrappedType = GeneratedWrappedTypes.FindRef(InTypeRegistryName);
+	const FString PythonTypeName = UTF8_TO_TCHAR(GeneratedWrappedType->TypeName.GetData());
 	GeneratedWrappedType->Reset();
 
 	// Fill the type with dummy information and re-finalize it as an empty stub
 	GeneratedWrappedType->TypeName = PyGenUtil::TCHARToUTF8Buffer(*FString::Printf(TEXT("%s_DELETED"), *PythonTypeName));
-	GeneratedWrappedType->TypeDoc = PyGenUtil::TCHARToUTF8Buffer(*FString::Printf(TEXT("%s was deleted!"), *InObj->GetPathName()));
+	GeneratedWrappedType->TypeDoc = PyGenUtil::TCHARToUTF8Buffer(*FString::Printf(TEXT("%s was deleted!"), *InTypeRegistryName.ToString()));
 	GeneratedWrappedType->Finalize();
 }
 
@@ -955,7 +901,7 @@ PyTypeObject* FPyWrapperTypeRegistry::GenerateWrappedClassType(const UClass* InC
 		// Update the doc string for the method
 		FString PythonStructMethodDocString = PyGenUtil::BuildFunctionDocString(InFunc, PythonStructMethodName, GeneratedWrappedDynamicMethod.MethodFunc.InputParams, GeneratedWrappedDynamicMethod.MethodFunc.OutputParams, &bIsStaticOverride);
 		PythonStructMethodDocString += LINE_TERMINATOR;
-		PythonStructMethodDocString += PyGenUtil::PythonizeFunctionTooltip(PyGenUtil::GetFieldTooltip(InFunc), InFunc, ParamsToIgnore);
+		PythonStructMethodDocString += PyGenUtil::PythonizeFunctionTooltip(PyGenUtil::ParseTooltip(PyGenUtil::GetFieldTooltip(InFunc)), InFunc, ParamsToIgnore);
 		GeneratedWrappedDynamicMethod.MethodDoc = PyGenUtil::TCHARToUTF8Buffer(*PythonStructMethodDocString);
 
 		// Update the flags as removing the 'self' argument may have changed the calling convention
@@ -1242,7 +1188,7 @@ PyTypeObject* FPyWrapperTypeRegistry::GenerateWrappedClassType(const UClass* InC
 
 		FString FunctionDeclDocString = PyGenUtil::BuildFunctionDocString(InFunc, PythonFunctionName, GeneratedWrappedMethod.MethodFunc.InputParams, GeneratedWrappedMethod.MethodFunc.OutputParams);
 		FunctionDeclDocString += LINE_TERMINATOR;
-		FunctionDeclDocString += PyGenUtil::PythonizeFunctionTooltip(PyGenUtil::GetFieldTooltip(InFunc), InFunc);
+		FunctionDeclDocString += PyGenUtil::PythonizeFunctionTooltip(PyGenUtil::ParseTooltip(PyGenUtil::GetFieldTooltip(InFunc)), InFunc);
 
 		GeneratedWrappedMethod.MethodDoc = PyGenUtil::TCHARToUTF8Buffer(*FunctionDeclDocString);
 		GeneratedWrappedMethod.MethodFlags = GeneratedWrappedMethod.MethodFunc.InputParams.Num() > 0 ? METH_VARARGS | METH_KEYWORDS : METH_NOARGS;
@@ -1308,7 +1254,7 @@ PyTypeObject* FPyWrapperTypeRegistry::GenerateWrappedClassType(const UClass* InC
 		}
 	}
 
-	FString TypeDocString = PyGenUtil::PythonizeTooltip(PyGenUtil::GetFieldTooltip(InClass));
+	FString TypeDocString = PyGenUtil::PythonizeTooltip(PyGenUtil::ParseTooltip(PyGenUtil::GetFieldTooltip(InClass)));
 	if (const UClass* SuperClass = InClass->GetSuperClass())
 	{
 		TSharedPtr<PyGenUtil::FGeneratedWrappedClassType> SuperGeneratedWrappedType = StaticCastSharedPtr<PyGenUtil::FGeneratedWrappedClassType>(GeneratedWrappedTypes.FindRef(PyGenUtil::GetTypeRegistryName(SuperClass)));
@@ -1574,7 +1520,7 @@ PyTypeObject* FPyWrapperTypeRegistry::GenerateWrappedStructType(const UScriptStr
 		GenerateWrappedProperty(Prop);
 	}
 
-	FString TypeDocString = PyGenUtil::PythonizeTooltip(PyGenUtil::GetFieldTooltip(InStruct));
+	FString TypeDocString = PyGenUtil::PythonizeTooltip(PyGenUtil::ParseTooltip(PyGenUtil::GetFieldTooltip(InStruct)));
 	if (const UScriptStruct* SuperStruct = Cast<UScriptStruct>(InStruct->GetSuperStruct()))
 	{
 		TSharedPtr<PyGenUtil::FGeneratedWrappedStructType> SuperGeneratedWrappedType = StaticCastSharedPtr<PyGenUtil::FGeneratedWrappedStructType>(GeneratedWrappedTypes.FindRef(PyGenUtil::GetTypeRegistryName(SuperStruct)));
@@ -1841,7 +1787,7 @@ PyTypeObject* FPyWrapperTypeRegistry::GenerateWrappedEnumType(const UEnum* InEnu
 		GeneratedWrappedType->Reset();
 	}
 
-	FString TypeDocString = PyGenUtil::PythonizeTooltip(PyGenUtil::GetFieldTooltip(InEnum));
+	FString TypeDocString = PyGenUtil::PythonizeTooltip(PyGenUtil::ParseTooltip(PyGenUtil::GetFieldTooltip(InEnum)));
 	PyGenUtil::AppendSourceInformationDocString(InEnum, TypeDocString);
 
 	const FString PythonEnumName = PyGenUtil::GetEnumPythonName(InEnum);
@@ -2001,7 +1947,7 @@ PyTypeObject* FPyWrapperTypeRegistry::GenerateWrappedDelegateType(const UFunctio
 		GatherWrappedTypesForPropertyReferences(Param, OutGeneratedWrappedTypeReferences);
 	}
 
-	FString TypeDocString = PyGenUtil::PythonizeFunctionTooltip(PyGenUtil::GetFieldTooltip(InDelegateSignature), InDelegateSignature);
+	FString TypeDocString = PyGenUtil::PythonizeFunctionTooltip(PyGenUtil::ParseTooltip(PyGenUtil::GetFieldTooltip(InDelegateSignature)), InDelegateSignature);
 	PyGenUtil::AppendSourceInformationDocString(InDelegateSignature, TypeDocString);
 
 	const FString DelegateBaseTypename = PyGenUtil::GetDelegatePythonName(InDelegateSignature);
@@ -2236,7 +2182,7 @@ void FPyWrapperTypeRegistry::GenerateStubCodeForWrappedTypes(const EPyOnlineDocs
 			const FString PythonModuleName = FString::Printf(TEXT("unreal_%s"), *PythonBaseModuleName);
 		
 			FString ModuleFilename;
-			if (PyUtil::IsModuleAvailableForImport(*PythonModuleName, &ModuleFilename))
+			if (PyUtil::IsModuleAvailableForImport(*PythonModuleName, &PyUtil::GetOnDiskUnrealModulesCache(), &ModuleFilename))
 			{
 				// Adjust .pyc and .pyd files so we try and find the source Python file
 				ModuleFilename = FPaths::ChangeExtension(ModuleFilename, TEXT(".py"));

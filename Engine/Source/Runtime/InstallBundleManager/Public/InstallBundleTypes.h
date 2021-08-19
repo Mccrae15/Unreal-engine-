@@ -12,6 +12,7 @@
 enum class EInstallBundleSourceType : int
 {
 	Bulk,
+	Launcher,
 	BuildPatchServices,
 #if WITH_PLATFORM_INSTALL_BUNDLE_SOURCE
 	Platform,
@@ -146,6 +147,7 @@ enum class EInstallBundleReleaseResult
 {
 	OK,
 	ManifestArchiveError,
+	UserCancelledError,
 	Count,
 };
 INSTALLBUNDLEMANAGER_API const TCHAR* LexToString(EInstallBundleReleaseResult Result);
@@ -162,13 +164,6 @@ struct FInstallBundleRequestInfo
 	EInstallBundleRequestInfoFlags InfoFlags = EInstallBundleRequestInfoFlags::None;
 	TArray<FName> BundlesEnqueued;
 };
-
-enum class EInstallBundleCancelFlags : uint32
-{
-	None = 0,
-	Resumable = (1 << 0),
-};
-ENUM_CLASS_FLAGS(EInstallBundleCancelFlags);
 
 enum class EInstallBundlePauseFlags : uint32
 {
@@ -287,10 +282,16 @@ struct FInstallBundleSourceUpdateContentResultInfo
 	bool DidBundleSourceDoWork() const { return (ContentPaths.Num() != 0);} 
 };
 
-struct FInstallBundleSourceRemoveContentResultInfo
+struct FInstallBundleSourceReleaseContentResultInfo
 {
 	FName BundleName;
 	EInstallBundleReleaseResult Result = EInstallBundleReleaseResult::OK;
+
+	FDateTime LastAccessTime = FDateTime::MinValue(); // If cached, used to decide eviction order
+
+	// Indicates content was actually removed and bundle manager should consider
+	// this bundle as no longer installed.
+	bool bContentWasRemoved = false;
 };
 
 struct FInstallBundleSourceProgress

@@ -656,7 +656,7 @@ void FDatasmithActorImporter::OverrideStaticMeshActorMaterials( const FDatasmith
 		 // if the material id is < 0, apply the material to all the material slots
 		if (OriginalSubMaterial->GetId() < 0)
 		{
-			for (int32 MeshSubMaterialIdx = 0; MeshSubMaterialIdx < StaticMesh->StaticMaterials.Num(); MeshSubMaterialIdx++)
+			for (int32 MeshSubMaterialIdx = 0; MeshSubMaterialIdx < StaticMesh->GetStaticMaterials().Num(); MeshSubMaterialIdx++)
 			{
 				OverrideStaticMeshActorMaterial( ImportContext, OriginalSubMaterial, StaticMeshComponentTemplate, MeshSubMaterialIdx );
 			}
@@ -673,7 +673,11 @@ void FDatasmithActorImporter::OverrideStaticMeshActorMaterials( const FDatasmith
 				MeshSubMaterialIdx = OriginalSubMaterial->GetId();
 			}
 
-			OverrideStaticMeshActorMaterial( ImportContext, OriginalSubMaterial, StaticMeshComponentTemplate, MeshSubMaterialIdx );
+			// Override material only if index of partition does exist in static mesh
+			if( ensure( StaticMesh->GetStaticMaterials().IsValidIndex( MeshSubMaterialIdx ) ) )
+			{
+				OverrideStaticMeshActorMaterial( ImportContext, OriginalSubMaterial, StaticMeshComponentTemplate, MeshSubMaterialIdx );
+			}
 		}
 	}
 }

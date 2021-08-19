@@ -8,6 +8,9 @@
 #include "NiagaraTypes.h"
 #include "INiagaraCompiler.h"
 #include "AssetTypeCategories.h"
+#include "NiagaraPerfBaseline.h"
+#include "NiagaraDebuggerCommon.h"
+#include "NiagaraEditorModule.generated.h"
 
 class IAssetTools;
 class IAssetTypeActions;
@@ -31,6 +34,12 @@ class UNiagaraScratchPadViewModel;
 class FHlslNiagaraCompiler;
 class FNiagaraComponentBroker;
 class INiagaraStackObjectIssueGenerator;
+class UNiagaraEffectType;
+class SNiagaraBaselineViewport;
+class FParticlePerfStatsListener_NiagaraBaselineComparisonRender;
+class FNiagaraDebugger;
+class UNiagaraParameterDefinitions;
+class UNiagaraReservedParametersManager;
 
 DECLARE_STATS_GROUP(TEXT("Niagara Editor"), STATGROUP_NiagaraEditor, STATCAT_Advanced);
 
@@ -44,9 +53,41 @@ public:
 	virtual TSharedRef<SWidget> CreateSystemOverview(TSharedRef<FNiagaraSystemViewModel> SystemViewModel) const = 0;
 	virtual TSharedRef<SWidget> CreateStackIssueIcon(UNiagaraStackViewModel& StackViewModel, UNiagaraStackEntry& StackEntry) const = 0;
 	virtual TSharedRef<SWidget> CreateScriptScratchPad(UNiagaraScratchPadViewModel& ScriptScratchPadViewModel) const = 0;
+	virtual TSharedRef<SWidget> CreateCurveOverview(TSharedRef<FNiagaraSystemViewModel> SystemViewModel) const = 0;
 	virtual FLinearColor GetColorForExecutionCategory(FName ExecutionCategory) const = 0;
-	virtual FLinearColor GetColorForParameterScope(ENiagaraParameterScope ParameterScope) const = 0;
 };
+
+/* Wrapper struct for tracking parameters that are reserved by parameter definitions assets. */
+USTRUCT()
+struct FReservedParameter
+{
+	GENERATED_BODY()
+
+public:
+	FReservedParameter()
+		: Parameter(FNiagaraVariable())
+		, ReservingDefinitionsAsset(nullptr)
+	{};
+
+	FReservedParameter(const FNiagaraVariableBase& InParameter, const UNiagaraParameterDefinitions* InReservingDefinitionsAsset)
+		: Parameter(InParameter)
+		, ReservingDefinitionsAsset(const_cast<UNiagaraParameterDefinitions*>(InReservingDefinitionsAsset))
+	{};
+
+	bool operator== (const FReservedParameter& Other) const { return Parameter == Other.GetParameter() && ReservingDefinitionsAsset == Other.GetReservingDefinitionsAsset(); };
+
+	const FNiagaraVariableBase& GetParameter() const { return Parameter; };
+	const UNiagaraParameterDefinitions* GetReservingDefinitionsAsset() const { return ReservingDefinitionsAsset; };
+
+private:
+	UPROPERTY(transient)
+	FNiagaraVariableBase Parameter;
+		 
+	UPROPERTY(transient)
+	UNiagaraParameterDefinitions* ReservingDefinitionsAsset;
+};
+
+FORCEINLINE uint32 GetTypeHash(const FReservedParameter& ReservedParameter) { return GetTypeHash(ReservedParameter.GetParameter().GetName()); };
 
 /** Niagara Editor module */
 class FNiagaraEditorModule : public IModuleInterface,
@@ -70,7 +111,7 @@ public:
 	virtual int32 CompileScript(const FNiagaraCompileRequestDataBase* InCompileRequest, const FNiagaraCompileOptions& InCompileOptions);
 	virtual TSharedPtr<FNiagaraVMExecutableData> GetCompilationResult(int32 JobID, bool bWait);
 
-	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> Precompile(UObject* Obj);
+	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> Precompile(UObject* Obj, FGuid Version);
 
 	/** Gets the extensibility managers for outside entities to extend static mesh editor's menus and toolbars */
 	virtual TSharedPtr<FExtensibilityManager> GetMenuExtensibilityManager() override {return MenuExtensibilityManager;}
@@ -130,9 +171,6 @@ public:
 		EnqueueObjectForDeferredDestructionInternal(ObjectInContainer);
 	}
 
-	/** Lookup a parameter scope info by name. Returns nullptr if the parameter scope info registered name cannot be found. */
-	static const FNiagaraParameterScopeInfo* FindParameterScopeInfo(const FName& ParameterScopeInfoName);
-
 	FORCEINLINE INiagaraStackObjectIssueGenerator* FindStackObjectIssueGenerator(FName StructName)
 	{
 		if (INiagaraStackObjectIssueGenerator** FoundGenerator = StackIssueGenerators.Find(StructName))
@@ -141,6 +179,17 @@ public:
 		}
 		return nullptr;
 	}
+
+#if WITH_NIAGARA_DEBUGGER
+	TSharedPtr<FNiagaraDebugger> GetDebugger(){ return Debugger; }
+#endif
+
+	UNiagaraReservedParametersManager* GetReservedParametersManager();
+
+	NIAGARAEDITOR_API void GetTargetSystemAndEmitterForDataInterface(UNiagaraDataInterface* InDataInterface, UNiagaraSystem*& OutOwningSystem, UNiagaraEmitter*& OutOwningEmitter);
+	NIAGARAEDITOR_API void GetDataInterfaceFeedbackSafe(UNiagaraDataInterface* InDataInterface, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& Warnings, TArray<FNiagaraDataInterfaceFeedback>& Info);
+
+	TArray<UNiagaraParameterDefinitions*>& GetReservedDefinitions() { return ReservedDefinitions; };
 
 private:
 	class FDeferredDestructionContainerBase
@@ -191,14 +240,12 @@ private:
 
 	bool DeferredDestructObjects(float InDeltaTime);
 
-	/** Register a parameter scope info to lookup by name. */
-	static void RegisterParameterScopeInfo(const FName& ParameterScopeInfoName, const FNiagaraParameterScopeInfo& ParameterScopeInfo);
-
 	void RegisterStackIssueGenerator(FName StructName, INiagaraStackObjectIssueGenerator* Generator)
 	{
 		StackIssueGenerators.Add(StructName) = Generator;
 	}
 
+	void PreloadAllParameterDefinitions();
 
 private:
 	TSharedPtr<FExtensibilityManager> MenuExtensibilityManager;
@@ -231,7 +278,7 @@ private:
 	FDelegateHandle PreviewPlatformChangedHandle;
 
 	USequencerSettings* SequencerSettings;
-	
+
 	TSharedPtr<INiagaraEditorWidgetProvider> WidgetProvider;
 
 	TSharedPtr<FNiagaraScriptMergeManager> ScriptMergeManager;
@@ -263,7 +310,59 @@ private:
 
 	TArray<TSharedRef<const FDeferredDestructionContainerBase>> EnqueuedForDeferredDestruction;
 
-	static TArray<TPair<FName, FNiagaraParameterScopeInfo>> RegisteredParameterScopeInfos;
-
 	TMap<FName, INiagaraStackObjectIssueGenerator*> StackIssueGenerators;
+
+#if NIAGARA_PERF_BASELINES
+	void GeneratePerfBaselines(TArray<UNiagaraEffectType*>& BaselinesToGenerate);
+	void OnPerfBaselineWindowClosed(const TSharedRef<SWindow>& ClosedWindow);
+
+	/** Viewport used when generating the performance baselines for Niagara systems. */
+	TSharedPtr<SNiagaraBaselineViewport> BaselineViewport;
+#endif
+
+#if WITH_NIAGARA_DEBUGGER
+	TSharedPtr<FNiagaraDebugger> Debugger;
+#endif
+
+	UNiagaraReservedParametersManager* ReservedParametersManagerSingleton;
+
+	// Set of Parameter Definitions assets to reconcile the unique Id for Definitions that are duplicated from each other.
+	TArray<UNiagaraParameterDefinitions*> ReservedDefinitions;
+};
+
+USTRUCT()
+struct FReservedParameterArray
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(Transient)
+	TArray<FReservedParameter> Arr;
+};
+
+/** Manager singleton for tracking parameters that are reserved by parameter definitions assets.
+ *  Implements UObject to support undo/redo transactions on the map of definitions asset ptrs to parameter names.
+ */
+UCLASS()
+class UNiagaraReservedParametersManager : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	// UNiagaraReservedParametersManager is lazy initialized inside FNiagaraEditorModule::GetReservedParametersByName(), so delegate this method as a friend so that it may call InitReservedParameters().
+	friend UNiagaraReservedParametersManager* FNiagaraEditorModule::GetReservedParametersManager();
+
+public:
+	const TArray<FReservedParameter>* FindReservedParametersByName(const FName ParameterName) const;
+	int32 GetNumReservedParametersByName(const FName ParameterName) const;
+	EParameterDefinitionMatchState GetDefinitionMatchStateForParameter(const FNiagaraVariableBase& Parameter) const;
+	void AddReservedParameter(const FNiagaraVariableBase& Parameter, const UNiagaraParameterDefinitions* ReservingDefinitionsAsset);
+	void RemoveReservedParameter(const FNiagaraVariableBase& Parameter, const UNiagaraParameterDefinitions* ReservingDefinitionsAsset);
+
+private:
+	UPROPERTY(Transient)
+	TMap<FName, FReservedParameterArray> ReservedParameters;
+
+private:
+	void InitReservedParameters();
 };

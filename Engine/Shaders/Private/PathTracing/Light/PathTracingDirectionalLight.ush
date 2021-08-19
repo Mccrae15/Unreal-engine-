@@ -8,95 +8,57 @@ DirectionalLight.usf: Light sampling functions for Directional light implementat
 
 #include "PathTracingLightCommon.ush"
 
-void DirectionalLight_GenerateLightRay(
-	RayDesc Ray,
-	int LightId,
-	float3 LightUV,
-	out RayDesc OutLightRay
-)
+FLightHit DirectionalLight_TraceLight(RayDesc Ray, int LightId)
 {
-	OutLightRay.Origin = Ray.Origin;
-	OutLightRay.TMin = 0.0;
-	OutLightRay.Direction = normalize(LightUV);
-	OutLightRay.TMax = 1.0e27;
+	if (Ray.TMax == POSITIVE_INFINITY) // we hit the background
+	{
+		float3 LightDirection = GetNormal(LightId);
+		float SinThetaMax = GetRadius(LightId); // Sin(Angle / 2)
+		float SinThetaMax2 = SinThetaMax * SinThetaMax;
+		// See explanation in UniformSampleConeRobust
+		float OneMinusCosThetaMax = SinThetaMax2 < 0.01 ? SinThetaMax2 * (0.5 + 0.125 * SinThetaMax2) : 1 - sqrt(1 - SinThetaMax2);
+
+		float CosTheta = saturate(dot(normalize(Ray.Direction), LightDirection));
+
+		// Is ray pointing inside the cone of directions?
+		if (1 - CosTheta < OneMinusCosThetaMax)
+		{
+			// We divide the color of the light by the solid angle so
+			// that the overall illumination stays constant as the angle changes.
+			float SolidAngle = 2 * PI * OneMinusCosThetaMax;
+			float3 Radiance = GetColor(LightId) / SolidAngle;
+			return CreateLightHit(Radiance, 1.0 / SolidAngle, POSITIVE_INFINITY);
+		}
+	}
+	return NullLightHit();
 }
 
-void DirectionalLight_PdfLight(
-	RayDesc Ray,
+FLightSample DirectionalLight_SampleLight(
 	int LightId,
-	float3 LightUV,
-	out float OutPdf
+	float2 RandSample,
+	float3 WorldPos,
+	float3 WorldNormal
 )
 {
-	OutPdf = 0.0;
+	float SinThetaMax = GetRadius(LightId); // currently sin(Angle / 2)
+	float4 DirAndPdf = UniformSampleConeRobust(RandSample, SinThetaMax * SinThetaMax);
+	float3 Direction = TangentToWorld(DirAndPdf.xyz, GetNormal(LightId));
+
+	// Because the light is normalized by the solid angle, the radiance/pdf ratio is just the color
+	return CreateLightSample(GetColor(LightId), DirAndPdf.w, Direction, POSITIVE_INFINITY);
 }
 
-void DirectionalLight_EvalLight(
+float DirectionalLight_EstimateLight(
 	int LightId,
-	float3 LightUV,
-	RayDesc Ray,
-	out float3 OutRadiance
-)
-{
-	float3 Color = GetColor(LightId);
-	OutRadiance = Color;
-}
-
-void DirectionalLight_EstimateLight(
-	int LightId,
-	RayDesc Ray,
-	FMaterialClosestHitPayload Payload,
-	out float OutIrradiance
+	float3 WorldPos,
+	float3 WorldNormal,
+	bool IsTransmissiveMaterial
 )
 {
 	float3 LightDirection = GetNormal(LightId);
-	float3 SurfaceNormal = Payload.WorldNormal;
-	float NoL = 1.0;
-	if (GetRadius(LightId) == 0.0)
-	{
-		NoL = dot(SurfaceNormal, LightDirection);
-		NoL = ENABLE_TRANSMISSION && HasTransmission(LightId) ? abs(NoL) : saturate(NoL);
-	}
+	float3 SurfaceNormal = WorldNormal;
 
+	float NoL = 1.0; // trivial upper bound -- trying to be more accurate appears to reduce performance
 	float LightPower = Luminance(GetColor(LightId));
-	OutIrradiance = LightPower * NoL;
-}
-
-void DirectionalLight_SampleLight(
-	RayDesc Ray,
-	FMaterialClosestHitPayload Payload,
-	float4 RandSample,
-	int LightId,
-	out float3 OutLightUV,
-	out float OutPdf
-)
-{
-	float3 N = normalize(GetNormal(LightId));
-	float3 dPdu = float3(1, 0, 0);
-	if (dot(N, dPdu) != 0)
-	{
-		dPdu = cross(N, dPdu);
-	}
-	else
-	{
-		dPdu = cross(N, float3(0, 1, 0));
-	}
-	float3 dPdv = cross(dPdu, N);
-
-	float Radius = GetRadius(LightId);
-	float2 DiskUV = UniformSampleDiskConcentric(RandSample.yz) * Radius;
-
-	float3 Direction = N;
-	OutLightUV = Direction + dPdu * DiskUV.x + dPdv * DiskUV.y;
-	OutPdf = 1.0;
-
-#if 0
-	// Pdf calculation for when directional light is visible to material rays
-	if (Radius > 0.0)
-	{
-		float Area = PI * Radius * Radius;
-		float SolidAngle = Area;
-		OutPdf /= SolidAngle;
-	}
-#endif
+	return LightPower * NoL;
 }

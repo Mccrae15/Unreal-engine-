@@ -27,6 +27,13 @@
 #include "Algo/Transform.h"
 #include "Curves/CurveFloat.h"
 #include "EngineUtils.h"
+#include "Landscape.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
+#include "Misc/UObjectToken.h"
+#include "Misc/MapErrors.h"
+#include "Logging/MessageLog.h"
+
+#define LOCTEXT_NAMESPACE "WaterBrushManager"
 
 AWaterBrushManager::AWaterBrushManager(const FObjectInitializer& ObjectInitializer)
 	: Super()
@@ -49,7 +56,6 @@ AWaterBrushManager::AWaterBrushManager(const FObjectInitializer& ObjectInitializ
 
 	PrimaryActorTick.TickGroup = ETickingGroup::TG_PrePhysics;
 	bIsEditorOnlyActor = false;
-	bLockLocation = true;
 }
 
 void AWaterBrushManager::Serialize(FArchive& Ar)
@@ -57,6 +63,7 @@ void AWaterBrushManager::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FWaterCustomVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
 }
 
 void AWaterBrushManager::PostLoad()
@@ -91,6 +98,7 @@ void AWaterBrushManager::PostLoad()
 		}
 	}
 
+#if WITH_EDITOR
 	if (GetLinkerCustomVersion(FWaterCustomVersion::GUID) < FWaterCustomVersion::MoveWaterMPCParamsToWaterMesh)
 	{
 		// OnPostLoad, the world is not set so we cannot retrieve the water mesh actor, we have to delay it to post-init :  
@@ -102,13 +110,47 @@ void AWaterBrushManager::PostLoad()
 				if (AWaterMeshActor* WaterMeshActor = It ? *It : nullptr)
 				{
 					FVector RTWorldLocation, RTWorldSizeVector;
-					ComputeWaterLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
-					WaterMeshActor->SetLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
+					if (DeprecateWaterLandscapeInfo(RTWorldLocation, RTWorldSizeVector))
+					{
+						WaterMeshActor->SetLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
+						SetMPCParams();
+					}
 				}
 			}
 		});
 		
+		// Each time a level is added, it might contain a landscape component, hence we need to deprecate RTWorldLocationand RTWorldSizeVector accordingly :
+		OnLevelAddedToWorldHandle = FWorldDelegates::LevelAddedToWorld.AddLambda([this](ULevel* Level, UWorld* World)
+		{
+			if ((World == GetWorld()) && (Level != nullptr))
+			{
+				TActorIterator<AWaterMeshActor> It(World);
+				if (AWaterMeshActor* WaterMeshActor = It ? *It : nullptr)
+				{
+					FVector RTWorldLocation, RTWorldSizeVector;
+					if (DeprecateWaterLandscapeInfo(RTWorldLocation, RTWorldSizeVector))
+					{
+						WaterMeshActor->SetLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
+						SetMPCParams();
+					}
+				}
+			}
+		});
+
 	}
+
+	if (!IsTemplate() 
+		&& (bNeedsForceUpdate || (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::RemoveLandscapeWaterInfo)))
+	{
+		// The removal of LandscapeWaterInfo is accompanied by a change in how the water velocity height texture is encoded so we need to regenerate it :
+		bNeedsForceUpdate = true;
+
+		ShowForceUpdateMapCheckError();
+
+		// Show MapCheck window
+		FMessageLog("MapCheck").Open(EMessageSeverity::Warning);
+	}
+#endif // WITH_EDITOR
 }
 
 void AWaterBrushManager::BeginDestroy()
@@ -117,6 +159,9 @@ void AWaterBrushManager::BeginDestroy()
 
 	FWorldDelegates::OnPostWorldInitialization.Remove(OnWorldPostInitHandle);
 	OnWorldPostInitHandle.Reset();
+
+	FWorldDelegates::LevelAddedToWorld.Remove(OnLevelAddedToWorldHandle);
+	OnLevelAddedToWorldHandle.Reset();
 }
 	
 
@@ -288,11 +333,19 @@ void AWaterBrushManager::BlueprintOnRenderTargetTexturesUpdated_Native(UTexture2
 
 void AWaterBrushManager::ForceUpdate()
 {
-	bKillCache = true;
+#if WITH_EDITOR
+	if (bNeedsForceUpdate)
+	{
+		// We need to mark our own package as dirty to force save the water brush manager and stop dispaying the ForceUpdate message
+		Modify();
+	}
+#endif // WITH_EDITOR
+
+	bKillCache = true;	
 	ClearCurveCache();
 	ALandscapeBlueprintBrushBase::RequestLandscapeUpdate();
 	// Regenerate the water depth velocity RT : 
-	MarkRenderTargetsDirty();
+	MarkRenderTargetsDirty();	
 }
 
 void AWaterBrushManager::SingleJumpStep()
@@ -488,13 +541,15 @@ bool AWaterBrushManager::SetupRiverSplineRenderMIDs(const FBrushActorRenderConte
 
 	for (int32 MIDIndex = 0; MIDIndex < NumSplineMids; ++MIDIndex)
 	{
+		USplineMeshComponent* SplineMeshComponent = SplineMeshComponents[MIDIndex];
+		check(SplineMeshComponent != nullptr);
 		if (bClearMIDs)
 		{
-			SplineMeshComponents[MIDIndex]->SetMaterial(0, nullptr);
+			SplineMeshComponent->SetMaterial(0, nullptr);
 		}
 		else
 		{
-			check(MIDIndex < SplineMeshComponents.Num());
+			RiverSplineMIDs.IsValidIndex(MIDIndex);
 			RiverSplineMIDs[MIDIndex] = FWaterUtils::GetOrCreateTransientMID(RiverSplineMIDs[MIDIndex], TEXT("RiverSplineMID"), RenderRiverSplineDepthMaterial);
 			UMaterialInstanceDynamic* TempMID = RiverSplineMIDs[MIDIndex];
 			if (TempMID != nullptr)
@@ -505,7 +560,7 @@ bool AWaterBrushManager::SetupRiverSplineRenderMIDs(const FBrushActorRenderConte
 				TempMID->SetScalarParameterValue(FName(TEXT("VelA")), SplineComponent->GetFloatPropertyAtSplinePoint(MIDIndex, FName(TEXT("WaterVelocityScalar"))));
 				TempMID->SetScalarParameterValue(FName(TEXT("VelB")), SplineComponent->GetFloatPropertyAtSplinePoint(MIDIndex + 1, FName(TEXT("WaterVelocityScalar"))));
 
-				SplineMeshComponents[MIDIndex]->SetMaterial(0, TempMID);
+				SplineMeshComponent->SetMaterial(0, TempMID);
 			}
 			else
 			{
@@ -627,12 +682,7 @@ void AWaterBrushManager::UpdateCurveCacheKeys()
 			if (ensure(ElevationCurveAsset != nullptr))
 			{
 				FWaterBodyBrushCache* WaterBrushCache = BrushCurveRTCache.Find(ElevationCurveAsset);
-				if (WaterBrushCache != nullptr)
-				{
-					// TODO [jonathan.bard] : there are some repros where this can happen : fix this : 
-					check(WaterBrushCache->CacheRenderTarget != nullptr);
-				}
-				else
+				if ((WaterBrushCache == nullptr) || (WaterBrushCache->CacheRenderTarget == nullptr))
 				{
 					UTextureRenderTarget2D* CurveRT = FWaterUtils::GetOrCreateTransientRenderTarget2D(nullptr, TEXT("CurveRT"), FIntPoint(256, 1), ETextureRenderTargetFormat::RTF_R16f);
 					BrushCurveRTCache.Add(ElevationCurveAsset, FWaterBodyBrushCache{ CurveRT, false });
@@ -1022,12 +1072,46 @@ void AWaterBrushManager::BeginPlay()
 void AWaterBrushManager::ComputeWaterLandscapeInfo(FVector& OutRTWorldLocation, FVector& OutRTWorldSizeVector) const
 {
 	FVector LandscapeScale = LandscapeTransform.GetScale3D();
-	OutRTWorldSizeVector = FVector(LandscapeRTRes - FIntPoint(1, 1));
-	OutRTWorldSizeVector *= LandscapeScale;
+	OutRTWorldSizeVector = FVector(LandscapeRTRes) * LandscapeScale;
 	OutRTWorldSizeVector.Z = 1.0f;
 	OutRTWorldLocation = LandscapeTransform.GetLocation();
 	OutRTWorldLocation -= FVector(LandscapeScale.X, LandscapeScale.Y, 0.0f) * 0.5f;
 }
+
+bool AWaterBrushManager::DeprecateWaterLandscapeInfo(FVector& OutRTWorldLocation, FVector& OutRTWorldSizeVector)
+{
+#if WITH_EDITOR
+	if (ALandscape* Landscape = GetOwningLandscape())
+	{
+		FIntPoint LandscapeSize;
+		if (Landscape->ComputeLandscapeLayerBrushInfo(LandscapeTransform, LandscapeSize, LandscapeRTRes))
+		{
+			ComputeWaterLandscapeInfo(OutRTWorldLocation, OutRTWorldSizeVector);
+			return true;
+		}
+	}
+
+	return false;
+#endif // WITH_EDITOR
+}
+
+#if WITH_EDITOR
+
+void AWaterBrushManager::ShowForceUpdateMapCheckError()
+{
+	FFormatNamedArguments Arguments;
+	Arguments.Add(TEXT("WaterBrush"), FText::FromString(GetName()));
+	Arguments.Add(TEXT("Outer"), FText::FromString(GetPackage()->GetPathName()));
+	
+	FMessageLog("MapCheck").Warning()
+		->AddToken(FUObjectToken::Create(this))
+		->AddToken(FTextToken::Create(FText::Format(LOCTEXT("AWaterBrushManager_ShowForceUpdateMapCheckError_Message_ForceUpdateNeeded", "Water brush {WaterBrush} in package {Outer} is out of date and needs updating for water to render properly."), Arguments)))
+		->AddToken(FMapErrorToken::Create(TEXT("AWaterBrushManager_ShowForceUpdateMapCheckError_MapError_ForceUpdateNeeded")))
+		->AddToken(FActionToken::Create(LOCTEXT("AWaterBrushManager_ShowForceUpdateMapCheckError_ActionName_ForceUpdateNeeded", "Update water brush"), FText(),
+			FOnActionTokenExecuted::CreateUObject(this, &AWaterBrushManager::ForceUpdate), true));
+}
+
+#endif // WITH_EDITOR
 
 void AWaterBrushManager::SetMPCParams()
 {
@@ -1344,6 +1428,8 @@ UTextureRenderTarget2D* AWaterBrushManager::Render_Native(bool InIsHeightmap, UT
 
 	bKillCache = false;
 
+	bNeedsForceUpdate = false;
+
 	return ReturnRT;
 }
 
@@ -1371,3 +1457,20 @@ void AWaterBrushManager::UpdateBrushCacheKeys()
 	}
 }
 
+
+#if WITH_EDITOR
+
+void AWaterBrushManager::CheckForErrors()
+{
+	Super::CheckForErrors();
+
+	// If a force update action was requested but hasn't been performed yet, display the message again : 
+	if (bNeedsForceUpdate)
+	{
+		ShowForceUpdateMapCheckError();
+	}
+}
+
+#endif // WITH_EDITOR
+
+#undef LOCTEXT_NAMESPACE

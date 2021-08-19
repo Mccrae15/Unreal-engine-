@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 /*================================================================================================
-	RayTracingDefinitions.ush: used in ray tracing shaders and C++ code to define common constants
+	RayTracingDefinitions.h: used in ray tracing shaders and C++ code to define common constants
 	!!! Changing this file requires recompilation of the engine !!!
 =================================================================================================*/
 
@@ -34,4 +34,3 @@
 #define RAY_TRACING_MAX_ALLOWED_RECURSION_DEPTH 1   // Only allow ray tracing from RayGen shader
 #define RAY_TRACING_MAX_ALLOWED_ATTRIBUTE_SIZE  8   // Sizeof 2 floats (barycentrics)
 #define RAY_TRACING_MAX_ALLOWED_PAYLOAD_SIZE    64  // Our maximum allowed payload size (sizeof FPackedMaterialClosestHitPayload)
-

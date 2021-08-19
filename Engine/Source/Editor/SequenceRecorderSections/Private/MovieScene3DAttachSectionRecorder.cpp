@@ -60,12 +60,13 @@ void FMovieScene3DAttachSectionRecorder::Record(float CurrentTime)
 			if(!MovieSceneSection.IsValid() || AttachedToActor != ActorAttachedTo.Get())
 			{
 				MovieSceneSection = Cast<UMovieScene3DAttachSection>(AttachTrack->CreateNewSection());
+				AttachTrack->AddSection(*MovieSceneSection);
 
 				FFrameRate TickResolution = MovieSceneSection->GetTypedOuter<UMovieScene>()->GetTickResolution();
 				FFrameNumber CurrentFrame = (CurrentTime * TickResolution).FloorToFrame();
 
 				MovieSceneSection->SetRange(TRange<FFrameNumber>::Inclusive(CurrentFrame, CurrentFrame));
-				MovieSceneSection->SetConstraintId(Guid);
+				MovieSceneSection->SetConstraintBindingID(UE::MovieScene::FRelativeObjectBindingID(Guid));
 				MovieSceneSection->AttachSocketName = SocketName;
 				MovieSceneSection->AttachComponentName = ComponentName;
 

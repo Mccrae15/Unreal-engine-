@@ -1228,7 +1228,7 @@ void SRigHierarchy::RefreshHierarchy(const FAssetData& InAssetData)
 			bSelectBones = !CurrentRig->IsSetupModeEnabled();
 		}
 
-		const FReferenceSkeleton& RefSkeleton = Mesh->RefSkeleton;
+		const FReferenceSkeleton& RefSkeleton = Mesh->GetRefSkeleton();
 		Hierarchy->BoneHierarchy.ImportSkeleton(RefSkeleton, NAME_None, true, true, bSelectBones, false /* notify */);
 	}
 
@@ -1286,12 +1286,12 @@ void SRigHierarchy::ImportHierarchy(const FAssetData& InAssetData)
 			bSelectBones = !CurrentRig->IsSetupModeEnabled();
 		}
 
-		const FReferenceSkeleton& RefSkeleton = Mesh->RefSkeleton;
+		const FReferenceSkeleton& RefSkeleton = Mesh->GetRefSkeleton();
 		Hierarchy->BoneHierarchy.ImportSkeleton(RefSkeleton, NAME_None, false, false, bSelectBones, false /* notify */);
-		Hierarchy->CurveContainer.ImportCurvesFromSkeleton(Mesh->Skeleton, NAME_None, true, false, false /* notify */);
+		Hierarchy->CurveContainer.ImportCurvesFromSkeleton(Mesh->GetSkeleton(), NAME_None, true, false, false /* notify */);
 
-		ControlRigBlueprint->SourceHierarchyImport = Mesh->Skeleton;
-		ControlRigBlueprint->SourceCurveImport = Mesh->Skeleton;
+		ControlRigBlueprint->SourceHierarchyImport = Mesh->GetSkeleton();
+		ControlRigBlueprint->SourceCurveImport = Mesh->GetSkeleton();
 	}
 
 	ControlRigBlueprint->PropagateHierarchyFromBPToInstances(true);

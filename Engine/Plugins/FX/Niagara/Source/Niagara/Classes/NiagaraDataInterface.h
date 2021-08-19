@@ -151,6 +151,16 @@ public:
 		return ErrorSummaryText;
 	}
 
+	FORCEINLINE bool operator !=(const FNiagaraDataInterfaceError& Other) const
+	{
+		return !(*this == Other);
+	}
+
+	FORCEINLINE bool operator == (const FNiagaraDataInterfaceError& Other) const
+	{
+		return ErrorText.EqualTo(Other.ErrorText) && ErrorSummaryText.EqualTo(Other.ErrorSummaryText);
+	}
+
 private:
 	FText ErrorText;
 	FText ErrorSummaryText;
@@ -196,6 +206,16 @@ public:
 	FText GetFeedbackSummaryText() const
 	{
 		return FeedbackSummaryText;
+	}
+
+	FORCEINLINE bool operator !=(const FNiagaraDataInterfaceFeedback& Other) const
+	{
+		return !(*this == Other);
+	}
+
+	FORCEINLINE bool operator == (const FNiagaraDataInterfaceFeedback& Other) const
+	{
+		return FeedbackText.EqualTo(Other.FeedbackText) && FeedbackSummaryText.EqualTo(Other.FeedbackSummaryText);
 	}
 
 private:
@@ -252,6 +272,7 @@ public:
 	virtual void PostLoad() override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	// UObject Interface END
 
 	/** Does this data interface need setup and teardown for each stage when working a sim stage sim source? */
 	virtual bool SupportsSetupAndTeardownHLSL() const { return false; }
@@ -265,8 +286,13 @@ public:
 	virtual bool GenerateIterationSourceNamespaceReadAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& InIterationSourceVariable, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bInSetToDefaults, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const { return false; };
 	/** Generate the necessary plumbing HLSL at the end of the stage where this is used as a sim stage iteration source. Note that this should inject other internal calls using the CustomHLSL node syntax. See GridCollection2D for an example.*/
 	virtual bool GenerateIterationSourceNamespaceWriteAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& InIterationSourceVariable, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const { return false; };
+	/** Used by the translator when dealing with signatures that turn into compiler tags to figure out the precise compiler tag. */
+	virtual bool GenerateCompilerTagPrefix(const FNiagaraFunctionSignature& InSignature, FString& OutPrefix) const  { return false; }
+
 #endif
-	// UObject Interface END
+
+	virtual bool NeedsGPUContextInit() const { return false; }
+	virtual bool GPUContextInit(const FNiagaraScriptDataInterfaceCompileInfo& InInfo, void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) const { return false; }
 
 	/** Initializes the per instance data for this interface. Returns false if there was some error and the simulation should be disabled. */
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) { return true; }
@@ -278,8 +304,13 @@ public:
 	virtual bool PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) { return false; }
 	virtual bool PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) { return false; }
 
+#if WITH_EDITORONLY_DATA
 	/** Allows the generic class defaults version of this class to specify any dependencies/version/etc that might invalidate the compile. It should never depend on the value of specific properties.*/
 	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const;
+#endif
+
+	/** Allows data interfaces to influence the compilation of GPU shaders and is only called on the CDO object not the instance. */
+	virtual void ModifyCompilationEnvironment(struct FShaderCompilerEnvironment& OutEnvironment) const {}
 
 	/** 
 		Subclasses that wish to work with GPU systems/emitters must implement this.
@@ -347,6 +378,7 @@ public:
 	/** Determines if this type definition matches to a known data interface type.*/
 	static bool IsDataInterfaceType(const FNiagaraTypeDefinition& TypeDef);
 
+#if WITH_EDITORONLY_DATA
 	/** Allows data interfaces to provide common functionality that will be shared across interfaces on that type. */
 	virtual void GetCommonHLSL(FString& OutHLSL)
 	{
@@ -361,7 +393,6 @@ public:
 		return false;
 	}
 
-#if WITH_EDITORONLY_DATA
 	/**
 	Allows data interfaces the opportunity to rename / change the function signature and perform an upgrade.
 	Return true if the signature was modified and we need to refresh the pins / name, etc.
@@ -395,11 +426,18 @@ public:
 	void RefreshErrors();
 
 	FSimpleMulticastDelegate& OnErrorsRefreshed();
+
 #endif
+
+    /** Method to add asset tags that are specific to this data interface. By default we add in how many instances of this class exist in the list.*/
+	virtual void GetAssetTagsForContext(const UObject* InAsset, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const;
 	virtual bool CanExposeVariables() const { return false; }
 	virtual void GetExposedVariables(TArray<FNiagaraVariableBase>& OutVariables) const {}
 	virtual bool GetExposedVariableValue(const FNiagaraVariableBase& InVariable, void* InPerInstanceData, FNiagaraSystemInstance* InSystemInstance, void* OutData) const { return false; }
 
+	virtual bool CanRenderVariablesToCanvas() const { return false; }
+	virtual void GetCanvasVariables(TArray<FNiagaraVariableBase>& OutVariables) const { }
+	virtual bool RenderVariableToCanvas(FNiagaraSystemInstanceID SystemInstanceID, FName VariableName, class FCanvas* Canvas, const FIntRect& DrawRect) const { return false; }
 
 	FNiagaraDataInterfaceProxy* GetProxy()
 	{
@@ -445,6 +483,14 @@ protected:
 	T* GetProxyAs()
 	{
 		T* TypedProxy = static_cast<T*>(Proxy.Get());
+		check(TypedProxy != nullptr);
+		return TypedProxy;
+	}
+
+	template<typename T>
+	const T* GetProxyAs() const
+	{
+		const T* TypedProxy = static_cast<const T*>(Proxy.Get());
 		check(TypedProxy != nullptr);
 		return TypedProxy;
 	}
@@ -669,6 +715,14 @@ struct FNDIInputParam<FNiagaraBool>
 };
 
 template<>
+struct FNDIInputParam<bool>
+{
+	VectorVM::FExternalFuncInputHandler<FNiagaraBool> Data;
+	FORCEINLINE FNDIInputParam(FVectorVMContext& Context) : Data(Context) {}
+	FORCEINLINE bool GetAndAdvance() { return Data.GetAndAdvance().GetValue(); }
+};
+
+template<>
 struct FNDIInputParam<FVector2D>
 {
 	VectorVM::FExternalFuncInputHandler<float> X;
@@ -741,6 +795,15 @@ struct FNDIOutputParam
 
 template<>
 struct FNDIOutputParam<FNiagaraBool>
+{
+	VectorVM::FExternalFuncRegisterHandler<FNiagaraBool> Data;
+	FORCEINLINE FNDIOutputParam(FVectorVMContext& Context) : Data(Context) {}
+	FORCEINLINE bool IsValid() const { return Data.IsValid(); }
+	FORCEINLINE void SetAndAdvance(bool Val) { Data.GetDestAndAdvance()->SetValue(Val); }
+};
+
+template<>
+struct FNDIOutputParam<bool>
 {
 	VectorVM::FExternalFuncRegisterHandler<FNiagaraBool> Data;
 	FORCEINLINE FNDIOutputParam(FVectorVMContext& Context) : Data(Context) {}
@@ -888,4 +951,99 @@ struct FNDIOutputParam<FNiagaraID>
 		*Index.GetDestAndAdvance() = Val.Index;
 		*AcquireTag.GetDestAndAdvance() = Val.AcquireTag;
 	}
+};
+
+class FNDI_GeneratedData
+{
+public:
+	virtual ~FNDI_GeneratedData() = default;
+
+	typedef uint32 TypeHash;
+
+	virtual void Tick(ETickingGroup TickGroup, float DeltaSeconds) = 0;
+};
+
+class FNDI_SharedResourceUsage
+{
+public:
+	FNDI_SharedResourceUsage() = default;
+	FNDI_SharedResourceUsage(bool InRequiresCpuAccess, bool InRequiresGpuAccess)
+		: RequiresCpuAccess(InRequiresCpuAccess)
+		, RequiresGpuAccess(InRequiresGpuAccess)
+	{}
+
+	bool IsValid() const { return RequiresCpuAccess || RequiresGpuAccess; }
+
+	bool RequiresCpuAccess = false;
+	bool RequiresGpuAccess = false;
+};
+
+template<typename ResourceType, typename UsageType>
+class FNDI_SharedResourceHandle
+{
+	using HandleType = FNDI_SharedResourceHandle<ResourceType, UsageType>;
+
+public:
+	FNDI_SharedResourceHandle()
+		: Resource(nullptr)
+	{}
+
+	FNDI_SharedResourceHandle(UsageType InUsage, const TSharedPtr<ResourceType>& InResource, bool bNeedsDataImmediately)
+		: Usage(InUsage)
+		, Resource(InResource)
+	{
+		if (ResourceType* ResourceData = Resource.Get())
+		{
+			ResourceData->RegisterUser(Usage, bNeedsDataImmediately);
+		}
+	}
+
+	FNDI_SharedResourceHandle(const HandleType& Other) = delete;
+	FNDI_SharedResourceHandle(HandleType&& Other)
+		: Usage(Other.Usage)
+		, Resource(Other.Resource)
+	{
+		Other.Resource = nullptr;
+	}
+
+	~FNDI_SharedResourceHandle()
+	{
+		if (ResourceType* ResourceData = Resource.Get())
+		{
+			ResourceData->UnregisterUser(Usage);
+		}
+	}
+
+	FNDI_SharedResourceHandle& operator=(const HandleType& Other) = delete;
+	FNDI_SharedResourceHandle& operator=(HandleType&& Other)
+	{
+		if (this != &Other)
+		{
+			if (ResourceType* ResourceData = Resource.Get())
+			{
+				ResourceData->UnregisterUser(Usage);
+			}
+
+			Usage = Other.Usage;
+			Resource = Other.Resource;
+			Other.Resource = nullptr;
+		}
+
+		return *this;
+	}
+
+	explicit operator bool() const
+	{
+		return Resource.IsValid();
+	}
+
+	const ResourceType& ReadResource() const
+	{
+		return *Resource;
+	}
+
+	UsageType Usage;
+
+private:
+	TSharedPtr<ResourceType> Resource;
 };

@@ -4,10 +4,14 @@
 
 #include "USDAssetImportData.h"
 #include "USDErrorUtils.h"
+#include "USDLayerUtils.h"
 #include "USDLog.h"
 #include "USDTypesConversion.h"
 
+#include "UsdWrappers/SdfLayer.h"
+#include "UsdWrappers/SdfPath.h"
 #include "UsdWrappers/UsdPrim.h"
+#include "UsdWrappers/UsdStage.h"
 
 #include "Algo/Copy.h"
 #include "Animation/AnimSequence.h"
@@ -19,23 +23,30 @@
 #include "Components/PoseableMeshComponent.h"
 #include "Components/RectLightComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/PointLight.h"
 #include "Engine/RectLight.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/SkyLight.h"
+#include "Engine/SpotLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
 #include "GeometryCache.h"
+
+#if WITH_EDITOR
 #include "ObjectTools.h"
+#endif // WITH_EDITOR
 
 #if USE_USD_SDK
 #include "USDIncludesStart.h"
+	#include "pxr/base/tf/stringUtils.h"
 	#include "pxr/base/tf/token.h"
 	#include "pxr/usd/usd/attribute.h"
 	#include "pxr/usd/usd/editContext.h"
 	#include "pxr/usd/usd/modelAPI.h"
+	#include "pxr/usd/usd/payloads.h"
 	#include "pxr/usd/usd/primRange.h"
 	#include "pxr/usd/usd/stage.h"
 	#include "pxr/usd/usd/variantSets.h"
@@ -50,10 +61,11 @@
 	#include "pxr/usd/usdLux/distantLight.h"
 	#include "pxr/usd/usdLux/domeLight.h"
 	#include "pxr/usd/usdLux/rectLight.h"
+	#include "pxr/usd/usdLux/shapingAPI.h"
 	#include "pxr/usd/usdLux/sphereLight.h"
-	#include "pxr/usd/usdSkel/root.h"
 	#include "pxr/usd/usdSkel/binding.h"
 	#include "pxr/usd/usdSkel/cache.h"
+	#include "pxr/usd/usdSkel/root.h"
 	#include "pxr/usd/usdSkel/skeletonQuery.h"
 #include "USDIncludesEnd.h"
 
@@ -63,6 +75,20 @@
 
 namespace USDConversionUtilsImpl
 {
+	// Adapted from ObjectTools as it is within an Editor-only module
+	FString SanitizeObjectName( const FString& InObjectName )
+	{
+		FString SanitizedText = InObjectName;
+		const TCHAR* InvalidChar = INVALID_OBJECTNAME_CHARACTERS;
+		while ( *InvalidChar )
+		{
+			SanitizedText.ReplaceCharInline( *InvalidChar, TCHAR( '_' ), ESearchCase::CaseSensitive );
+			++InvalidChar;
+		}
+
+		return SanitizedText;
+	}
+
 	/** Show some warnings if the UVSet primvars show some unsupported/problematic behavior */
 	void CheckUVSetPrimvars( TMap<int32, TArray<pxr::UsdGeomPrimvar>> UsablePrimvars, TMap<int32, TArray<pxr::UsdGeomPrimvar>> UsedPrimvars, const FString& MeshPath )
 	{
@@ -205,14 +231,26 @@ template USDUTILITIES_API pxr::VtArray< pxr::GfVec3f >	UsdUtils::GetUsdValue< px
 template USDUTILITIES_API pxr::VtArray< float >			UsdUtils::GetUsdValue< pxr::VtArray< float > >( const pxr::UsdAttribute& Attribute, pxr::UsdTimeCode TimeCode );
 template USDUTILITIES_API pxr::VtArray< int >			UsdUtils::GetUsdValue< pxr::VtArray< int > >( const pxr::UsdAttribute& Attribute, pxr::UsdTimeCode TimeCode );
 
-pxr::TfToken UsdUtils::GetUsdStageAxis( const pxr::UsdStageRefPtr& Stage )
+pxr::TfToken UsdUtils::GetUsdStageUpAxis( const pxr::UsdStageRefPtr& Stage )
 {
 	return pxr::UsdGeomGetStageUpAxis( Stage );
 }
 
-void UsdUtils::SetUsdStageAxis( const pxr::UsdStageRefPtr& Stage, pxr::TfToken Axis )
+EUsdUpAxis UsdUtils::GetUsdStageUpAxisAsEnum( const pxr::UsdStageRefPtr& Stage )
+{
+	pxr::TfToken UpAxisToken = pxr::UsdGeomGetStageUpAxis( Stage );
+	return UpAxisToken == pxr::UsdGeomTokens->z ? EUsdUpAxis::ZAxis : EUsdUpAxis::YAxis;
+}
+
+void UsdUtils::SetUsdStageUpAxis( const pxr::UsdStageRefPtr& Stage, pxr::TfToken Axis )
 {
 	pxr::UsdGeomSetStageUpAxis( Stage, Axis );
+}
+
+void UsdUtils::SetUsdStageUpAxis( const pxr::UsdStageRefPtr& Stage, EUsdUpAxis Axis )
+{
+	pxr::TfToken UpAxisToken = Axis == EUsdUpAxis::ZAxis ? pxr::UsdGeomTokens->z : pxr::UsdGeomTokens->y;
+	SetUsdStageUpAxis( Stage, UpAxisToken );
 }
 
 float UsdUtils::GetUsdStageMetersPerUnit( const pxr::UsdStageRefPtr& Stage )
@@ -233,7 +271,7 @@ void UsdUtils::SetUsdStageMetersPerUnit( const pxr::UsdStageRefPtr& Stage, float
 
 bool UsdUtils::HasCompositionArcs( const pxr::UsdPrim& Prim )
 {
-	if ( !Prim )
+	if ( !Prim || !Prim.IsActive() )
 	{
 		return false;
 	}
@@ -257,7 +295,14 @@ UClass* UsdUtils::GetActorTypeForPrim( const pxr::UsdPrim& Prim )
 	}
 	else if ( Prim.IsA< pxr::UsdLuxSphereLight >() )
 	{
-		return APointLight::StaticClass();
+		if ( Prim.HasAPI< pxr::UsdLuxShapingAPI >() )
+		{
+			return ASpotLight::StaticClass();
+		}
+		else
+		{
+			return APointLight::StaticClass();
+		}
 	}
 	else if ( Prim.IsA< pxr::UsdLuxDomeLight >() )
 	{
@@ -293,7 +338,14 @@ UClass* UsdUtils::GetComponentTypeForPrim( const pxr::UsdPrim& Prim )
 	}
 	else if ( Prim.IsA< pxr::UsdLuxSphereLight >() )
 	{
-		return UPointLightComponent::StaticClass();
+		if ( Prim.HasAPI< pxr::UsdLuxShapingAPI >() )
+		{
+			return USpotLightComponent::StaticClass();
+		}
+		else
+		{
+			return UPointLightComponent::StaticClass();
+		}
 	}
 	else if ( Prim.IsA< pxr::UsdLuxDomeLight >() )
 	{
@@ -461,6 +513,11 @@ TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars( const pxr
 
 bool UsdUtils::IsAnimated( const pxr::UsdPrim& Prim )
 {
+	if ( !Prim || !Prim.IsActive() )
+	{
+		return false;
+	}
+
 	FScopedUsdAllocs UsdAllocs;
 
 	pxr::UsdGeomXformable Xformable( Prim );
@@ -487,10 +544,10 @@ bool UsdUtils::IsAnimated( const pxr::UsdPrim& Prim )
 	if ( pxr::UsdSkelRoot SkeletonRoot{ Prim } )
 	{
 		pxr::UsdSkelCache SkeletonCache;
-		SkeletonCache.Populate( SkeletonRoot );
+		SkeletonCache.Populate( SkeletonRoot, pxr::UsdTraverseInstanceProxies() );
 
 		std::vector< pxr::UsdSkelBinding > SkeletonBindings;
-		SkeletonCache.ComputeSkelBindings( SkeletonRoot, &SkeletonBindings );
+		SkeletonCache.ComputeSkelBindings( SkeletonRoot, &SkeletonBindings, pxr::UsdTraverseInstanceProxies() );
 
 		for ( const pxr::UsdSkelBinding& Binding : SkeletonBindings )
 		{
@@ -583,7 +640,7 @@ FString UsdUtils::GetAssetPathFromPrimPath( const FString& RootContentPath, cons
 	ModelApi.GetAssetName( &RawAssetName );
 
 	FString AssetName = UsdToUnreal::ConvertString( RawAssetName );
-	FString MeshName = ObjectTools::SanitizeObjectName( RawPrimName );
+	FString MeshName = USDConversionUtilsImpl::SanitizeObjectName( RawPrimName );
 
 	FString USDPath = UsdToUnreal::ConvertString( Prim.GetPrimPath().GetString().c_str() );
 
@@ -693,12 +750,12 @@ UUsdAssetImportData* UsdUtils::GetAssetImportData( UObject* Asset )
 	{
 		if ( USkeletalMesh* SkMesh = Skeleton->GetPreviewMesh() )
 		{
-			ImportData = Cast<UUsdAssetImportData>( SkMesh->AssetImportData );
+			ImportData = Cast<UUsdAssetImportData>( SkMesh->GetAssetImportData() );
 		}
 	}
 	else if ( USkeletalMesh* SkMesh = Cast<USkeletalMesh>( Asset ) )
 	{
-		ImportData = Cast<UUsdAssetImportData>( SkMesh->AssetImportData );
+		ImportData = Cast<UUsdAssetImportData>( SkMesh->GetAssetImportData() );
 	}
 	else if ( UAnimSequence* SkelAnim = Cast<UAnimSequence>( Asset ) )
 	{
@@ -718,6 +775,364 @@ UUsdAssetImportData* UsdUtils::GetAssetImportData( UObject* Asset )
 	}
 #endif
 	return ImportData;
+}
+
+void UsdUtils::AddReference( UE::FUsdPrim& Prim, const TCHAR* AbsoluteFilePath )
+{
+#if USE_USD_SDK
+	if ( !Prim || !AbsoluteFilePath )
+	{
+		return;
+	}
+
+	FScopedUsdAllocs UsdAllocs;
+
+	pxr::UsdPrim UsdPrim( Prim );
+
+	const std::string UsdAbsoluteFilePath = UnrealToUsd::ConvertString( AbsoluteFilePath ).Get();
+	pxr::UsdReferences References = UsdPrim.GetReferences();
+
+	pxr::SdfLayerRefPtr ReferenceLayer = pxr::SdfLayer::FindOrOpen( UsdAbsoluteFilePath );
+
+	// Group updates or else the SetTypeName and AddReference calls below will both trigger separate resyncs of the same prim path
+	pxr::SdfChangeBlock ChangeBlock;
+
+	if ( ReferenceLayer && !UsdPrim.GetTypeName().IsEmpty() )
+	{
+		pxr::SdfPrimSpecHandle DefaultPrimSpec = ReferenceLayer->GetPrimAtPath( pxr::SdfPath( ReferenceLayer->GetDefaultPrim() ) );
+		if ( DefaultPrimSpec )
+		{
+			// Set the same prim type as its reference so that they are compatible
+			pxr::TfType DefaultPrimType = pxr::UsdSchemaRegistry::GetTypeFromName( DefaultPrimSpec->GetTypeName() );
+			if ( DefaultPrimType.IsUnknown() )
+			{
+				UsdPrim.ClearTypeName();
+			}
+			else if ( !UsdPrim.IsA( DefaultPrimType ) )
+			{
+				UsdPrim.SetTypeName( DefaultPrimSpec->GetTypeName() );
+			}
+		}
+	}
+
+	pxr::SdfLayerHandle EditLayer = UsdPrim.GetStage()->GetEditTarget().GetLayer();
+
+	FString RelativePath = AbsoluteFilePath;
+	MakePathRelativeToLayer( UE::FSdfLayer( EditLayer ), RelativePath );
+
+	References.AddReference( UnrealToUsd::ConvertString( *RelativePath ).Get() );
+#endif // #if USE_USD_SDK
+}
+
+void UsdUtils::AddPayload( UE::FUsdPrim& Prim, const TCHAR* AbsoluteFilePath )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs UsdAllocs;
+
+	pxr::UsdPrim UsdPrim( Prim );
+
+	pxr::SdfLayerHandle EditLayer = UsdPrim.GetStage()->GetEditTarget().GetLayer();
+
+	FString RelativePath = AbsoluteFilePath;
+	MakePathRelativeToLayer( UE::FSdfLayer( EditLayer ), RelativePath );
+
+	pxr::UsdPayloads Payloads = UsdPrim.GetPayloads();
+	Payloads.AddPayload(
+		UnrealToUsd::ConvertString( *RelativePath ).Get()
+	);
+#endif // #if USE_USD_SDK
+}
+
+bool UsdUtils::RenamePrim( UE::FUsdPrim& Prim, const TCHAR* NewPrimName )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs UsdAllocs;
+
+	if ( !Prim || !NewPrimName )
+	{
+		return false;
+	}
+
+	if ( Prim.GetName() == FName( NewPrimName ) )
+	{
+		return false;
+	}
+
+	pxr::UsdPrim PxrUsdPrim{ Prim };
+	pxr::UsdStageRefPtr PxrUsdStage{ Prim.GetStage() };
+	if ( !PxrUsdStage )
+	{
+		return false;
+	}
+
+	pxr::TfToken NewNameToken = UnrealToUsd::ConvertToken( NewPrimName ).Get();
+	pxr::SdfPath TargetPath = PxrUsdPrim.GetPrimPath().ReplaceName( NewNameToken );
+
+	std::vector<pxr::SdfPrimSpecHandle> SpecStack = PxrUsdPrim.GetPrimStack();
+	TArray<TPair<pxr::SdfLayerRefPtr, pxr::SdfBatchNamespaceEdit>> Edits;
+
+	// Check if we can apply this rename, and collect error messages if we can't
+	// We will only rename if we can change all specs, or else we'd split the prim
+	TArray<FString> ErrorMessages;
+	pxr::SdfNamespaceEditDetailVector Details;
+	int32 LastDetailsSize = 0;
+	bool bCanApply = true;
+	for ( const pxr::SdfPrimSpecHandle& Spec : SpecStack )
+	{
+		pxr::SdfPath SpecPath = Spec->GetPath();
+		if ( !SpecPath.IsPrimPath() )
+		{
+			// Especially when it comes to variants, we can have many different specs for a prim.
+			// e.g. we can simultaneously have "/Prim{Varset=}", "/Prim{Varset=Var}" and "/Prim" in there, and
+			// we will fail to do anything if these paths are not prim paths
+			continue;
+		}
+
+		pxr::SdfLayerRefPtr SpecLayer = Spec->GetLayer();
+
+		pxr::SdfBatchNamespaceEdit BatchEdit;
+		BatchEdit.Add( pxr::SdfNamespaceEdit::Rename( SpecPath, NewNameToken ) );
+
+		int32 CurrentNumDetails = Details.size();
+		if ( SpecLayer->CanApply( BatchEdit, &Details ) != pxr::SdfNamespaceEditDetail::Result::Okay )
+		{
+			FString LayerIdentifier = UsdToUnreal::ConvertString( SpecLayer->GetIdentifier() );
+
+			// This error pushed something new into the Details vector. Get it as an error message
+			FString ErrorMessage;
+			if ( CurrentNumDetails != LastDetailsSize )
+			{
+				ErrorMessage = UsdToUnreal::ConvertString( Details[ CurrentNumDetails - 1 ].reason );
+			}
+
+			ErrorMessages.Add( FString::Printf( TEXT( "\t%s: %s" ), *LayerIdentifier, *ErrorMessage ) );
+			bCanApply = false;
+			// Don't break so we can collect all error messages
+		}
+
+		LastDetailsSize = CurrentNumDetails;
+		Edits.Add( TPair<pxr::SdfLayerRefPtr, pxr::SdfBatchNamespaceEdit>{ SpecLayer, BatchEdit } );
+	}
+
+	if ( !bCanApply )
+	{
+		UE_LOG( LogUsd, Error, TEXT( "Failed to rename prim with path '%s' to name '%s'. Errors:\n%s" ),
+			*Prim.GetPrimPath().GetString(),
+			NewPrimName,
+			*FString::Join( ErrorMessages, TEXT( "\n" ) )
+		);
+
+		return false;
+	}
+
+	// Actually apply the renames
+	{
+		pxr::SdfChangeBlock Block;
+
+		for ( const TPair<pxr::SdfLayerRefPtr, pxr::SdfBatchNamespaceEdit>& Pair : Edits )
+		{
+			const pxr::SdfLayerRefPtr& Layer = Pair.Key;
+			const pxr::SdfBatchNamespaceEdit& Edit = Pair.Value;
+
+			if ( !Layer->Apply( Edit ) )
+			{
+				// This should not be happening since CanApply was true, so stop doing whatever it is we're doing
+				UE_LOG( LogUsd, Error, TEXT( "Failed to rename prim with path '%s' to name '%s' in layer '%s'" ),
+					*Prim.GetPrimPath().GetString(),
+					NewPrimName,
+					*UsdToUnreal::ConvertString( Layer->GetIdentifier() )
+				);
+
+				return false;
+			}
+		}
+	}
+
+	// For whatever reason, if the renamed prim is within a variant set it will be left inactive (i.e. effectively deleted) post-rename by USD.
+	// Here we override that with a SetActive opinion on the session layer, which will also trigger a new resync of that prim.
+	//
+	// We must send a separate notice for this (which is why this function can't be inside a change block) for two reasons:
+	// - In order to let the transactor know that this edit is done on the session layer (so that we can have our active=true opinion there and not save it to disk);
+	// - Because after we apply the rename, usd *needs* to responds to notices in order to make the target path valid again. Until
+	//   it does so, we can't Get/Override/Define a prim at the target path at all, and so can't set it to active.
+	//
+	// We can't do this *before* we rename because if we already have a prim defined/overriden on "/Root/Target", then we
+	// can't apply a rename from a prim onto "/Root/Target": Meaning we'd lose all extra data we have on the prim on the session layer.
+	{
+		pxr::UsdEditContext EditContext{ PxrUsdStage, PxrUsdStage->GetSessionLayer() };
+
+		if ( pxr::UsdPrim PostRenamePrim = PxrUsdStage->OverridePrim( TargetPath ) )
+		{
+			// We need to toggle it back and forth because whenever we undo a rename we'll rename our spec on the session layer
+			// back to the original path, and that spec *already* has an active=true opinion that we set during the first rename.
+			// This means that just setting it to active here wouldn't send any notice (because it already is). We need a new notice
+			// to update to the fact that the child prim is now active again (the rename notice is a resync, but it already comes with the prim set to inactive)
+			pxr::SdfChangeBlock Block;
+			const bool bActive = true;
+			PostRenamePrim.SetActive( !bActive );
+			PostRenamePrim.SetActive( bActive );
+		}
+	}
+
+	return true;
+#else
+	return false;
+#endif // #if USE_USD_SDK
+}
+
+FString UsdUtils::SanitizeUsdIdentifier( const TCHAR* InIdentifier )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs Allocs;
+
+	std::string UsdInName = UnrealToUsd::ConvertString( InIdentifier ).Get();
+	std::string UsdValidName = pxr::TfMakeValidIdentifier( UsdInName );
+
+	return UsdToUnreal::ConvertString( UsdValidName );
+#endif // USE_USD_SDK
+
+	return InIdentifier;
+}
+
+void UsdUtils::MakeVisible( UE::FUsdPrim& Prim, double TimeCode )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdPrim PxrUsdPrim{ Prim };
+	if ( pxr::UsdGeomImageable Imageable{ PxrUsdPrim } )
+	{
+		Imageable.MakeVisible( TimeCode );
+	}
+#endif // USE_USD_SDK
+}
+
+void UsdUtils::MakeInvisible( UE::FUsdPrim& Prim, double TimeCode )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdPrim PxrUsdPrim{ Prim };
+	if ( pxr::UsdGeomImageable Imageable{ PxrUsdPrim } )
+	{
+		Imageable.MakeInvisible( TimeCode );
+	}
+#endif // USE_USD_SDK
+}
+
+bool UsdUtils::IsVisible( UE::FUsdPrim& Prim, double TimeCode )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdPrim PxrUsdPrim{ Prim };
+	if ( pxr::UsdGeomImageable Imageable{ PxrUsdPrim } )
+	{
+		return Imageable.ComputeVisibility( TimeCode ) == pxr::UsdGeomTokens->inherited;
+	}
+
+	return true;
+#else
+	return false;
+#endif // USE_USD_SDK
+}
+
+bool UsdUtils::HasInheritedVisibility( UE::FUsdPrim& Prim, double TimeCode )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdPrim PxrUsdPrim{ Prim };
+	if ( pxr::UsdGeomImageable Imageable{ PxrUsdPrim } )
+	{
+		if ( pxr::UsdAttribute VisibilityAttr = Imageable.GetVisibilityAttr() )
+		{
+			pxr::TfToken Visibility;
+			if ( !VisibilityAttr.Get<pxr::TfToken>( &Visibility, TimeCode ) )
+			{
+				return true;
+			}
+
+			return Visibility == pxr::UsdGeomTokens->inherited;
+		}
+	}
+
+	// If it doesn't have the attribute the default is for it to be 'inherited'
+	return true;
+#else
+	return false;
+#endif // USE_USD_SDK
+}
+
+UE::FSdfPath UsdUtils::GetPrimSpecPathForLayer( const UE::FUsdPrim& Prim, const UE::FSdfLayer& Layer )
+{
+	UE::FSdfPath Result;
+#if USE_USD_SDK
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdPrim UsdPrim{ Prim };
+	pxr::SdfLayerRefPtr UsdLayer{ Layer };
+
+	// We may have multiple specs in the same layer if we're within a variant set (e.g "/Root/Parent/Child" and
+	// "/Root{Varset=Var}Parent/Child{ChildSet=ChildVar}" and "/Root{Varset=Var}Parent/Child").
+	// This function needs to return a prim path with all of its variant selections (i.e. the last example above)
+	std::size_t LargestPathLength = 0;
+	for ( const pxr::SdfPrimSpecHandle& Spec : UsdPrim.GetPrimStack() )
+	{
+		pxr::SdfPath SpecPath = Spec->GetPath();
+		if ( !SpecPath.IsPrimPath() )
+		{
+			continue;
+		}
+
+		if ( Spec->GetLayer() == UsdLayer )
+		{
+			const std::size_t NewPathLength = Spec->GetPath().GetString().length();
+			if ( NewPathLength > LargestPathLength )
+			{
+				Result = UE::FSdfPath{ SpecPath };
+			}
+		}
+	}
+
+#endif // USE_USD_SDK
+	return Result;
+}
+
+USDUTILITIES_API void UsdUtils::RemoveAllPrimSpecs( const UE::FUsdPrim& Prim, const UE::FSdfLayer& Layer )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdPrim UsdPrim{ Prim };
+	if ( !UsdPrim )
+	{
+		return;
+	}
+
+	pxr::SdfChangeBlock Block;
+
+	pxr::SdfLayerRefPtr UsdLayer{ Layer };
+	pxr::UsdStageRefPtr UsdStage = UsdPrim.GetStage();
+
+	for ( const pxr::SdfPrimSpecHandle& Spec : UsdPrim.GetPrimStack() )
+	{
+		pxr::SdfPath SpecPath = Spec->GetPath();
+		if ( !SpecPath.IsPrimPath() )
+		{
+			continue;
+		}
+
+		if ( Spec->GetLayer() != UsdLayer )
+		{
+			continue;
+		}
+
+		UE_LOG( LogUsd, Log, TEXT( "Removing prim spec '%s' from edit target '%s'" ), *UsdToUnreal::ConvertPath( SpecPath ), *UsdToUnreal::ConvertString( UsdLayer->GetIdentifier() ) );
+		UsdStage->RemovePrim( SpecPath );
+	}
+
+#endif // USE_USD_SDK
 }
 
 #if USE_USD_SDK

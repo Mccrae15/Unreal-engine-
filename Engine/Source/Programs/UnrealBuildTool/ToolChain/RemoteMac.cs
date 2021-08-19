@@ -129,8 +129,8 @@ namespace UnrealBuildTool
 		/// <param name="ProjectFile">Project to read settings from</param>
 		public RemoteMac(FileReference ProjectFile)
 		{
-			this.RsyncExe = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Extras", "ThirdPartyNotUE", "DeltaCopy", "Binaries", "Rsync.exe");
-			this.SshExe = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Extras", "ThirdPartyNotUE", "DeltaCopy", "Binaries", "Ssh.exe");
+			this.RsyncExe = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Extras", "ThirdPartyNotUE", "cwrsync", "bin", "rsync.exe");
+			this.SshExe = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Extras", "ThirdPartyNotUE", "cwrsync", "bin", "ssh.exe");
 			this.ProjectFile = ProjectFile;
 			if (ProjectFile != null)
 			{
@@ -269,12 +269,21 @@ namespace UnrealBuildTool
 			CommonRsyncArguments.Add("--prune-empty-dirs"); // Remove empty directories from the file list
 
 			// Get the remote base directory
-			StringBuilder Output;
-			if(ExecuteAndCaptureOutput("'echo ~'", out Output) != 0)
+			string RemoteServerOverrideBuildPath;
+			if (Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "RemoteServerOverrideBuildPath", out RemoteServerOverrideBuildPath) && !String.IsNullOrEmpty(RemoteServerOverrideBuildPath))
 			{
-				throw new BuildException("Unable to determine home directory for remote user. SSH output:\n{0}", StringUtils.Indent(Output.ToString(), "  "));
+				RemoteBaseDir = String.Format("{0}/{1}", RemoteServerOverrideBuildPath.Trim().TrimEnd('/'), Environment.MachineName);
 			}
-			RemoteBaseDir = String.Format("{0}/UE4/Builds/{1}", Output.ToString().Trim().TrimEnd('/'), Environment.MachineName);
+			else
+			{
+				StringBuilder Output;
+				if (ExecuteAndCaptureOutput("'echo ~'", out Output) != 0)
+				{
+					throw new BuildException("Unable to determine home directory for remote user. SSH output:\n{0}", StringUtils.Indent(Output.ToString(), "  "));
+				}
+				RemoteBaseDir = String.Format("{0}/UE4/Builds/{1}", Output.ToString().Trim().TrimEnd('/'), Environment.MachineName);
+			}
+
 			Log.TraceInformation("[Remote] Using base directory '{0}'", RemoteBaseDir);
 
 			// Build the list of directory mappings between the local and remote machines
@@ -754,13 +763,13 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Escapes spaces in a shell command argument
+		/// Escapes spaces and brackets in a shell command argument
 		/// </summary>
 		/// <param name="Argument">The argument to escape</param>
 		/// <returns>The escaped argument</returns>
 		private static string EscapeShellArgument(string Argument)
 		{
-			return Argument.Replace(" ", "\\ ");
+			return Argument.Replace(" ", "\\ ").Replace("[", "\\\\[").Replace("]", "\\\\]");
 		}
 
 		/// <summary>
@@ -969,13 +978,16 @@ namespace UnrealBuildTool
 				}
 			}
 
-			Execute("/", String.Format("rm -rf {0}/Intermediate/IOS/*.plist", GetRemotePath(UnrealBuildTool.EngineDirectory)));
-			Execute("/", String.Format("rm -rf {0}/Intermediate/TVOS/*.plist", GetRemotePath(UnrealBuildTool.EngineDirectory)));
+			Execute("/", String.Format("rm -rf {0}/Intermediate/IOS/*.plist", GetRemotePath(UnrealBuildTool.EngineDirectory)), true);
+			Execute("/", String.Format("rm -rf {0}/Intermediate/TVOS/*.plist", GetRemotePath(UnrealBuildTool.EngineDirectory)), true);
 			if (ProjectFile != null)
 			{
-				Execute("/", String.Format("rm -rf {0}/Intermediate/IOS/*.plist", GetRemotePath(ProjectFile.Directory)));
-				Execute("/", String.Format("rm -rf {0}/Intermediate/TVOS/*.plist", GetRemotePath(ProjectFile.Directory)));
+				Execute("/", String.Format("rm -rf {0}/Intermediate/IOS/*.plist", GetRemotePath(ProjectFile.Directory)), true);
+				Execute("/", String.Format("rm -rf {0}/Intermediate/TVOS/*.plist", GetRemotePath(ProjectFile.Directory)), true);
 			}
+
+			// Convert CRLF to LF for all shell scripts
+			Execute(RemoteBaseDir, String.Format("for i in {0}/Build/BatchFiles/Mac/*.sh; do mv $i $i.crlf; tr -d '\r' < $i.crlf > $i; done", EscapeShellArgument(GetRemotePath(UnrealBuildTool.EngineDirectory))));
 
 			// Fixup permissions on any shell scripts
 			Execute(RemoteBaseDir, String.Format("chmod +x {0}/Build/BatchFiles/Mac/*.sh", EscapeShellArgument(GetRemotePath(UnrealBuildTool.EngineDirectory))));
@@ -1088,11 +1100,14 @@ namespace UnrealBuildTool
 		{
 			using(Process RsyncProcess = new Process())
 			{
+				DataReceivedEventHandler OutputHandler = (E, Args) => { RsyncOutput(Args, false); };
+				DataReceivedEventHandler ErrorHandler = (E, Args) => { RsyncOutput(Args, true); };
+
 				RsyncProcess.StartInfo.FileName = RsyncExe.FullName;
 				RsyncProcess.StartInfo.Arguments = Arguments;
 				RsyncProcess.StartInfo.WorkingDirectory = SshExe.Directory.FullName;
-				RsyncProcess.OutputDataReceived += RsyncOutput;
-				RsyncProcess.ErrorDataReceived += RsyncOutput;
+				RsyncProcess.OutputDataReceived += OutputHandler;
+				RsyncProcess.ErrorDataReceived += ErrorHandler;
 
 				Log.TraceLog("[Rsync] {0} {1}", Utils.MakePathSafeToUseWithCommandLine(RsyncProcess.StartInfo.FileName), RsyncProcess.StartInfo.Arguments);
 				return Utils.RunLocalProcess(RsyncProcess);
@@ -1102,13 +1117,20 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Handles data output by rsync
 		/// </summary>
-		/// <param name="Sender">The object sending the messag</param>
 		/// <param name="Args">The received data</param>e
-		private void RsyncOutput(object Sender, DataReceivedEventArgs Args)
+		/// <param name="bStdErr">whether the data was received on stderr</param>
+		private void RsyncOutput(DataReceivedEventArgs Args, bool bStdErr)
 		{
-			if(Args.Data != null)
+			if (Args.Data != null)
 			{
-				Log.TraceInformation("  {0}", Args.Data);
+				if (bStdErr)
+				{
+					Log.TraceError("  {0}", Args.Data);
+				}
+				else
+				{
+					Log.TraceInformation("  {0}", Args.Data);
+				}
 			}
 		}
 
@@ -1117,10 +1139,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="WorkingDir"></param>
 		/// <param name="Command"></param>
+		/// <param name="bSilent"></param>
 		/// <returns></returns>
-		public int Execute(DirectoryReference WorkingDir, string Command)
+		public int Execute(DirectoryReference WorkingDir, string Command, bool bSilent = false)
 		{
-			return Execute(GetRemotePath(WorkingDir), Command);
+			return Execute(GetRemotePath(WorkingDir), Command, bSilent);
 		}
 
 		/// <summary>
@@ -1128,19 +1151,24 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="WorkingDirectory">The remote working directory</param>
 		/// <param name="Command">Command to be executed</param>
+		/// <param name="bSilent">If true, logging is suppressed</param>
 		/// <returns></returns>
-		protected int Execute(string WorkingDirectory, string Command)
+		protected int Execute(string WorkingDirectory, string Command, bool bSilent = false)
 		{
 			string FullCommand = String.Format("cd {0} && {1}", EscapeShellArgument(WorkingDirectory), Command);
-			using(Process SSHProcess = new Process())
+			using (Process SSHProcess = new Process())
 			{
-				DataReceivedEventHandler OutputHandler = (E, Args) => { SshOutput(Args); };
+				DataReceivedEventHandler OutputHandler = (E, Args) => { SshOutput(Args, false); };
+				DataReceivedEventHandler ErrorHandler = (E, Args) => { SshOutput(Args, true); };
 
 				SSHProcess.StartInfo.FileName = SshExe.FullName;
 				SSHProcess.StartInfo.WorkingDirectory = SshExe.Directory.FullName;
-				SSHProcess.StartInfo.Arguments = String.Format("{0} {1}", String.Join(" ", CommonSshArguments), FullCommand.Replace("\"", "\\\""));
-				SSHProcess.OutputDataReceived += OutputHandler;
-				SSHProcess.ErrorDataReceived += OutputHandler;
+				SSHProcess.StartInfo.Arguments = String.Format("{0} {1}", String.Join(" ", CommonSshArguments), FullCommand);
+				if (!bSilent)
+				{
+					SSHProcess.OutputDataReceived += OutputHandler;
+					SSHProcess.ErrorDataReceived += ErrorHandler;
+				}
 
 				Log.TraceLog("[SSH] {0} {1}", Utils.MakePathSafeToUseWithCommandLine(SSHProcess.StartInfo.FileName), SSHProcess.StartInfo.Arguments);
 				return Utils.RunLocalProcess(SSHProcess);
@@ -1151,12 +1179,20 @@ namespace UnrealBuildTool
 		/// Handler for output from running remote SSH commands
 		/// </summary>
 		/// <param name="Args"></param>
-		private void SshOutput(DataReceivedEventArgs Args)
+		/// <param name="bStdErr">whether the data was received on stderr</param>
+		private void SshOutput(DataReceivedEventArgs Args, bool bStdErr)
 		{
-			if(Args.Data != null)
+			if (Args.Data != null)
 			{
 				string FormattedOutput = ConvertRemotePathsToLocal(Args.Data);
-				Log.TraceInformation("  {0}", FormattedOutput);
+				if (bStdErr)
+				{
+					Log.TraceError("  {0}", FormattedOutput);
+				}
+				else
+				{
+					Log.TraceInformation("  {0}", FormattedOutput);
+				}
 			}
 		}
 

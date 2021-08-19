@@ -3,6 +3,7 @@
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/MovieSceneEntitySystemTypes.h"
 #include "EntitySystem/MovieSceneEntitySystem.h"
+#include "EntitySystem/MovieSceneEntitySystemTask.h"
 #include "EntitySystem/MovieSceneEntityMutations.h"
 #include "EntitySystem/MovieSceneComponentRegistry.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
@@ -60,6 +61,12 @@ UMovieSceneEntitySystemLinker::UMovieSceneEntitySystemLinker(const FObjectInitia
 	}
 }
 
+UE::MovieScene::FEntitySystemLinkerExtensionID UMovieSceneEntitySystemLinker::RegisterExtension()
+{
+	static int32 StaticID = 0;
+	return UE::MovieScene::FEntitySystemLinkerExtensionID{ StaticID++ };
+}
+
 void UMovieSceneEntitySystemLinker::Reset()
 {
 	Events.AbandonLinker.Broadcast(this);
@@ -112,20 +119,6 @@ void UMovieSceneEntitySystemLinker::InvalidateObjectBinding(const FGuid& ObjectB
 	{
 		InstanceRegistry->InvalidateObjectBinding(ObjectBindingID, InInstanceHandle);
 	}
-}
-
-TSharedRef<bool> UMovieSceneEntitySystemLinker::CaptureGlobalState()
-{
-	TSharedPtr<bool> Pinned = GlobalStateCaptureToken.Pin();
-	if (!Pinned)
-	{
-		Pinned = MakeShared<bool>();
-		GlobalStateCaptureToken = Pinned;
-
-		LinkSystem<UMovieSceneCachePreAnimatedStateSystem>();
-	}
-
-	return Pinned.ToSharedRef();
 }
 
 void UMovieSceneEntitySystemLinker::SystemLinked(UMovieSceneEntitySystem* InSystem)

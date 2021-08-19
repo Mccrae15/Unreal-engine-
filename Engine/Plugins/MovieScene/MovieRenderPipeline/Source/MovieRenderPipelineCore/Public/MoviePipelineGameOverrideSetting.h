@@ -35,6 +35,7 @@ public:
 		, ShadowRadiusThreshold(0.001f)
 		, bOverrideViewDistanceScale(true)
 		, ViewDistanceScale(50)
+		, bFlushGrassStreaming(true)
 		, bDisableGPUTimeout(true) 
 	{
 	}
@@ -84,7 +85,7 @@ public:
 	int32 ShadowDistanceScale;
 
 	/** Cull shadow casters if they are too small, value is the minimal screen space bounding sphere radius */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (EditCondition = bUseHighQualityShadows, UIMin=0.001))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (EditCondition = bUseHighQualityShadows, UIMin=0.001, ClampMin=0.001))
 	float ShadowRadiusThreshold;
 
 	/** Should we override the View Distance Scale? Can be used in situations where MaxDrawDistance has been set before for in-game performance. */
@@ -94,6 +95,10 @@ public:
 	/** Controls the view distance scale. A primitive's MaxDrawDistance is scaled by this value. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (EditCondition = bOverrideViewDistanceScale))
 	int32 ViewDistanceScale;
+	
+	/** Flushing grass streaming (combined with override view distance scale) prevents visible pop-in/culling of grace instances. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering")
+	bool bFlushGrassStreaming;
 
 	/** Should we disable the GPU Timeout? Currently only applicable when using D3D12 renderer. */
 	bool bDisableGPUTimeout;
@@ -116,4 +121,6 @@ private:
 	int32 PreviousFoliageDitheredLOD;
 	int32 PreviousFoliageForceLOD;
 	int32 PreviousNeverMuteNonRealtimeAudio;
+	int32 PreviousSkyLightRealTimeReflectionCaptureTimeSlice;
+	int32 PreviousVolumetricRenderTarget;
 };

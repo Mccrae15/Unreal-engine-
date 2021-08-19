@@ -276,6 +276,13 @@ static void AssignLayerChunkDelegate(const FAssignLayerChunkMap* ChunkManifest, 
 	}
 }
 
+void IChunkDataGenerator::GenerateChunkDataFiles(const int32 InChunkId, const TSet<FName>& InPackagesInChunk, const ITargetPlatform* TargetPlatform, FSandboxPlatformFile* InSandboxFile, TArray<FString>& OutChunkFilenames)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	GenerateChunkDataFiles(InChunkId, InPackagesInChunk, TargetPlatform->PlatformName(), InSandboxFile, OutChunkFilenames);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 bool FAssetRegistryGenerator::GenerateStreamingInstallManifest(int64 InExtraFlavorChunkSize, FSandboxPlatformFile* InSandboxFile)
 {
 	const FString Platform = TargetPlatform->PlatformName();
@@ -372,13 +379,15 @@ bool FAssetRegistryGenerator::GenerateStreamingInstallManifest(int64 InExtraFlav
 		FPackageFileSizeVisitor PackageSearch(PackageFileSizes);
 		IFileManager::Get().IterateDirectoryStatRecursively(*SandboxPath, PackageSearch);
 	}
-
+	
 	bool bEnableGameOpenOrderSort = false;
+	bool bUseSecondaryOpenOrder = false;
 	{
 		FConfigFile PlatformIniFile;
 		FConfigCacheIni::LoadLocalIniFile(PlatformIniFile, TEXT("Game"), true, *TargetPlatform->IniPlatformName());
 		FString ConfigString;
 		PlatformIniFile.GetBool(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("bEnableAssetRegistryGameOpenOrderSort"), bEnableGameOpenOrderSort);
+		PlatformIniFile.GetBool(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("bPakUsesSecondaryOrder"), bUseSecondaryOpenOrder);
 	}
 	
 
@@ -391,10 +400,19 @@ bool FAssetRegistryGenerator::GenerateStreamingInstallManifest(int64 InExtraFlav
 	FPakOrderMap OrderMap;
 	if (bEnableGameOpenOrderSort && IFileManager::Get().FileExists(*OpenOrderFullPath) )
 	{
-		OrderMap.ProcessOrderFile(*OpenOrderFullPath, true);
+		OrderMap.ProcessOrderFile(*OpenOrderFullPath);
 
 		UE_LOG(LogAssetRegistryGenerator, Display, TEXT("Found game open order %s using it to sort input files"), *OpenOrderFullPath);
 		bHaveGameOpenOrder = true;
+	}
+	if (bUseSecondaryOpenOrder)
+	{
+		FString SecondaryOpenOrderFullPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Build"), Platform, TEXT("FileOpenOrder"), TEXT("CookerOpenOrder.log")));
+		UE_LOG(LogAssetRegistryGenerator, Display, TEXT("Looking for secondary openorder in dir %s"), *SecondaryOpenOrderFullPath);
+		if(IFileManager::Get().FileExists(*SecondaryOpenOrderFullPath))
+		{
+			OrderMap.ProcessOrderFile(*SecondaryOpenOrderFullPath, true);
+		}
 	}
 
 	// generate per-chunk pak list files
@@ -482,7 +500,7 @@ bool FAssetRegistryGenerator::GenerateStreamingInstallManifest(int64 InExtraFlav
 
 				for (const TSharedRef<IChunkDataGenerator>& ChunkDataGenerator : ChunkDataGenerators)
 				{
-					ChunkDataGenerator->GenerateChunkDataFiles(PakchunkIndex, PackagesInChunk, Platform, InSandboxFile, ChunkFilenames);
+					ChunkDataGenerator->GenerateChunkDataFiles(PakchunkIndex, PackagesInChunk, TargetPlatform, InSandboxFile, ChunkFilenames);
 				}
 			}
 
@@ -495,10 +513,11 @@ bool FAssetRegistryGenerator::GenerateStreamingInstallManifest(int64 InExtraFlav
 
 					struct FFilePaths
 					{
-						FFilePaths(const FString& InFilename, FString&& InRelativeFilename) : Filename(InFilename), RelativeFilename(MoveTemp(InRelativeFilename))
+						FFilePaths(const FString& InFilename, FString&& InRelativeFilename, uint64 InFileOpenOrder) : Filename(InFilename), RelativeFilename(MoveTemp(InRelativeFilename)), FileOpenOrder(InFileOpenOrder)
 						{ }
 						FString Filename;
 						FString RelativeFilename;
+						uint64 FileOpenOrder;
 					};
 
 					TArray<FFilePaths> SortedFiles;
@@ -513,12 +532,31 @@ bool FAssetRegistryGenerator::GenerateStreamingInstallManifest(int64 InExtraFlav
 							RelativeFilename = FPaths::SetExtension(RelativeFilename, TEXT("uasset")); // only use the uassets to decide which pak file these guys should live in
 						}
 						RelativeFilename.ToLowerInline();
-						SortedFiles.Add(FFilePaths(ChunkFilename, MoveTemp(RelativeFilename)));
+						uint64 FileOpenOrder = OrderMap.GetFileOrder(RelativeFilename, true);
+						/*if (FileOpenOrder != MAX_uint64)
+						{
+							UE_LOG(LogAssetRegistryGenerator, Display, TEXT("Found file open order for %s, %ll"), *RelativeFilename, FileOpenOrder);
+						}
+						else
+						{
+							UE_LOG(LogAssetRegistryGenerator, Display, TEXT("Didn't find openorder for %s"), *RelativeFilename, FileOpenOrder);
+						}*/
+						SortedFiles.Add(FFilePaths(ChunkFilename, MoveTemp(RelativeFilename), FileOpenOrder));
 					}
 
 					SortedFiles.Sort([&OrderMap, &CookedDirectory, &RelativePath](const FFilePaths& A, const FFilePaths& B)
 					{
-						return OrderMap.GetFileOrder(A.RelativeFilename, true) < OrderMap.GetFileOrder(B.RelativeFilename, true);
+						uint64 AOrder = A.FileOpenOrder;
+						uint64 BOrder = B.FileOpenOrder;
+
+						if (AOrder == MAX_uint64 && BOrder == MAX_uint64)
+						{
+							return A.RelativeFilename.Compare(B.RelativeFilename, ESearchCase::IgnoreCase) < 0;
+						}
+						else 
+						{
+							return AOrder < BOrder;
+						}
 					});
 
 					ChunkFilenames.Empty(SortedFiles.Num());
@@ -667,10 +705,7 @@ bool FAssetRegistryGenerator::LoadPreviousAssetRegistry(const FString& Filename)
 
 	if (IFileManager::Get().FileExists(*Filename) && FFileHelper::LoadFileToArray(SerializedAssetData, *Filename))
 	{
-		FAssetRegistrySerializationOptions Options;
-		Options.ModifyForDevelopment();
-
-		return PreviousState.Serialize(SerializedAssetData, Options);
+		return PreviousState.Load(SerializedAssetData);
 	}
 
 	return false;
@@ -693,9 +728,7 @@ void FAssetRegistryGenerator::InjectEncryptionData(FAssetRegistryState& TargetSt
 
 			for (FName EncryptedRootPackageName : EncryptedRootAssets)
 			{
-				const TArray<const FAssetData*>& PackageAssets = TargetState.GetAssetsByPackageName(EncryptedRootPackageName);
-
-				for (const FAssetData* PackageAsset : PackageAssets)
+				for (const FAssetData* PackageAsset : TargetState.GetAssetsByPackageName(EncryptedRootPackageName))
 				{
 					FAssetData* AssetData = const_cast<FAssetData*>(PackageAsset);
 
@@ -723,9 +756,10 @@ void FAssetRegistryGenerator::InjectEncryptionData(FAssetRegistryState& TargetSt
 
 							if (Guid.IsValid())
 							{
-								FAssetDataTagMap TagsAndValues = AssetData->TagsAndValues.GetMap();
+								FAssetDataTagMap TagsAndValues = AssetData->TagsAndValues.CopyMap();
 								TagsAndValues.Add(UAssetManager::GetEncryptionKeyAssetTagName(), Guid.ToString());
 								FAssetData NewAssetData = FAssetData(AssetData->PackageName, AssetData->PackagePath, AssetData->AssetName, AssetData->AssetClass, TagsAndValues, AssetData->ChunkIDs, AssetData->PackageFlags);
+								NewAssetData.TaggedAssetBundles = AssetData->TaggedAssetBundles;
 								TargetState.UpdateAssetData(AssetData, NewAssetData);
 							}
 						}
@@ -815,7 +849,9 @@ void FAssetRegistryGenerator::UpdateKeptPackagesDiskData(const TArray<FName>& In
 			continue;
 		}
 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (PackageData->PackageGuid != PreviousPackageData->PackageGuid)
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			continue;
 		}
@@ -829,10 +865,9 @@ void FAssetRegistryGenerator::UpdateKeptPackagesAssetData()
 {
 	for (FName PackageName : KeptPackages)
 	{
-		const TArray<const FAssetData*>& PreviousAssetDatas = PreviousState.GetAssetsByPackageName(PackageName);
-		for (int I = 0; I < PreviousAssetDatas.Num(); ++I)
+		for (const FAssetData* PreviousAssetData : PreviousState.GetAssetsByPackageName(PackageName))
 		{
-			State.UpdateAssetData(*PreviousAssetDatas[I]);
+			State.UpdateAssetData(*PreviousAssetData);
 		}
 	}
 }
@@ -900,7 +935,7 @@ void FAssetRegistryGenerator::UpdateCollectionAssetData()
 		const FAssetData* AssetData = State.GetAssetByObjectPath(AssetPathName);
 		if (AssetData)
 		{
-			FAssetDataTagMap TagsAndValues = AssetData->TagsAndValues.GetMap();
+			FAssetDataTagMap TagsAndValues = AssetData->TagsAndValues.CopyMap();
 			for (const FName& CollectionTagName : CollectionTagsForAsset)
 			{
 				TagsAndValues.Add(CollectionTagName, FString()); // TODO: Does this need a value to avoid being trimmed?
@@ -948,7 +983,9 @@ void FAssetRegistryGenerator::ComputePackageDifferences(TSet<FName>& ModifiedPac
 		{
 			NewPackages.Add(PackageName);
 		}
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		else if (CurrentPackageData->PackageGuid == PreviousPackageData->PackageGuid)
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			if (PreviousPackageData->DiskSize < 0)
 			{
@@ -1231,7 +1268,7 @@ void FAssetRegistryGenerator::AddAssetToFileOrderRecursive(const FName& InPackag
 
 bool FAssetRegistryGenerator::SaveAssetRegistry(const FString& SandboxPath, bool bSerializeDevelopmentAssetRegistry, bool bForceNoFilter)
 {
-	UE_LOG(LogAssetRegistryGenerator, Display, TEXT("Saving asset registry."));
+	UE_LOG(LogAssetRegistryGenerator, Display, TEXT("Saving asset registry v%d."), FAssetRegistryVersion::Type::LatestVersion);
 	const TMap<FName, const FAssetData*>& ObjectToDataMap = State.GetObjectPathToAssetDataMap();
 	
 	// Write development first, this will always write
@@ -1261,7 +1298,7 @@ bool FAssetRegistryGenerator::SaveAssetRegistry(const FString& SandboxPath, bool
 		// Create development registry data, used for incremental cook and editor viewing
 		FArrayWriter SerializedAssetRegistry;
 
-		State.Serialize(SerializedAssetRegistry, DevelopmentSaveOptions);
+		State.Save(SerializedAssetRegistry, DevelopmentSaveOptions);
 
 		// Save the generated registry
 		FString PlatformSandboxPath = SandboxPath.Replace(TEXT("[Platform]"), *TargetPlatform->PlatformName());
@@ -1336,7 +1373,7 @@ bool FAssetRegistryGenerator::SaveAssetRegistry(const FString& SandboxPath, bool
 				FArrayWriter SerializedAssetRegistry;
 				SerializedAssetRegistry.SetFilterEditorOnly(true);
 
-				NewState.Serialize(SerializedAssetRegistry, SaveOptions);
+				NewState.Save(SerializedAssetRegistry, SaveOptions);
 
 				// Save the generated registry
 				FString PlatformSandboxPath = SandboxPathWithoutExtension.Replace(TEXT("[Platform]"), *TargetPlatform->PlatformName());
@@ -1365,7 +1402,7 @@ bool FAssetRegistryGenerator::SaveAssetRegistry(const FString& SandboxPath, bool
 			FArrayWriter SerializedAssetRegistry;
 			SerializedAssetRegistry.SetFilterEditorOnly(true);
 
-			State.Serialize(SerializedAssetRegistry, SaveOptions);
+			State.Save(SerializedAssetRegistry, SaveOptions);
 
 			// Save the generated registry
 			FString PlatformSandboxPath = SandboxPath.Replace(TEXT("[Platform]"), *TargetPlatform->PlatformName());
@@ -1379,7 +1416,58 @@ bool FAssetRegistryGenerator::SaveAssetRegistry(const FString& SandboxPath, bool
 	return true;
 }
 
-bool FAssetRegistryGenerator::WriteCookerOpenOrder()
+class FPackageCookerOpenOrderVisitor : public IPlatformFile::FDirectoryVisitor
+{
+	const FSandboxPlatformFile* SandboxFile;
+	const FString& PlatformSandboxPath;
+	const TSet<FString>& ValidExtensions;
+	TMultiMap<FString, FString>& PackageExtensions;
+public:
+	FPackageCookerOpenOrderVisitor(
+		const FSandboxPlatformFile* InSandboxFile,
+		const FString& InPlatformSandboxPath,
+		const TSet<FString>& InValidExtensions,
+		TMultiMap<FString, FString>& OutPackageExtensions) :
+		SandboxFile(InSandboxFile),
+		PlatformSandboxPath(InPlatformSandboxPath),
+		ValidExtensions(InValidExtensions),
+		PackageExtensions(OutPackageExtensions)
+	{}
+
+	virtual bool Visit(const TCHAR* FilenameOrDirectory, bool bIsDirectory)
+	{
+		if (bIsDirectory)
+			return true;
+
+		FString Filename = FilenameOrDirectory;
+		FString FileExtension = FPaths::GetExtension(Filename, true);
+
+		if (ValidExtensions.Contains(FileExtension))
+		{
+			FString PackageName;
+			Filename.ReplaceInline(*PlatformSandboxPath, *SandboxFile->GetSandboxDirectory());
+			FString AssetSourcePath = SandboxFile->ConvertFromSandboxPath(*Filename);
+			FString StandardAssetSourcePath = FPaths::CreateStandardFilename(AssetSourcePath);
+			if (StandardAssetSourcePath.EndsWith(TEXT(".m.ubulk")))
+			{
+				// '.' is an 'invalid' character in a filename; FilenameToLongPackageName will fail.
+				FString BaseAssetSourcePath(StandardAssetSourcePath);
+				BaseAssetSourcePath.RemoveFromEnd(TEXT(".m.ubulk"));
+				PackageName = FPackageName::FilenameToLongPackageName(BaseAssetSourcePath);
+			}
+			else
+			{
+				PackageName = FPackageName::FilenameToLongPackageName(StandardAssetSourcePath);
+			}
+
+			PackageExtensions.AddUnique(PackageName, StandardAssetSourcePath);
+		}
+
+		return true;
+	}
+};
+
+bool FAssetRegistryGenerator::WriteCookerOpenOrder(FSandboxPlatformFile* InSandboxFile)
 {
 	TSet<FName> PackageNameSet;
 	TSet<FName> MapList;
@@ -1446,14 +1534,42 @@ bool FAssetRegistryGenerator::WriteCookerOpenOrder()
 		{
 			AddAssetToFileOrderRecursive(PackageName, FileOrder, EncounteredNames, PackageNameSet, MapList);
 		}
+		
+		// Iterate sandbox folder and generate a map from package name to cooked files
+		const TArray<FString> ValidExtensions =
+		{
+			TEXT(".uasset"),
+			TEXT(".uexp"),
+			TEXT(".ubulk"),
+			TEXT(".uptnl"),
+			TEXT(".umap"),
+			TEXT(".ufont")
+		};
+		const TSet<FString> ValidExtensionSet(ValidExtensions);
+
+		const FString SandboxPath = InSandboxFile->GetSandboxDirectory();
+		const FString Platform = TargetPlatform->PlatformName();
+		FString PlatformSandboxPath = SandboxPath.Replace(TEXT("[Platform]"), *Platform);
+
+		TMultiMap<FString, FString> CookedPackageFilesMap;
+		FPackageCookerOpenOrderVisitor PackageSearch(InSandboxFile, PlatformSandboxPath, ValidExtensionSet, CookedPackageFilesMap);
+		IFileManager::Get().IterateDirectoryRecursively(*PlatformSandboxPath, PackageSearch);
 
 		int32 CurrentIndex = 0;
 		for (FName PackageName : FileOrder)
 		{
-			bool bIsMap = MapList.Contains(PackageName);
-			FString Filename = FPackageName::LongPackageNameToFilename(PackageName.ToString(), bIsMap ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension());
-			FString Line = FString::Printf(TEXT("\"%s\" %i\n"), *Filename, CurrentIndex++);
-			CookerFileOrderString.Append(Line);
+			TArray<FString> CookedFiles;
+			CookedPackageFilesMap.MultiFind(PackageName.ToString(), CookedFiles);
+			CookedFiles.Sort([&ValidExtensions](const FString& A, const FString& B)
+			{
+				return ValidExtensions.IndexOfByKey(FPaths::GetExtension(A, true)) < ValidExtensions.IndexOfByKey(FPaths::GetExtension(B, true));
+			});
+
+			for (const FString& CookedFile : CookedFiles)
+			{
+				FString Line = FString::Printf(TEXT("\"%s\" %i\n"), *CookedFile, CurrentIndex++);
+				CookerFileOrderString.Append(Line);
+			}
 		}
 	}
 
@@ -1916,8 +2032,7 @@ void FAssetRegistryGenerator::FixupPackageDependenciesForChunks(FSandboxPlatform
 		check(FinalChunkManifests[PakchunkIndex]);
 		for (const TPair<FName, FString>& Asset : *FinalChunkManifests[PakchunkIndex])
 		{
-			const TArray<const FAssetData*> AssetIndexArray = State.GetAssetsByPackageName(Asset.Key);
-			for (const FAssetData* AssetData : AssetIndexArray)
+			for (const FAssetData* AssetData : State.GetAssetsByPackageName(Asset.Key))
 			{
 				// Chunk Ids are safe to modify in place
 				const_cast<FAssetData*>(AssetData)->ChunkIDs.AddUnique(PakchunkIndex);
@@ -2081,6 +2196,33 @@ void FAssetRegistryGenerator::GetChunkAssignments(TArray<TSet<FName>>& OutAssign
 			OutAssignments.Add(PackagesInChunk);
 		}
 	}
+}
+
+FAssetRegistryGenerator::FCreateOrFindArray FAssetRegistryGenerator::CreateOrFindAssetDatas(const UPackage& Package)
+{
+	FCreateOrFindArray OutputAssets;
+
+	ForEachObjectWithOuter(&Package, [&OutputAssets, this](UObject* const Object)
+	{
+		if (Object->IsAsset())
+		{
+			OutputAssets.Add(CreateOrFindAssetData(*Object));
+		}
+	}, /*bIncludeNestedObjects*/ false);
+
+	return OutputAssets;
+}
+
+const FAssetData* FAssetRegistryGenerator::CreateOrFindAssetData(UObject& Object)
+{
+	const FAssetData* const AssetData = State.GetAssetByObjectPath(FName(Object.GetPathName()));
+	if (!AssetData)
+	{
+		FAssetData* const NewAssetData = new FAssetData(&Object, true /* bAllowBlueprintClass */);
+		State.AddAssetData(NewAssetData);
+		return NewAssetData;
+	}
+	return AssetData;
 }
 
 void FAssetRegistryGenerator::InitializeChunkIdPakchunkIndexMapping()

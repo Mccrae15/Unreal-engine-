@@ -823,7 +823,7 @@ public:
 #define HAIR_MATERIAL_DEBUG_OUTPUT 0
 static bool IsPlatformRequiringRenderTargetForMaterialPass(EShaderPlatform Platform)
 {
-	return HAIR_MATERIAL_DEBUG_OUTPUT || Platform == SP_VULKAN_SM5 || Platform == SP_PS4; //#hair_todo: change to a proper RHI(Platform) function
+	return HAIR_MATERIAL_DEBUG_OUTPUT || Platform == SP_VULKAN_SM5 || FDataDrivenShaderPlatformInfo::GetRequiresRenderTargetDuringRaster(Platform); //#hair_todo: change to a proper RHI(Platform) function
 }
 
 class FHairMaterialPS : public FMeshMaterialShader
@@ -3040,10 +3040,10 @@ class FVisiblityRasterComputeCS : public FGlobalShader
 		SHADER_PARAMETER(float, HairStrandsVF_Radius)
 		SHADER_PARAMETER(float, HairStrandsVF_Length)
 		SHADER_PARAMETER(uint32, HairStrandsVF_bUseStableRasterization)
-		SHADER_PARAMETER(FVector, HairStrandsVF_PositionOffset)
 		SHADER_PARAMETER(uint32, HairStrandsVF_VertexCount)
 		SHADER_PARAMETER(FMatrix, HairStrandsVF_LocalToWorldPrimitiveTransform)
 		SHADER_PARAMETER_SRV(Buffer, HairStrandsVF_PositionBuffer)
+		SHADER_PARAMETER_SRV(Buffer, HairStrandsVF_PositionOffsetBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_CullingIndirectBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_CullingIndexBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_CullingRadiusScaleBuffer)
@@ -3222,7 +3222,7 @@ static FRasterComputeOutput AddVisibilityComputeRasterPass(
 
 			const FHairGroupPublicData::FVertexFactoryInput& VFInput = HairGroupPublicData->VFInput;
 			PassParameters->HairStrandsVF_PositionBuffer	= VFInput.Strands.PositionBuffer;
-			PassParameters->HairStrandsVF_PositionOffset	= VFInput.Strands.PositionOffset;
+			PassParameters->HairStrandsVF_PositionOffsetBuffer = VFInput.Strands.PositionOffsetBuffer;
 			PassParameters->HairStrandsVF_VertexCount		= VFInput.Strands.VertexCount;
 			PassParameters->HairStrandsVF_Radius			= VFInput.Strands.HairRadius;
 			PassParameters->HairStrandsVF_Length			= VFInput.Strands.HairLength;

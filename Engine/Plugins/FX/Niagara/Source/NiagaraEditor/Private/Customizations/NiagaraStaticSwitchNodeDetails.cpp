@@ -15,6 +15,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "NiagaraConstants.h"
+#include "NiagaraScriptVariable.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStaticSwitchNodeDetails"
 
@@ -70,7 +71,6 @@ void FNiagaraStaticSwitchNodeDetails::CustomizeDetails(IDetailLayoutBuilder& Det
 		IDetailCategoryBuilder& CategoryBuilder = DetailBuilder.EditCategory(SwitchCategoryName);		
 		FDetailWidgetRow& NameWidget = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeNameFilterText", "Input parameter name"));
 		FDetailWidgetRow& DropdownWidget = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeTypeFilterText", "Input parameter type"));
-		FDetailWidgetRow& IntValueOption = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeIntFilterText", "Max integer value"));
 		FDetailWidgetRow& DefaultValueOption = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeDefaultFilterText", "Default value"));
 		FDetailWidgetRow& ConstantSelection = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeConstantFilterText", "Compiler constant"));
 
@@ -131,34 +131,7 @@ void FNiagaraStaticSwitchNodeDetails::CustomizeDetails(IDetailLayoutBuilder& Det
 				]
 			]
 		];
-
-		IntValueOption
-		.NameContent()
-		[
-			SNew(SBox)
-			.Padding(FMargin(0.0f, 2.0f))
-			[
-				SNew(STextBlock)
-				.IsEnabled(this, &FNiagaraStaticSwitchNodeDetails::GetIntOptionEnabled)
-				.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.ParameterText")
-				.Text(LOCTEXT("NiagaraSwitchNodeIntOptionText", "Max integer value"))
-			]
-		]
-		.ValueContent()
-		[
-			SNew(SBox)
-			.Padding(FMargin(0.0f, 2.0f))
-			[
-				SNew(SNumericEntryBox<int32>)
-				.IsEnabled(this, &FNiagaraStaticSwitchNodeDetails::GetIntOptionEnabled)
-				.AllowSpin(false)
-				.MinValue(0)
-				.MaxValue(99)
-				.Value(this, &FNiagaraStaticSwitchNodeDetails::GetIntOptionValue)
-				.OnValueCommitted(this, &FNiagaraStaticSwitchNodeDetails::IntOptionValueCommitted)
-			]
-		];
-
+		
 		DefaultValueOption
 		.NameContent()
 		[
@@ -263,27 +236,27 @@ int32 FNiagaraStaticSwitchNodeDetails::GetDefaultWidgetIndex() const
 
 TOptional<int32> FNiagaraStaticSwitchNodeDetails::GetSwitchDefaultValue() const
 {
-	TOptional<FNiagaraVariableMetaData> MetaData = GetSwitchParameterMetadata();
-	return MetaData.IsSet() ? TOptional<int32>(MetaData->GetStaticSwitchDefaultValue()) : TOptional<int32>();
+	UNiagaraScriptVariable* ScriptVar = GetSwitchParameterScriptVar();
+	return ScriptVar ? TOptional<int32>(ScriptVar->GetStaticSwitchDefaultValue()) : TOptional<int32>();
 }
 
 void FNiagaraStaticSwitchNodeDetails::DefaultIntValueCommitted(int32 Value, ETextCommit::Type CommitInfo)
 {
-	TOptional<FNiagaraVariableMetaData> MetaData = GetSwitchParameterMetadata();
-	if (MetaData.IsSet())
+	UNiagaraScriptVariable* ScriptVar = GetSwitchParameterScriptVar();
+	if (ScriptVar)
 	{
-		MetaData->SetStaticSwitchDefaultValue(Value);
-		SetSwitchParameterMetadata(MetaData.GetValue());
+		ScriptVar->SetStaticSwitchDefaultValue(Value);
+		SetSwitchParameterMetadata(ScriptVar->Metadata);
 	}
 }
 
 void FNiagaraStaticSwitchNodeDetails::DefaultBoolValueCommitted(ECheckBoxState NewState)
 {
-	TOptional<FNiagaraVariableMetaData> MetaData = GetSwitchParameterMetadata();
-	if (MetaData.IsSet())
+	UNiagaraScriptVariable* ScriptVar = GetSwitchParameterScriptVar();
+	if (ScriptVar)
 	{
-		MetaData->SetStaticSwitchDefaultValue((NewState == ECheckBoxState::Checked) ? 1 : 0);
-		SetSwitchParameterMetadata(MetaData.GetValue());
+		ScriptVar->SetStaticSwitchDefaultValue((NewState == ECheckBoxState::Checked) ? 1 : 0);
+		SetSwitchParameterMetadata(ScriptVar->Metadata);
 	}
 }
 
@@ -317,8 +290,8 @@ FText FNiagaraStaticSwitchNodeDetails::GetConstantSelectionItemLabel() const
 void FNiagaraStaticSwitchNodeDetails::OnSelectionChanged(TSharedPtr<DefaultEnumOption> NewValue, ESelectInfo::Type)
 {
 	SelectedDefaultValue = NewValue;
-	TOptional<FNiagaraVariableMetaData> MetaData = GetSwitchParameterMetadata();
-	if (!SelectedDefaultValue.IsValid() || !MetaData.IsSet())
+	UNiagaraScriptVariable* ScriptVar = GetSwitchParameterScriptVar();
+	if (!SelectedDefaultValue.IsValid() || !ScriptVar)
 	{
 		return;
 	}
@@ -329,8 +302,8 @@ void FNiagaraStaticSwitchNodeDetails::OnSelectionChanged(TSharedPtr<DefaultEnumO
 		return;
 	}
 
-	MetaData->SetStaticSwitchDefaultValue(SelectedDefaultValue->EnumIndex);
-	SetSwitchParameterMetadata(MetaData.GetValue());
+	ScriptVar->SetStaticSwitchDefaultValue(SelectedDefaultValue->EnumIndex);
+	SetSwitchParameterMetadata(ScriptVar->Metadata);
 }
 
 void FNiagaraStaticSwitchNodeDetails::OnSelectionChanged(TSharedPtr<SwitchDropdownOption> NewValue, ESelectInfo::Type)
@@ -452,7 +425,8 @@ void FNiagaraStaticSwitchNodeDetails::RefreshDropdownValues()
 	{
 		return;
 	}
-	TOptional<FNiagaraVariableMetaData> MetaData = GetSwitchParameterMetadata();
+
+	UNiagaraScriptVariable* ScriptVar = GetSwitchParameterScriptVar();
 
 	DefaultEnumDropdownOptions.Empty();
 	UEnum* Enum = Node->SwitchTypeData.Enum;
@@ -468,7 +442,7 @@ void FNiagaraStaticSwitchNodeDetails::RefreshDropdownValues()
 			FText DisplayName = Enum->GetDisplayNameTextByIndex(i);
 			DefaultEnumDropdownOptions.Add(MakeShared<DefaultEnumOption>(DisplayName, i));
 
-			if (MetaData.IsSet() && i == MetaData->GetStaticSwitchDefaultValue())
+			if (ScriptVar && i == ScriptVar->GetStaticSwitchDefaultValue())
 			{
 				SelectedDefaultValue = DefaultEnumDropdownOptions[i];
 			}
@@ -480,14 +454,13 @@ void FNiagaraStaticSwitchNodeDetails::RefreshDropdownValues()
 	}
 }
 
-TOptional<FNiagaraVariableMetaData> FNiagaraStaticSwitchNodeDetails::GetSwitchParameterMetadata() const
+UNiagaraScriptVariable* FNiagaraStaticSwitchNodeDetails::GetSwitchParameterScriptVar() const
 {
 	if (!Node.IsValid() || !Node->GetNiagaraGraph())
 	{
-		TOptional<FNiagaraVariableMetaData> Empty;
-		return Empty;
+		return nullptr;
 	}
-	return Node->GetNiagaraGraph()->GetMetaData(FNiagaraVariable(Node->GetInputType(), Node->InputParameterName));
+	return Node->GetNiagaraGraph()->GetScriptVariable(FNiagaraVariable(Node->GetInputType(), Node->InputParameterName));
 }
 
 void FNiagaraStaticSwitchNodeDetails::SetSwitchParameterMetadata(const FNiagaraVariableMetaData& MetaData)
@@ -547,14 +520,14 @@ bool FNiagaraStaticSwitchNodeDetails::GetIntOptionEnabled() const
 
 TOptional<int32> FNiagaraStaticSwitchNodeDetails::GetIntOptionValue() const
 {
-	return Node.IsValid() ? TOptional<int32>(Node->SwitchTypeData.MaxIntCount) : TOptional<int32>();
+	return Node.IsValid() ? TOptional<int32>(Node->NumOptionsPerVariable) : TOptional<int32>();
 }
 
 void FNiagaraStaticSwitchNodeDetails::IntOptionValueCommitted(int32 Value, ETextCommit::Type CommitInfo)
 {
 	if (Node.IsValid() && Value > 0)
 	{
-		Node->SwitchTypeData.MaxIntCount = Value;
+		Node->NumOptionsPerVariable = Value;
 		Node->RefreshFromExternalChanges();
 	}
 }

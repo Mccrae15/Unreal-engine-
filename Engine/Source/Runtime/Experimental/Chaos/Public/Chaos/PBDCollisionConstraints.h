@@ -22,10 +22,7 @@ class FCollisionConstraintBase;
 class FImplicitObject;
 class FPBDCollisionConstraints;
 class FRigidBodyPointContactConstraint;
-class FRigidBodyMultiPointContactConstraint;
-
-template <typename T, int d>
-class TPBDRigidsSOAs;
+class FPBDRigidsSOAs;
 
 using FRigidBodyContactConstraintsPostComputeCallback = TFunction<void()>;
 using FRigidBodyContactConstraintsPostApplyCallback = TFunction<void(const FReal Dt, const TArray<FPBDCollisionConstraintHandle*>&)>;
@@ -55,13 +52,12 @@ public:
 	using FConstraintContainerHandle = FPBDCollisionConstraintHandle;
 
 
-	FPBDCollisionConstraints(const TPBDRigidsSOAs<FReal, 3>& InParticles, 
+	FPBDCollisionConstraints(const FPBDRigidsSOAs& InParticles, 
 		TArrayCollectionArray<bool>& Collided, 
 		const TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>>& PhysicsMaterials, 
 		const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& PerParticlePhysicsMaterials, 
 		const int32 ApplyPairIterations = 1, 
 		const int32 ApplyPushOutPairIterations = 1, 
-		const FReal CullDistance = (FReal)0, 
 		const FReal RestitutionThreshold = 2000.0f);
 
 	virtual ~FPBDCollisionConstraints() {}
@@ -79,9 +75,9 @@ public:
 	/**
 	 * Set the solver method to use in the Apply step
 	 */
-	void SetApplyType(ECollisionApplyType InApplyType)
+	void SetSolverType(EConstraintSolverType InSolverType)
 	{
-		ApplyType = InApplyType;
+		SolverType = InSolverType;
 	}
 
 	/**
@@ -108,13 +104,11 @@ public:
 		// Reserves space for NumToAdd constraints in the internal container
 		void ReserveSingle(int32 NumToAdd);
 		void ReserveSingleSwept(int32 NumToAdd);
-		void ReserveMulti(int32 NumToAdd);
 
 		// Append constraint lists to the internal container.
 		// note this will move the container, it will no longer be valid after a call to Append.
 		void Append(TArray<FRigidBodyPointContactConstraint>&& InConstraints);
 		void Append(TArray<FRigidBodySweptPointContactConstraint>&& InConstraints);
-		void Append(TArray<FRigidBodyMultiPointContactConstraint>&& InConstraints);
 
 	private:
 		FPBDCollisionConstraints* Owner = nullptr;
@@ -124,10 +118,8 @@ public:
 		// the helper added so we can build the new handles on scope exit
 		int32 NumBeginSingle = 0;
 		int32 NumBeginSingleSwept = 0;
-		int32 NumBeginMulti = 0;
 		int32 NumAddedSingle = 0;
 		int32 NumAddedSingleSwept = 0;
-		int32 NumAddedMulti = 0;
 	};
 	
 	/** Begin an append operation, recieving a helper object for bulk operations on the constraint container */
@@ -152,7 +144,6 @@ public:
 	*/
 	void AddConstraint(const FRigidBodyPointContactConstraint& InConstraint);
 	void AddConstraint(const FRigidBodySweptPointContactConstraint& InConstraint);
-	void AddConstraint(const FRigidBodyMultiPointContactConstraint& InConstraint);
 
 	/**
 	*  Reset the constraint frame. 
@@ -160,11 +151,11 @@ public:
 	void Reset();
 
 	/**
-	 * Apply a modifier to the constraints and specify which constraints should be disabled.
+	 * Apply modifiers to the constraints and specify which constraints should be disabled.
 	 * You would probably call this in the PostComputeCallback. Prefer this to calling RemoveConstraints in a loop,
 	 * so you don't have to worry about constraint iterator/indices changing.
 	 */
-	void ApplyCollisionModifier(const FCollisionModifierCallback& CollisionModifier);
+	void ApplyCollisionModifier(const TArray<ISimCallbackObject*>& CollisionModifiers);
 
 
 	/**
@@ -198,11 +189,6 @@ public:
 	 * Update all constraint values
 	 */
 	void UpdateConstraints(FReal Dt);
-
-	/**
-	* Update all contact manifolds
-	*/
-	void UpdateManifolds(FReal Dt);
 
 
 	//
@@ -267,16 +253,6 @@ public:
 #endif
 	}
 
-	void SetCullDistance(FReal InCullDistance)
-	{
-		MCullDistance = InCullDistance;
-	}
-
-	FReal GetCullDistance() const
-	{
-		return MCullDistance;
-	}
-
 	void SetCanDisableContacts(bool bInCanDisableContacts)
 	{
 		bCanDisableContacts = bInCanDisableContacts;
@@ -302,9 +278,19 @@ public:
 		MApplyPairIterations = InPairIterations;
 	}
 
+	int32 GetPairIterations() const
+	{
+		return MApplyPairIterations;
+	}
+
 	void SetPushOutPairIterations(int32 InPairIterations)
 	{
 		MApplyPushOutPairIterations = InPairIterations;
+	}
+
+	int32 GetPushOutPairIterations() const
+	{
+		return MApplyPushOutPairIterations;
 	}
 
 	void SetCollisionsEnabled(bool bInEnableCollisions)
@@ -334,7 +320,7 @@ public:
 
 	int32 NumConstraints() const
 	{
-		return Constraints.SinglePointConstraints.Num() + Constraints.SinglePointSweptConstraints.Num() + Constraints.MultiPointConstraints.Num();
+		return Constraints.SinglePointConstraints.Num() + Constraints.SinglePointSweptConstraints.Num();
 	}
 
 	FHandles& GetConstraintHandles()
@@ -366,12 +352,11 @@ protected:
 private:
 
 	friend FConstraintAppendScope;
-	const TPBDRigidsSOAs<FReal, 3>& Particles;
+	const FPBDRigidsSOAs& Particles;
 
 	FCollisionConstraintsArray Constraints;
 	int32 NumActivePointConstraints;
 	int32 NumActiveSweptPointConstraints;
-	int32 NumActiveIterativeConstraints;
 
 #if CHAOS_COLLISION_PERSISTENCE_ENABLED
 	TMap< FConstraintContainerHandleKey, FPBDCollisionConstraintHandle* > Manifolds;
@@ -384,7 +369,6 @@ private:
 	const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& MPerParticlePhysicsMaterials;
 	int32 MApplyPairIterations;
 	int32 MApplyPushOutPairIterations;
-	FReal MCullDistance;
 	FReal RestitutionThreshold;
 	bool bUseCCD;
 	bool bEnableCollisions;
@@ -399,7 +383,7 @@ private:
 	// Used by PushOut to decide on priority when two bodies are at same shock propagation level
 	FVec3 GravityDir;
 
-	ECollisionApplyType ApplyType;
+	EConstraintSolverType SolverType;
 
 	int32 LifespanCounter;
 

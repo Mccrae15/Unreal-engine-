@@ -3,6 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
+
 #include "DisplayClusterEnums.generated.h"
 
 
@@ -17,6 +19,18 @@ enum class EDisplayClusterOperationMode : uint8
 	Disabled
 };
 
+/**
+ * Display cluster node role
+ */
+UENUM(BlueprintType)
+enum class EDisplayClusterNodeRole : uint8
+{
+	None = 0,
+	Master,
+	Slave,
+	Backup,
+};
+
 
 /**
  * Display cluster synchronization groups
@@ -28,3 +42,14 @@ enum class EDisplayClusterSyncGroup : uint8
 	Tick,
 	PostTick
 };
+
+/**
+ * UDisplayClusterGameEngine running state.
+ */
+enum class EDisplayClusterRunningMode : uint8
+{
+	Startup = 0,
+	Synced,
+	WaitingForSync,
+};
+

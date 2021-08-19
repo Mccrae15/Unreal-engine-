@@ -421,14 +421,14 @@ void FAnimTrace::OutputSkeletalMesh(const USkeletalMesh* InMesh)
 
 	TRACE_OBJECT(InMesh);
 
-	uint32 BoneCount = (uint32)InMesh->RefSkeleton.GetNum();
+	uint32 BoneCount = (uint32)InMesh->GetRefSkeleton().GetNum();
 
 	TArray<int32>& ParentIndices = FAnimTraceScratchBuffers::Get().ParentIndices;
 	ParentIndices.Reset();
 	ParentIndices.SetNumUninitialized(BoneCount);
 
 	int32 BoneIndex = 0;
-	for(const FMeshBoneInfo& BoneInfo : InMesh->RefSkeleton.GetRefBoneInfo())
+	for(const FMeshBoneInfo& BoneInfo : InMesh->GetRefSkeleton().GetRefBoneInfo())
 	{
 		ParentIndices[BoneIndex++] = BoneInfo.ParentIndex;
 	}
@@ -537,7 +537,7 @@ void FAnimTrace::OutputSkeletalMeshComponent(const USkeletalMeshComponent* InCom
 			<< SkeletalMeshComponent2.Pose(reinterpret_cast<const float*>(InComponent->GetComponentSpaceTransforms().GetData()), BoneCount * (sizeof(FTransform) / sizeof(float)))
 			<< SkeletalMeshComponent2.CurveIds(CurveIds.GetData(), CurveIds.Num())
 			<< SkeletalMeshComponent2.CurveValues(CurveValues.GetData(), CurveValues.Num())
-			<< SkeletalMeshComponent2.LodIndex((uint16)InComponent->PredictedLODLevel)
+			<< SkeletalMeshComponent2.LodIndex((uint16)InComponent->GetPredictedLODLevel())
 			<< SkeletalMeshComponent2.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(InComponent));
 	}
 }

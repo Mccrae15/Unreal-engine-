@@ -11,6 +11,9 @@
 
 struct FPropertyChangedChainEvent;
 
+class USoundClass;
+class USoundConcurrency;
+
 // Enumeration for what our options are for sample rates used for VOIP.
 UENUM()
 enum class EVoiceSampleRate : int32
@@ -64,6 +67,30 @@ struct ENGINE_API FAudioQualitySettings
 	}
 };
 
+USTRUCT()
+struct ENGINE_API FSoundDebugEntry
+{
+	GENERATED_USTRUCT_BODY()
+
+	/** Short name to use when referencing sound (ex. in the command line) */
+	UPROPERTY(config, EditAnywhere, Category="Debug", meta=(DisplayName="Name"))
+	FName DebugName;
+
+	/** Reference to a Debug Sound */
+	UPROPERTY(config, EditAnywhere, Category="Debug", meta=(AllowedClasses="SoundBase"))
+	FSoftObjectPath Sound;
+};
+
+USTRUCT()
+struct ENGINE_API FDefaultAudioBusSettings
+{
+	GENERATED_BODY()
+
+	/** The audio bus to start up by default on init. */
+	UPROPERTY(EditAnywhere, Category = "Mix", meta = (AllowedClasses = "AudioBus"))
+	FSoftObjectPath AudioBus;
+};
+
 /**
  * Audio settings.
  */
@@ -100,9 +127,13 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category="Audio", meta=(AllowedClasses="SoundClass", DisplayName = "VOIP Sound Class"))
 	FSoftObjectPath VoiPSoundClass;
 
-	/** The Master submix through which all sounds are routed */
+	/** The default submix through which all sounds are routed to. The root submix that outputs to audio hardware. */
 	UPROPERTY(config, EditAnywhere, Category="Mix", meta=(AllowedClasses="SoundSubmix"))
 	FSoftObjectPath MasterSubmix;
+
+	/** The default submix to use for implicit submix sends (i.e. if the base submix send is null or if a submix parent is null) */
+	UPROPERTY(config, EditAnywhere, Category = "Mix", meta = (AllowedClasses = "SoundSubmix"), AdvancedDisplay)
+	FSoftObjectPath BaseDefaultSubmix;
 
 	/** The submix through which all sounds set to use reverb are routed */
 	UPROPERTY(config, EditAnywhere, Category="Mix", meta=(AllowedClasses="SoundSubmix"))
@@ -128,7 +159,7 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category = "Audio", meta = (ClampMin = 0.001, UIMin = 0.001, UIMax = 4.0))
 	float GlobalMinPitchScale;
 
-	/** The value to use to clamp the min pitch scale */
+	/** The value to use to clamp the max pitch scale */
 	UPROPERTY(config, EditAnywhere, Category = "Audio", meta = (ClampMin = 0.001, UIMin = 0.001, UIMax = 4.0))
 	float GlobalMaxPitchScale;
 
@@ -178,11 +209,37 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category="Dialogue")
 	FString DialogueFilenameFormat;
 
+	/**
+	* Sounds only packaged in non-shipped builds for debugging.
+	*/
+	UPROPERTY(config, EditAnywhere, Category = "Debug")
+	TArray<FSoundDebugEntry> DebugSounds;
+
+	/** Array of AudioBuses that are automatically initialized when the AudioEngine is initialized */
+	UPROPERTY(config, EditAnywhere, Category="Mix")
+	TArray<FDefaultAudioBusSettings> DefaultAudioBuses;
+
 #if WITH_EDITOR
 	FAudioSettingsChanged AudioSettingsChanged;
 #endif // WITH_EDITOR
 
+	private:
+		UPROPERTY(Transient)
+			USoundClass* DefaultSoundClass;
+
+		UPROPERTY(Transient)
+			USoundClass* DefaultMediaSoundClass;
+
+		UPROPERTY(Transient)
+			USoundConcurrency* DefaultSoundConcurrency;
+
 public:
+	void LoadDefaultObjects();
+
+	USoundClass* GetDefaultSoundClass() const;
+	USoundClass* GetDefaultMediaSoundClass() const;
+	USoundConcurrency* GetDefaultSoundConcurrency() const;
+
 	// Get the quality level settings at the provided level index
 	const FAudioQualitySettings& GetQualityLevelSettings(int32 QualityLevel) const;
 	
@@ -211,6 +268,7 @@ private:
 	TArray<FAudioQualitySettings> CachedQualityLevels;
 	FSoftObjectPath CachedAmbisonicSubmix;
 	FSoftObjectPath CachedMasterSubmix;
+	FSoftObjectPath CachedSoundClass;
 #endif // WITH_EDITOR
 
 	void AddDefaultSettings();

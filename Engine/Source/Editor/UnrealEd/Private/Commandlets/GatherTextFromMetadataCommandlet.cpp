@@ -103,6 +103,8 @@ int32 UGatherTextFromMetaDataCommandlet::Main( const FString& Params )
 		}
 	}
 
+	FGatherTextDelegates::GetAdditionalGatherPaths.Broadcast(GatherManifestHelper->GetTargetName(), IncludePathFilters, ExcludePathFilters);
+
 	// Get whether we should gather editor-only data. Typically only useful for the localization of UE4 itself.
 	if (!GetBoolFromConfig(*SectionName, TEXT("ShouldGatherFromEditorOnlyData"), ShouldGatherFromEditorOnlyData, GatherTextConfigPath))
 	{
@@ -337,7 +339,7 @@ void UGatherTextFromMetaDataCommandlet::GatherTextFromField(UField* Field, const
 							FLocItem LocItem(MetaDataValue);
 							FManifestContext Context;
 							Context.Key = FText::Format(Arguments.OutputKeys[j], PatternArguments).ToString();
-							Context.SourceLocation = FString::Printf(TEXT("From metadata for key %s of enum value %s of enum %s in %s"), *Arguments.InputKeys[j], *Enum->GetNameStringByIndex(i), *Enum->GetName(), *Enum->GetFullGroupName(true));
+							Context.SourceLocation = FString::Printf(TEXT("Meta-data for key %s of enum value %s of enum %s in %s"), *Arguments.InputKeys[j], *Enum->GetNameStringByIndex(i), *Enum->GetName(), *Enum->GetFullGroupName(true));
 							Context.PlatformName = InPlatformName;
 							GatherManifestHelper->AddSourceText(Namespace, LocItem, Context);
 						}
@@ -426,7 +428,7 @@ void UGatherTextFromMetaDataCommandlet::GatherTextFromFieldImpl(FieldType* Field
 				FLocItem LocItem(MetaDataValue);
 				FManifestContext Context;
 				Context.Key = FText::Format(Arguments.OutputKeys[i], PatternArguments).ToString();
-				Context.SourceLocation = FString::Printf(TEXT("From metadata for key %s of member %s in %s (type: %s, owner: %s)"), *Arguments.InputKeys[i], *Field->GetName(), *Field->GetFullGroupName(true), *Field->GetClass()->GetName(), FieldOwnerType ? *FieldOwnerType->GetName() : TEXT("<null>"));
+				Context.SourceLocation = FString::Printf(TEXT("Meta-data for key %s of member %s in %s (type: %s, owner: %s)"), *Arguments.InputKeys[i], *Field->GetName(), *Field->GetFullGroupName(true), *Field->GetClass()->GetName(), FieldOwnerType ? *FieldOwnerType->GetName() : TEXT("<null>"));
 				Context.PlatformName = InPlatformName;
 				GatherManifestHelper->AddSourceText(Namespace, LocItem, Context);
 			}

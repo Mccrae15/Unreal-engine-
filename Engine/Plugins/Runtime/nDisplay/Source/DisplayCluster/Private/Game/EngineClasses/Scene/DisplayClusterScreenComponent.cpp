@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/DisplayClusterScreenComponent.h"
+
+#include "DisplayClusterVersion.h"
 #include "Components/StaticMeshComponent.h"
 
 #include "Engine/StaticMesh.h"
@@ -8,78 +10,85 @@
 #include "Materials/Material.h"
 #include "UObject/ConstructorHelpers.h"
 
-#include "DisplayClusterRootActor.h"
-#include "DisplayClusterConfigurationTypes.h"
-
-#include "Game/IPDisplayClusterGameManager.h"
-#include "Misc/DisplayClusterGlobals.h"
-
 
 UDisplayClusterScreenComponent::UDisplayClusterScreenComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	// Children of UDisplayClusterSceneComponent must always Tick to be able to process VRPN tracking
-	PrimaryComponentTick.bCanEverTick = true;
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> ScreenMesh(TEXT("/nDisplay/Meshes/plane_1x1"));
+	SetStaticMesh(ScreenMesh.Object);
+
+	SetMobility(EComponentMobility::Movable);
+	SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	SetVisibility(false);
+	SetHiddenInGame(true);
 
 #if WITH_EDITOR
 	if (GIsEditor)
 	{
-		// Create visual mesh component as a child
-		VisScreenComponent = CreateDefaultSubobject<UStaticMeshComponent>(FName(*(GetName() + FString("_impl"))));
-		if (VisScreenComponent)
-		{
-			static ConstructorHelpers::FObjectFinder<UStaticMesh> ScreenMesh(TEXT("/nDisplay/Meshes/plane_1x1"));
-
-			VisScreenComponent->SetFlags(EObjectFlags::RF_DuplicateTransient | RF_Transient | RF_TextExportTransient);
-			VisScreenComponent->AttachToComponent(this, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
-			VisScreenComponent->RegisterComponentWithWorld(GetWorld());
-
-			VisScreenComponent->SetRelativeLocationAndRotation(FVector::ZeroVector, FRotator::ZeroRotator);
-			VisScreenComponent->SetRelativeScale3D(FVector::OneVector);
-			VisScreenComponent->SetStaticMesh(ScreenMesh.Object);
-			VisScreenComponent->SetMobility(EComponentMobility::Movable);
-			VisScreenComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-			VisScreenComponent->SetVisibility(true);
-		}
+		SetVisibility(true);
 	}
 #endif
-}
 
-void UDisplayClusterScreenComponent::ApplyConfigurationData()
-{
-	Super::ApplyConfigurationData();
-
-	const UDisplayClusterConfigurationSceneComponentScreen* CfgScreen = Cast<UDisplayClusterConfigurationSceneComponentScreen>(GetConfigParameters());
-	if (CfgScreen)
-	{
-		SetScreenSize(CfgScreen->Size);
-	}
+	// Default screen size
+	SetScreenSize(FVector2D(100.f, 56.25f));
 }
 
 FVector2D UDisplayClusterScreenComponent::GetScreenSize() const
 {
-	return Size;
+	const FVector ComponentScale = GetComponentScale();
+	const FVector2D ComponentScale2D(ComponentScale.Y, ComponentScale.Z);
+	return ComponentScale2D;
 }
 
 void UDisplayClusterScreenComponent::SetScreenSize(const FVector2D& InSize)
 {
-	Size = InSize;
+	SetWorldScale3D(FVector(1.f, InSize.X, InSize.Y));
 
 #if WITH_EDITOR
-	if (VisScreenComponent)
-	{
-		VisScreenComponent->SetRelativeScale3D(FVector(1.f, Size.X * 100.f, Size.Y * 100.f));
-	}
+	Size = InSize;
 #endif
 }
 
-#if WITH_EDITOR
-void UDisplayClusterScreenComponent::SetNodeSelection(bool bSelect)
+void UDisplayClusterScreenComponent::Serialize(FArchive& Ar)
 {
-	if (VisScreenComponent)
+	Ar.UsingCustomVersion(FDisplayClusterCustomVersion::GUID);
+	if (Ar.IsLoading() &&
+		Ar.CustomVer(FDisplayClusterCustomVersion::GUID) < FDisplayClusterCustomVersion::ComponentParentChange_4_27)
 	{
-		VisScreenComponent->bDisplayVertexColors = bSelect;
-		VisScreenComponent->PushSelectionToProxy();
+		USceneComponent::Serialize(Ar);
+
+#if WITH_EDITOR
+		// Filtering by GetOwner() allows to avoid double upscaling for many cases. But it's not enough unfortunately.
+		// There are still some cases where screens get upscaled repeatedly and get x10000 in the end.
+		SetScreenSize(Size * (GetOwner() ? 1.f : 100.f));
+#endif
 	}
+	else
+	{
+		Super::Serialize(Ar);
+	}
+}
+
+#if WITH_EDITOR
+void UDisplayClusterScreenComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.MemberProperty)
+	{
+		if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDisplayClusterScreenComponent, Size))
+		{
+			SetScreenSize(Size);
+		}
+		else if (PropertyChangedEvent.MemberProperty->GetFName() == TEXT("RelativeScale3D"))
+		{
+			UpdateScreenSizeFromScale();
+		}
+	}
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+
+void UDisplayClusterScreenComponent::UpdateScreenSizeFromScale()
+{
+	Size = GetScreenSize();
 }
 #endif

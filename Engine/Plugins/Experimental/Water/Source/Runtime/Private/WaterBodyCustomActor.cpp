@@ -6,6 +6,7 @@
 
 #if WITH_EDITOR
 #include "WaterIconHelper.h"
+#include "WaterSubsystem.h"
 #endif
 
 // ----------------------------------------------------------------------------------
@@ -17,7 +18,7 @@ AWaterBodyCustom::AWaterBodyCustom(const FObjectInitializer& ObjectInitializer)
 	bAffectsLandscape = false;
 
 #if WITH_EDITOR
-	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterBodyCustomSprite"), NSLOCTEXT("Water", "WaterBodyCustomSpriteName", "Water Body Custom"));
+	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterBodyCustomSprite"));
 #endif
 
 	// @todo_water : Remove these checks (Once AWaterBody is no more Blueprintable, these methods should become PURE_VIRTUAL and this class should overload them)
@@ -41,6 +42,19 @@ TArray<UPrimitiveComponent*> AWaterBodyCustom::GetCollisionComponents() const
 		return CustomGenerator->GetCollisionComponents();
 	}
 	return Super::GetCollisionComponents();
+}
+
+void AWaterBodyCustom::BeginUpdateWaterBody()
+{
+	Super::BeginUpdateWaterBody();
+
+	UMaterialInstanceDynamic* WaterMaterialInstance = GetWaterMaterialInstance();
+	if (CustomGenerator && WaterMaterialInstance)
+	{
+		// We need to get(or create) the water MID at runtime and apply it to the static mesh component of the custom generator
+		// The MID is transient so it will not make it through serialization, apply it here (at runtime)
+		CustomGenerator->SetMaterial(WaterMaterialInstance);
+	}
 }
 
 void AWaterBodyCustom::UpdateWaterBody(bool bWithExclusionVolumes)
@@ -79,6 +93,13 @@ void UCustomMeshGenerator::Reset()
 	}
 }
 
+void UCustomMeshGenerator::SetMaterial(UMaterialInterface* Material)
+{
+	if (MeshComp)
+	{
+		MeshComp->SetMaterial(0, Material);
+	}
+}
 
 void UCustomMeshGenerator::OnUpdateBody(bool bWithExclusionVolumes)
 {

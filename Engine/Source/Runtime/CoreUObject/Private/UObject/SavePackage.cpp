@@ -477,6 +477,18 @@ FArchive& FArchiveSaveTagImports::operator<<( UObject*& Obj )
 				Outer = Outer->GetOuter();
 			}
 
+			bool bIsImport = !Obj->HasAnyMarks(OBJECTMARK_TagExp);
+			if (bIsImport)
+			{
+#if WITH_EDITORONLY_DATA
+				if (!bReferencerIsEditorOnly && !IsEditorOnlyPropertyOnTheStack())
+#endif
+				{
+					// Check every reference to an import for whether the reference is used-in-game and upgrade the _Package_'s reference to used-in-game. Do this before we early exit for imports we have seen before
+					ImportsUsedInGame.Add(Obj);
+				}
+			}
+
 			// We add objects as dependencies even if they're also exports
 			if (!bIsTopLevelPackage && !bIgnoreDependencies)
 			{
@@ -488,7 +500,7 @@ FArchive& FArchiveSaveTagImports::operator<<( UObject*& Obj )
 				DependencyArray.Add(Obj);
 			}
 			
-			if (!Obj->HasAnyMarks(OBJECTMARK_TagExp))  
+			if (bIsImport)
 			{
 				// Add into other imports list unless it's already there
 				if (bIsTopLevelPackage || bIgnoreDependencies)
@@ -503,12 +515,7 @@ FArchive& FArchiveSaveTagImports::operator<<( UObject*& Obj )
 
 				// Mark this object as an import
 				Obj->Mark(OBJECTMARK_TagImp);
-#if WITH_EDITORONLY_DATA
-				if (!bReferencerIsEditorOnly && !IsEditorOnlyPropertyOnTheStack())
-#endif
-				{
-					ImportsUsedInGame.Add(Obj);
-				}
+
 				UClass* ClassObj = Cast<UClass>(Obj);
 
 				// Don't recurse into CDOs if we're already ignoring dependencies, we only want to recurse into our outer chain in that case
@@ -2509,7 +2516,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 						UObject* Asset = nullptr;
 						ForEachObjectWithOuter(Package, [&Asset](UObject* Object)
 							{
-								if (!Asset && Object->IsAsset())
+								if (!Asset && Object->IsAsset() && !UE::AssetRegistry::FFiltering::ShouldSkipAsset(Object))
 								{
 									Asset = Object;
 								}
@@ -2712,7 +2719,8 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 						check(Obj->HasAnyMarks(OBJECTMARK_TagExp));
 
 						// Build list.
-						FArchiveSaveTagImports ImportTagger(Linker.Get(), NameMapSaver, ImportsUsedInGame, SoftPackagesUsedInGame, IsEditorOnlyObject(Obj, true /* bCheckRecursive */, true /* bCheckMarks */));
+						bool bReferencerIsEditorOnly = IsEditorOnlyObject(Obj, true /* bCheckRecursive */, true /* bCheckMarks */) && !Obj->HasNonEditorOnlyReferences();
+						FArchiveSaveTagImports ImportTagger(Linker.Get(), NameMapSaver, ImportsUsedInGame, SoftPackagesUsedInGame, bReferencerIsEditorOnly);
 						ImportTagger.SetPortFlags(ComparisonFlags);
 						ImportTagger.SetFilterEditorOnly(FilterEditorOnly);
 						ImportTagger.SetSerializeContext(SaveContext);
@@ -3153,7 +3161,9 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 				{
 					// Conform to previous generation of file.
 					UE_LOG(LogSavePackage, Log,  TEXT("Conformal save, relative to: %s, Generation %i"), *Conform->Filename, Conform->Summary.Generations.Num()+1 );
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
 					Linker->Summary.Guid = Conform->Summary.Guid;
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if WITH_EDITORONLY_DATA
 					Linker->Summary.PersistentGuid = Conform->Summary.PersistentGuid;					
 #endif
@@ -3162,7 +3172,9 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 				else if (SaveFlags & SAVE_KeepGUID)
 				{
 					// First generation file, keep existing GUID
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
 					Linker->Summary.Guid = InOuter->Guid;
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if WITH_EDITORONLY_DATA
 					Linker->Summary.PersistentGuid = InOuter->PersistentGuid;
 #endif
@@ -3171,14 +3183,18 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 				else
 				{
 					// First generation file.
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
 					Linker->Summary.Guid = FGuid::NewGuid();
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if WITH_EDITORONLY_DATA
 					Linker->Summary.PersistentGuid = InOuter->PersistentGuid;
 #endif
 					Linker->Summary.Generations = TArray<FGenerationInfo>();
 
 					// make sure the UPackage's copy of the GUID is up to date
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
 					InOuter->Guid = Linker->Summary.Guid;
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				}
 				new(Linker->Summary.Generations)FGenerationInfo(0, 0);
 
@@ -3522,7 +3538,9 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 							Linker->ExportMap[i].PackageFlags = Package->GetPackageFlags();
 							if (!Package->HasAnyPackageFlags(PKG_ServerSideOnly))
 							{
+								PRAGMA_DISABLE_DEPRECATION_WARNINGS
 								Linker->ExportMap[i].PackageGuid = Package->GetGuid();
+								PRAGMA_ENABLE_DEPRECATION_WARNINGS
 							}
 						}
 					}

@@ -600,7 +600,7 @@ void FSlateUser::DrawCursor(const TSharedRef<SWindow>& WindowToDraw, FSlateWindo
 
 			FVector2D CursorInScreen = GetCursorPosition();
 			FVector2D CursorPosInWindowSpace = WindowToDraw->GetWindowGeometryInScreen().AbsoluteToLocal(CursorInScreen) * WindowRootScale;
-			CursorPosInWindowSpace += (CursorWidget->GetDesiredSize() * -0.5) * WindowRootScale;
+			CursorPosInWindowSpace += (CursorWidget->GetDesiredSize() * -0.5);
 			const FGeometry CursorGeometry = FGeometry::MakeRoot(CursorWidget->GetDesiredSize(), FSlateLayoutTransform(CursorPosInWindowSpace));
 
 			CursorWidget->Paint(
@@ -938,7 +938,7 @@ TSharedRef<SWindow> FSlateUser::GetOrCreateTooltipWindow()
 
 void FSlateUser::NotifyTouchStarted(const FPointerEvent& TouchEvent)
 {
-	UE_CLOG(PointerPositionsByIndex.Contains(TouchEvent.GetUserIndex()), LogSlate, Error, TEXT("SlateUser [%d] notified of a touch starting for pointer [%d] without finding out it ever ended."));
+	UE_CLOG(PointerPositionsByIndex.Contains(TouchEvent.GetPointerIndex()), LogSlate, Error, TEXT("SlateUser [%d] notified of a touch starting for pointer [%d] without finding out it ever ended."), TouchEvent.GetUserIndex(), TouchEvent.GetPointerIndex());
 	
 	GestureDetector.OnTouchStarted(TouchEvent.GetPointerIndex(), TouchEvent.GetScreenSpacePosition());
 	PointerPositionsByIndex.FindOrAdd(TouchEvent.GetPointerIndex()) = TouchEvent.GetScreenSpacePosition();

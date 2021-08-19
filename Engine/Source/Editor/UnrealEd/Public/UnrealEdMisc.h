@@ -212,6 +212,8 @@ public:
 	 */
 	bool GetURL( const TCHAR* InKey, FString& OutURL, const bool bCheckRocket = false ) const;
 
+	void ReplaceDocumentationURLWildcards(FString& Url, const FCultureRef& Culture);
+
 	/** Returns the editor executable to use to execute commandlets */
 	FString GetExecutableForCommandlets() const;
 
@@ -302,6 +304,9 @@ public:
 	/** Handles "Enable World Composition" option in WorldSettings */
 	bool EnableWorldComposition(UWorld* InWorld, bool bEnable);
 
+	/** Finds a map using only the map name, no extension, no path, also caches it for faster lookup next time. */
+	FString FindMapFileFromPartialName(const FString& PartialMapName);
+
 private:
 
 	/** The current state of the autosave */
@@ -310,7 +315,7 @@ private:
 	/** Stores whether or not the current map build was cancelled. */
 	bool bCancelBuild;
 
-	/** Whenther the system has been initialised */
+	/** Has the system has been initialized? */
 	bool bInitialized;
 
 	/** The name of a pending project.  When the editor shuts down it will switch to this project if not empty */ 

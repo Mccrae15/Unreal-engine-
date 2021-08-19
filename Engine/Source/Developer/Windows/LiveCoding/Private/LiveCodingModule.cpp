@@ -11,6 +11,7 @@
 #include "Misc/App.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/MessageDialog.h"
 #include "LiveCodingSettings.h"
 #include "ISettingsModule.h"
 #include "ISettingsSection.h"
@@ -28,6 +29,18 @@ FString GLiveCodingConsoleArguments;
 #if IS_MONOLITHIC
 extern const TCHAR* GLiveCodingEngineDir;
 extern const TCHAR* GLiveCodingProject;
+#endif
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wextern-initializer"
+#endif
+
+LPP_PRECOMPILE_HOOK(FLiveCodingModule::PreCompileHook);
+LPP_POSTCOMPILE_HOOK(FLiveCodingModule::PostCompileHook);
+
+#ifdef __clang__
+#pragma clang diagnostic pop
 #endif
 
 FLiveCodingModule::FLiveCodingModule()
@@ -246,12 +259,33 @@ void FLiveCodingModule::Tick()
 	{
 		EnableForSession(Settings->bEnabled);
 		bEnabledLastTick = Settings->bEnabled;
+		if (IsEnabledByDefault() && !IsEnabledForSession())
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoEnableLiveCodingAfterHotReload", "Live Coding cannot be enabled while hot-reloaded modules are active. Please close the editor and build from your IDE before restarting."));
+		}
 	}
 
 	if (bUpdateModulesInTick)
 	{
 		UpdateModules();
 		bUpdateModulesInTick = false;
+	}
+
+	AttemptSyncLivePatching();
+}
+
+void FLiveCodingModule::AttemptSyncLivePatching()
+{
+	while (LppPendingTokens.Num() > 0)
+	{
+		if (LppTryWaitForToken(LppPendingTokens[0]))
+		{
+			LppPendingTokens.RemoveAt(0);
+		}
+		else
+		{
+			return;
+		}
 	}
 
 	// Needs to happen after updating modules, since "Quick Restart" functionality may try to install patch immediately
@@ -388,7 +422,9 @@ void FLiveCodingModule::UpdateModules()
 					}
 					else
 					{
-						LppWaitForToken(LppEnableLazyLoadedModule(*FullFilePath));
+						TRACE_CPUPROFILER_EVENT_SCOPE(LppEnableLazyLoadedModule);
+						void* LppEnableLazyLoadedModuleToken = LppEnableLazyLoadedModule(*FullFilePath);
+						LppPendingTokens.Add(LppEnableLazyLoadedModuleToken);
 					}
 					ConfiguredModules.Add(ModuleName);
 				}
@@ -402,7 +438,12 @@ void FLiveCodingModule::UpdateModules()
 			{
 				EnableModuleFileNames.Add(*EnableModule);
 			}
-			LppWaitForToken(LppEnableModules(EnableModuleFileNames.GetData(), EnableModuleFileNames.Num()));
+
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(LppEnableModules);
+				void* LppEnableModulesToken = LppEnableModules(EnableModuleFileNames.GetData(), EnableModuleFileNames.Num());
+				LppPendingTokens.Add(LppEnableModulesToken);
+			}
 		}
 #endif
 	}
@@ -428,6 +469,12 @@ void FLiveCodingModule::OnModulesChanged(FName ModuleName, EModuleChangeReason R
 
 bool FLiveCodingModule::ShouldPreloadModule(const FName& Name, const FString& FullFilePath) const
 {
+	// For the hooks to work properly, we always have to load the live coding module
+	if (Name == TEXT(LIVE_CODING_MODULE_NAME))
+	{
+		return true;
+	}
+
 	if (Settings->PreloadNamedModules.Contains(Name))
 	{
 		return true;
@@ -470,6 +517,18 @@ bool FLiveCodingModule::ShouldPreloadModule(const FName& Name, const FString& Fu
 			return Settings->bPreloadEngineModules;
 		}
 	}
+}
+
+void FLiveCodingModule::PreCompileHook()
+{
+	UE_LOG(LogLiveCoding, Display, TEXT("Starting Live Coding compile."));
+	GIsCompileActive = true;
+}
+
+void FLiveCodingModule::PostCompileHook()
+{
+	UE_LOG(LogLiveCoding, Display, TEXT("Live Coding compile done.  See Live Coding console for more information."));
+	GIsCompileActive = false;
 }
 
 #undef LOCTEXT_NAMESPACE

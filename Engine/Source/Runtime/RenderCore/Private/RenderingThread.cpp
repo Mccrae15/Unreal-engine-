@@ -77,7 +77,7 @@ static void OnRenderThreadPollPeriodMsChanged(IConsoleVariable* Var)
 
 static FAutoConsoleVariable CVarRenderThreadPollPeriodMs(
 	TEXT("TaskGraph.RenderThreadPollPeriodMs"),
-	-1,
+	1,
 	TEXT("Render thread polling period in milliseconds. If value < 0, task graph tasks explicitly wake up RT, otherwise RT polls for tasks."),
 	FConsoleVariableDelegate::CreateStatic(&OnRenderThreadPollPeriodMsChanged)
 );
@@ -561,11 +561,6 @@ public:
 	{
 		GSuspendRenderingTickables = 0;
 		OutstandingHeartbeats.Reset();
-
-#if CSV_PROFILER
-		FCsvProfiler::Get()->SetRenderThreadId(FPlatformTLS::GetCurrentThreadId());
-#endif
-
 		return true; 
 	}
 
@@ -916,7 +911,7 @@ void CheckRenderingThreadHealth()
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		TGuardValue<TAtomic<bool>, bool> GuardMainThreadBlockedOnRenderThread(GMainThreadBlockedOnRenderThread,true);
 #endif
-		SCOPE_CYCLE_COUNTER(STAT_PumpMessages);
+		//QUICK_SCOPE_CYCLE_COUNTER(STAT_PumpMessages);
 		FPlatformApplicationMisc::PumpMessages(false);
 	}
 }
@@ -1138,7 +1133,7 @@ static void GameThreadWaitForTask(const FGraphEventRef& Task, ENamedThreads::Typ
 				if(GIsAutomationTesting)
 				{
 					// temp test to log callstacks for this being triggered during automation tests
-					ensureMsgf(false, TEXT("FlushRenderingCommands called recursively! %d calls on the stack."));
+					ensureMsgf(false, TEXT("FlushRenderingCommands called recursively! %d calls on the stack."), NumRecursiveCalls);
 				}
 				UE_LOG(LogRendererCore,Warning,TEXT("FlushRenderingCommands called recursively! %d calls on the stack."), NumRecursiveCalls);
 			}

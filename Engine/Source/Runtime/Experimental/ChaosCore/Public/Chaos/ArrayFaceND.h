@@ -10,21 +10,21 @@ namespace Chaos
 template<class T, int d>
 class TArrayFaceND
 {
-	TArrayFaceND(const TUniformGrid<float, d>& Grid)
+	TArrayFaceND(const TUniformGrid<FReal, d>& Grid)
 	{
 		MArray.SetNum(d); // @todo(mlentine): This should not be needed
 		const auto& Counts = Grid.Counts();
 		for (int32 i = 0; i < d; ++i)
 		{
-			MArray[i] = TArrayND<T, 3>(Counts + TVector<int32, 3>::AxisVector(i));
+			MArray[i] = TArrayND<T, 3>(Counts + TVec3<int32>::AxisVector(i));
 		}
 	}
-	TArrayFaceND(const TVector<int32, 3>& Counts)
+	TArrayFaceND(const TVec3<int32>& Counts)
 	{
 		MArray.SetNum(d); // @todo(mlentine): This should not be needed
 		for (int32 i = 0; i < d; ++i)
 		{
-			MArray[i] = TArrayND<T, 3>(Counts + TVector<int32, 3>::AxisVector(i));
+			MArray[i] = TArrayND<T, 3>(Counts + TVec3<int32>::AxisVector(i));
 		}
 	}
 	TArrayFaceND(const TArrayFaceND<T, d>& Other) = delete;
@@ -39,20 +39,20 @@ template<class T>
 class TArrayFaceND<T, 3>
 {
   public:
-	TArrayFaceND(const TUniformGrid<float, 3>& Grid)
+	TArrayFaceND(const TUniformGrid<FReal, 3>& Grid)
 	{
 		MArray.SetNum(3); // @todo(mlentine): This should not be needed
 		const auto& Counts = Grid.Counts();
-		MArray[0] = TArrayND<T, 3>(Counts + TVector<int32, 3>::AxisVector(0));
-		MArray[1] = TArrayND<T, 3>(Counts + TVector<int32, 3>::AxisVector(1));
-		MArray[2] = TArrayND<T, 3>(Counts + TVector<int32, 3>::AxisVector(2));
+		MArray[0] = TArrayND<T, 3>(Counts + TVec3<int32>::AxisVector(0));
+		MArray[1] = TArrayND<T, 3>(Counts + TVec3<int32>::AxisVector(1));
+		MArray[2] = TArrayND<T, 3>(Counts + TVec3<int32>::AxisVector(2));
 	}
-	TArrayFaceND(const TVector<int32, 3>& Counts)
+	TArrayFaceND(const TVec3<int32>& Counts)
 	{
 		MArray.SetNum(3); // @todo(mlentine): This should not be needed
-		MArray[0] = TArrayND<T, 3>(Counts + TVector<int32, 3>::AxisVector(0));
-		MArray[1] = TArrayND<T, 3>(Counts + TVector<int32, 3>::AxisVector(1));
-		MArray[2] = TArrayND<T, 3>(Counts + TVector<int32, 3>::AxisVector(2));
+		MArray[0] = TArrayND<T, 3>(Counts + TVec3<int32>::AxisVector(0));
+		MArray[1] = TArrayND<T, 3>(Counts + TVec3<int32>::AxisVector(1));
+		MArray[2] = TArrayND<T, 3>(Counts + TVec3<int32>::AxisVector(2));
 	}
 	TArrayFaceND(const TArrayFaceND<T, 3>& Other) = delete;
 	TArrayFaceND(TArrayFaceND<T, 3>&& Other)
@@ -61,8 +61,8 @@ class TArrayFaceND<T, 3>
 	{
 		return TArrayFaceND(MArray);
 	}
-	T& operator()(const Pair<int32, TVector<int32, 3>>& Index) { return MArray[Index.First](Index.Second[0], Index.Second[1], Index.Second[2]); }
-	const T& operator()(const Pair<int32, TVector<int32, 3>>& Index) const { return MArray[Index.First](Index.Second[0], Index.Second[1], Index.Second[2]); }
+	T& operator()(const Pair<int32, TVec3<int32>>& Index) { return MArray[Index.First](Index.Second[0], Index.Second[1], Index.Second[2]); }
+	const T& operator()(const Pair<int32, TVec3<int32>>& Index) const { return MArray[Index.First](Index.Second[0], Index.Second[1], Index.Second[2]); }
 	T& operator()(const int32 Axis, const int32& x, const int32& y, const int32& z) { return MArray[Axis](x, y, z); }
 	const T& operator()(const int32 Axis, const int32& x, const int32& y, const int32& z) const { return MArray[Axis](x, y, z); }
 	void Fill(const T& Scalar)

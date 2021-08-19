@@ -69,25 +69,26 @@ static IModuleInterface* LoadSubsystemModule(const FString& SubsystemName, const
 void FOnlineSubsystemModule::StartupModule()
 {
 	// These should not be LoadModuleChecked because these modules might not exist
-	// Load dependent modules to ensure they will still exist during ShutdownModule.
+	// For all modules loaded here, we want to ensure they will still exist during ShutdownModule.
 	// We will always load these modules at the cost of extra modules loaded for the few OSS (like Null) that don't use it.
-	if (FModuleManager::Get().ModuleExists(TEXT("HTTP")))
+	TArray<FString> AdditionalModulesToLoad;
+	GConfig->GetArray(TEXT("OnlineSubsystem"), TEXT("AdditionalModulesToLoad"), AdditionalModulesToLoad, GEngineIni);
+	for (const FString& AdditonalModule : AdditionalModulesToLoad)
 	{
-		FModuleManager::Get().LoadModule(TEXT("HTTP"));
-	}
-	if (FModuleManager::Get().ModuleExists(TEXT("XMPP")))
-	{
-		FModuleManager::Get().LoadModule(TEXT("XMPP"));
+		if (FModuleManager::Get().ModuleExists(*AdditonalModule))
+		{
+			FModuleManager::Get().LoadModule(*AdditonalModule);
+		}
 	}
 
 	ProcessConfigDefinedModuleRedirects();
 
-	LoadDefaultSubsystem();
-	
 	// Also load the console/platform specific OSS which might not necessarily be the default OSS instance
 	FString InterfaceString;
 	GConfig->GetString(TEXT("OnlineSubsystem"), TEXT("NativePlatformService"), InterfaceString, GEngineIni);
 	NativePlatformService = FName(*InterfaceString);
+
+	LoadDefaultSubsystem();
 
 	ProcessConfigDefinedSubsystems();
 

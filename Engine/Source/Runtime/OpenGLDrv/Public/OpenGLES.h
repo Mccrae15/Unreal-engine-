@@ -94,6 +94,7 @@ typedef GLfloat GLdouble;
 #ifndef GL_TEXTURE_RECTANGLE
 #define GL_TEXTURE_RECTANGLE	0x84F5
 #endif
+
 /** For the shader stage bits that don't exist just use 0 */
 #define GL_GEOMETRY_SHADER_BIT				0x00000000
 #define GL_TESS_CONTROL_SHADER_BIT			0x00000000
@@ -186,7 +187,6 @@ struct FOpenGLES : public FOpenGLBase
 	static bool SupportsDisjointTimeQueries();
 	static FORCEINLINE bool SupportsDepthStencilRead() { return false; }
 	static FORCEINLINE bool SupportsFloatReadSurface() { return SupportsColorBufferHalfFloat(); }
-	static FORCEINLINE bool SupportsMultipleRenderTargets() { return true; }
 	static FORCEINLINE bool SupportsWideMRT() { return true; }
 	static FORCEINLINE bool SupportsMultisampledTextures() { return false; }
 	static FORCEINLINE bool SupportsPolygonMode() { return false; }
@@ -214,11 +214,9 @@ struct FOpenGLES : public FOpenGLBase
 	static FORCEINLINE bool SupportsRGB10A2() { return bSupportsRGB10A2; }
 	static FORCEINLINE bool SupportsComputeShaders() { return true; }
 	static FORCEINLINE bool SupportsDrawIndirect() { return true; }
-	static FORCEINLINE bool SupportsVertexAttribBinding() { return true; }
 	static FORCEINLINE bool SupportsBufferStorage() { return bSupportsBufferStorage; }
 	
 
-	static FORCEINLINE bool RequiresUEShaderFramebufferFetchDef() { return bRequiresUEShaderFramebufferFetchDef; }
 	static FORCEINLINE bool HasBinaryProgramRetrievalFailed() { return bBinaryProgramRetrievalFailed; }
 	static FORCEINLINE bool RequiresDisabledEarlyFragmentTests() { return bRequiresDisabledEarlyFragmentTests; }
 	static FORCEINLINE bool RequiresARMShaderFramebufferFetchDepthStencilUndef() { return bRequiresARMShaderFramebufferFetchDepthStencilUndef; }
@@ -232,6 +230,8 @@ struct FOpenGLES : public FOpenGLBase
 	// Turning this to false reverts back to not using vertex and index buffers
 	// for glDrawArrays() and glDrawElements() on dynamic data.
 	static FORCEINLINE bool SupportsFastBufferData() { return false; }
+
+	static FORCEINLINE bool SupportsASTCDecodeMode() { return bSupportsASTCDecodeMode; }
 
 	// Optional
 	static FORCEINLINE void BeginQuery(GLenum QueryType, GLuint QueryId)
@@ -581,6 +581,13 @@ struct FOpenGLES : public FOpenGLBase
 		glClearDepthf(Depth);
 	}
 
+	static FORCEINLINE void GenerateMipmap( GLenum Target )
+	{
+		glGenerateMipmap( Target);
+	}
+	
+	static FORCEINLINE bool SupportsGenerateMipmap() { return true; }
+
 	static FORCEINLINE GLuint GetMajorVersion()
 	{
 		return 3;
@@ -632,7 +639,7 @@ struct FOpenGLES : public FOpenGLBase
 				Attachment == GL_DEPTH_ATTACHMENT || 
 				Attachment == GL_STENCIL_ATTACHMENT ||
 				Attachment == GL_DEPTH_STENCIL_ATTACHMENT ||
-				(SupportsMultipleRenderTargets() && Attachment >= GL_COLOR_ATTACHMENT0 && Attachment <= GL_COLOR_ATTACHMENT7));
+				(Attachment >= GL_COLOR_ATTACHMENT0 && Attachment <= GL_COLOR_ATTACHMENT7));
 
 		glFramebufferTexture2D(Target, Attachment, TexTarget, Texture, Level);
 		VERIFY_GL(FramebufferTexture_2D);
@@ -767,9 +774,6 @@ protected:
 	/** GL_EXT_shader_framebuffer_fetch */
 	static bool bSupportsShaderFramebufferFetch;
 
-	/** workaround for GL_EXT_shader_framebuffer_fetch */
-	static bool bRequiresUEShaderFramebufferFetchDef;
-
 	/** GL_ARM_shader_framebuffer_fetch_depth_stencil */
 	static bool bSupportsShaderDepthStencilFetch;
 
@@ -793,6 +797,10 @@ protected:
 
 	/** Maximum number of MSAA samples supported on chip in tile memory, or 1 if not available */
 	static GLint MaxMSAASamplesTileMem;
+
+	/** GL_EXT_texture_compression_astc_decode_mode */
+	static bool bSupportsASTCDecodeMode;
+
 public:
 	/* This indicates failure when attempting to retrieve driver's binary representation of the hack program  */
 	static bool bBinaryProgramRetrievalFailed;

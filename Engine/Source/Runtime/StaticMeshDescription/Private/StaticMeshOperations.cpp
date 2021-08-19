@@ -2190,15 +2190,32 @@ void FStaticMeshOperations::BuildWeldedVertexIDRemap(const FMeshDescription& Mes
 	}
 }
 
-FSHAHash FStaticMeshOperations::ComputeSHAHash(const FMeshDescription& MeshDescription)
+FSHAHash FStaticMeshOperations::ComputeSHAHash(const FMeshDescription& MeshDescription, bool bSkipTransientAttributes)
 {
 	FSHA1 HashState;
 	TArray< FName > AttributesNames;
 
-	auto HashAttributeSet = [&AttributesNames, &HashState](const FAttributesSetBase& AttributeSet)
+	auto HashAttributeSet = [&AttributesNames, &HashState, bSkipTransientAttributes](const auto& AttributeSet)
 	{
 		AttributesNames.Reset();
-		AttributeSet.GetAttributeNames(AttributesNames);
+
+		if (!bSkipTransientAttributes)
+		{
+			AttributeSet.GetAttributeNames(AttributesNames);
+		}
+		else
+		{
+			AttributeSet.ForEach([&AttributesNames](const FName AttributeName, auto AttributesRef)
+			{
+				bool bIsTransient = (AttributesRef.GetFlags() & EMeshAttributeFlags::Transient) != EMeshAttributeFlags::None;
+				if (!bIsTransient)
+				{
+					AttributesNames.Add(AttributeName);
+				}
+			});
+		}
+
+		AttributesNames.Sort(FNameLexicalLess());
 
 		for (FName AttributeName : AttributesNames)
 		{
@@ -2243,6 +2260,44 @@ void FStaticMeshOperations::FlipPolygons(FMeshDescription& MeshDescription)
 		TAttributesSet<FVertexInstanceID>& AttributesSet = MeshDescription.VertexInstanceAttributes();
 		AttributesSet.SetAttribute(VertexInstanceID, MeshAttribute::VertexInstance::Normal, 0, Normal);
 		AttributesSet.SetAttribute(VertexInstanceID, MeshAttribute::VertexInstance::Tangent, 0, Tangent);
+	}
+}
+
+void FStaticMeshOperations::ApplyTransform(FMeshDescription& MeshDescription, const FTransform& Transform)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshOperations::ApplyTransform)
+
+	TVertexAttributesRef<FVector> VertexPositions = MeshDescription.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
+	TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
+	TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
+	TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = MeshDescription.VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
+
+	for (const FVertexID VertexID : MeshDescription.Vertices().GetElementIDs())
+	{
+		VertexPositions[VertexID] = Transform.TransformPosition(VertexPositions[VertexID]);
+	}
+
+	FMatrix Matrix = Transform.ToMatrixWithScale();
+	FMatrix AdjointT = Matrix.TransposeAdjoint();
+	AdjointT.RemoveScaling();
+
+	const bool bIsMirrored = Transform.GetDeterminant() < 0.f;
+	const float MulBy = bIsMirrored ? -1.f : 1.f;
+
+	for (const FVertexInstanceID VertexInstanceID : MeshDescription.VertexInstances().GetElementIDs())
+	{
+		FVector Tangent = VertexInstanceTangents[VertexInstanceID];
+		FVector Normal = VertexInstanceNormals[VertexInstanceID];
+		float BinormalSign = VertexInstanceBinormalSigns[VertexInstanceID];
+
+		VertexInstanceTangents[VertexInstanceID] = AdjointT.TransformVector(Tangent) * MulBy;
+		VertexInstanceBinormalSigns[VertexInstanceID] = BinormalSign * MulBy;
+		VertexInstanceNormals[VertexInstanceID] = AdjointT.TransformVector(Normal) * MulBy;
+	}
+
+	if (bIsMirrored)
+	{
+		MeshDescription.ReverseAllPolygonFacing();
 	}
 }
 

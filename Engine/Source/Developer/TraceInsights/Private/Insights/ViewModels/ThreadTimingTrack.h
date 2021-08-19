@@ -38,6 +38,7 @@ public:
 	virtual ~FThreadTimingSharedState() = default;
 
 	TSharedPtr<FGpuTimingTrack> GetGpuTrack() { return GpuTrack; }
+	TSharedPtr<FGpuTimingTrack> GetGpu2Track() { return Gpu2Track; }
 	TSharedPtr<FCpuTimingTrack> GetCpuTrack(uint32 InThreadId);
 
 	bool IsGpuTrackVisible() const;
@@ -80,6 +81,7 @@ private:
 	bool bShowHideAllCpuTracks;
 
 	TSharedPtr<FGpuTimingTrack> GpuTrack;
+	TSharedPtr<FGpuTimingTrack> Gpu2Track;
 
 	/** Maps thread id to track pointer. */
 	TMap<uint32, TSharedPtr<FCpuTimingTrack>> CpuTracks;
@@ -99,6 +101,14 @@ class FThreadTimingTrack : public FTimingEventsTrack
 
 public:
 	typedef typename Trace::ITimeline<Trace::FTimingProfilerEvent>::FTimelineEventInfo TimelineEventInfo;
+
+	struct FPendingEventInfo
+	{
+		double StartTime;
+		double EndTime;
+		uint32 Depth;
+		uint32 TimerIndex;
+	};
 
 	explicit FThreadTimingTrack(FThreadTimingSharedState& InSharedState, const FString& InName, const TCHAR* InGroupName, uint32 InTimelineIndex, uint32 InThreadId)
 		: FTimingEventsTrack(InName)

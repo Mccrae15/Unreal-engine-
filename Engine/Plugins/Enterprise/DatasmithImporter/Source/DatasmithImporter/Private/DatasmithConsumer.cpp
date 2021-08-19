@@ -132,7 +132,7 @@ namespace DatasmithConsumerUtils
 	}
 
 	template<class AssetClass>
-	TArray<UPackage*> ApplyFolderDirective(TMap<FName, TSoftObjectPtr< AssetClass >>& AssetMap, const FString& RootPackagePath, TMap<FSoftObjectPath, FSoftObjectPath>& AssetRedirectorMap, TFunction<void(ELogVerbosity::Type, FText)> ReportCallback)
+	TArray<UPackage*> ApplyFolderDirective(TMap<FName, TSoftObjectPtr< AssetClass >>& AssetMap, const FString& RootPackagePath, TMap<FSoftObjectPath, FSoftObjectPath>& AssetRedirectorMap, TFunction<void(ELogVerbosity::Type, FText)> ReportCallback, TSet<FString>& OutFolderOverrides)
 	{
 		auto CanMoveAsset = [&ReportCallback](UObject* Source, UObject* Target) -> bool
 		{
@@ -178,10 +178,11 @@ namespace DatasmithConsumerUtils
 				const FString& OutputFolder = GetMarker(Asset, UDataprepContentConsumer::RelativeOutput);
 				if(OutputFolder.Len() > 0)
 				{
+					OutFolderOverrides.Add(FPaths::Combine(RootPackagePath, OutputFolder));
+
 					UPackage* SourcePackage = Entry.Value->GetOutermost();
 					FString TargetPackagePath = FPaths::Combine(RootPackagePath, OutputFolder, Asset->GetName());
-
-
+				
 					if( ensure(SourcePackage) && SourcePackage->GetPathName() != TargetPackagePath)
 					{
 						FString PackageFilename;
@@ -240,8 +241,7 @@ namespace DatasmithConsumerUtils
 const FString UDatasmithConsumer::ConsumerMarkerID = TEXT("DatasmithConsumer_UniqueID");
 
 UDatasmithConsumer::UDatasmithConsumer()
-	: DatasmithScene(nullptr)
-	, WorkingWorld(nullptr)
+	: WorkingWorld(nullptr)
 	, PrimaryLevel(nullptr)
 {
 	if(!HasAnyFlags(RF_NeedLoad|RF_ClassDefaultObject))
@@ -269,22 +269,30 @@ void UDatasmithConsumer::PostLoad()
 			LevelName = GetOuter()->GetName() + TEXT("_Map");
 		}
 
-		if(OutputLevelSoftObject.GetAssetPathString().Len() == 0)
+		if (OutputLevelSoftObject_DEPRECATED.GetAssetPathString().Len() > 0)
 		{
-			OutputLevelSoftObject = FSoftObjectPath(FPaths::Combine(TargetContentFolder, LevelName) + "." + LevelName);
+			OutputLevelObjectPath = OutputLevelSoftObject_DEPRECATED.GetAssetPathString();
+			OutputLevelSoftObject_DEPRECATED.Reset();
+
+			bMarkDirty = true;
+		}
+		
+		if(OutputLevelObjectPath.Len() == 0)
+		{
+			OutputLevelObjectPath = FPaths::Combine(TargetContentFolder, LevelName) + "." + LevelName;
+		}
+
+		if (DatasmithScene_DEPRECATED.GetAssetName().Len() > 0)
+		{
+			DatasmithSceneObjectPath = DatasmithScene_DEPRECATED.ToString();
+			DatasmithScene_DEPRECATED.Reset();
 
 			bMarkDirty = true;
 		}
 
 		if(bMarkDirty)
 		{
-			const FText AssetName = FText::FromString( GetOuter()->GetName() );
-			const FText WarningMessage = FText::Format( LOCTEXT( "DataprepConsumerOldVersion", "{0} is from an old version and has been updated. Please save asset to complete update."), AssetName );
-			const FText NotificationText = FText::Format( LOCTEXT( "DataprepConsumerOldVersionNotif", "{0} is from an old version and has been updated."), AssetName );
-			LogWarning(WarningMessage);
-			//DataprepCorePrivateUtils::LogMessage( EMessageSeverity::Warning, WarningMessage, NotificationText );
-
-			GetOutermost()->SetDirtyFlag(true);
+			UE_LOG(LogDatasmithImport, Warning, TEXT("%s is from an old version and has been updated. Please save asset to complete update."), *GetOuter()->GetName());
 		}
 	}
 }
@@ -300,7 +308,7 @@ void UDatasmithConsumer::PostInitProperties()
 			LevelName = GetOuter()->GetName() + TEXT("_Map");
 		}
 
-		OutputLevelSoftObject = FSoftObjectPath(FPaths::Combine( TargetContentFolder, LevelName) + TEXT(".") + LevelName);
+		OutputLevelObjectPath = FPaths::Combine( TargetContentFolder, LevelName) + TEXT(".") + LevelName;
 	}
 }
 
@@ -319,16 +327,13 @@ bool UDatasmithConsumer::Initialize()
 	UpdateScene();
 
 	// Re-create the DatasmithScene if not in memory yet
-	if ( !DatasmithScene.IsValid() )
+	if ( !DatasmithSceneWeakPtr.IsValid() )
 	{
 		// Check if DatasmithScene can be loaded in memory
-		if( !DatasmithScene.IsNull() )
-		{
-			DatasmithScene.LoadSynchronous();
-		}
+		DatasmithSceneWeakPtr = Cast<UDatasmithScene>(FSoftObjectPath(DatasmithSceneObjectPath).TryLoad());
 
 		// Still not in memory, re-create it
-		if(!DatasmithScene.IsValid())
+		if(!DatasmithSceneWeakPtr.IsValid())
 		{
 			FString PackageName = FPaths::Combine( GetTargetPackagePath(), GetOuter()->GetName() + DatasmithSceneSuffix );
 
@@ -337,25 +342,25 @@ bool UDatasmithConsumer::Initialize()
 
 			FString DatasmithSceneName = FPaths::GetBaseFilename( Package->GetFullName(), true );
 
-			DatasmithScene = NewObject< UDatasmithScene >( Package, *DatasmithSceneName, GetFlags() | RF_Standalone | RF_Public | RF_Transactional );
-			check( DatasmithScene.IsValid() );
+			DatasmithSceneWeakPtr = NewObject< UDatasmithScene >( Package, *DatasmithSceneName, GetFlags() | RF_Standalone | RF_Public | RF_Transactional );
+			check( DatasmithSceneWeakPtr.IsValid() );
 
-			FAssetRegistryModule::AssetCreated( DatasmithScene.Get() );
+			FAssetRegistryModule::AssetCreated( DatasmithSceneWeakPtr.Get() );
 
-			DatasmithScene->AssetImportData = NewObject< UDatasmithSceneImportData >( DatasmithScene.Get(), UDatasmithSceneImportData::StaticClass() );
-			check( DatasmithScene->AssetImportData );
+			DatasmithSceneWeakPtr->AssetImportData = NewObject< UDatasmithSceneImportData >( DatasmithSceneWeakPtr.Get(), UDatasmithSceneImportData::StaticClass() );
+			check( DatasmithSceneWeakPtr->AssetImportData );
 
 			// Store a Dataprep asset pointer into the scene asset in order to be able to later re-execute the dataprep pipeline
-			if ( DatasmithScene->GetClass()->ImplementsInterface(UInterface_AssetUserData::StaticClass()) )
+			if ( DatasmithSceneWeakPtr->GetClass()->ImplementsInterface(UInterface_AssetUserData::StaticClass()) )
 			{
-				if ( IInterface_AssetUserData* AssetUserDataInterface = Cast< IInterface_AssetUserData >( DatasmithScene.Get() ) )
+				if ( IInterface_AssetUserData* AssetUserDataInterface = Cast< IInterface_AssetUserData >( DatasmithSceneWeakPtr.Get() ) )
 				{
 					UDataprepAssetUserData* DataprepAssetUserData = AssetUserDataInterface->GetAssetUserData< UDataprepAssetUserData >();
 
 					if ( !DataprepAssetUserData )
 					{
 						EObjectFlags Flags = RF_Public;
-						DataprepAssetUserData = NewObject< UDataprepAssetUserData >( DatasmithScene.Get(), NAME_None, Flags );
+						DataprepAssetUserData = NewObject< UDataprepAssetUserData >( DatasmithSceneWeakPtr.Get(), NAME_None, Flags );
 						AssetUserDataInterface->AddAssetUserData( DataprepAssetUserData );
 					}
 
@@ -366,14 +371,16 @@ bool UDatasmithConsumer::Initialize()
 				}
 			}
 
-			DatasmithScene->MarkPackageDirty();
+			DatasmithSceneWeakPtr->MarkPackageDirty();
 
 			// Make package dirty for new DatasmithScene been archived
-			FProperty* Property = FindFProperty<FProperty>( StaticClass(), TEXT("DatasmithScene") );
+			FProperty* Property = FindFProperty<FProperty>( StaticClass(), TEXT("DatasmithSceneWeakPtr") );
 			FPropertyChangedEvent PropertyUpdateStruct( Property );
 			PostEditChangeProperty( PropertyUpdateStruct );
 
 			MarkPackageDirty();
+
+			DatasmithSceneObjectPath = FSoftObjectPath(DatasmithSceneWeakPtr.Get()).GetAssetPathString();
 		}
 	}
 
@@ -439,28 +446,103 @@ bool UDatasmithConsumer::Run()
 	// Table of remapping to contain moved assets
 	TMap<FSoftObjectPath, FSoftObjectPath> AssetRedirectorMap;
 
+	// Gether all the output overrides to be able to later delete empty folder in them
+	TSet<FString> OutputFolderOverrides;
+
 	DatasmithConsumerUtils::SetMarker(SceneAsset->Textures, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->Textures, TargetContentFolder, AssetRedirectorMap, ReportFunc );
+	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->Textures, TargetContentFolder, AssetRedirectorMap, ReportFunc, OutputFolderOverrides);
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->StaticMeshes, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->StaticMeshes, TargetContentFolder, AssetRedirectorMap, ReportFunc );
+	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->StaticMeshes, TargetContentFolder, AssetRedirectorMap, ReportFunc, OutputFolderOverrides);
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->Materials, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	PackagesToCheck.Append(DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->Materials, TargetContentFolder, AssetRedirectorMap, ReportFunc ));
+	PackagesToCheck.Append(DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->Materials, TargetContentFolder, AssetRedirectorMap, ReportFunc, OutputFolderOverrides));
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->MaterialFunctions, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->MaterialFunctions, TargetContentFolder, AssetRedirectorMap, ReportFunc );
+	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->MaterialFunctions, TargetContentFolder, AssetRedirectorMap, ReportFunc, OutputFolderOverrides);
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->LevelSequences, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	PackagesToFix.Append(DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->LevelSequences, TargetContentFolder, AssetRedirectorMap, ReportFunc ));
+	PackagesToFix.Append(DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->LevelSequences, TargetContentFolder, AssetRedirectorMap, ReportFunc, OutputFolderOverrides));
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->LevelVariantSets, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	PackagesToFix.Append(DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->LevelVariantSets, TargetContentFolder, AssetRedirectorMap, ReportFunc ));
+	PackagesToFix.Append(DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->LevelVariantSets, TargetContentFolder, AssetRedirectorMap, ReportFunc, OutputFolderOverrides));
 
 	if(AssetRedirectorMap.Num() > 0 && PackagesToCheck.Num() > 0)
 	{
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 		AssetTools.RenameReferencingSoftObjectPaths(PackagesToCheck, AssetRedirectorMap);
+	}
+
+	// Remove empty output folders
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+
+	TFunction<void(const FString&)> DeleteFolder = [&AssetRegistryModule](const FString& InFolderPath)
+	{
+		struct FEmptyFolderVisitor : public IPlatformFile::FDirectoryVisitor
+		{
+			bool bIsEmpty;
+
+			FEmptyFolderVisitor()
+				: bIsEmpty(true)
+			{
+			}
+
+			virtual bool Visit(const TCHAR* FilenameOrDirectory, bool bIsDirectory) override
+			{
+				if (!bIsDirectory)
+				{
+					bIsEmpty = false;
+					return false; // abort searching
+				}
+
+				return true; // continue searching
+			}
+		};
+
+		bool bFolderWasRemoved = false;
+
+		FString PathToDeleteOnDisk;
+		if (FPackageName::TryConvertLongPackageNameToFilename(InFolderPath, PathToDeleteOnDisk))
+		{
+			// Look for files on disk in case the folder contains things not tracked by the asset registry
+			FEmptyFolderVisitor EmptyFolderVisitor;
+			IFileManager::Get().IterateDirectoryRecursively(*PathToDeleteOnDisk, EmptyFolderVisitor);
+
+			if (EmptyFolderVisitor.bIsEmpty)
+			{
+				bFolderWasRemoved = IFileManager::Get().DeleteDirectory(*PathToDeleteOnDisk, false, true);
+			}
+		}
+
+		if (bFolderWasRemoved)
+		{
+			AssetRegistryModule.Get().RemovePath(InFolderPath);
+		}
+	};
+
+	TArray<FString> SubPaths;
+
+	for (const FString& OuputFolder : OutputFolderOverrides)
+	{
+		SubPaths.Empty();
+		AssetRegistryModule.Get().GetSubPaths(OuputFolder, SubPaths, true);
+
+		// Sort to start from deeper folders first
+		SubPaths.Sort([](const FString& A, const FString& B) -> bool
+		{
+			return A.Len() > B.Len();
+		});
+
+		for(auto SubPathIt(SubPaths.CreateConstIterator()); SubPathIt; SubPathIt++)	
+		{
+			TArray<FAssetData> AssetsInFolder;
+			AssetRegistryModule.Get().GetAssetsByPath(FName(*SubPathIt), AssetsInFolder, true);
+			if (AssetsInFolder.Num() == 0)
+			{
+				DeleteFolder(*SubPathIt);
+			}
+		}
 	}
 
 	return true;
@@ -472,7 +554,7 @@ bool UDatasmithConsumer::FinalizeRun()
 
 	// Save all assets
 	TArray<UPackage*> PackagesToSave;
-	PackagesToSave.Add(DatasmithScene->GetOutermost());
+	PackagesToSave.Add(DatasmithSceneWeakPtr->GetOutermost());
 
 	DatasmithConsumerUtils::CollectAssetsToSave(SceneAsset->Textures, PackagesToSave);
 	DatasmithConsumerUtils::CollectAssetsToSave(SceneAsset->MaterialFunctions, PackagesToSave);
@@ -528,7 +610,7 @@ bool UDatasmithConsumer::CreateWorld()
 				FSoftObjectPath LevelWorldPath(LevelWorld);
 
 				// If paths differ, remove level with same name from world
-				if(LevelWorldPath != OutputLevelSoftObject)
+				if(LevelWorldPath.GetAssetPathString() != OutputLevelObjectPath)
 				{
 					if(DatasmithConsumerUtils::GetMarker(Level, ConsumerMarkerID) == UniqueID)
 					{
@@ -623,15 +705,15 @@ const FText& UDatasmithConsumer::GetDescription() const
 
 bool UDatasmithConsumer::BuildContexts()
 {
-	const FString FilePath = FPaths::Combine( FPaths::ProjectIntermediateDir(), ( DatasmithScene->GetName() + TEXT( ".udatasmith" ) ) );
+	const FString FilePath = FPaths::Combine( FPaths::ProjectIntermediateDir(), ( DatasmithSceneWeakPtr->GetName() + TEXT( ".udatasmith" ) ) );
 
 	ImportContextPtr = MakeUnique< FDatasmithImportContext >( FilePath, false, TEXT("DatasmithImport"), LOCTEXT("DatasmithImportFactoryDescription", "Datasmith") );
 
 	// Update import context with consumer's data
 	ImportContextPtr->Options->BaseOptions.SceneHandling = EDatasmithImportScene::CurrentLevel;
-	ImportContextPtr->SceneAsset = DatasmithScene.Get();
+	ImportContextPtr->SceneAsset = DatasmithSceneWeakPtr.Get();
 	ImportContextPtr->ActorsContext.ImportWorld = Context.WorldPtr.Get();
-	ImportContextPtr->Scene = FDatasmithSceneFactory::CreateScene( *DatasmithScene->GetName() );
+	ImportContextPtr->Scene = FDatasmithSceneFactory::CreateScene( *DatasmithSceneWeakPtr->GetName() );
 	ImportContextPtr->SceneName = ImportContextPtr->Scene->GetName();
 
 	// Convert all incoming Datasmith scene actors as regular actors
@@ -645,7 +727,7 @@ bool UDatasmithConsumer::BuildContexts()
 	FDatasmithImporterUtils::FillSceneElement( ImportContextPtr->Scene, RootActors );
 
 	// Initialize context
-	FString SceneOuterPath = DatasmithScene->GetOutermost()->GetName();
+	FString SceneOuterPath = DatasmithSceneWeakPtr->GetOutermost()->GetName();
 	FString RootPath = FPackageName::GetLongPackagePath( SceneOuterPath );
 
 	if ( Algo::Count( RootPath, TEXT('/') ) > 1 )
@@ -871,7 +953,7 @@ bool UDatasmithConsumer::SetTargetContentFolderImplementation(const FString& InT
 		const FText Message = FText::Format( LOCTEXT("DatasmithConsumer_SetTargetContentFolder", "Package path {0} different from path previously used. Previous content will not be updated."), FText::FromString( TargetContentFolder ) );
 		LogInfo(Message);
 
-		DatasmithScene.Reset();
+		DatasmithSceneWeakPtr.Reset();
 
 		return SetOutputLevel( LevelName );
 	}
@@ -882,16 +964,18 @@ bool UDatasmithConsumer::SetTargetContentFolderImplementation(const FString& InT
 void UDatasmithConsumer::UpdateScene()
 {
 	// Nothing to check if DatasmithScene is explicitly pointing to no object
-	if( DatasmithScene.IsNull() )
+	if( !DatasmithSceneWeakPtr.IsValid() )
 	{
 		return;
 	}
 
 	// If name of owning Dataprep asset has changed, remove reference to UDatasmithScene 
 	// #ueent_todo: Listen to asset renaming event to detect when owning Dataprep's name changes
-	if( !DatasmithScene.GetAssetName().StartsWith(GetOuter()->GetName() + DatasmithSceneSuffix) )
+	FString AssetName;
+	DatasmithSceneObjectPath.Split(TEXT("."), nullptr, &AssetName, ESearchCase::CaseSensitive, ESearchDir::FromStart);
+	if( !AssetName.StartsWith(GetOuter()->GetName() + DatasmithSceneSuffix) )
 	{
-		if (UDatasmithScene* OldDatasmithScene = DatasmithScene.Get())
+		if (UDatasmithScene* OldDatasmithScene = DatasmithSceneWeakPtr.Get())
 		{
 			// Remove reference to Dataprep asset. The old UDatasmithScene cannot be re-imported anymore
 			if ( OldDatasmithScene->GetClass()->ImplementsInterface(UInterface_AssetUserData::StaticClass()) )
@@ -910,7 +994,7 @@ void UDatasmithConsumer::UpdateScene()
 		}
 
 		// Force re-creation of Datasmith scene
-		DatasmithScene.Reset();
+		DatasmithSceneWeakPtr.Reset();
 	}
 }
 
@@ -920,7 +1004,7 @@ bool UDatasmithConsumer::SetOutputLevel(const FString& InLevelName)
 	{
 		Modify();
 
-		OutputLevelSoftObject = FSoftObjectPath(FPaths::Combine( TargetContentFolder, InLevelName) + TEXT(".") + InLevelName);
+		OutputLevelObjectPath = FPaths::Combine( TargetContentFolder, InLevelName) + TEXT(".") + InLevelName;
 
 		MarkPackageDirty();
 
@@ -978,7 +1062,32 @@ ULevel* UDatasmithConsumer::FindOrAddLevel(const FString& InLevelName)
 	else
 	{
 		StreamingLevel = EditorLevelUtils::CreateNewStreamingLevelForWorld( *WorkingWorld, ULevelStreamingAlwaysLoaded::StaticClass(), *PackageFilename );
-		ensure(StreamingLevel);
+
+		if( StreamingLevel )
+		{
+			// Register the newly created map asset (associated with this consumer) to the asset registry
+			UPackage* WorldPackage = FindPackage(nullptr, *StreamingLevel->GetWorldAssetPackageName());
+			ensure(WorldPackage);
+
+			UWorld* World = nullptr;
+			ForEachObjectWithPackage(WorldPackage, [&World](UObject* Object)
+			{
+				if (UWorld* WorldAsset = Cast<UWorld>(Object))
+				{
+					World = WorldAsset;
+					return false;
+				}
+				return true;
+			}, false);
+
+			ensure(World);
+		
+			FAssetRegistryModule::AssetCreated(World);
+		}
+		else
+		{
+			ensure(false);
+		}
 	}
 
 	WorkingWorld->PersistentLevel = CurrentLevel;
@@ -1571,9 +1680,9 @@ namespace DatasmithConsumerUtils
 				else if(UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset))
 				{
 					// Clean up static meshes which have incomplete render data.
-					if(StaticMesh->RenderData.IsValid() && !StaticMesh->RenderData->IsInitialized())
+					if(StaticMesh->GetRenderData() && !StaticMesh->GetRenderData()->IsInitialized())
 					{
-						StaticMesh->RenderData.Reset();
+						StaticMesh->SetRenderData(nullptr);
 					}
 
 					if(FDatasmithObjectTemplateUtils::GetObjectTemplate<UDatasmithStaticMeshTemplate>( StaticMesh ) == nullptr)

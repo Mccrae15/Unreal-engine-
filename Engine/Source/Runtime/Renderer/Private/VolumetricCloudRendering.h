@@ -31,24 +31,26 @@ BEGIN_SHADER_PARAMETER_STRUCT(FVolumetricCloudCommonShaderParameters, )
 	SHADER_PARAMETER(float, TopRadiusKm)
 	SHADER_PARAMETER(float, TracingStartMaxDistance)
 	SHADER_PARAMETER(float, TracingMaxDistance)
+	SHADER_PARAMETER(int32, SampleCountMin)
 	SHADER_PARAMETER(int32, SampleCountMax)
 	SHADER_PARAMETER(float, InvDistanceToSampleCountMax)
 	SHADER_PARAMETER(int32, ShadowSampleCountMax)
 	SHADER_PARAMETER(float, ShadowTracingMaxDistance)
+	SHADER_PARAMETER(float, StopTracingTransmittanceThreshold)
 	SHADER_PARAMETER(float, SkyLightCloudBottomVisibility)
 	SHADER_PARAMETER_ARRAY(FLinearColor, AtmosphericLightCloudScatteredLuminanceScale, [2])
-	SHADER_PARAMETER_ARRAY(float,	CloudShadowmapFarDepthKm, [2])
-	SHADER_PARAMETER_ARRAY(float,	CloudShadowmapStrength, [2])
-	SHADER_PARAMETER_ARRAY(float,	CloudShadowmapDepthBias, [2])
-	SHADER_PARAMETER_ARRAY(float,	CloudShadowmapSampleCount, [2])
+	SHADER_PARAMETER_ARRAY(FVector4,	CloudShadowmapFarDepthKm, [2]) // SHADER_PARAMETER_ARRAY of float is always a vector behind the scene and we must comply with SPIRV-Cross alignment requirement so using an array Float4 for now for easy indexing from code.
+	SHADER_PARAMETER_ARRAY(FVector4,	CloudShadowmapStrength, [2])
+	SHADER_PARAMETER_ARRAY(FVector4,	CloudShadowmapDepthBias, [2])
+	SHADER_PARAMETER_ARRAY(FVector4,	CloudShadowmapSampleCount, [2])
 	SHADER_PARAMETER_ARRAY(FVector4,CloudShadowmapSizeInvSize, [2])
 	SHADER_PARAMETER_ARRAY(FVector4,CloudShadowmapTracingSizeInvSize, [2])
 	SHADER_PARAMETER_ARRAY(FMatrix,	CloudShadowmapWorldToLightClipMatrix, [2])
 	SHADER_PARAMETER_ARRAY(FMatrix,	CloudShadowmapWorldToLightClipMatrixInv, [2])
 	SHADER_PARAMETER_ARRAY(FVector4, CloudShadowmapTracingPixelScaleOffset, [2])
-	SHADER_PARAMETER_ARRAY(FVector, CloudShadowmapLightDir, [2])
-	SHADER_PARAMETER_ARRAY(FVector, CloudShadowmapLightPos, [2])
-	SHADER_PARAMETER_ARRAY(FVector, CloudShadowmapLightAnchorPos, [2])	// Snapped position on the planet the shadow map rotate around 
+	SHADER_PARAMETER_ARRAY(FVector4, CloudShadowmapLightDir, [2])
+	SHADER_PARAMETER_ARRAY(FVector4, CloudShadowmapLightPos, [2])
+	SHADER_PARAMETER_ARRAY(FVector4, CloudShadowmapLightAnchorPos, [2])	// Snapped position on the planet the shadow map rotate around 
 	SHADER_PARAMETER(float,		CloudSkyAOFarDepthKm)
 	SHADER_PARAMETER(float,		CloudSkyAOStrength)
 	SHADER_PARAMETER(float,		CloudSkyAOSampleCount)
@@ -90,6 +92,8 @@ private:
 
 
 bool ShouldRenderVolumetricCloud(const FScene* Scene, const FEngineShowFlags& EngineShowFlags);
+bool ShouldViewVisualizeVolumetricCloudConservativeDensity(const FViewInfo& ViewInfo, const FEngineShowFlags& EngineShowFlags);
+uint32 GetVolumetricCloudDebugSampleCountMode(const FEngineShowFlags& ShowFlags);
 
 
 // Structure with data necessary to specify a cloud render.
@@ -116,6 +120,9 @@ struct FCloudRenderContext
 	bool bIsSkyRealTimeReflectionRendering;		// Real time sky capture only
 	bool bSkipAtmosphericLightShadowmap;
 	bool bSecondAtmosphereLightEnabled;
+
+	bool bAsyncCompute;
+	bool bVisualizeConservativeDensityOrDebugSampleCount;
 
 	FUintVector4 TracingCoordToZbufferCoordScaleBias;
 	uint32 NoiseFrameIndexModPattern;

@@ -22,7 +22,9 @@ namespace MovieScene
 
 struct ISequenceUpdater;
 struct FSequenceInstance;
+struct FPreAnimatedStateExtension;
 struct FCompiledDataVolatilityManager;
+struct FSubSequencePath;
 
 /**
  * A sequence instance represents a specific instance of a currently playing sequence, either as a top-level sequence in an IMovieScenePlayer, or as a sub sequence.
@@ -85,6 +87,23 @@ public:
 	 * @param Linker     The linker that owns this sequence instance
 	 */
 	void PostEvaluation(UMovieSceneEntitySystemLinker* Linker);
+
+	/**
+	 * Called to run legacy track templates
+	 */
+	void RunLegacyTrackTemplates();
+
+	/**
+	 * Indicate that this sequence instance should capture any and all changes of state so they can be restored later
+	 *
+	 * @param Linker     The linker that owns this sequence instance
+	 */
+	void EnableGlobalPreAnimatedStateCapture(UMovieSceneEntitySystemLinker* Linker);
+
+	/**
+	 * Check whether this sequence instance is capturing any and all changes of state so they can be restored later
+	 */
+	bool IsCapturingGlobalPreAnimatedState() const;
 
 public:
 
@@ -179,7 +198,6 @@ public:
 	 */
 	FMovieSceneEntityID FindEntity(UObject* Owner, uint32 EntityID) const;
 
-
 	/**
 	 * Retrieve the legacy evaluator for this sequence, if it is available (may return nullptr)
 	 */
@@ -187,6 +205,11 @@ public:
 	{
 		return LegacyEvaluator.Get();
 	}
+
+	/**
+	 * Retrieve a path for this sequence instance back to the root
+	 */
+	FSubSequencePath GetSubSequencePath() const;
 
 public:
 
@@ -257,7 +280,7 @@ private:
 	/** For top-level sequences only - a utility class that is used to ensure that volatile sequences are up to date. Only valid in editor, or for sequences that have the volatile flag. */
 	TUniquePtr<FCompiledDataVolatilityManager> VolatilityManager;
 	/** For top-level sequences only - a marker that keeps this instance's linker saving global preanimated state. */
-	TSharedPtr<bool> GlobalStateMarker;
+	TSharedPtr<FPreAnimatedStateExtension> GlobalPreAnimatedState;
 
 
 	/** Delegate Binding for when an object binding is invalidated in this instance . */

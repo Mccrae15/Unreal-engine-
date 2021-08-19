@@ -8,7 +8,10 @@
 
 #include "DirectLinkCommon.h"
 
+#include "Engine/StaticMesh.h"
 #include "Misc/SecureHash.h"
+
+#include "DatasmithRuntimeUtils.generated.h"
 
 class IDatasmithBaseMaterialElement;
 class IDatasmithElement;
@@ -17,16 +20,45 @@ class IDatasmithMeshElement;
 class IDatasmithTextureElement;
 class IDatasmithUEPbrMaterialElement;
 class FSceneImporter;
+class UBodySetup;
 class UClass;
 class UMaterial;
 class UMaterialInstanceDynamic;
 class USceneComponent;
-class UStaticMesh;
+class UWorld;
 
 struct FTextureData;
 struct FActorData;
 struct FDatasmithMeshElementPayload;
 struct FMeshDescription;
+struct FStaticMeshLODResources;
+
+// Class deriving from UStaticMesh to allow the cooking of collision meshes at runtime
+// To do so, bAllowCPUAccess must be true AND  the metod GetWorld() must return a valid world
+UCLASS()
+class URuntimeMesh : public UStaticMesh
+{
+	GENERATED_BODY()
+
+public:
+	URuntimeMesh()
+		: World(nullptr)
+	{
+		// Set bAllowCPUAccess to true to allow the copy of render data triangles to the collision mesh
+		bAllowCPUAccess = true;
+	}
+
+	// UObject overrides
+	// Overridden to allow cooking of collision meshes, simple and complex, from static mesh at runtime
+	virtual UWorld* GetWorld() const override  { return World ? World : UStaticMesh::GetWorld(); }
+	// End UObject overrides
+
+	// Use valid world to allow cooking of collision meshes, simple and complex, from static mesh at runtime 
+	void SetWorld(UWorld* InWorld) { World = InWorld; }
+
+private:
+	UWorld* World;
+};
 
 namespace DatasmithRuntime
 {
@@ -38,9 +70,9 @@ namespace DatasmithRuntime
 		NextPowerOfTwo
 	};
 
-	FORCEINLINE uint32 GetTypeHash(const FMD5Hash& Hash)
+	FORCEINLINE uint32 GetTypeHash(const FMD5Hash& Hash, EDataType Type = EDataType::None)
 	{
-		return FCrc::MemCrc32(Hash.GetBytes(),Hash.GetSize());
+		return HashCombine(FCrc::MemCrc32(Hash.GetBytes(),Hash.GetSize()), 1u << (uint8)Type);
 	}
 
 	extern void CalculateMeshesLightmapWeights(const TArray< FSceneGraphId >& MeshElementArray, const TMap< FSceneGraphId, TSharedPtr< IDatasmithElement > >& Elements, TMap< FSceneGraphId, float >& LightmapWeights);
@@ -53,6 +85,9 @@ namespace DatasmithRuntime
 
 	// Borrowed from FDatasmithStaticMeshImporter::ProcessCollision(UStaticMesh* StaticMesh, const TArray< FVector >& VertexPositions)
 	extern void ProcessCollision(UStaticMesh* StaticMesh, FDatasmithMeshElementPayload& Payload);
+
+	extern void BuildCollision(UBodySetup* Body, ECollisionTraceFlag CollisionFlag, const FStaticMeshLODResources& Resources);
+
 
 	extern bool /*FDatasmithStaticMeshImporter::*/ShouldRecomputeNormals(const FMeshDescription& MeshDescription, int32 BuildRequirements);
 
@@ -79,13 +114,15 @@ namespace DatasmithRuntime
 
 		static bool IsObjectCompleted(UObject* Asset);
 
-		static UObject* FindObjectFromHash(DirectLink::FElementHash ElementHash);
+		static UObject* FindObjectFromHash(uint32 ElementHash);
+
+		static int32 GetAssetReferenceCount(UObject* Asset);
 
 		/** @return true if some assets have been marked for deletion */
 		static bool CleanUp();
 
 	private:
-		static TMap<DirectLink::FElementHash, TStrongObjectPtr<UObject>> RegistrationMap;
+		static TMap<uint32, TStrongObjectPtr<UObject>> RegistrationMap;
 		static TMap<uint32, TMap<FSceneGraphId,FAssetData>*> SceneMappings;
 	};
 

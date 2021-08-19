@@ -24,6 +24,10 @@
 
 #include "AjaMediaAllowPlatformTypes.h"
 
+#if WITH_EDITOR
+#include "EngineAnalytics.h"
+#endif
+
 #define LOCTEXT_NAMESPACE "FAjaMediaPlayer"
 
 DECLARE_CYCLE_STAT(TEXT("AJA MediaPlayer Request frame"), STAT_AJA_MediaPlayer_RequestFrame, STATGROUP_Media);
@@ -69,6 +73,7 @@ FAjaMediaPlayer::FAjaMediaPlayer(IMediaEventSink& InEventSink)
 	, bVerifyFrameDropCount(true)
 	, InputChannel(nullptr)
 	, SupportedSampleTypes(EMediaIOSampleType::None)
+	, bPauseRequested(false)
 {
 }
 
@@ -84,6 +89,13 @@ FAjaMediaPlayer::~FAjaMediaPlayer()
 
 /* IMediaPlayer interface
  *****************************************************************************/
+
+/**
+ * @EventName MediaFramework.AjaSourceOpened
+ * @Trigger Triggered when an Aja media source is opened through a media player.
+ * @Type Client
+ * @Owner MediaIO Team
+ */
 bool FAjaMediaPlayer::Open(const FString& Url, const IMediaOptions* Options)
 {
 	if (!FAja::CanUseAJACard())
@@ -227,6 +239,22 @@ bool FAjaMediaPlayer::Open(const FString& Url, const IMediaOptions* Options)
 	AjaThreadNewState = EMediaState::Preparing;
 	EventSink.ReceiveMediaEvent(EMediaEvent::MediaConnecting);
 
+#if WITH_EDITOR
+	if (FEngineAnalytics::IsAvailable())
+	{
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+		
+		const int64 ResolutionWidth = Options->GetMediaOption( FMediaIOCoreMediaOption::ResolutionWidth, (int64)1920);
+		const int64 ResolutionHeight = Options->GetMediaOption( FMediaIOCoreMediaOption::ResolutionHeight, (int64)1080);
+		
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("ResolutionWidth"), FString::Printf(TEXT("%d"), ResolutionWidth)));
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("ResolutionHeight"), FString::Printf(TEXT("%d"), ResolutionHeight)));
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("FrameRate"), *VideoFrameRate.ToPrettyText().ToString()));
+		
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("MediaFramework.AjaSourceOpened"), EventAttributes);
+	}
+#endif
+	
 	return true;
 }
 
@@ -496,10 +524,12 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 {
 	SCOPE_CYCLE_COUNTER(STAT_AJA_MediaPlayer_ProcessFrame);
 
-	if (AjaThreadNewState != EMediaState::Playing)
+	if ((AjaThreadNewState != EMediaState::Playing) && (AjaThreadNewState != EMediaState::Paused))
 	{
 		return false;
 	}
+
+	AjaThreadNewState = bPauseRequested ? EMediaState::Paused : EMediaState::Playing;
 
 	AjaThreadFrameDropCount = InInputFrame.FramesDropped;
 
@@ -700,7 +730,7 @@ bool FAjaMediaPlayer::OnOutputFrameCopied(const AJA::AJAOutputFrameData& InFrame
 
 bool FAjaMediaPlayer::IsHardwareReady() const
 {
-	return AjaThreadNewState == EMediaState::Playing ? true : false;
+	return (AjaThreadNewState == EMediaState::Playing) || (AjaThreadNewState == EMediaState::Paused);
 }
 
 void FAjaMediaPlayer::SetupSampleChannels()
@@ -716,6 +746,23 @@ void FAjaMediaPlayer::SetupSampleChannels()
 	FMediaIOSamplingSettings MetadataSettings = BaseSettings;
 	MetadataSettings.BufferSize = MaxNumMetadataFrameBuffer;
 	Samples->InitializeMetadataBuffer(MetadataSettings);
+}
+
+bool FAjaMediaPlayer::SetRate(float Rate)
+{
+	if (FMath::IsNearlyEqual(Rate, 1.0f))
+	{
+		bPauseRequested = false;
+		return true;
+	}
+
+	if (FMath::IsNearlyEqual(Rate, 0.0f))
+	{
+		bPauseRequested = true;
+		return true;
+	}
+
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

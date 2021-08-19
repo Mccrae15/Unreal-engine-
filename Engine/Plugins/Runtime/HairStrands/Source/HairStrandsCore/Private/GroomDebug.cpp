@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved. 
 
+#include "GeometryCacheComponent.h"
 #include "GroomInstance.h"
 #include "GroomManager.h"
 #include "GPUSkinCache.h"
@@ -50,24 +51,6 @@ static FAutoConsoleVariableRef CVarHairCardsGuidesDebug_Sim(TEXT("r.HairStrands.
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-const TCHAR* ToString(EWorldType::Type Type)
-{
-	switch (Type)
-	{
-		case EWorldType::None			: return TEXT("None");
-		case EWorldType::Game			: return TEXT("Game");
-		case EWorldType::Editor			: return TEXT("Editor");
-		case EWorldType::PIE			: return TEXT("PIE");
-		case EWorldType::EditorPreview	: return TEXT("EditorPreview");
-		case EWorldType::GamePreview	: return TEXT("GamePreview");
-		case EWorldType::GameRPC		: return TEXT("GameRPC");
-		case EWorldType::Inactive		: return TEXT("Inactive");
-		default							: return TEXT("Unknown");
-	}
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
-
 namespace GroomDebug
 {
 	// Internal helper class for FCanvas to be able to get screen size
@@ -103,22 +86,30 @@ static void GetGroomInterpolationData(
 {
 	for (const FHairGroupInstance* Instance : Instances)
 	{
-		if (!Instance || Instance->WorldType != WorldType || !Instance->Debug.SkeletalComponent)
+		if (!Instance || Instance->WorldType != WorldType || !Instance->Debug.MeshComponent)
 			continue;
 
 		FCachedGeometry CachedGeometry;
-		if (Instance->Debug.SkeletalComponent)
+		if (Instance->Debug.GroomBindingType == EGroomBindingMeshType::SkeletalMesh)
 		{
-			if (SkinCache)
+			if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Instance->Debug.MeshComponent))
 			{
-				CachedGeometry = SkinCache->GetCachedGeometry(Instance->Debug.SkeletalComponent->ComponentId.PrimIDValue);
+				if (SkinCache)
+				{
+					CachedGeometry = SkinCache->GetCachedGeometry(SkeletalMeshComponent->ComponentId.PrimIDValue);
+				}
+
+				if (IsHairStrandsSkinCacheEnable() && CachedGeometry.Sections.Num() == 0)
+				{
+					FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+					BuildCacheGeometry(GraphBuilder, ShaderMap, SkeletalMeshComponent, CachedGeometry);
+				}
 			}
-			
-			if (IsHairStrandsSkinCacheEnable() && CachedGeometry.Sections.Num() == 0)
-			{
-				FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-				BuildCacheGeometry(GraphBuilder, ShaderMap, Instance->Debug.SkeletalComponent, CachedGeometry);
-			}
+		}
+		else if (UGeometryCacheComponent* GeometryCacheComponent = Cast<UGeometryCacheComponent>(Instance->Debug.MeshComponent))
+		{
+			FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+			BuildCacheGeometry(GraphBuilder, ShaderMap, GeometryCacheComponent, CachedGeometry);
 		}
 		if (CachedGeometry.Sections.Num() == 0)
 			continue;

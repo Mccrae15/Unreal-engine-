@@ -147,6 +147,26 @@ extern CORE_API bool GIsReinstancing;
 /** Helper function to flush resource streaming. */
 extern CORE_API void(*GFlushStreamingFunc)(void);
 
+/** The settings used by the UE-as-a-library feature. */
+struct FUELibraryOverrideSettings
+{
+	/** True if we were initialized via the UELibrary.  If this is false,
+	    none of the other field values should be acknowledged. */
+	bool bIsEmbedded = false;
+
+	/** The window handle to embed the engine into */
+	void* WindowHandle = nullptr;
+
+	/** The overridden width of the embedded viewport */
+	int32 WindowWidth = 0;
+
+	/** The overridden height of the embedded viewport */
+	int32 WindowHeight = 0;
+};
+
+/** Settings for when using UE as a library */
+extern CORE_API FUELibraryOverrideSettings GUELibraryOverrideSettings;
+
 extern CORE_API bool GIsRunningUnattendedScript;
 
 #if WITH_ENGINE
@@ -253,8 +273,23 @@ extern CORE_API bool GIsSlowTask;
 extern CORE_API bool GSlowTaskOccurred;
 extern CORE_API bool GIsGuarded;
 
+/**
+* Set this to true to only allow setting RequestingExit at the start of the Engine tick
+*   This will remove the chance for undefined behaviour when setting RequestExit
+*
+* This needs to proved out on all platforms/use cases before this can moved to default
+*/
+#ifndef UE_SET_REQUEST_EXIT_ON_TICK_ONLY
+	#define UE_SET_REQUEST_EXIT_ON_TICK_ONLY 0
+#endif
+
 UE_DEPRECATED(4.24, "Please use IsEngineExitRequested()/RequestEngineExit(const FString&)")
 extern CORE_API bool GIsRequestingExit;
+
+/**
+ * This will check if a RequestExit has come in, if it has will set GIsRequestingExit.
+ */
+extern CORE_API void BeginExitIfRequested();
 
 FORCEINLINE bool IsEngineExitRequested()
 {
@@ -305,6 +340,7 @@ extern CORE_API FString GGameUserSettingsIni;
 extern CORE_API FString GRuntimeOptionsIni;
 extern CORE_API FString GInstallBundleIni;
 extern CORE_API FString GDeviceProfilesIni;
+extern CORE_API FString GGameplayTagsIni;
 
 extern CORE_API float GNearClippingPlane;
 
@@ -371,6 +407,8 @@ extern CORE_API bool GIsRetrievingVTablePtr;
 
 /** Steadily increasing frame counter. */
 extern CORE_API TSAN_ATOMIC(uint64) GFrameCounter;
+
+extern CORE_API uint64 GFrameCounterRenderThread;
 
 /** GFrameCounter the last time GC was run. */
 extern CORE_API uint64 GLastGCFrame;

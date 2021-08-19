@@ -397,6 +397,7 @@ private:
 		// Allow the plugin manager to mount new content paths by exposing access through a delegate.  PluginManager is 
 		// a Core class, but content path functionality is added at the CoreUObject level.
 		IPluginManager::Get().SetRegisterMountPointDelegate( IPluginManager::FRegisterMountPointDelegate::CreateStatic( &FPackageName::RegisterMountPoint ) );
+		IPluginManager::Get().SetUnRegisterMountPointDelegate( IPluginManager::FRegisterMountPointDelegate::CreateStatic( &FPackageName::UnRegisterMountPoint ) );
 	}
 };
 
@@ -1037,8 +1038,11 @@ bool FPackageName::DoesPackageExist(const FString& LongPackageName, const FGuid*
 
 			return true;
 		}
-
-		return false;
+	
+		// Try to find uncooked packages on disk when I/O store is enabled in editor builds
+#if !WITH_IOSTORE_IN_EDITOR
+		return false; 
+#endif
 	}
 
 	// Convert to filename (no extension yet).
@@ -1061,7 +1065,9 @@ bool FPackageName::DoesPackageExist(const FString& LongPackageName, const FGuid*
 		*PackageReader << Summary;
 
 		// Compare Guids
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (Summary.Guid != *Guid)
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			bFoundFile = false;
 		}
@@ -1079,8 +1085,9 @@ bool FPackageName::DoesPackageExist(const FString& LongPackageName, const FGuid*
 
 bool FPackageName::SearchForPackageOnDisk(const FString& PackageName, FString* OutLongPackageName, FString* OutFilename)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FPackageName::SearchForPackageOnDisk);
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FPackageName::SearchForPackageOnDisk"), STAT_PackageName_SearchForPackageOnDisk, STATGROUP_LoadTime);
-	
+
 	// This function may take a long time to complete, so suspend heartbeat measure while we're here
 	FSlowHeartBeatScope SlowHeartBeatScope;
 
@@ -1517,11 +1524,26 @@ void FPackageName::IteratePackagesInDirectory(const FString& RootDir, const FPac
 	IFileManager::Get().IterateDirectoryStatRecursively(*RootDir, PackageVisitor);
 }
 
-void FPackageName::QueryRootContentPaths( TArray<FString>& OutRootContentPaths )
+void FPackageName::QueryRootContentPaths(TArray<FString>& OutRootContentPaths, bool bIncludeReadOnlyRoots, bool bWithoutLeadingSlashes, bool bWithoutTrailingSlashes)
 {
 	const FLongPackagePathsSingleton& Paths = FLongPackagePathsSingleton::Get();
-	const bool bIncludeReadOnlyRoots = false;	// Don't include Script or Temp paths
 	Paths.GetValidLongPackageRoots( OutRootContentPaths, bIncludeReadOnlyRoots );
+
+	if (bWithoutTrailingSlashes || bWithoutLeadingSlashes)
+	{
+		for (FString& It : OutRootContentPaths)
+		{
+			if (bWithoutTrailingSlashes && It.Len() > 1 && It[It.Len() - 1] == TEXT('/'))
+			{
+				It.RemoveAt(It.Len() - 1, /*Count*/ 1, /*bAllowShrinking*/ false);
+			}
+
+			if (bWithoutLeadingSlashes && It.Len() > 1 && It[0] == TEXT('/'))
+			{
+				It.RemoveAt(0, /*Count*/ 1, /*bAllowShrinking*/ false);
+			}
+		}
+	}
 }
 
 void FPackageName::EnsureContentPathsAreRegistered()
@@ -1549,7 +1571,8 @@ bool FPackageName::ParseExportTextPath(const FString& InExportTextPath, FString*
 	return false;
 }
 
-bool FPackageName::ParseExportTextPath(FStringView InExportTextPath, FStringView* OutClassName, FStringView* OutObjectPath)
+template<class T>
+bool ParseExportTextPathImpl(const T& InExportTextPath, T* OutClassName, T* OutObjectPath)
 {
 	int32 Index;
 	if (InExportTextPath.FindChar('\'', Index))
@@ -1571,14 +1594,25 @@ bool FPackageName::ParseExportTextPath(FStringView InExportTextPath, FStringView
 	return false;
 }
 
+bool FPackageName::ParseExportTextPath(FWideStringView InExportTextPath, FWideStringView* OutClassName, FWideStringView* OutObjectPath)
+{
+	return ParseExportTextPathImpl(InExportTextPath, OutClassName, OutObjectPath);
+}
+
+bool FPackageName::ParseExportTextPath(FAnsiStringView InExportTextPath, FAnsiStringView* OutClassName, FAnsiStringView* OutObjectPath)
+{
+	return ParseExportTextPathImpl(InExportTextPath, OutClassName, OutObjectPath);
+}
+
 bool FPackageName::ParseExportTextPath(const TCHAR* InExportTextPath, FStringView* OutClassName, FStringView* OutObjectPath)
 {
 	return ParseExportTextPath(FStringView(InExportTextPath), OutClassName, OutObjectPath);
 }
 
-FStringView FPackageName::ExportTextPathToObjectPath(FStringView InExportTextPath)
+template <class T>
+T ExportTextPathToObjectPathImpl(const T& InExportTextPath)
 {
-	FStringView ObjectPath;
+	T ObjectPath;
 	if (FPackageName::ParseExportTextPath(InExportTextPath, nullptr, &ObjectPath))
 	{
 		return ObjectPath;
@@ -1588,16 +1622,19 @@ FStringView FPackageName::ExportTextPathToObjectPath(FStringView InExportTextPat
 	return InExportTextPath;
 }
 
+FWideStringView FPackageName::ExportTextPathToObjectPath(FWideStringView InExportTextPath)
+{
+	return ExportTextPathToObjectPathImpl(InExportTextPath);
+}
+
+FAnsiStringView FPackageName::ExportTextPathToObjectPath(FAnsiStringView InExportTextPath)
+{
+	return ExportTextPathToObjectPathImpl(InExportTextPath);
+}
+
 FString FPackageName::ExportTextPathToObjectPath(const FString& InExportTextPath)
 {
-	FString ObjectPath;
-	if ( FPackageName::ParseExportTextPath(InExportTextPath, NULL, &ObjectPath) )
-	{
-		return ObjectPath;
-	}
-	
-	// Could not parse the export text path. Could already be an object path, just return it back.
-	return InExportTextPath;
+	return ExportTextPathToObjectPathImpl(InExportTextPath);
 }
 
 FString FPackageName::ExportTextPathToObjectPath(const TCHAR* InExportTextPath)
@@ -1605,7 +1642,8 @@ FString FPackageName::ExportTextPathToObjectPath(const TCHAR* InExportTextPath)
 	return ExportTextPathToObjectPath(FString(InExportTextPath));
 }
 
-FString FPackageName::ObjectPathToPackageName(const FString& InObjectPath)
+template<class T>
+T ObjectPathToPackageNameImpl(const T& InObjectPath)
 {
 	// Check for package delimiter
 	int32 ObjectDelimiterIdx;
@@ -1616,6 +1654,21 @@ FString FPackageName::ObjectPathToPackageName(const FString& InObjectPath)
 
 	// No object delimiter. The path must refer to the package name directly.
 	return InObjectPath;
+}
+
+FWideStringView FPackageName::ObjectPathToPackageName(FWideStringView InObjectPath)
+{
+	return ObjectPathToPackageNameImpl(InObjectPath);
+}
+
+FAnsiStringView FPackageName::ObjectPathToPackageName(FAnsiStringView InObjectPath)
+{
+	return ObjectPathToPackageNameImpl(InObjectPath);
+}
+
+FString FPackageName::ObjectPathToPackageName(const FString& InObjectPath)
+{
+	return ObjectPathToPackageNameImpl(InObjectPath);
 }
 
 template<class T>
@@ -1644,7 +1697,7 @@ FString FPackageName::ObjectPathToObjectName(const FString& InObjectPath)
 	return ObjectPathToObjectNameImpl(InObjectPath);
 }
 
-FStringView FPackageName::ObjectPathToObjectName(FStringView InObjectPath)
+FWideStringView FPackageName::ObjectPathToObjectName(FWideStringView InObjectPath)
 {
 	return ObjectPathToObjectNameImpl(InObjectPath);
 }

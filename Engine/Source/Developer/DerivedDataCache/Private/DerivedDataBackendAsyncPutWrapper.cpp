@@ -41,6 +41,7 @@ public:
 	/** Call the inner backend and when that completes, remove the memory cache */
 	void DoWork()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(DDCPut_DoWork);
 		COOK_STAT(auto Timer = UsageStats.TimePut());
 		bool bOk = true;
 		bool bDidTry = false;
@@ -104,18 +105,18 @@ public:
 
 FDerivedDataBackendAsyncPutWrapper::FDerivedDataBackendAsyncPutWrapper(FDerivedDataBackendInterface* InInnerBackend, bool bCacheInFlightPuts)
 	: InnerBackend(InInnerBackend)
-	, InflightCache(bCacheInFlightPuts ? (new FMemoryDerivedDataBackend(TEXT("AsyncPutCache"))) : NULL)
+	, InflightCache(bCacheInFlightPuts ? (new FMemoryDerivedDataBackend(TEXT("InflightMemoryCache"))) : NULL)
 {
 	check(InnerBackend);
 }
 
 /** return true if this cache is writable **/
-bool FDerivedDataBackendAsyncPutWrapper::IsWritable()
+bool FDerivedDataBackendAsyncPutWrapper::IsWritable() const
 {
 	return InnerBackend->IsWritable();
 }
 
-FDerivedDataBackendInterface::ESpeedClass FDerivedDataBackendAsyncPutWrapper::GetSpeedClass()
+FDerivedDataBackendInterface::ESpeedClass FDerivedDataBackendAsyncPutWrapper::GetSpeedClass() const
 {
 	return InnerBackend->GetSpeedClass();
 }
@@ -175,6 +176,7 @@ bool FDerivedDataBackendAsyncPutWrapper::GetCachedData(const TCHAR* CacheKey, TA
 		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s CacheHit from InFlightCache on %s"), *GetName(), CacheKey);
 		return true;
 	}
+
 	bool bSuccess = InnerBackend->GetCachedData(CacheKey, OutData);
 	if (bSuccess)
 	{
@@ -191,6 +193,7 @@ bool FDerivedDataBackendAsyncPutWrapper::GetCachedData(const TCHAR* CacheKey, TA
 void FDerivedDataBackendAsyncPutWrapper::PutCachedData(const TCHAR* CacheKey, TArrayView<const uint8> InData, bool bPutEvenIfExists)
 {
 	COOK_STAT(auto Timer = PutSyncUsageStats.TimePut());
+
 	if (!InnerBackend->IsWritable())
 	{
 		return; // no point in continuing down the chain
@@ -236,19 +239,20 @@ void FDerivedDataBackendAsyncPutWrapper::RemoveCachedData(const TCHAR* CacheKey,
 	UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s removed %s"), *GetName(), CacheKey)
 }
 
-void FDerivedDataBackendAsyncPutWrapper::GatherUsageStats(TMap<FString, FDerivedDataCacheUsageStats>& UsageStatsMap, FString&& GraphPath)
+TSharedRef<FDerivedDataCacheStatsNode> FDerivedDataBackendAsyncPutWrapper::GatherUsageStats() const
 {
-	COOK_STAT(
-		{
-		UsageStatsMap.Add(GraphPath + TEXT(": AsyncPut"), UsageStats);
-		UsageStatsMap.Add(GraphPath + TEXT(": AsyncPutSync"), PutSyncUsageStats);
-		if (InnerBackend)
-		{
-			InnerBackend->GatherUsageStats(UsageStatsMap, GraphPath + TEXT(". 0"));
-		}
-		if (InflightCache)
-		{
-			InflightCache->GatherUsageStats(UsageStatsMap, GraphPath + TEXT(". 1"));
-		}
-	});
+	TSharedRef<FDerivedDataCacheStatsNode> Usage = MakeShared<FDerivedDataCacheStatsNode>(this, TEXT("AsyncPutWrapper"));
+	Usage->Stats.Add(TEXT("AsyncPut"), UsageStats);
+	Usage->Stats.Add(TEXT("AsyncPutSync"), PutSyncUsageStats);
+
+	if (InnerBackend)
+	{
+		Usage->Children.Add(InnerBackend->GatherUsageStats());
+	}
+	if (InflightCache)
+	{
+		Usage->Children.Add(InflightCache->GatherUsageStats());
+	}
+
+	return Usage;
 }

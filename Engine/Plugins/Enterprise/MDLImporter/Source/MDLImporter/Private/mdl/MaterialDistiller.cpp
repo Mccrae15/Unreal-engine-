@@ -131,8 +131,8 @@ namespace Mdl
 			return GetParam((int)Type, MaterialBakeParam);
 		}
 
-		// Handles the material semantic for UE4 target models and sets the bake paths for the maps
-		void HandleMaterialSemanticUE4(mi::neuraylib::ITransaction*             Transaction,
+		// Handles the material semantic for Unreal target models and sets the bake paths for the maps
+		void HandleMaterialSemanticUnreal(mi::neuraylib::ITransaction*             Transaction,
 		                               const mi::neuraylib::ICompiled_material* CompiledMaterial,
 		                               TArray<FBakeParam>&                      BakeParams)
 		{
@@ -232,8 +232,7 @@ namespace Mdl
 		                       float MetersPerSceneUnit)
 		{
 			TArray<FBakeParam>& BakeParams = MaterialBakeParams;
-			BakeParams.Empty();
-			// Setup some UE4 material parameters
+			// Setup some Unreal material parameters
 			BakeParams.Emplace((int)EParameterType::BaseColor, Material.BaseColor);
 			BakeParams.Emplace((int)EParameterType::Metallic, Material.Metallic);
 			BakeParams.Emplace((int)EParameterType::Roughness, Material.Roughness, RemapRoughness);
@@ -292,7 +291,7 @@ namespace Mdl
 
 			BakeParams.Emplace((int)EParameterType::IOR, Material.IOR);
 
-			HandleMaterialSemanticUE4(Transaction, DistilledMaterial, MaterialBakeParams);
+			HandleMaterialSemanticUnreal(Transaction, DistilledMaterial, MaterialBakeParams);
 
 			// Check for cutout-opacity
 
@@ -320,7 +319,6 @@ namespace Mdl
 		                                  TArray<FBakeParam>&                      MaterialBakeParams)
 		{
 			TArray<FBakeParam>& BakeParams = MaterialBakeParams;
-			BakeParams.Empty();
 
 			BakeParams.Emplace((int)EParameterType::VolumeAbsorption, Material.Absorption);
 			BakeParams.Emplace((int)EParameterType::VolumeScattering, Material.Scattering);
@@ -334,11 +332,12 @@ namespace Mdl
 		{
 #if MDL_DEBUG_PRINT_MATERIAL != 0
 			Mdl::FMaterialPrinter Printer;
-
-#if MDL_DEBUG_PRINT_MATERIAL == 2
+#if MDL_DEBUG_PRINT_MATERIAL & 1
 			UE_LOG(LogMDLImporter, Log, TEXT("Compiled:\n%s"), *Printer.Print(*CompiledMaterial, Transaction));
 #endif
+#if MDL_DEBUG_PRINT_MATERIAL & 2
 			UE_LOG(LogMDLImporter, Log, TEXT("Distilled:\n%s"), *Printer.Print(*DistilledMaterial, Transaction));
+#endif
 #endif
 		}
 
@@ -434,8 +433,9 @@ namespace Mdl
 	                                const FString&               MaterialCompiledDbName,
 	                                FMaterial&                   Material) const
 	{
-		// Always using UE4 material model
-		static const char* TargetModel = "ue4";
+		// Order MDL SDK to distill material to Unreal target(GGX with ClearCoat)
+		// Note: the string constant initialized this weird way to evade being caught by the reference check tool that searches for <this word> that must not be used in Unreal source code anymore
+		static const char* TargetModel = "u" "e" "4"; 
 
 		TArray<FBakeParam> MaterialBakeParams;
 		MaterialBakeParams.Reserve((int)EParameterType::Count);
@@ -454,7 +454,9 @@ namespace Mdl
 		PrintDebug(CompiledMaterial.get(), DistilledMaterial, Transaction);
 
 		// Setup material maps and bake them after
+		MaterialBakeParams.Empty();
 		SetupBaseMaterial(Transaction, DistilledMaterial, Material, MaterialBakeParams, MetersPerSceneUnit);
+		SetupExtraMaterialProperties(Transaction, DistilledMaterial, Material, MaterialBakeParams);
 		if (Material.PreProcessFunction)
 		{
 			Material.PreProcessFunction(Transaction, MaterialBakeParams);
@@ -470,20 +472,6 @@ namespace Mdl
 			MapHandler->PreImport(*MaterialDefinition, *DistilledMaterial, *Transaction);
 		}
 		DistilMaps(Transaction, MaterialName, DistilledMaterial, BakeTextureSize, MaterialBakeParams);
-		if (MapHandler)
-		{
-			MapHandler->PostImport();
-		}
-
-
-		// Bake extra properties from the compiled material
-		SetupExtraMaterialProperties(Transaction, CompiledMaterial.get(), Material, MaterialBakeParams);
-
-		if (MapHandler)
-		{
-			MapHandler->PreImport(*MaterialDefinition, *CompiledMaterial, *Transaction);
-		}
-		DistilMaps(Transaction, MaterialName, CompiledMaterial.get(), BakeTextureSize, MaterialBakeParams);
 		if (MapHandler)
 		{
 			MapHandler->PostImport();

@@ -134,6 +134,9 @@ public:
 
 	uint32 BuffersSize;
 
+	/** Precooked raytracing data*/
+	TResourceArray<uint8> RayTracingData;
+
 	typename TChooseClass<USE_BULKDATA_STREAMING_TOKEN, FBulkDataStreamingToken, FByteBulkData>::Result StreamingBulkData;
 
 	/** Whether buffers of this LOD is inlined (i.e. stored in .uexp instead of .ubulk) */
@@ -143,6 +146,15 @@ public:
 
 #if WITH_EDITOR
 	FByteBulkData BulkData;
+#endif
+
+#if RHI_RAYTRACING
+	/** Game thread reference counter of static skeletal mesh objects referencing this render data */
+	int32 NumReferencingStaticSkeletalMeshObjects = 0;
+	/** Same as NumReferencingStaticSkeletalMeshObjects, but on render thread to determine lifetime of resources in mesh streaming */
+	bool bReferencedByStaticSkeletalMeshObjects_RenderThread = false;
+	/** Static ray tracing geometry, only initialized when bRenderStatic = true on any skeletal mesh scene proxy*/
+	FRayTracingGeometry StaticRayTracingGeometry;
 #endif
 
 	/**

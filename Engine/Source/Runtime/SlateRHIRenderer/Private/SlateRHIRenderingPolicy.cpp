@@ -659,6 +659,8 @@ void FSlateRHIRenderingPolicy::DrawElements(
 	TSlateElementVertexBuffer<FSlateVertex>* VertexBufferPtr = &MasterVertexBuffer;
 	FSlateElementIndexBuffer* IndexBufferPtr = &MasterIndexBuffer;
 
+	TRefCountPtr<FRHIUniformBuffer> SceneTextureUniformBuffer;
+
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
@@ -782,7 +784,7 @@ void FSlateRHIRenderingPolicy::DrawElements(
 				false);
 
 			const uint32 PrimitiveCount = RenderBatch.DrawPrimitiveType == ESlateDrawPrimitive::LineList ? RenderBatch.NumIndices / 2 : RenderBatch.NumIndices / 3;
-
+			check(ShaderResource == nullptr || !ShaderResource->Debug_IsDestroyed());
 			ESlateShaderResource::Type ResourceType = ShaderResource ? ShaderResource->GetType() : ESlateShaderResource::Invalid;
 			if (ResourceType != ESlateShaderResource::Material && ShaderType != ESlateShader::PostProcess)
 			{
@@ -1036,24 +1038,27 @@ void FSlateRHIRenderingPolicy::DrawElements(
 				const FSceneView& ActiveSceneView = *SceneViews[ActiveSceneIndex];
 
 				FSlateMaterialResource* MaterialShaderResource = (FSlateMaterialResource*)ShaderResource;
-				if (FMaterialRenderProxy* MaterialRenderProxy = MaterialShaderResource->GetRenderProxy())
+				if (const FMaterialRenderProxy* MaterialRenderProxy = MaterialShaderResource->GetRenderProxy())
 				{
 					MaterialShaderResource->CheckForStaleResources();
 
-					const FMaterial* Material = MaterialRenderProxy->GetMaterial(ActiveSceneView.GetFeatureLevel());
+					const FMaterial& Material = MaterialRenderProxy->GetMaterialWithFallback(ActiveSceneView.GetFeatureLevel(), MaterialRenderProxy);
 
-					TShaderRef<FSlateMaterialShaderPS> PixelShader = GetMaterialPixelShader(Material, ShaderType);
+					TShaderRef<FSlateMaterialShaderPS> PixelShader = GetMaterialPixelShader(&Material, ShaderType);
 
 					const bool bUseInstancing = RenderBatch.InstanceCount > 0 && RenderBatch.InstanceData != nullptr;
-					TShaderRef<FSlateMaterialShaderVS> VertexShader = GetMaterialVertexShader(Material, bUseInstancing);
+					TShaderRef<FSlateMaterialShaderVS> VertexShader = GetMaterialVertexShader(&Material, bUseInstancing);
 
 					if (VertexShader.IsValid() && PixelShader.IsValid() && IsSceneTexturesValid(RHICmdList))
 					{
-						FUniformBufferRHIRef PassUniformBuffer = CreateSceneTextureUniformBufferDependentOnShadingPath(
-							RHICmdList,
-							ActiveSceneView.GetFeatureLevel(),
-							ESceneTextureSetupMode::SceneDepth | ESceneTextureSetupMode::CustomDepth);
-						FUniformBufferStaticBindings GlobalUniformBuffers(PassUniformBuffer);
+						if (!SceneTextureUniformBuffer)
+						{
+							SceneTextureUniformBuffer = CreateSceneTextureUniformBufferDependentOnShadingPath(
+								RHICmdList,
+								ActiveSceneView.GetFeatureLevel(),
+								ESceneTextureSetupMode::SceneDepth | ESceneTextureSetupMode::CustomDepth);
+						}
+						FUniformBufferStaticBindings GlobalUniformBuffers(SceneTextureUniformBuffer);
 						SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdList, GlobalUniformBuffers);
 
 #if WITH_SLATE_VISUALIZERS
@@ -1081,9 +1086,9 @@ void FSlateRHIRenderingPolicy::DrawElements(
 						else
 #endif
 						{
-							PixelShader->SetBlendState(GraphicsPSOInit, Material);
+							PixelShader->SetBlendState(GraphicsPSOInit, &Material);
 							FSlateShaderResource* MaskResource = MaterialShaderResource->GetTextureMaskResource();
-							if (MaskResource && (Material->GetBlendMode() == EBlendMode::BLEND_Opaque || Material->GetBlendMode() == EBlendMode::BLEND_Masked))
+							if (MaskResource && (Material.GetBlendMode() == EBlendMode::BLEND_Opaque || Material.GetBlendMode() == EBlendMode::BLEND_Masked))
 							{
 								// Font materials require some form of translucent blending
 								GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_InverseDestAlpha, BF_One>::GetRHI();
@@ -1102,9 +1107,9 @@ void FSlateRHIRenderingPolicy::DrawElements(
 								QUICK_SCOPE_CYCLE_COUNTER(Slate_SetMaterialShaderParams);
 								VertexShader->SetViewProjection(RHICmdList, ViewProjection);
 								VertexShader->SetVerticalAxisMultiplier(RHICmdList, bSwitchVerticalAxis ? -1.0f : 1.0f);
-								VertexShader->SetMaterialShaderParameters(RHICmdList, ActiveSceneView, MaterialRenderProxy, Material);
+								VertexShader->SetMaterialShaderParameters(RHICmdList, ActiveSceneView, MaterialRenderProxy, &Material);
 
-								PixelShader->SetParameters(RHICmdList, ActiveSceneView, MaterialRenderProxy, Material, ShaderParams.PixelParams);
+								PixelShader->SetParameters(RHICmdList, ActiveSceneView, MaterialRenderProxy, &Material, ShaderParams.PixelParams);
 								const float FinalGamma = EnumHasAnyFlags(DrawFlags, ESlateBatchDrawFlag::ReverseGamma) ? 1.0f / EngineGamma : EnumHasAnyFlags(DrawFlags, ESlateBatchDrawFlag::NoGamma) ? 1.0f : DisplayGamma;
 								const float FinalContrast = EnumHasAnyFlags(DrawFlags, ESlateBatchDrawFlag::NoGamma) ? 1 : DisplayContrast;
 								PixelShader->SetDisplayGammaAndContrast(RHICmdList, FinalGamma, FinalContrast);

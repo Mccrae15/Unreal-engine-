@@ -49,19 +49,19 @@ struct FBindingTargets
 	}
 
 	UPROPERTY()
-	UInputBindingTarget* Started;
+	UInputBindingTarget* Started = nullptr;
 
 	UPROPERTY()
-	UInputBindingTarget* Ongoing;
+	UInputBindingTarget* Ongoing = nullptr;
 
 	UPROPERTY()
-	UInputBindingTarget* Canceled;
+	UInputBindingTarget* Canceled = nullptr;
 
 	UPROPERTY()
-	UInputBindingTarget* Completed;
+	UInputBindingTarget* Completed = nullptr;
 
 	UPROPERTY()
-	UInputBindingTarget* Triggered;
+	UInputBindingTarget* Triggered = nullptr;
 };
 
 // Mock input subsystems to avoid having to create an actual subsystem + local player + game instance.
@@ -97,8 +97,6 @@ public:
 	// Storage for input actions applied to the player
 	UPROPERTY()
 	TMap<FName, UInputAction*> InputAction;
-
-	FEnhancedActionKeyMapping* ActionMapping = nullptr;	// Last applied action mapping
 
 	// Ensure we don't try to double bind listeners when applying multiple key mappings
 	TSet<const UInputAction*> MappedActionListeners;

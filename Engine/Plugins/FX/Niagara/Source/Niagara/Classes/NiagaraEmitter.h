@@ -13,6 +13,8 @@
 #include "NiagaraDataSetAccessor.h"
 #include "NiagaraBoundsCalculator.h"
 #include "NiagaraRendererProperties.h"
+#include "NiagaraParameterDefinitionsBase.h"
+#include "NiagaraParameterDefinitionsSubscriber.h"
 #include "NiagaraEmitter.generated.h"
 
 class UMaterial;
@@ -207,7 +209,7 @@ struct MemoryRuntimeEstimation
  *	that need to be serialized and are used for its initialization 
  */
 UCLASS(MinimalAPI)
-class UNiagaraEmitter : public UObject
+class UNiagaraEmitter : public UObject, public INiagaraParameterDefinitionsSubscriber
 {
 	GENERATED_UCLASS_BODY()
 
@@ -237,6 +239,7 @@ public:
 	virtual void PostRename(UObject* OldOuter, const FName OldName) override;
 	virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
 	NIAGARA_API FOnPropertiesChanged& OnPropertiesChanged();
 	NIAGARA_API FOnRenderersChanged& OnRenderersChanged();
 	/** Helper method for when a rename has been detected within the graph. Covers renaming the internal renderer bindings.*/
@@ -244,13 +247,32 @@ public:
 	/** Helper method for when a rename has been detected within the graph. Covers resetting the internal renderer bindings.*/
 	NIAGARA_API void HandleVariableRemoved(const FNiagaraVariable& InOldVariable, bool bUpdateContexts);
 
+	/** Helper method for binding the notifications needed for proper editor integration. */
+	NIAGARA_API void BindNotifications();
 #endif
 	virtual bool NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const override;
 	void Serialize(FArchive& Ar)override;
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
 	virtual bool IsEditorOnly() const override;
+	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	//End UObject Interface
+
+#if WITH_EDITORONLY_DATA
+	//~ Begin INiagaraParameterDefinitionsSubscriber Interface
+	virtual const TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() const override { return ParameterDefinitionsSubscriptions; };
+	virtual TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() override { return ParameterDefinitionsSubscriptions; };
+
+	/** Get all UNiagaraScriptSourceBase of this subscriber. */
+	virtual TArray<UNiagaraScriptSourceBase*> GetAllSourceScripts() override;
+
+	/** Get the path to the UObject of this subscriber. */
+	virtual FString GetSourceObjectPathName() const override;
+
+	/** Get All adapters to editor only script vars owned directly by this subscriber. */
+	virtual TArray<UNiagaraEditorParametersAdapterBase*> GetEditorOnlyParametersAdapters() override;
+	//~ End INiagaraParameterDefinitionsSubscriber Interface
+#endif
 
 	bool IsEnabledOnPlatform(const FString& PlatformName)const;
 
@@ -376,7 +398,7 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter", meta = (InlineEditConditionToggle))
 	uint32 bLimitDeltaTime : 1;
 
-	void NIAGARA_API GetScripts(TArray<UNiagaraScript*>& OutScripts, bool bCompilableOnly = true) const;
+	void NIAGARA_API GetScripts(TArray<UNiagaraScript*>& OutScripts, bool bCompilableOnly = true, bool bEnabledOnly = false) const;
 
 	NIAGARA_API UNiagaraScript* GetScript(ENiagaraScriptUsage Usage, FGuid UsageId);
 
@@ -386,26 +408,27 @@ public:
 	void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData);
 	void CacheFromShaderCompiled();
 
+	NIAGARA_API void UpdateEmitterAfterLoad();
+
 #if WITH_EDITORONLY_DATA
 	/** 'Source' data/graphs for the scripts used by this emitter. */
 	UPROPERTY()
 	class UNiagaraScriptSourceBase*	GraphSource;
 
 	/** Should we enable rapid iteration removal if the system is also set to remove rapid iteration parameters on compile? This value defaults to true.*/
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter")
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter", meta = (DisplayName = "Supports Baked Rapid Iteration"))
 	uint32 bBakeOutRapidIteration : 1;
 
 	bool NIAGARA_API AreAllScriptAndSourcesSynchronized() const;
 	void NIAGARA_API OnPostCompile();
 
-	UNiagaraEmitter* MakeRecursiveDeepCopy(UObject* DestOuter) const;
-	UNiagaraEmitter* MakeRecursiveDeepCopy(UObject* DestOuter, TMap<const UObject*, UObject*>& ExistingConversions) const;
 	void NIAGARA_API InvalidateCompileResults();
 
 	/* Gets a Guid which is updated any time data in this emitter is changed. */
 	FGuid NIAGARA_API GetChangeId() const;
 
 	NIAGARA_API UNiagaraEditorDataBase* GetEditorData() const;
+	NIAGARA_API UNiagaraEditorParametersAdapterBase* GetEditorParameters();
 
 	NIAGARA_API void SetEditorData(UNiagaraEditorDataBase* InEditorData);
 
@@ -420,12 +443,19 @@ public:
 	/* If this emitter is exposed to the library. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
 	bool bExposeToLibrary;
+	
+	UPROPERTY()
+	bool bIsTemplateAsset_DEPRECATED;
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
-	bool bIsTemplateAsset;
-
+	ENiagaraScriptTemplateSpecification TemplateSpecification;
+	
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
 	FText TemplateAssetDescription;
+
+	/** Category to collate this emitter into for "add new emitter" dialogs.*/
+	UPROPERTY(AssetRegistrySearchable, EditAnywhere, Category = Script)
+	FText Category;
 
 	UPROPERTY()
 	TArray<UNiagaraScript*> ScratchPadScripts;
@@ -592,14 +622,20 @@ private:
 	UPROPERTY()
 	UNiagaraEditorDataBase* EditorData;
 
+	/** Wrapper for editor only parameters. */
+	UPROPERTY()
+	UNiagaraEditorParametersAdapterBase* EditorParameters;
+
 	/** A multicast delegate which is called whenever all the scripts for this emitter have been compiled (successfully or not). */
 	FOnEmitterCompiled OnVMScriptCompiledDelegate;
 
 	/** A multicast delegate which is called whenever all the scripts for this emitter have been compiled (successfully or not). */
 	FOnEmitterCompiled OnGPUScriptCompiledDelegate;
 
-	void RaiseOnEmitterGPUCompiled(UNiagaraScript* InScript);
+	void RaiseOnEmitterGPUCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
 #endif
+
+	bool bFullyLoaded = false;
 
 #if !UE_BUILD_SHIPPING
 	FString DebugSimName;
@@ -629,6 +665,10 @@ private:
 
 	UPROPERTY()
 	UNiagaraEmitter* ParentAtLastMerge;
+
+	/** Subscriptions to definitions of parameters. */
+	UPROPERTY()
+	TArray<FParameterDefinitionsSubscription> ParameterDefinitionsSubscriptions;
 #endif
 
 #if WITH_EDITOR

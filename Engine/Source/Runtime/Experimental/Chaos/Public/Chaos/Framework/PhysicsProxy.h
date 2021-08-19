@@ -39,7 +39,7 @@ class TPhysicsProxy : public IPhysicsProxyBase
 public:
 	using FParticleType = Concrete;
 
-	using FParticlesType = Chaos::TPBDRigidParticles<float, 3>;
+	using FParticlesType = Chaos::FPBDRigidParticles;
 	using FCollisionConstraintsType = Chaos::FPBDCollisionConstraints;
 	using FIntArray = Chaos::TArrayCollectionArray<int32>;
 
@@ -65,27 +65,19 @@ public:
 
 	// Previously callback related functions, all called in the context of the physics thread if enabled.
 	bool IsSimulating() const { return static_cast<const Concrete*>(this)->IsSimulating(); }
-	void UpdateKinematicBodiesCallback(const FParticlesType& InParticles, const float InDt, const float InTime, FKinematicProxy& InKinematicProxy) { static_cast<Concrete*>(this)->UpdateKinematicBodiesCallback(InParticles, InDt, InTime, InKinematicProxy); }
-	void StartFrameCallback(const float InDt, const float InTime) { static_cast<Concrete*>(this)->StartFrameCallback(InDt, InTime); }
-	void EndFrameCallback(const float InDt) { static_cast<Concrete*>(this)->EndFrameCallback(InDt); }
+	void UpdateKinematicBodiesCallback(const FParticlesType& InParticles, const Chaos::FReal InDt, const Chaos::FReal InTime, FKinematicProxy& InKinematicProxy) { static_cast<Concrete*>(this)->UpdateKinematicBodiesCallback(InParticles, InDt, InTime, InKinematicProxy); }
+	void StartFrameCallback(const Chaos::FReal InDt, const Chaos::FReal InTime) { static_cast<Concrete*>(this)->StartFrameCallback(InDt, InTime); }
+	void EndFrameCallback(const Chaos::FReal InDt) { static_cast<Concrete*>(this)->EndFrameCallback(InDt); }
 	void CreateRigidBodyCallback(FParticlesType& InOutParticles) { static_cast<Concrete*>(this)->CreateRigidBodyCallback(InOutParticles); }
-	void ParameterUpdateCallback(FParticlesType& InParticles, const float InTime) { static_cast<Concrete*>(this)->ParameterUpdateCallback(InParticles, InTime); }
 	void DisableCollisionsCallback(TSet<TTuple<int32, int32>>& InPairs) { static_cast<Concrete*>(this)->DisableCollisionsCallback(InPairs); }
-	void AddForceCallback(FParticlesType& InParticles, const float InDt, const int32 InIndex) { static_cast<Concrete*>(this)->AddForceCallback(InParticles, InDt, InIndex); }
-
-	template <typename Traits>
-	void FieldForcesUpdateCallback(Chaos::TPBDRigidsSolver<Traits>* InSolver, FParticlesType& Particles, Chaos::TArrayCollectionArray<FVector> & Force, Chaos::TArrayCollectionArray<FVector> & Torque, const float Time) { static_cast<Concrete*>(this)->FieldForcesUpdateCallback(InSolver, Particles, Force, Torque, Time); }
+	void AddForceCallback(FParticlesType& InParticles, const Chaos::FReal InDt, const int32 InIndex) { static_cast<Concrete*>(this)->AddForceCallback(InParticles, InDt, InIndex); }
 
 	/** The Particle Binding creates a connection between the particles in the simulation and the solver objects dataset. */
 	void BindParticleCallbackMapping(Chaos::TArrayCollectionArray<PhysicsProxyWrapper> & PhysicsProxyReverseMap, Chaos::TArrayCollectionArray<int32> & ParticleIDReverseMap) {static_cast<Concrete*>(this)->BindParticleCallbackMapping(PhysicsProxyReverseMap, ParticleIDReverseMap);}
 
-	/** Called to buffer a command to be processed at the next available safe opportunity */
-	template <typename Traits>
-	void BufferCommand(Chaos::TPBDRigidsSolver<Traits>* InSolver, const FFieldSystemCommand& InCommand) { static_cast<Concrete*>(this)->BufferCommand(InSolver, InCommand); }
-
 	/** Returns the concrete type of the derived class*/
 	EPhysicsProxyType ConcreteType() { return static_cast<Concrete*>(this)->ConcreteType(); }
-
+	
 	/**
 	 * CONTEXT: GAMETHREAD
 	* Returns a new unmanaged allocation of the data saved on the handle, otherwise nullptr
@@ -109,37 +101,7 @@ public:
 	* they may "overaccumulate".
 	*/
 	void ClearAccumulatedData() { static_cast<Concrete*>(this)->ClearAccumulatedData(); }
-
-	/**
-	 * CONTEXT: PHYSICSTHREAD
-	 * Called per-tick after the simulation has completed. The proxy should cache the results of their
-	 * simulation into the local buffer. 
-	 */
-	void BufferPhysicsResults() { static_cast<Concrete*>(this)->BufferPhysicsResults(); }
-
-	/**
-	 * CONTEXT: PHYSICSTHREAD (Write Locked)
-	 * Called by the physics thread to signal that it is safe to perform any double-buffer flips here.
-	 * The physics thread has pre-locked an RW lock for this operation so the game thread won't be reading
-	 * the data
-	 */
-	void FlipBuffer() { static_cast<Concrete*>(this)->FlipBuffer(); }
-
-	/**
-	 * CONTEXT: GAMETHREAD (Read Locked)
-	 * Perform a similar operation to Sync, but take the data from a gamethread-safe buffer. This will be called
-	 * from the game thread when it cannot sync to the physics thread. The simulation is very likely to be running
-	 * when this happens so never read any physics thread data here!
-	 *
-	 * SyncTimestamp indicates which inputs the solver used to generate these results. Proxy can stomp results if needed
-	 * For example of particle has been deleted, or a position was set manually by game thread, the proxy ignores the solver results
-	 * Returns true if the data was pulled. If false is returned the proxy's particle pointer may be dangling so do not read from it. Skip sync entirely
-	 *
-	 * Note: A read lock will have been acquired for this - so the physics thread won't force a buffer flip while this
-	 * sync is ongoing
-	 */
-	bool PullFromPhysicsState(const int32 SolverSyncTimestamp) { return static_cast<Concrete*>(this)->PullFromPhysicsState(SolverSyncTimestamp); }
-
+	
 	/**
 	 * CONTEXT: GAMETHREAD
 	 * Called during the gamethread sync after the proxy has been removed from its solver
@@ -166,7 +128,7 @@ public:
 
 	void* GetUserData() const { return nullptr; }
 
-	Chaos::TRigidTransform<float, 3> GetTransform() const { return Chaos::TRigidTransform<float, 3>(); }
+	Chaos::FRigidTransform3 GetTransform() const { return Chaos::FRigidTransform3(); }
 
 
 private:

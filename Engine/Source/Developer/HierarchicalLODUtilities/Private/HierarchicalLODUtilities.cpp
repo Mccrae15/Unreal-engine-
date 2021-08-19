@@ -4,6 +4,7 @@
 #include "GameFramework/Actor.h"
 #include "Components/StaticMeshComponent.h"
 #include "StaticMeshAttributes.h"
+#include "StaticMeshOperations.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
 #include "GameFramework/WorldSettings.h"
@@ -246,28 +247,28 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 	return BuildStaticMeshForLODActor(LODActor, Proxy, LODSetup, InBaseMaterial);
 }
 
-static FString GetImposterMeshName(const UMaterialInterface* InImposterMaterial)
+static FString GetImposterMeshName(const UStaticMesh* InImposterMesh)
 {
-	UPackage* MaterialOuterMost = InImposterMaterial->GetOutermost();
+	UPackage* MeshOuterMost = InImposterMesh->GetOutermost();
 
-	const FString BaseName = FPackageName::GetShortName(MaterialOuterMost->GetPathName());
+	const FString BaseName = FPackageName::GetShortName(MeshOuterMost->GetPathName());
 	return FString::Printf(TEXT("%s_ImposterMesh"), *BaseName);
 }
 
-static FString GetImposterMeshPackageName(const UMaterialInterface* InImposterMaterial)
+static FString GetImposterMeshPackageName(const UStaticMesh* InImposterMesh)
 {
-	UPackage* MaterialOuterMost = InImposterMaterial->GetOutermost();
+	UPackage* MeshOuterMost = InImposterMesh->GetOutermost();
 
-	const FString PathName = FPackageName::GetLongPackagePath(MaterialOuterMost->GetPathName());
-	const FString BaseName = FPackageName::GetShortName(MaterialOuterMost->GetPathName());
+	const FString PathName = FPackageName::GetLongPackagePath(MeshOuterMost->GetPathName());
+	const FString BaseName = FPackageName::GetShortName(MeshOuterMost->GetPathName());
 	return FString::Printf(TEXT("%s/%s_ImposterMesh"), *PathName, *BaseName);
 }
 
-UPackage* CreateOrRetrieveImposterMeshPackage(const UMaterialInterface* InImposterMaterial)
+static UPackage* CreateOrRetrieveImposterMeshPackage(const UStaticMesh* InImposterMesh)
 {
-	checkf(InImposterMaterial != nullptr, TEXT("Invalid material supplied"));
+	checkf(InImposterMesh != nullptr, TEXT("Invalid mesh supplied"));
 
-	const FString MeshPackageName = GetImposterMeshPackageName(InImposterMaterial);
+	const FString MeshPackageName = GetImposterMeshPackageName(InImposterMesh);
 
 	UPackage* MeshPackage = CreatePackage( *MeshPackageName);
 	MeshPackage->FullyLoad();
@@ -280,29 +281,48 @@ UPackage* CreateOrRetrieveImposterMeshPackage(const UMaterialInterface* InImpost
 	return MeshPackage;
 }
 
-UStaticMesh* CreateImposterStaticMesh(UStaticMeshComponent* InComponent, UMaterialInterface* InMaterial, const FMeshProxySettings& InProxySettings)
+static UMaterialInterface* GetImposterMaterial(UStaticMeshComponent* InComponent)
 {
-	UPackage* MeshPackage = CreateOrRetrieveImposterMeshPackage(InMaterial);
+	// Retrieve imposter material
+	const int32 LODIndex = InComponent->GetStaticMesh()->GetNumLODs() - 1;
+
+	// Retrieve the sections, we're expect 1 for imposter meshes
+	const FStaticMeshLODResources::FStaticMeshSectionArray& Sections = InComponent->GetStaticMesh()->GetRenderData()->LODResources[LODIndex].Sections;
+	check(Sections.Num() == 1);
+
+	// Retrieve material for this section
+	return InComponent->GetMaterial(Sections[0].MaterialIndex);
+}
+
+static UStaticMesh* CreateImposterStaticMesh(UStaticMeshComponent* InComponent, const FMeshProxySettings& InProxySettings)
+{
+	UPackage* ImposterStaticMeshPackage = CreateOrRetrieveImposterMeshPackage(InComponent->GetStaticMesh());
 
 	// check if our asset exists
-	const FString ImposterMeshName = GetImposterMeshName(InMaterial);
-	UStaticMesh* StaticMesh = FindObject<UStaticMesh>(MeshPackage, *ImposterMeshName);
-	if (StaticMesh == nullptr)
+	const FString ImposterStaticMeshName = GetImposterMeshName(InComponent->GetStaticMesh());
+	UStaticMesh* ImposterStaticMesh = FindObject<UStaticMesh>(ImposterStaticMeshPackage, *ImposterStaticMeshName);
+	bool bMeshChanged = false;
+
+	FMeshDescription SourceMeshDesc;
+	const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
+	MeshMergeUtilities.ExtractImposterToRawMesh(InComponent, SourceMeshDesc);
+
+	if (ImposterStaticMesh == nullptr)
 	{
 		// Create the UStaticMesh object.
-		StaticMesh = NewObject<UStaticMesh>(MeshPackage, *ImposterMeshName, RF_Public | RF_Standalone);
-		StaticMesh->InitResources();
+		ImposterStaticMesh = NewObject<UStaticMesh>(ImposterStaticMeshPackage, *ImposterStaticMeshName, RF_Public | RF_Standalone);
+		ImposterStaticMesh->InitResources();
 
 		// make sure it has a new lighting guid
-		StaticMesh->LightingGuid = FGuid::NewGuid();
+		ImposterStaticMesh->SetLightingGuid();
 
 		// Set it to use textured lightmaps. Note that Build Lighting will do the error-checking (texcoordindex exists for all LODs, etc).
-		StaticMesh->LightMapResolution = InProxySettings.LightMapResolution;
-		StaticMesh->LightMapCoordinateIndex = 1;
+		ImposterStaticMesh->SetLightMapResolution(InProxySettings.LightMapResolution);
+		ImposterStaticMesh->SetLightMapCoordinateIndex(1);
 
 		// Add one LOD for the base mesh
-		StaticMesh->SetNumSourceModels(0);
-		FStaticMeshSourceModel& SrcModel = StaticMesh->AddSourceModel();
+		ImposterStaticMesh->SetNumSourceModels(0);
+		FStaticMeshSourceModel& SrcModel = ImposterStaticMesh->AddSourceModel();
 		/*Don't allow the engine to recalculate normals*/
 		SrcModel.BuildSettings.bRecomputeNormals = false;
 		SrcModel.BuildSettings.bRecomputeTangents = false;
@@ -318,39 +338,60 @@ UStaticMesh* CreateImposterStaticMesh(UStaticMeshComponent* InComponent, UMateri
 			SrcModel.BuildSettings.DistanceFieldResolutionScale = 0.0f;
 		}
 
-		FMeshDescription* ImposterMesh = StaticMesh->CreateMeshDescription(0);
-		const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
-		MeshMergeUtilities.ExtractImposterToRawMesh(InComponent, *ImposterMesh);
-
+		ImposterStaticMesh->CreateMeshDescription(0, SourceMeshDesc);
+		
 		// Disable collisions on imposters
-		FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(0, 0);
+		FMeshSectionInfo Info = ImposterStaticMesh->GetSectionInfoMap().Get(0, 0);
 		Info.bEnableCollision = false;
-		StaticMesh->GetSectionInfoMap().Set(0, 0, Info);
+		ImposterStaticMesh->GetSectionInfoMap().Set(0, 0, Info);
 
+		UMaterialInterface* ImposterMaterial = GetImposterMaterial(InComponent);
+
+		ImposterStaticMesh->SetStaticMaterials({ ImposterMaterial });
+
+		bMeshChanged = true;
+	}
+	else
+	{
+		// Compare existing Imposter mesh with the source mesh, update imposter if required
+		FMeshDescription* ImposterMeshDesc = ImposterStaticMesh->GetMeshDescription(0);
+		check(ImposterMeshDesc);
+
+		FSHAHash ImposterHash = FStaticMeshOperations::ComputeSHAHash(*ImposterMeshDesc, true);
+		FSHAHash SourceHash = FStaticMeshOperations::ComputeSHAHash(SourceMeshDesc, true);
+		
+		if (ImposterHash != SourceHash)
+		{
+			*ImposterMeshDesc = SourceMeshDesc;
+			bMeshChanged = true;
+		}
+	}
+
+	if (bMeshChanged)
+	{
 		// Commit mesh description and materials list to static mesh
-		StaticMesh->CommitMeshDescription(0);
-		StaticMesh->StaticMaterials = { InMaterial };
+		ImposterStaticMesh->CommitMeshDescription(0);
 
 		//Set the Imported version before calling the build
-		StaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;
+		ImposterStaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;
 
-		StaticMesh->PostEditChange();
+		ImposterStaticMesh->PostEditChange();
 
 		// Our imposters meshes are flat, but they actually represent a volume.
 		// Extend the imposter bounds using the original mesh bounds.
-		if (StaticMesh->GetBoundingBox().GetVolume() == 0)
+		if (ImposterStaticMesh->GetBoundingBox().GetVolume() == 0)
 		{
-			const FBox StaticMeshBox = StaticMesh->GetBoundingBox();
+			const FBox StaticMeshBox = ImposterStaticMesh->GetBoundingBox();
 			const FBox CombinedBox = StaticMeshBox + InComponent->GetStaticMesh()->GetBoundingBox();
-			StaticMesh->PositiveBoundsExtension = (CombinedBox.Max - StaticMeshBox.Max);
-			StaticMesh->NegativeBoundsExtension = (StaticMeshBox.Min - CombinedBox.Min);
-			StaticMesh->CalculateExtendedBounds();
-		}	
-	
-		StaticMesh->MarkPackageDirty();
+			ImposterStaticMesh->SetPositiveBoundsExtension((CombinedBox.Max - StaticMeshBox.Max));
+			ImposterStaticMesh->SetNegativeBoundsExtension((StaticMeshBox.Min - CombinedBox.Min));
+			ImposterStaticMesh->CalculateExtendedBounds();
+		}
+
+		ImposterStaticMesh->MarkPackageDirty();
 	}
 
-	return StaticMesh;
+	return ImposterStaticMesh;
 }
 
 bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, UHLODProxy* Proxy, const FHierarchicalSimplification& LODSetup, UMaterialInterface* InBaseMaterial)
@@ -388,7 +429,7 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 		{
 			if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
 			{
-				if (LODActor->GetImposterMaterial(StaticMeshComponent))
+				if (LODActor->ShouldUseInstancing(StaticMeshComponent))
 				{
 					AllImposters.Add(StaticMeshComponent);
 				}
@@ -493,7 +534,7 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 			FProjectStatus ProjectStatus;
 			if (IProjectManager::Get().QueryStatusForCurrentProject(ProjectStatus) && (ProjectStatus.IsTargetPlatformSupported(TEXT("Android")) || ProjectStatus.IsTargetPlatformSupported(TEXT("IOS"))))
 			{
-				if (MainMesh->RenderData.IsValid() && MainMesh->RenderData->LODResources.Num() && MainMesh->RenderData->LODResources[0].IndexBuffer.Is32Bit())
+				if (MainMesh->GetRenderData() && MainMesh->GetRenderData()->LODResources.Num() && MainMesh->GetRenderData()->LODResources[0].IndexBuffer.Is32Bit())
 				{
 					FMessageLog("HLODResults").Warning()
 						->AddToken(FUObjectToken::Create(LODActor))
@@ -541,6 +582,7 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 	}
 
 	// Add imposters
+	LODActor->ClearInstances();
 	if (AllImposters.Num() > 0)
 	{
 		struct FLODImposterBatch
@@ -550,26 +592,47 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 		};
 
 		// Get all meshes + transforms for all imposters type (per material)
-		TMap<UMaterialInterface*, FLODImposterBatch> ImposterBatches;
+		TMap<FHLODInstancingKey, FLODImposterBatch> ImposterBatches;
 		for (UStaticMeshComponent* Imposter : AllImposters)
 		{
-			UMaterialInterface* Material = LODActor->GetImposterMaterial(Imposter);
-			check(Material);
+			UStaticMesh* StaticMesh = Imposter->GetStaticMesh();
+			check(StaticMesh);
 
-			FLODImposterBatch& LODImposterBatch = ImposterBatches.FindOrAdd(Material);
-			LODImposterBatch.Transforms.Add(Imposter->GetOwner()->GetActorTransform());
+			UMaterialInterface* ImposterMaterial = GetImposterMaterial(Imposter);
+
+			FHLODInstancingKey Key(Imposter->GetStaticMesh(), ImposterMaterial);
+			check(Key.IsValid());
+
+			FLODImposterBatch& LODImposterBatch = ImposterBatches.FindOrAdd(Key);
+
+			// If we have an ISMC, ensure we include all its instances
+			if (UInstancedStaticMeshComponent* InstancedSMC = Cast<UInstancedStaticMeshComponent>(Imposter))
+			{
+				FTransform ActorTransformWS = InstancedSMC->GetOwner()->GetActorTransform();
+
+				LODImposterBatch.Transforms.Reserve(LODImposterBatch.Transforms.Num() + InstancedSMC->GetInstanceCount());
+				for (const FInstancedStaticMeshInstanceData& InstanceData : InstancedSMC->PerInstanceSMData)
+				{
+					FTransform InstanceTransformWS = FTransform(InstanceData.Transform) * ActorTransformWS;
+					LODImposterBatch.Transforms.Add(InstanceTransformWS);
+				}
+			}
+			else
+			{
+				LODImposterBatch.Transforms.Add(Imposter->GetOwner()->GetActorTransform());
+			}
 
 			// The static mesh hasn't been created yet, do it.
 			if (LODImposterBatch.StaticMesh == nullptr)
 			{
-				LODImposterBatch.StaticMesh = CreateImposterStaticMesh(Imposter, Material, LODSetup.ProxySetting);
+				LODImposterBatch.StaticMesh = CreateImposterStaticMesh(Imposter, LODSetup.ProxySetting);
 			}
 		}
 
 		// Add imposters to the LODActor
-		for (const TPair<UMaterialInterface*, FLODImposterBatch>& ImposterBatch : ImposterBatches)
+		for (const auto& ImposterBatch : ImposterBatches)
 		{
-			LODActor->SetupImposters(ImposterBatch.Key, ImposterBatch.Value.StaticMesh, ImposterBatch.Value.Transforms);
+			LODActor->AddInstances(ImposterBatch.Value.StaticMesh, ImposterBatch.Key.Material, ImposterBatch.Value.Transforms);
 		}
 	}
 
@@ -1042,7 +1105,7 @@ int32 FHierarchicalLODUtilities::GetLODLevelForScreenSize(const UStaticMeshCompo
 {
 	check(StaticMeshComponent != nullptr && StaticMeshComponent->GetStaticMesh() != nullptr);
 
-	const FStaticMeshRenderData* RenderData = StaticMeshComponent->GetStaticMesh()->RenderData.Get();
+	const FStaticMeshRenderData* RenderData = StaticMeshComponent->GetStaticMesh()->GetRenderData();
 	checkf(RenderData != nullptr, TEXT("StaticMesh in StaticMeshComponent %s contains invalid render data"), *StaticMeshComponent->GetName());
 	checkf(StaticMeshComponent->GetStaticMesh()->GetNumSourceModels() > 0, TEXT("StaticMesh in StaticMeshComponent %s contains no SourceModels"), *StaticMeshComponent->GetName());
 
@@ -1053,7 +1116,12 @@ AHierarchicalLODVolume* FHierarchicalLODUtilities::CreateVolumeForLODActor(ALODA
 {
 	FBox BoundingBox = InLODActor->GetComponentsBoundingBox(true);
 
-	AHierarchicalLODVolume* Volume = InWorld->SpawnActor<AHierarchicalLODVolume>(AHierarchicalLODVolume::StaticClass(), FTransform(BoundingBox.GetCenter()));
+	// If no world is provided, spawn the volume in the same level as InLODActor
+	UWorld* WorldToSpawnIn = InWorld ? InWorld : InLODActor->GetWorld();
+	FActorSpawnParameters ActorSpawnParameters;
+	ActorSpawnParameters.OverrideLevel = InWorld == nullptr ? InLODActor->GetLevel() : nullptr;
+
+	AHierarchicalLODVolume* Volume = WorldToSpawnIn->SpawnActor<AHierarchicalLODVolume>(AHierarchicalLODVolume::StaticClass(), FTransform(BoundingBox.GetCenter()), ActorSpawnParameters);
 
 	// this code builds a brush for the new actor
 	Volume->PreEditChange(NULL);
@@ -1071,7 +1139,7 @@ AHierarchicalLODVolume* FHierarchicalLODUtilities::CreateVolumeForLODActor(ALODA
 	CubeBuilder->Y = BoundingBox.GetSize().Y * 1.5f;
 	CubeBuilder->Z = BoundingBox.GetSize().Z * 1.5f;
 
-	Volume->BrushBuilder->Build(InWorld, Volume);
+	Volume->BrushBuilder->Build(WorldToSpawnIn, Volume);
 
 	FBSPOps::csgPrepMovingBrush(Volume);
 

@@ -16,6 +16,7 @@
 #include "PostProcessing.h"
 #include "GpuDebugRendering.h"
 #include "ShaderPrintParameters.h"
+#include "ShaderPrint.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -172,7 +173,6 @@ class FDeepTransmittanceMaskCS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderDrawDebugParameters, ShaderDrawParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintParameters)
 
 		SHADER_PARAMETER_ARRAY(FIntVector4, DeepShadow_AtlasSlotOffsets_AtlasSlotIndex, [FHairStrandsDeepShadowData::MaxMacroGroupCount])
 		SHADER_PARAMETER_ARRAY(FMatrix, DeepShadow_CPUWorldToLightTransforms, [FHairStrandsDeepShadowData::MaxMacroGroupCount])
@@ -309,7 +309,6 @@ static FRDGBufferRef AddDeepShadowTransmittanceMaskPass(
 	if (ShaderDrawDebug::IsShaderDrawDebugEnabled(View))
 	{
 		ShaderDrawDebug::SetParameters(GraphBuilder, View.ShaderDrawData, Parameters->ShaderDrawParameters);
-		ShaderPrint::SetParameters(View, Parameters->ShaderPrintParameters);
 	}
 
 	memcpy(&(Parameters->DeepShadow_AtlasSlotOffsets_AtlasSlotIndex[0]), Params.DeepShadow_AtlasSlotOffsets_AtlasSlotIndex, sizeof(FIntVector4) * FHairStrandsDeepShadowData::MaxMacroGroupCount);
@@ -370,7 +369,6 @@ class FDeepShadowMaskPS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderDrawDebugParameters, ShaderDrawParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintParameters)
 		                         
 		SHADER_PARAMETER(FIntPoint, DeepShadow_SlotOffset)
 		SHADER_PARAMETER(uint32, DeepShadow_SlotIndex)
@@ -470,7 +468,6 @@ static void AddDeepShadowOpaqueMaskPass(
 	if (ShaderDrawDebug::IsShaderDrawDebugEnabled(View))
 	{
 		ShaderDrawDebug::SetParameters(GraphBuilder, View.ShaderDrawData, Parameters->ShaderDrawParameters);
-		ShaderPrint::SetParameters(View, Parameters->ShaderPrintParameters);
 	}
 
 	FRDGTextureRef RayMarchMask = nullptr;
@@ -673,11 +670,12 @@ FHairStrandsTransmittanceMaskData RenderHairStrandsTransmittanceMask(
 	FHairStrandsTransmittanceMaskData TransmittanceMaskData;
 	if (HairDatas)
 	{
-		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+		//for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+		const int32 HairViewIndex = 0; // HAIR_TODO multiview support
 		{
-			const FViewInfo& View = Views[ViewIndex];
-			const FHairStrandsVisibilityData& InHairVisibilityData = HairDatas->HairVisibilityViews.HairDatas[ViewIndex];
-			const FHairStrandsMacroGroupDatas& InMacroGroupDatas = HairDatas->MacroGroupsPerViews.Views[ViewIndex];
+			const FViewInfo& View = Views[HairViewIndex];
+			const FHairStrandsVisibilityData& InHairVisibilityData = HairDatas->HairVisibilityViews.HairDatas[HairViewIndex];
+			const FHairStrandsMacroGroupDatas& InMacroGroupDatas = HairDatas->MacroGroupsPerViews.Views[HairViewIndex];
 
 			TransmittanceMaskData = RenderHairStrandsTransmittanceMask(GraphBuilder, View, LightSceneInfo, InMacroGroupDatas, InHairVisibilityData, ScreenShadowMaskSubPixelTexture);
 		}

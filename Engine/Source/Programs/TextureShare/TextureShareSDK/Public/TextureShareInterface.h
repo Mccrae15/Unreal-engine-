@@ -21,7 +21,7 @@ public:
 	TEXTURE_SHARE_SDK_API static void SetSyncPolicySettings(const FTextureShareSyncPolicySettings& InSyncPolicySettings);
 
 	// Create shared resource object
-	TEXTURE_SHARE_SDK_API static bool CreateTextureShare(const TCHAR* ShareName, ETextureShareProcess Process, FTextureShareSyncPolicy SyncMode, ETextureShareDevice DeviceType);
+	TEXTURE_SHARE_SDK_API static bool CreateTextureShare(const TCHAR* ShareName, ETextureShareProcess Process, FTextureShareSyncPolicy SyncMode, ETextureShareDevice DeviceType, float SyncWaitTime = 0.03);
 	TEXTURE_SHARE_SDK_API static bool ReleaseTextureShare(const TCHAR* ShareName);
 
 	TEXTURE_SHARE_SDK_API static bool IsValid(const TCHAR* ShareName);
@@ -49,5 +49,10 @@ public:
 	TEXTURE_SHARE_SDK_API static bool LockTextureD3D12_RenderThread(ID3D12Device* pD3D12Device, const TCHAR* ShareName, const TCHAR* TextureName, ID3D12Resource*& OutD3D12Resource);
 
 	TEXTURE_SHARE_SDK_API static bool UnlockTexture_RenderThread(const TCHAR* ShareName, const TCHAR* TextureName);
+
+	TEXTURE_SHARE_SDK_API static bool SetCustomProjectionData(const TCHAR* ShareName, const FTextureShareSDKCustomProjectionData& InData);
+
+	TEXTURE_SHARE_SDK_API static bool BeginSyncFrame();
+	TEXTURE_SHARE_SDK_API static bool EndSyncFrame();
 };
 

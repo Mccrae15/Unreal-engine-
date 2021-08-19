@@ -42,6 +42,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraRibbonUniformParameters, NIAGARAVER
 	SHADER_PARAMETER(int, MaterialParam1DataOffset)
 	SHADER_PARAMETER(int, MaterialParam2DataOffset)
 	SHADER_PARAMETER(int, MaterialParam3DataOffset)
+	SHADER_PARAMETER(int, DistanceFromStartOffset)
 	SHADER_PARAMETER(int, U0OverrideDataOffset)
 	SHADER_PARAMETER(int, V0RangeOverrideDataOffset)
 	SHADER_PARAMETER(int, U1OverrideDataOffset)
@@ -49,6 +50,12 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraRibbonUniformParameters, NIAGARAVER
 	SHADER_PARAMETER(int, TotalNumInstances)
 	SHADER_PARAMETER(int, InterpCount)
 	SHADER_PARAMETER(float, OneOverInterpCount)
+	SHADER_PARAMETER(int, ParticleIdShift)
+	SHADER_PARAMETER(int, ParticleIdMask)
+	SHADER_PARAMETER(int, InterpIdShift)
+	SHADER_PARAMETER(int, InterpIdMask)
+	SHADER_PARAMETER(int, SliceVertexIdMask)
+	SHADER_PARAMETER(int, ShouldFlipNormalToView)
 	SHADER_PARAMETER(int, U0DistributionMode)
 	SHADER_PARAMETER(int, U1DistributionMode)
 	SHADER_PARAMETER(FVector4, PackedVData)
@@ -61,12 +68,14 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraRibbonVFLooseParameters, NIAGARAVER
 	SHADER_PARAMETER(uint32, NiagaraFloatDataStride)
 	SHADER_PARAMETER(uint32, SortedIndicesOffset)
 	SHADER_PARAMETER(uint32, FacingMode)
+	SHADER_PARAMETER(uint32, Shape)
 	SHADER_PARAMETER_SRV(Buffer<int>, SortedIndices)
 	SHADER_PARAMETER_SRV(Buffer<float4>, TangentsAndDistances)
 	SHADER_PARAMETER_SRV(Buffer<uint>, MultiRibbonIndices)
 	SHADER_PARAMETER_SRV(Buffer<float>, PackedPerRibbonDataByIndex)
 	SHADER_PARAMETER_SRV(Buffer<float>, NiagaraParticleDataFloat)
 	SHADER_PARAMETER_SRV(Buffer<float>, NiagaraParticleDataHalf)
+	SHADER_PARAMETER_SRV(Buffer<float>, SliceVertexData)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 typedef TUniformBufferRef<FNiagaraRibbonVFLooseParameters> FNiagaraRibbonVFLooseParametersRef;
 
@@ -161,6 +170,12 @@ public:
 		PackedPerRibbonDataByIndexSRV = InPackedPerRibbonDataByIndexSRV;
 	}
 
+	void SetSliceVertexDataSRV(const FVertexBufferRHIRef& InSliceVertexDataBuffer, const FShaderResourceViewRHIRef& InSliceVertexDataSRV)
+	{
+		SliceVertexDataBuffer = InSliceVertexDataBuffer;
+		SliceVertexDataSRV = InSliceVertexDataSRV;
+	}
+
 	void SetFacingMode(uint32 InFacingMode)
 	{
 		FacingMode = InFacingMode;
@@ -189,6 +204,11 @@ public:
 	FORCEINLINE FRHIShaderResourceView* GetPackedPerRibbonDataByIndexSRV()
 	{
 		return PackedPerRibbonDataByIndexSRV;
+	}
+
+	FORCEINLINE FRHIShaderResourceView* GetSliceVertexDataSRV()
+	{
+		return SliceVertexDataSRV;
 	}
 
 	FORCEINLINE int32 GetFacingMode()
@@ -229,11 +249,13 @@ private:
 	FVertexBufferRHIRef TangentAndDistancesBuffer;
 	FVertexBufferRHIRef MultiRibbonIndicesBuffer;
 	FVertexBufferRHIRef PackedPerRibbonDataByIndexBuffer;
+	FVertexBufferRHIRef SliceVertexDataBuffer;
 
 	FShaderResourceViewRHIRef SortedIndicesSRV;
 	FShaderResourceViewRHIRef TangentAndDistancesSRV;
 	FShaderResourceViewRHIRef MultiRibbonIndicesSRV;
 	FShaderResourceViewRHIRef PackedPerRibbonDataByIndexSRV;
+	FShaderResourceViewRHIRef SliceVertexDataSRV;
 
 	uint32 SortedIndicesOffset;
 	int32 FacingMode;

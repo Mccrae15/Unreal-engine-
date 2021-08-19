@@ -151,6 +151,15 @@ ENGINE_API bool IsGPUSkinCacheAvailable(EShaderPlatform Platform)
 	return (GEnableGPUSkinCacheShaders != 0 || GForceRecomputeTangents != 0) && DoesPlatformSupportGPUSkinCache(Platform);
 }
 
+ENGINE_API bool GPUSkinCacheNeedsDuplicatedVertices()
+{
+#if WITH_EDITOR // Duplicated vertices are used in the editor when merging meshes
+	return true;
+#else
+	return (bool)GAllowDupedVertsForRecomputeTangents;
+#endif
+}
+
 // We don't have it always enabled as it's not clear if this has a performance cost
 // Call on render thread only!
 // Should only be called if SM5 (compute shaders, atomics) are supported.
@@ -763,7 +772,7 @@ void FGPUSkinCache::TransitionAllToReadable(FRHICommandList& RHICmdList)
 		{
 			UAVs.Add(FRHITransitionInfo(*SetIt, ERHIAccess::Unknown, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask));
 		}
-		RHICmdList.Transition(MakeArrayView(UAVs.GetData(), UAVs.Num()));
+		RHICmdList.Transition(UAVs);
 
 		BuffersToTransition.Empty(BuffersToTransition.Num());
 	}
@@ -1221,28 +1230,24 @@ void FGPUSkinCache::DoDispatch(FRHICommandListImmediate& RHICmdList)
 	}
 
 	RHICmdList.BeginUAVOverlap(OverlappedUAVBuffers);
+	for (int32 i = 0; i < BatchCount; ++i)
 	{
-		for (int32 i = 0; i < BatchCount; ++i)
-		{
-			FDispatchEntry& DispatchItem = BatchDispatches[i];
-			DispatchUpdateSkinning(RHICmdList, DispatchItem.SkinCacheEntry, DispatchItem.Section, DispatchItem.RevisionNumber);
-		}
+		FDispatchEntry& DispatchItem = BatchDispatches[i];
+		DispatchUpdateSkinning(RHICmdList, DispatchItem.SkinCacheEntry, DispatchItem.Section, DispatchItem.RevisionNumber);
 	}
 	RHICmdList.EndUAVOverlap(OverlappedUAVBuffers);
 
+	for (int32 i = 0; i < BatchCount; ++i)
 	{
-		for (int32 i = 0; i < BatchCount; ++i)
+		FDispatchEntry& DispatchItem = BatchDispatches[i];
+		DispatchItem.SkinCacheEntry->UpdateVertexFactoryDeclaration(DispatchItem.Section);
+
+		if (DispatchItem.SkinCacheEntry->DispatchData[DispatchItem.Section].IndexBuffer)
 		{
-			FDispatchEntry& DispatchItem = BatchDispatches[i];
-			DispatchItem.SkinCacheEntry->UpdateVertexFactoryDeclaration(DispatchItem.Section);
-
-			if (DispatchItem.SkinCacheEntry->DispatchData[DispatchItem.Section].IndexBuffer)
-			{
-				DispatchUpdateSkinTangents(RHICmdList, DispatchItem.SkinCacheEntry, DispatchItem.Section);
-			}
-
-			DispatchItem.SkinCacheEntry->UpdateVertexFactoryDeclaration(DispatchItem.Section);
+			DispatchUpdateSkinTangents(RHICmdList, DispatchItem.SkinCacheEntry, DispatchItem.Section);
 		}
+
+		DispatchItem.SkinCacheEntry->UpdateVertexFactoryDeclaration(DispatchItem.Section);
 	}
 }
 
@@ -1495,7 +1500,7 @@ void FGPUSkinCache::ProcessRayTracingGeometryToUpdate(
 
 			if (RayTracingGeometry.RayTracingGeometryRHI.IsValid())
 			{
-				// RayTracingGeometry.UpdateRHI() releases the old RT geometry, however due to the deferred deletion nature of RHI resources
+				// CreateRayTracingGeometry releases the old RT geometry, however due to the deferred deletion nature of RHI resources
 				// they will not be released until the end of the frame. We may get OOM in the middle of batched updates if not flushing.
 				// This memory size is an estimation based on vertex & index buffer size. In reality the flush happens at 2-3x of the number specified.
 				RayTracingGeometryMemoryPendingRelease += MemoryEstimation;
@@ -1508,8 +1513,14 @@ void FGPUSkinCache::ProcessRayTracingGeometryToUpdate(
 				}
 			}
 
+			if (LODModel.RayTracingData.Num())
+			{
+				Initializer.OfflineData = &LODModel.RayTracingData;
+				Initializer.bDiscardOfflineData = false; // The RayTracingData can be used for multiple SkeletalMeshObjects , so we need to keep it around
+			}
+
 			RayTracingGeometry.SetInitializer(Initializer);
-			RayTracingGeometry.UpdateRHI();
+			RayTracingGeometry.CreateRayTracingGeometry(ERTAccelerationStructureBuildPriority::Immediate);
 		}
 		else
 		{

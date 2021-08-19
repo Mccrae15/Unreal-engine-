@@ -46,7 +46,6 @@
 #include "Factories/FbxStaticMeshImportData.h"
 
 //Skeletal mesh includes
-#include "SkelImport.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
 #include "Components/SkinnedMeshComponent.h"
@@ -114,7 +113,7 @@ void FFbxImporter::ShowFbxSkeletonConflictWindow(USkeletalMesh* SkeletalMesh, US
 	
 	if (Skeleton == nullptr)
 	{
-		Skeleton = SkeletalMesh->Skeleton;
+		Skeleton = SkeletalMesh->GetSkeleton();
 	}
 
 	FCompMesh SourceData;

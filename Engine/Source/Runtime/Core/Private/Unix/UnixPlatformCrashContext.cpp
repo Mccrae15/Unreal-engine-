@@ -144,8 +144,11 @@ void GracefulTerminationHandler(int32 Signal, siginfo_t* Info, void* Context)
 {
 	GEnteredSignalHandler = 1;
 
+	// Possibly better to add a 2nd function if this is more required. Since we are in the Core module lets see if this is only needed here
+	extern bool GShouldRequestExit;
+
 	// do not flush logs at this point; this can result in a deadlock if the signal was received while we were holding lock in the malloc (flushing allocates memory)
-	if( !IsEngineExitRequested() )
+	if( !IsEngineExitRequested() && !GShouldRequestExit )
 	{
 		FPlatformMisc::RequestExitWithStatus(false, 128 + Signal);	// Keeping the established shell practice of returning 128 + signal for terminations by signal. Allows to distinguish SIGINT/SIGTERM/SIGHUP.
 	}
@@ -600,8 +603,13 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 				static_cast<void>(IFileManager::Get().Copy(*CrashConfigDstAbsolute, CrashConfigFilePath));	// best effort, so don't care about result
 			}
 
+#if PLATFORM_LINUXAARCH64
+			// try launching the tool and wait for its exit, if at all
+			const TCHAR * RelativePathToCrashReporter = TEXT("../../../Engine/Binaries/LinuxAArch64/CrashReportClient");	// FIXME: painfully hard-coded
+#else
 			// try launching the tool and wait for its exit, if at all
 			const TCHAR * RelativePathToCrashReporter = TEXT("../../../Engine/Binaries/Linux/CrashReportClient");	// FIXME: painfully hard-coded
+#endif
 
 			FString CrashReportLogFilename = LogBaseFilename + TEXT("-CRC") + LogExtension;
 			FString CrashReportLogFilepath = FPaths::Combine(*LogFolder, *CrashReportLogFilename);

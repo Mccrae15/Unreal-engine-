@@ -93,10 +93,37 @@ bool FWebRemoteControlEditorRoutes::HandleGetThumbnailRoute(const FHttpServerReq
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	FARFilter Filter;
-	Filter.ObjectPaths.Add(FName(*GetThumbnailRequest.ObjectPath));
+	Filter.ObjectPaths.Add(*GetThumbnailRequest.ObjectPath);
 
 	TArray<FAssetData> Assets;
 	AssetRegistryModule.Get().GetAssets(Filter, Assets);
+
+	if (!Assets.Num())
+	{
+		// Attempt to find by stripping file extension
+		int32 Index = INDEX_NONE;
+		FStringView ModifiedName = FStringView(GetThumbnailRequest.ObjectPath);
+
+		// Attempt to strip asset extension
+		if (GetThumbnailRequest.ObjectPath.FindLastChar(TEXT('.'), Index))
+		{
+			ModifiedName.LeftInline(Index);
+		}
+
+		if (GetThumbnailRequest.ObjectPath.FindLastChar(TEXT('/'), Index))
+		{
+			// Attempt to find by duplicating the last part of the path.
+			FStringView LastSegment = ModifiedName.RightChop(Index + 1);
+			TStringBuilder<64> Builder;
+			Builder.Append(ModifiedName);
+			Builder.Append(TEXT("."));
+			Builder.Append(LastSegment);
+
+			FARFilter FallbackFilter;
+			FallbackFilter.ObjectPaths.Add(Builder.ToString());
+			AssetRegistryModule.Get().GetAssets(FallbackFilter, Assets);
+		}
+	}
 
 	if (Assets.Num())
 	{
@@ -132,6 +159,7 @@ bool FWebRemoteControlEditorRoutes::HandleGetThumbnailRoute(const FHttpServerReq
 				FName ResourceName = ThumbnailBrush->GetResourceName();
 				if (FFileHelper::LoadFileToArray(Response->Body, *ResourceName.ToString()))
 				{
+					WebRemoteControlUtils::AddContentTypeHeaders(Response.Get(), TEXT("image/png"));
 					Response->Code = EHttpServerResponseCodes::Ok;
 				}
 			}

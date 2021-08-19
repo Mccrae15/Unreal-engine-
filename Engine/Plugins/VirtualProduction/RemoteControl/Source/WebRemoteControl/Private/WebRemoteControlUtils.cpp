@@ -2,8 +2,9 @@
 
 #include "WebRemoteControlUtils.h"
 #include "HttpServerRequest.h"
-#include "UObject/StructOnScope.h"
+#include "Misc/Base64.h"
 #include "Serialization/JsonReader.h"
+#include "UObject/StructOnScope.h"
 
 
 namespace RemotePayloadSerializer
@@ -90,16 +91,29 @@ namespace RemotePayloadSerializer
 
 	void SerializeWrappedCallResponse(int32 RequestId, TUniquePtr<FHttpServerResponse> Response, FMemoryWriter& Writer)
 	{
-		FJsonStructSerializerBackend Backend(Writer, EStructSerializerBackendFlags::Default);
+		FRCJsonStructSerializerBackend Backend(Writer, FRCJsonStructSerializerBackend::DefaultSerializerFlags);
 		TSharedPtr<TJsonWriter<ANSICHAR>> JsonWriter = TJsonWriter<ANSICHAR>::Create(&Writer);
+		TArray<FString>* ContentTypeHeaders = Response->Headers.Find(TEXT("Content-Type"));
+		const bool bIsBinaryData = ContentTypeHeaders && ContentTypeHeaders->Contains(TEXT("image/png"));
 
 		JsonWriter->WriteObjectStart();
 		JsonWriter->WriteValue(TEXT("RequestId"), RequestId);
 		JsonWriter->WriteValue(TEXT("ResponseCode"), static_cast<int32>(Response->Code));
 		JsonWriter->WriteIdentifierPrefix(TEXT("ResponseBody"));
+	
 		if (Response->Body.Num())
 		{
-			Writer.Serialize((void*)Response->Body.GetData(), Response->Body.Num());
+			if (!bIsBinaryData)
+			{
+				Writer.Serialize((void*)Response->Body.GetData(), Response->Body.Num());
+			}
+			else
+			{
+				FString Base64String = FString::Printf(TEXT("\"%s\""), *FBase64::Encode(Response->Body));
+				TArray<uint8> WorkingBuffer;
+				WebRemoteControlUtils::ConvertToUTF8(Base64String, WorkingBuffer);
+				Writer.Serialize((void*)WorkingBuffer.GetData(), WorkingBuffer.Num());
+			}
 		}
 		else
 		{
@@ -109,11 +123,11 @@ namespace RemotePayloadSerializer
 		JsonWriter->WriteObjectEnd();
 	}
 
-	bool SerializePartial(TFunctionRef<bool(FJsonStructSerializerBackend&)> SerializeFunction, FMemoryWriter& SerializedPayloadWriter)
+	bool SerializePartial(TFunctionRef<bool(FRCJsonStructSerializerBackend&)> SerializeFunction, FMemoryWriter& SerializedPayloadWriter)
 	{
 		TArray<uint8> WorkingBuffer;
 		FMemoryWriter TemporaryBufferWriter(WorkingBuffer);
-		FJsonStructSerializerBackend TemporaryBackend(TemporaryBufferWriter, EStructSerializerBackendFlags::Default);
+		FRCJsonStructSerializerBackend TemporaryBackend(TemporaryBufferWriter, FRCJsonStructSerializerBackend::DefaultSerializerFlags);
 
 		int32 ColonPosition = -1;
 		int32 LastBracketPosition = -1;
@@ -164,7 +178,7 @@ namespace RemotePayloadSerializer
 			{
 				FMemoryReader Reader(CallRequest.TCHARBody);
 				Reader.Seek(ParametersDelimiters.BlockStart);
-				Reader.SetLimitSize(ParametersDelimiters.BlockEnd + 1);
+				Reader.SetLimitSize(ParametersDelimiters.BlockEnd);
 
 				FJsonStructDeserializerBackend Backend(Reader);
 				if (!FStructDeserializer::Deserialize((void*)OutCall.ParamStruct.GetStructMemory(), *const_cast<UStruct*>(OutCall.ParamStruct.GetStruct()), Backend, FStructDeserializerPolicies()))
@@ -207,7 +221,7 @@ namespace RemotePayloadSerializer
 		}
 
 		// write the param struct
-		FJsonStructSerializerBackend Backend(Writer, EStructSerializerBackendFlags::Default);
+		FRCJsonStructSerializerBackend Backend(Writer, FRCJsonStructSerializerBackend::DefaultSerializerFlags);
 		FStructSerializerPolicies Policies;
 
 		if (bOnlyReturn)

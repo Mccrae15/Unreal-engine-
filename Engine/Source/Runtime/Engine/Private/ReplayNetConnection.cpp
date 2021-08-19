@@ -6,6 +6,7 @@
 #include "Engine/LevelStreaming.h"
 #include "Engine/World.h"
 #include "Engine/ActorChannel.h"
+#include "Engine/NetworkObjectList.h"
 #include "GameFramework/PlayerController.h"
 
 static const int32 MAX_REPLAY_PACKET = 1024 * 2;
@@ -67,8 +68,7 @@ void UReplayNetConnection::StartRecording()
 	OnLevelRemovedFromWorldHandle = FWorldDelegates::LevelRemovedFromWorld.AddUObject(this, &ThisClass::OnLevelRemovedFromWorld);
 	OnLevelAddedToWorldHandle = FWorldDelegates::LevelAddedToWorld.AddUObject(this, &ThisClass::OnLevelAddedToWorld);
 
-	ReplayHelper.StartRecording(GetWorld());
-
+	ReplayHelper.StartRecording(this);
 	ReplayHelper.CreateSpectatorController(this);
 }
 
@@ -115,7 +115,9 @@ void UReplayNetConnection::LowLevelSend(void* Data, int32 CountBits, FOutPacketT
 
 	TrackSendForProfiler(Data, CountBytes);
 
-	TArray<FQueuedDemoPacket>& QueuedPackets = (ResendAllDataState != EResendAllDataState::None) ? ReplayHelper.QueuedCheckpointPackets : ReplayHelper.QueuedDemoPackets;
+	const bool bCheckpoint = (ResendAllDataState != EResendAllDataState::None);
+
+	TArray<FQueuedDemoPacket>& QueuedPackets = bCheckpoint ? ReplayHelper.QueuedCheckpointPackets : ReplayHelper.QueuedDemoPackets;
 
 	int32 NewIndex = QueuedPackets.Emplace((uint8*)Data, CountBits, Traits);
 
@@ -131,6 +133,11 @@ void UReplayNetConnection::LowLevelSend(void* Data, int32 CountBits, FOutPacketT
 				//@todo: unique this in tick?
 				// RepChangedPropertyTrackerMap.Find is expensive
 				ReplayHelper.UpdateExternalDataForActor(this, Actor);
+			}
+
+			if (!bCheckpoint && ReplayHelper.bHasDeltaCheckpoints && Driver)
+			{
+				Driver->GetNetworkObjectList().MarkDirtyForReplay(Actor);
 			}
 		}
 	}
@@ -240,7 +247,7 @@ void UReplayNetConnection::AddUserToReplay(const FString& UserString)
 
 void UReplayNetConnection::OnSeamlessTravelStart(UWorld* CurrentWorld, const FString& LevelName)
 {
-	ReplayHelper.OnSeamlessTravelStart(CurrentWorld, LevelName);
+	ReplayHelper.OnSeamlessTravelStart(CurrentWorld, LevelName, this);
 }
 
 void UReplayNetConnection::NotifyActorDestroyed(AActor* Actor, bool IsSeamlessTravel /* = false */)
@@ -270,12 +277,6 @@ void UReplayNetConnection::NotifyActorDestroyed(AActor* Actor, bool IsSeamlessTr
 			{
 				ReplayHelper.RecordingDeltaCheckpointData.DestroyedNetStartupActors.Add(FullName);
 			}
-
-			FNetworkGUID NetGUID = Driver->GuidCache->NetGUIDLookup.FindRef(Actor);
-			if (NetGUID.IsValid())
-			{
-				ReplayHelper.DeletedNetStartupActorGUIDs.Add(NetGUID);
-			}
 		}
 	}
 
@@ -303,9 +304,9 @@ void UReplayNetConnection::NotifyActorChannelCleanedUp(UActorChannel* Channel, E
 {
 	Super::NotifyActorChannelCleanedUp(Channel, CloseReason);
 
-	if (Channel && ReplayHelper.HasDeltaCheckpoints())
+	if (ReplayHelper.HasDeltaCheckpoints() && (ReplayHelper.GetCheckpointSaveState() == FReplayHelper::ECheckpointSaveState::Idle))
 	{
-		if (Channel->bOpenedForCheckpoint)
+		if (Channel && Channel->bOpenedForCheckpoint)
 		{
 			ReplayHelper.RecordingDeltaCheckpointData.ChannelsToClose.Add(Channel->ActorNetGUID, CloseReason);
 		}

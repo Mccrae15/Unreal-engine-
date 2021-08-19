@@ -1,40 +1,35 @@
 # Copyright Epic Games, Inc. All Rights Reserved.
 
-from .config import CONFIG, SETTINGS, DEFAULT_MAP_TEXT
-from . import config
-from . import config_osc as osc
-from . import p4_utils
-from . import recording
-from . import resources
-from . import switchboard_application
-from switchboard.add_config_dialog import AddConfigDialog
-from switchboard.device_list_widget import DeviceListWidget, DeviceWidgetHeader
-from switchboard.devices.device_base import DeviceStatus
-from switchboard.devices.device_manager import DeviceManager
-from .switchboard_logging import ConsoleStream, DEFAULT_LOG_PATH, LOGGER
-from switchboard.settings_dialog import SettingsDialog
-from . import switchboard_utils
-import switchboard.switchboard_widgets as sb_widgets
-
 import datetime
-from enum import IntEnum, unique, auto
 import logging
 import os
 import threading
+from typing import List, Optional, Set
 
-from PySide2 import QtCore, QtGui, QtUiTools, QtWidgets
+from PySide2 import QtCore
+from PySide2 import QtGui
+from PySide2 import QtUiTools
+from PySide2 import QtWidgets
+
+from switchboard import config
+from switchboard import config_osc as osc
+from switchboard import p4_utils
+from switchboard import recording
+from switchboard import resources  # noqa
+from switchboard import switchboard_application
+from switchboard import switchboard_utils
+from switchboard import switchboard_widgets as sb_widgets
+from switchboard.add_config_dialog import AddConfigDialog
+from switchboard.config import CONFIG, DEFAULT_MAP_TEXT, SETTINGS
+from switchboard.device_list_widget import DeviceListWidget, DeviceWidgetHeader
+from switchboard.devices.device_base import DeviceStatus
+from switchboard.devices.device_manager import DeviceManager
+from switchboard.settings_dialog import SettingsDialog
+from switchboard.switchboard_logging import ConsoleStream, LOGGER
 
 ENGINE_PATH = "../../../../.."
 RELATIVE_PATH = os.path.dirname(__file__)
 EMPTY_SYNC_ENTRY = "-- None --"
-
-
-@unique
-class ApplicationStatus(IntEnum):
-    DISCONNECTED = auto()
-    CLOSED = auto()
-    SYNCING = auto()
-    OPEN = auto()
 
 
 class SwitchboardDialog(QtCore.QObject):
@@ -46,6 +41,7 @@ class SwitchboardDialog(QtCore.QObject):
         fontDB.addApplicationFont(os.path.join(ENGINE_PATH, 'Content/Slate/Fonts/Roboto-Regular.ttf'))
         fontDB.addApplicationFont(os.path.join(ENGINE_PATH, 'Content/Slate/Fonts/DroidSansMono.ttf'))
 
+        self.logger_autoscroll = True
         ConsoleStream.stderr().message_written.connect(self._console_pipe)
 
         # Set the UI object
@@ -64,9 +60,6 @@ class SwitchboardDialog(QtCore.QObject):
         with open(qss_file, "r") as styling:
             self.stylesheet = styling.read()
             self.window.setStyleSheet(self.stylesheet)
-
-        # Get the available configs
-        self.available_configs = config.list_config_files()
 
         self._shoot = None
         self._sequence = None
@@ -152,9 +145,12 @@ class SwitchboardDialog(QtCore.QObject):
         self.window.take_spin_box.valueChanged.connect(self._set_take)
         self.window.sequence_line_edit.textChanged.connect(self._set_sequence)
         self.window.level_combo_box.currentTextChanged.connect(self._set_level)
+        self.window.refresh_levels_button.clicked.connect(self.refresh_levels_incremental)
         self.window.project_cl_combo_box.currentTextChanged.connect(self._set_project_changelist)
         self.window.engine_cl_combo_box.currentTextChanged.connect(self._set_engine_changelist)
         self.window.logger_level_comboBox.currentTextChanged.connect(self.logger_level_comboBox_currentTextChanged)
+        self.window.logger_autoscroll_checkbox.stateChanged.connect(self.logger_autoscroll_stateChanged)
+        self.window.logger_wrap_checkbox.stateChanged.connect(self.logger_wrap_stateChanged)
         self.window.record_button.released.connect(self.record_button_released)
         self.window.sync_all_button.clicked.connect(self.sync_all_button_clicked)
         self.window.build_all_button.clicked.connect(self.build_all_button_clicked)
@@ -170,6 +166,10 @@ class SwitchboardDialog(QtCore.QObject):
         #self.transport_queue_menu.aboutToShow.connect(self.transport_queue_menu_about_to_show)
         #self.window.transport_queue_push_button.setMenu(self.transport_queue_menu)
 
+        # Log pane
+        self.window.logger_autoscroll_checkbox.setCheckState(QtCore.Qt.Checked if self.logger_autoscroll else QtCore.Qt.Unchecked)
+        self.window.base_console.horizontalScrollBar().sliderPressed.connect(lambda: self.window.logger_autoscroll_checkbox.setCheckState(QtCore.Qt.Unchecked))
+        self.window.base_console.verticalScrollBar().sliderPressed.connect(lambda: self.window.logger_autoscroll_checkbox.setCheckState(QtCore.Qt.Unchecked))
         # entries will be removed from the log window after the number of maximumBlockCount entries has been reached
         self.window.base_console.document().setMaximumBlockCount(1000)
 
@@ -259,21 +259,59 @@ class SwitchboardDialog(QtCore.QObject):
 
         self.window.menu_load_config.clear()
 
-        for c in config.list_config_files():
-            config_name = c.replace('.json', '')
-            config_action = self.window.menu_load_config.addAction(config_name, partial(self.set_current_config, c))
+        # We'll build up a dictionary of directory paths to the submenu for
+        # that directory as we go. Config files in the root configs directory
+        # will go at the top level.
+        menu_hierarchy = {
+            config.ROOT_CONFIGS_PATH: self.window.menu_load_config
+        }
 
-            if c == SETTINGS.CONFIG:
+        def _get_menu_for_path(path):
+            # Safe guard to make sure we don't accidentally traverse up past
+            # the root configs path.
+            if (path != config.ROOT_CONFIGS_PATH and
+                    config.ROOT_CONFIGS_PATH not in path.parents):
+                return None
+
+            path_menu = menu_hierarchy.get(path)
+            if not path_menu:
+                parent_menu = _get_menu_for_path(path.parent)
+                if not parent_menu:
+                    return None
+
+                path_menu = parent_menu.addMenu(path.name)
+                menu_hierarchy[path] = path_menu
+
+            return path_menu
+
+        config_paths = config.list_config_paths()
+
+        # Take a first pass through the config paths just creating the
+        # submenus. This makes sure that all submenus appear before any configs
+        # for any given menu level.
+        for config_path in config_paths:
+            _get_menu_for_path(config_path.parent)
+
+        # Now the dictionary of menus should be populated, so create actions
+        # for each config in the appropriate menu.
+        for config_path in config_paths:
+            menu = _get_menu_for_path(config_path.parent)
+            if not menu:
+                continue
+
+            config_action = menu.addAction(config_path.stem,
+                partial(self.set_current_config, config_path))
+
+            if config_path == SETTINGS.CONFIG:
                 config_action.setEnabled(False)
 
-    def set_current_config(self, config_name):
-
-        SETTINGS.CONFIG = config_name
-        SETTINGS.save()
+    def set_current_config(self, config_path):
 
         # Update to the new config
-        config_name = CONFIG.config_file_name_to_name(SETTINGS.CONFIG)
-        CONFIG.init_with_file_name(CONFIG.name_to_config_file_name(config_name))
+        CONFIG.init_with_file_path(config_path)
+
+        SETTINGS.CONFIG = config_path
+        SETTINGS.save()
 
         # Disable saving while loading
         CONFIG.push_saving_allowed(False)
@@ -307,12 +345,17 @@ class SwitchboardDialog(QtCore.QObject):
         if not os.path.exists(uproject_search_path):
             uproject_search_path = SETTINGS.LAST_BROWSED_PATH
 
-        dialog = AddConfigDialog(self.stylesheet, uproject_search_path=uproject_search_path, previous_engine_dir=CONFIG.ENGINE_DIR.get_value(), parent=self.window)
+        dialog = AddConfigDialog(self.stylesheet,
+            uproject_search_path=uproject_search_path,
+            previous_engine_dir=CONFIG.ENGINE_DIR.get_value(),
+            parent=self.window)
         dialog.exec()
 
         if dialog.result() == QtWidgets.QDialog.Accepted:
 
-            CONFIG.init_new_config(project_name=dialog.config_name, uproject=dialog.uproject, engine_dir=dialog.engine_dir, p4_settings=dialog.p4_settings())
+            CONFIG.init_new_config(file_path=dialog.config_path,
+                uproject=dialog.uproject, engine_dir=dialog.engine_dir,
+                p4_settings=dialog.p4_settings())
 
             # Disable saving while loading
             CONFIG.push_saving_allowed(False)
@@ -337,28 +380,30 @@ class SwitchboardDialog(QtCore.QObject):
 
     def menu_delete_config(self):
         """
-        Delete the current loaded config
-        After deleting, it will load the first config found by config.list_config_files()
-        Or it will create a new config
+        Delete the currently loaded config.
+
+        After deleting, it will load the first config found by
+        config.list_config_paths(), or it will create a new config.
         """
+        # Show the confirmation dialog using a relative path to the config.
+        rel_config_path = config.get_relative_config_path(SETTINGS.CONFIG)
         reply = QtWidgets.QMessageBox.question(self.window, 'Delete Config',
-                        f'Are you sure you would like to delete config "{SETTINGS.CONFIG}"?',
-                        QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No)
+            f'Are you sure you would like to delete config "{rel_config_path}"?',
+            QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No)
 
         if reply == QtWidgets.QMessageBox.Yes:
-            file_to_delete = os.path.normpath(os.path.join(config.CONFIG_DIR, SETTINGS.CONFIG))
-
             # Remove the old config
             try:
-                os.remove(file_to_delete)
+                SETTINGS.CONFIG.unlink()
+                self.set_current_config(None)
             except FileNotFoundError as e:
                 LOGGER.error(f'menu_delete_config: {e}')
 
-            # Grab a new config to lead once this one is delted
-            config_files = config.list_config_files()
+            # Grab a new config to lead once this one is deleted
+            config_paths = config.list_config_paths()
 
-            if config_files:
-                self.set_current_config(config_files[0])
+            if config_paths:
+                self.set_current_config(config_paths[0])
             else:
                 # Create a blank config
                 self.menu_new_config()
@@ -373,8 +418,7 @@ class SwitchboardDialog(QtCore.QObject):
         # TODO: VALIDATE RECORD PATH
         settings_dialog = SettingsDialog()
 
-        config_name = CONFIG.config_file_name_to_name(SETTINGS.CONFIG)
-        settings_dialog.set_config_name(config_name)
+        settings_dialog.set_config_path(SETTINGS.CONFIG)
         settings_dialog.set_ip_address(SETTINGS.IP_ADDRESS)
         settings_dialog.set_transport_path(SETTINGS.TRANSPORT_PATH)
         settings_dialog.set_listener_exe(CONFIG.LISTENER_EXE)
@@ -403,7 +447,6 @@ class SwitchboardDialog(QtCore.QObject):
             device_settings = [(device.name, device.device_settings(), device.setting_overrides()) for device in device_instances]
             settings_dialog.add_section_for_plugin(plugin_name, self.device_manager.plugin_settings(plugin_name), device_settings)
 
-
         # avoid saving the config all the time while in the settings dialog
         CONFIG.push_saving_allowed(False)
         try:
@@ -413,13 +456,13 @@ class SwitchboardDialog(QtCore.QObject):
             # Restore saving, which should happen at the end of this function
             CONFIG.pop_saving_allowed()
 
-        new_config_name = settings_dialog.config_name()
-        if config_name != new_config_name:
-            new_config_name = CONFIG.name_to_config_file_name(new_config_name)
-            SETTINGS.CONFIG = new_config_name
+        new_config_path = settings_dialog.config_path()
+        if new_config_path != SETTINGS.CONFIG and new_config_path is not None:
+            CONFIG.replace(new_config_path)
+
+            SETTINGS.CONFIG = new_config_path
             SETTINGS.save()
 
-            CONFIG.rename(new_config_name)
             self.update_configs_menu()
 
         ip_address = settings_dialog.ip_address()
@@ -636,6 +679,12 @@ class SwitchboardDialog(QtCore.QObject):
         except:
             pass
 
+        try:
+            device = self.device_manager.device_with_hash(device_widget.device_hash)
+            device.device_widget_registered(device_widget)
+        except:
+            LOGGER.error(f'Could not find device with hash {device_widget.device_hash} when registering its widget')
+
     def on_all_plugin_devices_connect_toggled(self, plugin_name, button_state):
         devices = self.device_manager.devices_of_type(plugin_name)
         self.set_device_connection_state(devices, button_state)
@@ -723,7 +772,7 @@ class SwitchboardDialog(QtCore.QObject):
                 continue
 
             # Do not send updates to disconnected devices
-            if device.status == DeviceStatus.DISCONNECTED:
+            if device.is_disconnected:
                 continue
 
             device.set_slate(self._slate)
@@ -773,7 +822,7 @@ class SwitchboardDialog(QtCore.QObject):
         # Tell all devices the new take
         for device in self.device_manager.devices():
             # Do not send updates to disconnected devices
-            if device.status == DeviceStatus.DISCONNECTED:
+            if device.is_disconnected:
                 continue
 
             if device.ip_address in exclude_ip_addresses:
@@ -1008,7 +1057,7 @@ class SwitchboardDialog(QtCore.QObject):
     def update_connect_and_open_button_states(self):
         """ Refresh states of connect-all and start-all buttons. """
         devices = self.device_manager.devices()
-        any_connected = any(device.status != DeviceStatus.DISCONNECTED for device in devices)
+        any_connected = any(not device.is_disconnected for device in devices)
         any_started = any(device.status > DeviceStatus.CLOSED for device in devices)
 
         self.update_connect_all_button_state(any_connected)
@@ -1096,9 +1145,12 @@ class SwitchboardDialog(QtCore.QObject):
         """
         self.window.base_console.appendHtml(msg)
 
-        # Only moving to StartOfLine/Down or End often causes the cursor to be stuck in the middle or the end of a line
-        # when the lines are longer than the widget. This combination keeps the cursor at the bottom left corner in all cases.
-        self.window.base_console.moveCursor(QtGui.QTextCursor.Down)
+        if self.logger_autoscroll:
+            self.logger_scroll_to_end()
+
+    def logger_scroll_to_end(self):
+        # This combination keeps the cursor at the bottom left corner in all cases.
+        self.window.base_console.moveCursor(QtGui.QTextCursor.End)
         self.window.base_console.moveCursor(QtGui.QTextCursor.StartOfLine)
 
     # Allow user to change logging level
@@ -1113,6 +1165,22 @@ class SwitchboardDialog(QtCore.QObject):
             LOGGER.setLevel(logging.DEBUG)
         else:
             LOGGER.setLevel(logging.INFO)
+
+    def logger_autoscroll_stateChanged(self, value):
+        if value == QtCore.Qt.Checked:
+            self.logger_autoscroll = True
+            self.logger_scroll_to_end()
+        else:
+            self.logger_autoscroll = False
+
+    def logger_wrap_stateChanged(self, value):
+        if value == QtCore.Qt.Checked:
+            self.window.base_console.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
+        else:
+            self.window.base_console.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+
+        if self.logger_autoscroll:
+            self.logger_scroll_to_end()
 
     # Update UI with latest CLs
     def p4_refresh_project_cl(self):
@@ -1162,14 +1230,55 @@ class SwitchboardDialog(QtCore.QObject):
             self.window.refresh_engine_cl_button.setToolTip(tool_tip)
         self.window.engine_cl_combo_box.addItem(EMPTY_SYNC_ENTRY)
 
-    def refresh_levels(self):
+    def refresh_levels(self, levels: Optional[List[str]] = None):
+        if levels is None:
+            levels = CONFIG.maps()
+
         current_level = CONFIG.CURRENT_LEVEL
 
         self.window.level_combo_box.clear()
-        self.window.level_combo_box.addItems([DEFAULT_MAP_TEXT] + CONFIG.maps())
+        self.window.level_combo_box.addItems([DEFAULT_MAP_TEXT] + levels)
 
-        if current_level and current_level in CONFIG.maps():
+        if current_level and current_level in levels:
             self.level = current_level
+
+    def get_current_level_list(self):
+        level_combo = self.window.level_combo_box
+        return [level_combo.itemText(i) for i in range(1, level_combo.count())] # skip DEFAULT_MAP_TEXT
+
+    def refresh_levels_incremental(self):
+        ''' Wrapper around `refresh_levels` with the following differences:
+            - Only resaves config if the selected level was removed (as opposed
+              to always generating 2-3 change events/config saves).
+            - Logs messages indicating which levels were added/removed.
+        '''
+
+        current_level: str = CONFIG.CURRENT_LEVEL
+        prev_levels_list: List[str] = self.get_current_level_list()
+        updated_levels_list: List[str] = CONFIG.maps()
+
+        prev_levels: Set[str] = set(prev_levels_list)
+        updated_levels: Set[str] = set(updated_levels_list)
+        levels_added = updated_levels - prev_levels
+        levels_removed = prev_levels - updated_levels
+
+        if not (levels_added or levels_removed):
+            return
+
+        if levels_added:
+            LOGGER.info(f'Levels added: {", ".join(levels_added)}')
+
+        if levels_removed:
+            LOGGER.info(f'Levels removed: {", ".join(levels_removed)}')
+
+        if current_level in levels_removed:
+            LOGGER.warning(f'Selected level "{current_level}" was removed; reverting to default')
+            self.level = DEFAULT_MAP_TEXT
+
+        CONFIG.push_saving_allowed(False)
+        self.refresh_levels(updated_levels_list)
+        CONFIG.pop_saving_allowed()
+
 
     def toggle_p4_controls(self, enabled):
         self.window.engine_cl_label.setEnabled(enabled)
@@ -1224,8 +1333,8 @@ class SwitchboardDialog(QtCore.QObject):
             LOGGER.warning(f'{ip_address} is not registered with a device in Switchboard')
             return None
 
-        # Do not recieve osc from disconnected devices
-        if device.status == DeviceStatus.DISCONNECTED:
+        # Do not receive osc from disconnected devices
+        if device.is_disconnected:
             LOGGER.warning(f'{device.name}: is sending OSC commands but is not connected. Ignoring "{command} {value}"')
             return None
 
@@ -1291,7 +1400,7 @@ class SwitchboardDialog(QtCore.QObject):
                 continue
 
             # Do not send updates to disconnected devices
-            if device.status == DeviceStatus.DISCONNECTED:
+            if device.is_disconnected:
                 continue
 
             LOGGER.debug(f'Record Start {device.name}')
@@ -1327,7 +1436,7 @@ class SwitchboardDialog(QtCore.QObject):
                 continue
 
             # Do not send updates to disconnected devices
-            if device.status == DeviceStatus.DISCONNECTED:
+            if device.is_disconnected:
                 continue
 
             device.record_stop()

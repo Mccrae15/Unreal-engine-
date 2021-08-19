@@ -34,16 +34,19 @@ struct FNiagaraComponentPropertyBinding
 	UPROPERTY()
 	FName MetadataSetterName;
 
+	/** (Optional) If we have a setter with more than one parameter, this holds the default values of any optional function parameters */
+	UPROPERTY()
+	TMap<FString, FString> PropertySetterParameterDefaults;
+
 	UPROPERTY(Transient)
 	FNiagaraVariable WritableValue;
-
-	UFunction* SetterFunction = nullptr;
 };
 
 struct FNiagaraPropertySetter
 {
 	UFunction* Function;
 	bool bIgnoreConversion = false;
+	
 };
 
 UCLASS(editinlinenew, MinimalAPI, meta = (DisplayName = "Component Renderer"))
@@ -77,7 +80,7 @@ public:
 	virtual const FSlateBrush* GetStackIcon() const override;
 	virtual FText GetWidgetDisplayName() const override;
 
-	virtual const TArray<FNiagaraVariable>& GetBoundAttributes() override;
+	virtual TArray<FNiagaraVariable> GetBoundAttributes() const override;
 	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
 #endif // WITH_EDITORONLY_DATA
 
@@ -86,12 +89,16 @@ public:
 	TSubclassOf<USceneComponent> ComponentType;
 
 	/** The max number of components that this emitter will spawn or update each frame. */
-	UPROPERTY(EditAnywhere, Category = "Component Rendering")
+	UPROPERTY(EditAnywhere, Category = "Component Rendering", meta = (ClampMin = 1))
 	uint32 ComponentCountLimit;
 
 	/** Which attribute should we use to check if component rendering should be enabled for a particle? This can be used to control the spawn-rate on a per-particle basis. */
 	UPROPERTY(EditAnywhere, Category = "Component Rendering")
 	FNiagaraVariableAttributeBinding EnabledBinding;
+
+	/** Which attribute should we use to check if component rendering should be enabled for a particle? This can be used to control the spawn-rate on a per-particle basis. */
+	UPROPERTY(EditAnywhere, Category = "Component Rendering")
+	FNiagaraVariableAttributeBinding RendererVisibilityTagBinding;
 
 	/** If true then components will not be automatically assigned to the first particle available, but try to stick to the same particle based on its unique id.
 	 * Disabling this option is faster, but a particle can get a different component each tick, which can lead to problems with for example motion blur. */
@@ -100,7 +107,7 @@ public:
 
 	/** If true then new components can only be created on newly spawned particles. If a particle is not able to create a component on it's first frame (e.g. because the component
 	 * limit was reached) then it will be blocked from spawning a component on subsequent frames. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Component Rendering", meta = (EditConition = "bAssignComponentsOnParticleID"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Component Rendering", meta = (EditCondition = "bAssignComponentsOnParticleID"))
 	bool bOnlyCreateComponentsOnParticleSpawn;
 
 #if WITH_EDITORONLY_DATA
@@ -110,6 +117,10 @@ public:
 	bool bVisualizeComponents;
 
 #endif
+
+	/** If a render visibility tag is present, particles whose tag matches this value will be visible in this renderer. */
+	UPROPERTY(EditAnywhere, Category = "Component Rendering")
+	int32 RendererVisibility;
 
 	/** The object template used to create new components at runtime. */
 	UPROPERTY(Export, Instanced, EditAnywhere, Category = "Component Properties")
@@ -126,6 +137,9 @@ public:
 	static FNiagaraTypeDefinition GetFRotatorDef();
 
 	virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
+	
+	virtual bool NeedsSystemPostTick() const override { return true; }
+	virtual bool NeedsSystemCompletion() const override { return true; }
 
 protected:
 	virtual void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit = false) override;

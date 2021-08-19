@@ -746,7 +746,7 @@ bool UNavigationSystemV1::ConditionalPopulateNavOctree()
 				for (int32 LevelIndex = 0; LevelIndex < World->GetNumLevels(); ++LevelIndex)
 				{
 					ULevel* Level = World->GetLevel(LevelIndex);
-					if (ensure(Level))
+					if (ensure(Level) && Level->bIsVisible)
 					{
 						AddLevelToOctree(*Level);
 					}
@@ -792,7 +792,7 @@ void UNavigationSystemV1::PostEditChangeChainProperty(FPropertyChangedChainEvent
 		}
 		else if (PropName == NAME_AllowClientSideNavigation && HasAnyFlags(RF_ClassDefaultObject))
 		{
-			for (FObjectIterator It(UNavigationSystemModuleConfig::StaticClass()); It; ++It)
+			for (FThreadSafeObjectIterator It(UNavigationSystemModuleConfig::StaticClass()); It; ++It)
 			{
 				((UNavigationSystemModuleConfig*)*It)->UpdateWithNavSysCDO(*this);
 			}

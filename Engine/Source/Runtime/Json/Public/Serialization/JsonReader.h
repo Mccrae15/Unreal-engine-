@@ -133,7 +133,7 @@ public:
 
 		if (FinishedReadingRootObject && !Stream->AtEnd())
 		{
-			ParseWhiteSpace();
+			ReadWasSuccess = ParseWhiteSpace();
 		}
 
 		return ReadWasSuccess;
@@ -269,12 +269,15 @@ private:
 			}
 		}
 
-		return true;
+		return !Stream->IsError();
 	}
 
 	bool ReadStart( EJsonToken& Token )
 	{
-		ParseWhiteSpace();
+		if (!ParseWhiteSpace())
+		{
+			return false;
+		}
 
 		Token = EJsonToken::None;
 
@@ -397,7 +400,10 @@ private:
 		while (!Stream->AtEnd())
 		{
 			CharType Char;
-			Stream->Serialize(&Char, sizeof(CharType));
+			if (!Serialize(&Char, sizeof(CharType)))
+			{
+				return false;
+			}
 			++CharacterNumber;
 
 			if (Char == CharType('\0'))
@@ -492,7 +498,10 @@ private:
 
 						while (!Stream->AtEnd())
 						{
-							Stream->Serialize(&Char, sizeof(CharType));
+							if (!Serialize(&Char, sizeof(CharType)))
+							{
+								return false;
+							}
 
 							if (IsAlphaNumber(Char))
 							{
@@ -555,7 +564,10 @@ private:
 			}
 
 			CharType Char;
-			Stream->Serialize(&Char, sizeof(CharType));
+			if (!Serialize(&Char, sizeof(CharType)))
+			{
+				return false;
+			}
 			++CharacterNumber;
 
 			if (Char == CharType('\"'))
@@ -565,7 +577,10 @@ private:
 
 			if (Char == CharType('\\'))
 			{
-				Stream->Serialize(&Char, sizeof(CharType));
+				if (!Serialize(&Char, sizeof(CharType)))
+				{
+					return false;
+				}
 				++CharacterNumber;
 
 				switch (Char)
@@ -589,7 +604,10 @@ private:
 								return false;
 							}
 
-							Stream->Serialize(&Char, sizeof(CharType));
+							if (!Serialize(&Char, sizeof(CharType)))
+							{
+								return false;
+							}
 							++CharacterNumber;
 
 							int32 HexDigit = FParse::HexDigit(Char);
@@ -632,7 +650,7 @@ private:
 		FString String;
 		int32 State = 0;
 		bool UseFirstChar = true;
-		bool Error = false;
+		bool StateError = false;
 
 		while (true)
 		{
@@ -650,7 +668,10 @@ private:
 			}
 			else
 			{
-				Stream->Serialize(&Char, sizeof(CharType));
+				if (!Serialize(&Char, sizeof(CharType)))
+				{
+					return false;
+				}
 				++CharacterNumber;
 			}
 
@@ -668,53 +689,53 @@ private:
 					if (Char == CharType('-')) { State = 1; }
 					else if (Char == CharType('0')) { State = 2; }
 					else if (IsNonZeroDigit(Char)) { State = 3; }
-					else { Error = true; }
+					else { StateError = true; }
 					break;
 
 				case 1:
 					if (Char == CharType('0')) { State = 2; }
 					else if (IsNonZeroDigit(Char)) { State = 3; }
-					else { Error = true; }
+					else { StateError = true; }
 					break;
 
 				case 2:
 					if (Char == CharType('.')) { State = 4; }
 					else if (Char == CharType('e') || Char == CharType('E')) { State = 5; }
-					else { Error = true; }
+					else { StateError = true; }
 					break;
 
 				case 3:
 					if (IsDigit(Char)) { State = 3; }
 					else if (Char == CharType('.')) { State = 4; }
 					else if (Char == CharType('e') || Char == CharType('E')) { State = 5; }
-					else { Error = true; }
+					else { StateError = true; }
 					break;
 
 				case 4:
 					if (IsDigit(Char)) { State = 6; }
-					else { Error = true; }
+					else { StateError = true; }
 					break;
 
 				case 5:
 					if (Char == CharType('-') ||Char == CharType('+')) { State = 7; }
 					else if (IsDigit(Char)) { State = 8; }
-					else {Error = true;}
+					else { StateError = true; }
 					break;
 
 				case 6:
 					if (IsDigit(Char)) { State = 6; }
 					else if (Char == CharType('e') || Char == CharType('E')) { State = 5; }
-					else { Error = true; }
+					else { StateError = true; }
 					break;
 
 				case 7:
 					if (IsDigit(Char)) { State = 8; }
-					else { Error = true; }
+					else { StateError = true; }
 					break;
 
 				case 8:
 					if (IsDigit(Char)) { State = 8; }
-					else { Error = true; }
+					else { StateError = true; }
 					break;
 
 				default:
@@ -722,7 +743,7 @@ private:
 					return false;
 				}
 
-				if (Error)
+				if (StateError)
 				{
 					break;
 				}
@@ -740,7 +761,7 @@ private:
 		}
 
 		// ensure the number has followed valid Json format
-		if (!Error && ((State == 2) || (State == 3) || (State == 6) || (State == 8)))
+		if (!StateError && ((State == 2) || (State == 3) || (State == 6) || (State == 8)))
 		{
 			StringValue = String;
 			NumberValue = FCString::Atod(*String);
@@ -751,12 +772,15 @@ private:
 		return false;
 	}
 
-	void ParseWhiteSpace()
+	bool ParseWhiteSpace()
 	{
 		while (!Stream->AtEnd())
 		{
 			CharType Char;
-			Stream->Serialize(&Char, sizeof(CharType));
+			if (!Serialize(&Char, sizeof(CharType)))
+			{
+				return false;
+			}
 			++CharacterNumber;
 
 			if (IsLineBreak(Char))
@@ -773,6 +797,7 @@ private:
 				break;
 			}
 		}
+		return true;
 	}
 
 	bool IsLineBreak( const CharType& Char )
@@ -811,6 +836,18 @@ private:
 	}
 
 protected:
+	bool Serialize(void* V, int64 Length)
+	{
+		Stream->Serialize(V, Length);
+		if (Stream->IsError())
+		{
+			SetErrorMessage(TEXT("Stream I/O Error"));
+			return false;
+		}
+		return true;
+	}
+
+protected:
 
 	TArray<EJson> ParseState;
 	EJsonToken CurrentToken;
@@ -842,6 +879,10 @@ public:
 		return MakeShareable(new FJsonStringReader(MoveTemp(JsonString)));
 	}
 
+	const FString& GetSourceString() const
+	{
+		return Content;
+	}
 public:
 
 	virtual ~FJsonStringReader() = default;

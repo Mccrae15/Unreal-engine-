@@ -70,6 +70,7 @@ public:
 				.ToolTipText(this, &SEmitterTrackWidget::GetToggleIsolateToolTip)
 				.OnClicked(this, &SEmitterTrackWidget::OnToggleIsolateButtonClicked)
 				.Visibility(this, &SEmitterTrackWidget::GetIsolateToggleVisibility)
+				.IsFocusable(false)
 				.Content()
 				[
 					SNew(SImage)
@@ -79,30 +80,13 @@ public:
 			];
 
 		// Renderer buttons
-
-		EmitterTrack->GetEmitterHandleViewModel()->GetRendererEntries(RendererEntryData);
-		for (UNiagaraStackEntry* RendererEntry : RendererEntryData)
-		{
-			if (UNiagaraStackRendererItem* RendererItem = Cast<UNiagaraStackRendererItem>(RendererEntry))
-			{
-				UNiagaraRendererProperties* Renderer = RendererItem->GetRendererProperties();
-				TrackBox->AddSlot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					.Padding(3, 0, 0, 0)
-					[
-						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-						.IsFocusable(false)
-						.ToolTipText(FText::Format(LOCTEXT("RenderButtonToolTip", "{0} - Press to select."), FText::FromString(FName::NameToDisplayString(Renderer->GetName(), false))))
-						.OnClicked(this, &SEmitterTrackWidget::OnRenderButtonClicked, RendererEntry)
-						[
-							SNew(SImage)
-							.Image(FSlateIconFinder::FindIconBrushForClass(Renderer->GetClass()))
-						]
-					];
-			}
-		}
+		TrackBox->AddSlot()
+			.AutoWidth()
+			[
+				SAssignNew(RenderersBox, SHorizontalBox)
+			];
+		ConstructRendererWidgets();
+		EmitterTrack->GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter()->OnRenderersChanged().AddSP(this, &SEmitterTrackWidget::ConstructRendererWidgets);
 
 		// Enabled checkbox.
 		TrackBox->AddSlot()
@@ -123,7 +107,52 @@ public:
 		];
 	}
 
+	~SEmitterTrackWidget()
+	{
+		if (EmitterTrack.IsValid() && EmitterTrack->GetEmitterHandleViewModel().IsValid())
+		{
+			UNiagaraEmitter* Emitter = EmitterTrack->GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter();
+			if (Emitter != nullptr)
+			{
+				Emitter->OnRenderersChanged().RemoveAll(this);
+			}
+		}
+	}
+
 private:
+	void ConstructRendererWidgets()
+	{
+		RenderersBox->ClearChildren();
+
+		if(EmitterTrack.IsValid())
+		{
+			TArray<UNiagaraStackEntry*> RendererEntryData;
+			EmitterTrack->GetEmitterHandleViewModel()->GetRendererEntries(RendererEntryData);
+			for (UNiagaraStackEntry* RendererEntry : RendererEntryData)
+			{
+				if (UNiagaraStackRendererItem* RendererItem = Cast<UNiagaraStackRendererItem>(RendererEntry))
+				{
+					UNiagaraRendererProperties* Renderer = RendererItem->GetRendererProperties();
+					RenderersBox->AddSlot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						.Padding(3, 0, 0, 0)
+						[
+							SNew(SButton)
+							.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+							.IsFocusable(false)
+							.ToolTipText(FText::Format(LOCTEXT("RenderButtonToolTip", "{0} - Press to select."), FText::FromString(FName::NameToDisplayString(Renderer->GetName(), false))))
+							.OnClicked(this, &SEmitterTrackWidget::OnRenderButtonClicked, RendererEntry)
+							[
+								SNew(SImage)
+								.Image(FSlateIconFinder::FindIconBrushForClass(Renderer->GetClass()))
+							]
+						];
+				}
+			}
+		}
+	}
+
 	EVisibility GetTrackErrorIconVisibility() const 
 	{
 		return EmitterTrack.IsValid() && EmitterTrack.Get()->GetSectionInitializationErrors().Num() > 0
@@ -215,7 +244,7 @@ private:
 private:
 	TWeakObjectPtr<UMovieSceneNiagaraEmitterTrack> EmitterTrack;
 	mutable TOptional<FText> TrackErrorIconToolTip;
-	TArray<UNiagaraStackEntry*> RendererEntryData;
+	TSharedPtr<SHorizontalBox> RenderersBox;
 };
 
 FNiagaraEmitterTrackEditor::FNiagaraEmitterTrackEditor(TSharedPtr<ISequencer> Sequencer) 

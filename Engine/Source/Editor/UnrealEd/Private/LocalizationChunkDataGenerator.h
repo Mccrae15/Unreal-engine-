@@ -17,7 +17,7 @@ public:
 	virtual ~FLocalizationChunkDataGenerator() = default;
 
 	//~ IChunkDataGenerator
-	virtual void GenerateChunkDataFiles(const int32 InChunkId, const TSet<FName>& InPackagesInChunk, const FString& InPlatformName, FSandboxPlatformFile* InSandboxFile, TArray<FString>& OutChunkFilenames) override;
+	virtual void GenerateChunkDataFiles(const int32 InChunkId, const TSet<FName>& InPackagesInChunk, const ITargetPlatform* TargetPlatform, FSandboxPlatformFile* InSandboxFile, TArray<FString>& OutChunkFilenames) override;
 
 private:
 	/** Update CachedLocalizationTargetData if needed */
@@ -34,4 +34,10 @@ private:
 
 	/** Cached localization target helpers, to avoid redundant work for each chunk */
 	TArray<TSharedPtr<FLocTextHelper>> CachedLocalizationTargetHelpers;
+
+	/** Array of potential content roots, including plugins that aren't currently loaded */
+	TArray<FString> AllPotentialContentRoots;
+
+	/** Array of plugin content roots that should be mapped onto /Game during cook */
+	TArray<FString> PluginContentRootsMappedToGameRoot;
 };

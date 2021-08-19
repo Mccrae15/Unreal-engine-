@@ -30,15 +30,11 @@ class DISPLAYCLUSTER_API IDisplayClusterClusterEventListener
 	GENERATED_BODY()
 
 public:
-	// React on incoming cluster events
-	UFUNCTION(BlueprintImplementableEvent, meta = (DeprecatedFunction, DeprecationMessage = "Use OnClusterEventJson"), Category="nDisplay")
-	void OnClusterEvent(const FDisplayClusterClusterEvent& Event);
-
-	// React on incoming cluster events
-	UFUNCTION(BlueprintImplementableEvent, Category = "nDisplay")
+	// React on incoming JSON cluster events
+	UFUNCTION(BlueprintImplementableEvent, Category = "NDisplay")
 	void OnClusterEventJson(const FDisplayClusterClusterEventJson& Event);
 
-	// React on incoming cluster events
-	UFUNCTION(BlueprintImplementableEvent, Category = "nDisplay")
+	// React on incoming binary cluster events
+	UFUNCTION(BlueprintImplementableEvent, Category = "NDisplay")
 	void OnClusterEventBinary(const FDisplayClusterClusterEventBinary& Event);
 };

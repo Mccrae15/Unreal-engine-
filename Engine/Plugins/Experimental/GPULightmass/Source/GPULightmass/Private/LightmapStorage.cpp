@@ -8,13 +8,14 @@
 #include "Scene/Lights.h"
 #include "LightmapRenderer.h"
 #include "GPULightmassModule.h"
+#include "Async/ParallelFor.h"
 
 namespace GPULightmass
 {
 
 TDoubleLinkedList<FTileDataLayer*> FTileDataLayer::AllUncompressedTiles;
 
-int64 FTileDataLayer::Compress()
+int64 FTileDataLayer::Compress(bool bParallelCompression)
 {
 	const int32 CompressMemoryBound = FCompression::CompressMemoryBound(NAME_LZ4, sizeof(FLinearColor) * GPreviewLightmapVirtualTileSize * GPreviewLightmapVirtualTileSize);
 
@@ -28,7 +29,10 @@ int64 FTileDataLayer::Compress()
 		Data.Empty();
 
 		check(bNodeAddedToList);
-		AllUncompressedTiles.RemoveNode(&Node, false);
+		if (!bParallelCompression)
+		{
+			AllUncompressedTiles.RemoveNode(&Node, false);
+		}
 		bNodeAddedToList = false;
 
 		return sizeof(FLinearColor) * GPreviewLightmapVirtualTileSize * GPreviewLightmapVirtualTileSize - CompressedSize;
@@ -68,13 +72,24 @@ void FTileDataLayer::Evict()
 {
 	int32 OldNum = AllUncompressedTiles.Num();
 	double StartTime = FPlatformTime::Seconds();
-	int64 EvictedMemorySize = 0;
+
+	TArray<FTileDataLayer*> TileDataLayersToCompress;
 
 	while (AllUncompressedTiles.Num() > 16384)
 	{
 		FTileDataLayer* TileDataLayerToCompress = AllUncompressedTiles.GetTail()->GetValue();
-		EvictedMemorySize += TileDataLayerToCompress->Compress();
+		AllUncompressedTiles.RemoveNode(AllUncompressedTiles.GetTail(), false);
+		TileDataLayersToCompress.Add(TileDataLayerToCompress);
 	}
+
+	int64 EvictedMemorySize = 0;
+
+	ParallelFor(TileDataLayersToCompress.Num(), 
+		[&TileDataLayersToCompress, &EvictedMemorySize](int32 Index)
+	{
+		FTileDataLayer* TileDataLayerToCompress = TileDataLayersToCompress[Index];
+		FPlatformAtomics::InterlockedAdd(&EvictedMemorySize, TileDataLayerToCompress->Compress(true)); 
+	});
 
 	double EndTime = FPlatformTime::Seconds();
 
@@ -99,8 +114,8 @@ void FLightmap::CreateGameThreadResources()
 	
 	// TODO: add more layers based on layer settings
 	{
-		TextureUObject->SetLayerForType(ELightMapVirtualTextureType::HqLayer0, 0);
-		TextureUObject->SetLayerForType(ELightMapVirtualTextureType::HqLayer1, 1);
+		TextureUObject->SetLayerForType(ELightMapVirtualTextureType::LightmapLayer0, 0);
+		TextureUObject->SetLayerForType(ELightMapVirtualTextureType::LightmapLayer1, 1);
 		TextureUObject->SetLayerForType(ELightMapVirtualTextureType::ShadowMask, 2);
 	}
 
@@ -119,10 +134,10 @@ void FLightmap::CreateGameThreadResources()
 			LightmapObject->AddVectors[CoefIndex] = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
 		}
 	}
-	LightmapObject->VirtualTexture = TextureUObject;
+	LightmapObject->VirtualTextures[0] = TextureUObject;
 
 	ResourceCluster = MakeUnique<FLightmapResourceCluster>();
-	ResourceCluster->Input.LightMapVirtualTexture = TextureUObject;
+	ResourceCluster->Input.LightMapVirtualTextures[0] = TextureUObject;
 
 	MeshMapBuildData = MakeUnique<FMeshMapBuildData>();
 	MeshMapBuildData->LightMap = LightmapObject;

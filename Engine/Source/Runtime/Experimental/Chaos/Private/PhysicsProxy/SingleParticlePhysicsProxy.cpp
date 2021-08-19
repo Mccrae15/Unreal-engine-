@@ -12,38 +12,33 @@
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/Framework/MultiBufferResource.h"
 #include "PhysicsSolver.h"
+#include "Chaos/ChaosMarshallingManager.h"
+#include "Chaos/PullPhysicsDataImp.h"
 
-template< class PARTICLE_TYPE >
-FSingleParticlePhysicsProxy<PARTICLE_TYPE>::FSingleParticlePhysicsProxy(PARTICLE_TYPE* InParticle, FParticleHandle* InHandle, UObject* InOwner, FInitialState InInitialState)
-	: Base(InOwner)
-	, bInitialized(false)
-	, InitialState(InInitialState)
-	, Particle(InParticle)
+
+FSingleParticlePhysicsProxy::FSingleParticlePhysicsProxy(TUniquePtr<PARTICLE_TYPE>&& InParticle, FParticleHandle* InHandle, UObject* InOwner)
+	: IPhysicsProxyBase(EPhysicsProxyType::SingleParticleProxy)
+	, Particle(MoveTemp(InParticle))
 	, Handle(InHandle)
+	, Owner(InOwner)
+	, PullDataInterpIdx_External(INDEX_NONE)
 {
-	BufferedData = Chaos::FMultiBufferFactory< typename PARTICLE_TYPE::FData >::CreateBuffer(Chaos::EMultiBufferMode::Double);
+	Particle->SetProxy(this);
 }
 
-template< class PARTICLE_TYPE >
-FSingleParticlePhysicsProxy<PARTICLE_TYPE>::~FSingleParticlePhysicsProxy()
+
+FSingleParticlePhysicsProxy::~FSingleParticlePhysicsProxy()
 {
 }
 
-template< class PARTICLE_TYPE >
-const FInitialState& 
-FSingleParticlePhysicsProxy<PARTICLE_TYPE>::GetInitialState() const 
-{ 
-	return InitialState; 
-}
-
-template <Chaos::EParticleType ParticleType, typename TParticleHandle, typename TEvolution>
-void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, TParticleHandle* Handle, int32 DataIdx, const Chaos::FDirtyProxy& Dirty, Chaos::FShapeDirtyData* ShapesData, TEvolution& Evolution, const bool bInitialized)
+template <Chaos::EParticleType ParticleType, typename TEvolution>
+void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos::FGeometryParticleHandle* Handle, int32 DataIdx, const Chaos::FDirtyProxy& Dirty, Chaos::FShapeDirtyData* ShapesData, TEvolution& Evolution)
 {
 	using namespace Chaos;
 	constexpr bool bHasKinematicData = ParticleType != EParticleType::Static;
 	constexpr bool bHasDynamicData = ParticleType == EParticleType::Rigid;
-	auto KinematicHandle = bHasKinematicData ? static_cast<Chaos::TKinematicGeometryParticleHandle<float,3>*>(Handle) : nullptr;
-	auto RigidHandle = bHasDynamicData ? static_cast<Chaos::TPBDRigidParticleHandle<float,3>*>(Handle) : nullptr;
+	auto KinematicHandle = bHasKinematicData ? static_cast<Chaos::FKinematicGeometryParticleHandle*>(Handle) : nullptr;
+	auto RigidHandle = bHasDynamicData ? static_cast<Chaos::FPBDRigidParticleHandle*>(Handle) : nullptr;
 	const FParticleDirtyData& ParticleData = Dirty.ParticleData;
 	// move the copied game thread data into the handle
 	{
@@ -69,7 +64,7 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, TParti
 		auto NewKinematicTarget = bHasKinematicData ? ParticleData.FindKinematicTarget(Manager, DataIdx) : nullptr;
 		if (NewKinematicTarget)
 		{
-			KinematicHandle->SetKinematicTarget(*NewKinematicTarget);
+		    KinematicHandle->SetKinematicTarget(*NewKinematicTarget);
 		}
 
 		if(NewXR || NewNonFrequentData || NewVelocities || NewKinematicTarget)
@@ -79,7 +74,7 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, TParti
 			{
 				Handle->SetHasBounds(true);
 				Handle->SetLocalBounds(Geometry->BoundingBox());
-				TAABB<float,3> WorldSpaceBounds = Geometry->BoundingBox().TransformedAABB(TRigidTransform<float,3>(Handle->X(),Handle->R()));
+				FAABB3 WorldSpaceBounds = Geometry->BoundingBox().TransformedAABB(FRigidTransform3(Handle->X(),Handle->R()));
 				if(bHasKinematicData)
 				{
 					WorldSpaceBounds.ThickenSymmetrically(KinematicHandle->V());
@@ -100,6 +95,7 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, TParti
 			if(auto NewData = ParticleData.FindDynamics(Manager, DataIdx))
 			{
 				RigidHandle->SetDynamics(*NewData);
+				RigidHandle->ResetVSmoothFromForces();
 			}
 
 			if(auto NewData = ParticleData.FindDynamicMisc(Manager,DataIdx))
@@ -107,233 +103,236 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, TParti
 				Evolution.SetParticleObjectState(RigidHandle,NewData->ObjectState());
 
 				RigidHandle->SetDynamicMisc(*NewData);
+
+				if(NewData->ObjectState() != EObjectStateType::Dynamic)
+				{
+					//this is needed because changing object state on external thread means we want to snap position to where the particle was at that time (on the external thread)
+					//for that to work we need to ensure the snap results (which we just got) are passed properly into the results manager
+					Evolution.GetParticles().MarkTransientDirtyParticle(RigidHandle);
+				}
+				
 			}
 		}
 
 		//shape properties
+		bool bUpdateCollisionData = false;
+		bool bHasCollision = false;
 		for(int32 ShapeDataIdx : Dirty.ShapeDataIndices)
 		{
 			const FShapeDirtyData& ShapeData = ShapesData[ShapeDataIdx];
 			const int32 ShapeIdx = ShapeData.GetShapeIdx();
+
 			if(auto NewData = ShapeData.FindCollisionData(Manager, ShapeDataIdx))
 			{
+				bUpdateCollisionData = true;
 				Handle->ShapesArray()[ShapeIdx]->SetCollisionData(*NewData);
+
+				const FCollisionData& CollisionData = Handle->ShapesArray()[ShapeIdx]->GetCollisionData();
+				bHasCollision |= CollisionData.HasCollisionData();
 			}
 			if(auto NewData = ShapeData.FindMaterials(Manager, ShapeDataIdx))
 			{
 				Handle->ShapesArray()[ShapeIdx]->SetMaterialData(*NewData);
 			}
+
 		}
-	}
-}
+		
 
-//
-// TGeometryParticle<float, 3> template specialization 
-//
-
-template< >
-template <typename Traits>
-void FSingleParticlePhysicsProxy<Chaos::TGeometryParticle<float, 3>>::PushToPhysicsState(const Chaos::FDirtyPropertiesManager& Manager, int32 DataIdx, const Chaos::FDirtyProxy& Dirty, Chaos::FShapeDirtyData* ShapesData, Chaos::TPBDRigidsEvolutionGBF<Traits>& Evolution)
-{
-	PushToPhysicsStateImp<Chaos::EParticleType::Static>(Manager,Handle,DataIdx,Dirty,ShapesData,Evolution,bInitialized);
-}
-
-
-
-template< >
-void FSingleParticlePhysicsProxy<Chaos::TGeometryParticle<float, 3>>::ClearAccumulatedData()
-{
-	Particle->ClearDirtyFlags();
-}
-
-
-template< >
-CHAOS_API void FSingleParticlePhysicsProxy<Chaos::TGeometryParticle<float, 3>>::BufferPhysicsResults()
-{
-	// Move simulation results into the double buffer.
-}
-
-
-template< >
-bool FSingleParticlePhysicsProxy<Chaos::TGeometryParticle<float, 3>>::PullFromPhysicsState(const int32 SolverSyncTimestamp)
-{
-	// Move buffered data into the TGeometryParticle
-	return true;
-}
-
-template< >
-bool FSingleParticlePhysicsProxy<Chaos::TGeometryParticle<float, 3>>::IsDirty()
-{
-	return Particle->IsDirty();
-}
-
-template< >
-EPhysicsProxyType FSingleParticlePhysicsProxy<Chaos::TGeometryParticle<float, 3>>::ConcreteType()
-{
-	return EPhysicsProxyType::SingleGeometryParticleType;
-}
-
-template< >
-Chaos::EWakeEventEntry  FSingleParticlePhysicsProxy<Chaos::TGeometryParticle<float, 3>>::GetWakeEvent() const
-{
-	return Chaos::EWakeEventEntry::None;
-}
-
-template< >
-void FSingleParticlePhysicsProxy<Chaos::TGeometryParticle<float, 3>>::ClearEvents()
-{
-
-}
-//
-// TKinematicGeometryParticle template specialization 
-//
-
-template <>
-template<typename Traits>
-void FSingleParticlePhysicsProxy<Chaos::TKinematicGeometryParticle<float, 3>>::PushToPhysicsState(const Chaos::FDirtyPropertiesManager& Manager, int32 DataIdx, const Chaos::FDirtyProxy& Dirty, Chaos::FShapeDirtyData* ShapesData, Chaos::TPBDRigidsEvolutionGBF<Traits>& Evolution)
-{
-	PushToPhysicsStateImp<Chaos::EParticleType::Kinematic>(Manager,Handle->CastToKinematicParticle(),DataIdx,Dirty,ShapesData,Evolution,bInitialized);
-}
-
-template< >
-void FSingleParticlePhysicsProxy<Chaos::TKinematicGeometryParticle<float, 3>>::ClearAccumulatedData()
-{
-	Particle->ClearDirtyFlags();
-}
-
-template< >
-CHAOS_API void FSingleParticlePhysicsProxy<Chaos::TKinematicGeometryParticle<float, 3>>::BufferPhysicsResults()
-{
-	// Move simulation results into the double buffer.
-}
-
-template< >
-bool FSingleParticlePhysicsProxy<Chaos::TKinematicGeometryParticle<float, 3>>::PullFromPhysicsState(const int32 SolverSyncTimestamp)
-{
-	// Move buffered data into the TKinematicGeometryParticle
-	return true;
-}
-
-template< >
-bool FSingleParticlePhysicsProxy<Chaos::TKinematicGeometryParticle<float, 3>>::IsDirty()
-{
-	return Particle->IsDirty();
-}
-
-template< >
-EPhysicsProxyType FSingleParticlePhysicsProxy<Chaos::TKinematicGeometryParticle<float, 3>>::ConcreteType()
-{
-	return EPhysicsProxyType::SingleKinematicParticleType;
-}
-
-template< >
-Chaos::EWakeEventEntry  FSingleParticlePhysicsProxy<Chaos::TKinematicGeometryParticle<float, 3>>::GetWakeEvent() const
-{
-	return Chaos::EWakeEventEntry::None;
-}
-
-template< >
-void FSingleParticlePhysicsProxy<Chaos::TKinematicGeometryParticle<float, 3>>::ClearEvents()
-{
-
-}
-
-//
-// TPBDRigidParticle template specialization 
-//
-
-template<>
-template<typename Traits>
-void FSingleParticlePhysicsProxy<Chaos::TPBDRigidParticle<float, 3>>::PushToPhysicsState(const Chaos::FDirtyPropertiesManager& Manager, int32 DataIdx, const Chaos::FDirtyProxy& Dirty, Chaos::FShapeDirtyData* ShapesData, Chaos::TPBDRigidsEvolutionGBF<Traits>& Evolution)
-{
-	PushToPhysicsStateImp<Chaos::EParticleType::Rigid>(Manager,Handle->CastToRigidParticle(),DataIdx,Dirty,ShapesData,Evolution,bInitialized);
-}
-
-template< >
-void FSingleParticlePhysicsProxy<Chaos::TPBDRigidParticle<float, 3>>::ClearAccumulatedData()
-{
-	Particle->SetF(Chaos::TVector<float, 3>(0), false);
-	Particle->SetTorque(Chaos::TVector<float, 3>(0), false);
-	Particle->SetLinearImpulse(Chaos::TVector<float, 3>(0), false);
-	Particle->SetAngularImpulse(Chaos::TVector<float, 3>(0), false);
-	Particle->ClearDirtyFlags();
-}
-
-template< >
-void FSingleParticlePhysicsProxy<Chaos::TPBDRigidParticle<float, 3>>::BufferPhysicsResults()
-{
-	// Move simulation results into the double buffer.
-	if (Chaos::TPBDRigidParticleHandle<float, 3>* RigidHandle = static_cast<Chaos::TPBDRigidParticleHandle<float, 3>*>(Handle))
-	{
-		Chaos::TPBDRigidParticleData<float, 3>* Buffer = BufferedData->AccessProducerBuffer();
-		Buffer->X = RigidHandle->X();
-		Buffer->R = RigidHandle->R();
-		Buffer->MV = RigidHandle->V();
-		Buffer->MW = RigidHandle->W();
-		Buffer->MObjectState = RigidHandle->ObjectState();
-	}
-}
-
-template< >
-bool FSingleParticlePhysicsProxy<Chaos::TPBDRigidParticle<float, 3>>::PullFromPhysicsState(const int32 SolverSyncTimestamp)
-{
-	// Move buffered data into the TPBDRigidParticle without triggering invalidation of the physics state.
-	const bool bSync = SyncTimestamp <= SolverSyncTimestamp;
-	if (bSync && Particle)
-	{
-		const Chaos::TPBDRigidParticleData<float, 3>* Buffer = BufferedData->GetConsumerBuffer();
-		Particle->SetX(Buffer->X, false);
-		Particle->SetR(Buffer->R, false);
-		Particle->SetV(Buffer->MV, false);
-		Particle->SetW(Buffer->MW, false);
-		Particle->UpdateShapeBounds();
-		//if (!Particle->IsDirty(Chaos::EParticleFlags::ObjectState))
-		//question: is it ok to call this when it was one of the other properties that changed?
-		if (!Particle->IsDirty(Chaos::EParticleFlags::DynamicMisc))
+		if(bUpdateCollisionData)
 		{
-			Particle->SetObjectState(Buffer->MObjectState, true, /*bInvalidate=*/false);
+			//Some shapes were not dirty and may have collision - so have to iterate them all. TODO: find a better way to handle this case
+			if(!bHasCollision && Dirty.ShapeDataIndices.Num() != Handle->ShapesArray().Num())
+			{
+				for (const TUniquePtr<FPerShapeData>& Shape : Handle->ShapesArray())
+				{
+					const FCollisionData& CollisionData = Shape->GetCollisionData();
+					bHasCollision |= CollisionData.HasCollisionData();
+
+					if (bHasCollision) { break; }
+				}
+			}
+
+			Handle->SetHasCollision(bHasCollision);
+
+			if(bHasCollision)
+			{
+				//make sure it's in acceleration structure
+				Evolution.DirtyParticle(*Handle);
+			}
+			else
+			{
+				Evolution.RemoveParticleFromAccelerationStructure(*Handle);
+			}
 		}
 	}
-	return bSync;
 }
 
-template< >
-bool FSingleParticlePhysicsProxy<Chaos::TPBDRigidParticle<float, 3>>::IsDirty()
+//
+// TGeometryParticle<FReal, 3> template specialization 
+//
+
+void FSingleParticlePhysicsProxy::PushToPhysicsState(const Chaos::FDirtyPropertiesManager& Manager, int32 DataIdx, const Chaos::FDirtyProxy& Dirty, Chaos::FShapeDirtyData* ShapesData, Chaos::FPBDRigidsEvolutionGBF& Evolution)
+{
+	using namespace Chaos;
+	switch(Dirty.ParticleData.GetParticleBufferType())
+	{
+		
+	case EParticleType::Static: PushToPhysicsStateImp<EParticleType::Static>(Manager, Handle, DataIdx, Dirty, ShapesData, Evolution); break;
+	case EParticleType::Kinematic: PushToPhysicsStateImp<EParticleType::Kinematic>(Manager, Handle, DataIdx, Dirty, ShapesData, Evolution); break;
+	case EParticleType::Rigid: PushToPhysicsStateImp<EParticleType::Rigid>(Manager, Handle, DataIdx, Dirty, ShapesData, Evolution); break;
+	default: check(false); //unexpected path
+	}
+}
+
+void FSingleParticlePhysicsProxy::ClearAccumulatedData()
+{
+	if(auto Rigid = Particle->CastToRigidParticle())
+	{
+		Rigid->ClearForces(false);
+		Rigid->ClearTorques(false);
+		Rigid->SetLinearImpulse(Chaos::FVec3(0), false);
+		Rigid->SetAngularImpulse(Chaos::FVec3(0), false);
+	}
+	
+	Particle->ClearDirtyFlags();
+}
+
+template <typename T>
+void BufferPhysicsResultsImp(Chaos::FDirtyRigidParticleData& PullData, T* Particle)
+{
+	PullData.X = Particle->X();
+	PullData.R = Particle->R();
+	PullData.V = Particle->V();
+	PullData.W = Particle->W();
+	PullData.ObjectState = Particle->ObjectState();
+}
+
+void FSingleParticlePhysicsProxy::BufferPhysicsResults(Chaos::FDirtyRigidParticleData& PullData)
+{
+	using namespace Chaos;
+	// Move simulation results into the double buffer.
+	FPBDRigidParticleHandle* RigidHandle = Handle ? Handle->CastToRigidParticle() : nullptr;	//TODO: can handle be null?
+	if(RigidHandle)
+	{
+		PullData.SetProxy(*this);
+		BufferPhysicsResultsImp(PullData, RigidHandle);
+	}
+}
+
+void FSingleParticlePhysicsProxy::BufferPhysicsResults_External(Chaos::FDirtyRigidParticleData& PullData)
+{
+	if(auto Rigid = Particle->CastToRigidParticle())
+	{
+		PullData.SetProxy(*this);
+		BufferPhysicsResultsImp(PullData, Rigid);
+	}
+}
+
+bool FSingleParticlePhysicsProxy::PullFromPhysicsState(const Chaos::FDirtyRigidParticleData& PullData,int32 SolverSyncTimestamp, const Chaos::FDirtyRigidParticleData* NextPullData, const Chaos::FRealSingle* Alpha)
+{
+	using namespace Chaos;
+	// Move buffered data into the TPBDRigidParticle without triggering invalidation of the physics state.
+	auto Rigid = Particle ? Particle->CastToRigidParticle() : nullptr;
+	if(Rigid)
+	{
+		const FProxyTimestamp* ProxyTimestamp = PullData.GetTimestamp();
+		
+		if(NextPullData)
+		{
+			auto LerpHelper = [SolverSyncTimestamp](const int32 PropertyTimestamp, const auto& Prev, const auto& Overwrite) -> const auto*
+			{
+				//if overwrite is in the future, do nothing
+				//if overwrite is on this step, we want to interpolate from overwrite to the result of the frame that consumed the overwrite
+				//if overwrite is in the past, just do normal interpolation
+
+				//this is nested because otherwise compiler can't figure out the type of nullptr with an auto return type
+				return PropertyTimestamp <= SolverSyncTimestamp ? (PropertyTimestamp < SolverSyncTimestamp ? &Prev : &Overwrite) : nullptr;
+			};
+
+			if(const FVec3* Prev = LerpHelper(ProxyTimestamp->XTimestamp, PullData.X, ProxyTimestamp->OverWriteX))
+			{
+				Rigid->SetX(FMath::Lerp(*Prev, NextPullData->X, *Alpha), false);
+			}
+
+			if (const FQuat* Prev = LerpHelper(ProxyTimestamp->RTimestamp, PullData.R, ProxyTimestamp->OverWriteR))
+			{
+				Rigid->SetR(FMath::Lerp(*Prev, NextPullData->R, *Alpha), false);
+			}
+
+			if (const FVec3* Prev = LerpHelper(ProxyTimestamp->VTimestamp, PullData.V, ProxyTimestamp->OverWriteV))
+			{
+				Rigid->SetV(FMath::Lerp(*Prev, NextPullData->V, *Alpha), false);
+			}
+
+			if (const FVec3* Prev = LerpHelper(ProxyTimestamp->WTimestamp, PullData.W, ProxyTimestamp->OverWriteW))
+			{
+				Rigid->SetW(FMath::Lerp(*Prev, NextPullData->W, *Alpha), false);
+			}
+
+			//we are interpolating from PullData to Next, but the timestamp is associated with Next
+			//since we are interpolating it means we must have not seen Next yet, so the timestamp has to be strictly less than
+			if (ProxyTimestamp->ObjectStateTimestamp < SolverSyncTimestamp)
+			{
+				Rigid->SetObjectState(PullData.ObjectState, true, /*bInvalidate=*/false);
+			}
+			else if(ProxyTimestamp->ObjectStateTimestamp == SolverSyncTimestamp && *Alpha == 1.f)
+			{
+				//if timestamp is the same as next, AND alpha is exactly 1, we are exactly at Next's time
+				//so we can use its sleep state
+				Rigid->SetObjectState(NextPullData->ObjectState, true, /*bInvalidate=*/false);
+			}
+		}
+		else
+		{
+			//no interpolation, just ignore if overwrite comes after
+			if(SolverSyncTimestamp >= ProxyTimestamp->XTimestamp)
+			{
+				Rigid->SetX(PullData.X, false);
+			}
+
+			if(SolverSyncTimestamp >= ProxyTimestamp->RTimestamp)
+			{
+				Rigid->SetR(PullData.R, false);
+			}
+
+			if(SolverSyncTimestamp >= ProxyTimestamp->VTimestamp)
+			{
+				Rigid->SetV(PullData.V, false);
+			}
+
+			if(SolverSyncTimestamp >= ProxyTimestamp->WTimestamp)
+			{
+				Rigid->SetW(PullData.W, false);
+			}
+
+			if (SolverSyncTimestamp >= ProxyTimestamp->ObjectStateTimestamp)
+			{
+				Rigid->SetObjectState(PullData.ObjectState, true, /*bInvalidate=*/false);
+			}
+		}
+		
+		Rigid->UpdateShapeBounds();
+	}
+	return true;
+}
+
+bool FSingleParticlePhysicsProxy::IsDirty()
 {
 	return Particle->IsDirty();
 }
 
-template< >
-Chaos::EWakeEventEntry FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float, 3> >::GetWakeEvent() const
+Chaos::EWakeEventEntry FSingleParticlePhysicsProxy::GetWakeEvent() const
 {
-	return Particle->GetWakeEvent();
+	//question: should this API exist on proxy?
+	auto Rigid = Particle->CastToRigidParticle();
+	return Rigid ? Rigid->GetWakeEvent() : Chaos::EWakeEventEntry::None;
 }
 
-template< >
-void FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float, 3> >::ClearEvents()
+void FSingleParticlePhysicsProxy::ClearEvents()
 {
-	Particle->ClearEvents();
+	//question: should this API exist on proxy?
+	if(auto Rigid = Particle->CastToRigidParticle())
+	{
+		Rigid->ClearEvents();
+	}
 }
-
-template< >
-EPhysicsProxyType  FSingleParticlePhysicsProxy<Chaos::TPBDRigidParticle<float, 3>>::ConcreteType() 
-{ 
-	return EPhysicsProxyType::SingleRigidParticleType;
-}
-
-template class CHAOS_API FSingleParticlePhysicsProxy< Chaos::TGeometryParticle<float, 3> >;
-template class CHAOS_API FSingleParticlePhysicsProxy< Chaos::TKinematicGeometryParticle<float, 3> >;
-template class CHAOS_API FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float,3> >;
-
-
-#define EVOLUTION_TRAIT(Traits)\
-template void FSingleParticlePhysicsProxy<Chaos::TGeometryParticle<Chaos::FReal,3>>::PushToPhysicsState(const Chaos::FDirtyPropertiesManager& Manager,\
-	int32 DataIdx,const Chaos::FDirtyProxy& Dirty,Chaos::FShapeDirtyData* ShapesData, Chaos::TPBDRigidsEvolutionGBF<Chaos::Traits>& Evolution);\
-\
-template void FSingleParticlePhysicsProxy<Chaos::TKinematicGeometryParticle<Chaos::FReal,3>>::PushToPhysicsState(const Chaos::FDirtyPropertiesManager& Manager,\
-	int32 DataIdx,const Chaos::FDirtyProxy& Dirty,Chaos::FShapeDirtyData* ShapesData,Chaos::TPBDRigidsEvolutionGBF<Chaos::Traits>& Evolution);\
-\
-template void FSingleParticlePhysicsProxy<Chaos::TPBDRigidParticle<Chaos::FReal,3>>::PushToPhysicsState(const Chaos::FDirtyPropertiesManager& Manager,\
-	int32 DataIdx,const Chaos::FDirtyProxy& Dirty,Chaos::FShapeDirtyData* ShapesData, Chaos::TPBDRigidsEvolutionGBF<Chaos::Traits>& Evolution);
-#include "Chaos/EvolutionTraits.inl"
-#undef EVOLUTION_TRAIT

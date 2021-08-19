@@ -129,6 +129,88 @@ void MovieSceneToolHelpers::TrimSection(const TSet<TWeakObjectPtr<UMovieSceneSec
 }
 
 
+void MovieSceneToolHelpers::TrimOrExtendSection(UMovieSceneTrack* Track, TOptional<int32> SpecifiedRowIndex, FQualifiedFrameTime Time, bool bTrimOrExtendLeft, bool bDeleteKeys)
+{
+	Track->Modify();
+
+	int32 StartRowIndex = SpecifiedRowIndex.IsSet() ? SpecifiedRowIndex.GetValue() : 0;
+	int32 EndRowIndex = SpecifiedRowIndex.IsSet() ? SpecifiedRowIndex.GetValue() : Track->GetMaxRowIndex();
+
+	for (int32 RowIndex = StartRowIndex; RowIndex <= EndRowIndex; ++RowIndex)
+	{
+		// First, trim all intersecting sections
+		bool bAnyIntersects = false;
+		for (UMovieSceneSection* Section : Track->GetAllSections())
+		{
+			if (Section->GetRowIndex() == RowIndex && Section->HasStartFrame() && Section->HasEndFrame() && Section->GetRange().Contains(Time.Time.GetFrame()))
+			{
+				Section->TrimSection(Time, bTrimOrExtendLeft, bDeleteKeys);
+				bAnyIntersects = true;
+			}
+		}
+
+		// If there aren't any intersects, extend the closest start/end
+		if (!bAnyIntersects)
+		{
+			UMovieSceneSection* ClosestSection = nullptr;
+			TOptional<FFrameNumber> MinDiff;
+
+			for (UMovieSceneSection* Section : Track->GetAllSections())
+			{
+				if (Section->GetRowIndex() == RowIndex)
+				{
+					if (bTrimOrExtendLeft)
+					{
+						if (Section->HasStartFrame())
+						{
+							FFrameNumber StartFrame = Section->GetInclusiveStartFrame();
+							if (StartFrame > Time.Time.GetFrame())
+							{
+								FFrameNumber Diff = StartFrame - Time.Time.GetFrame();
+								if (!MinDiff.IsSet() || Diff < MinDiff.GetValue())
+								{
+									ClosestSection = Section;
+									MinDiff = Diff;
+								}
+							}
+						}
+					}
+					else
+					{
+						if (Section->HasEndFrame())
+						{
+							FFrameNumber EndFrame = Section->GetExclusiveEndFrame();
+							if (EndFrame < Time.Time.GetFrame())
+							{
+								FFrameNumber Diff = Time.Time.GetFrame() - EndFrame;
+								if (!MinDiff.IsSet() || Diff < MinDiff.GetValue())
+								{
+									ClosestSection = Section;
+									MinDiff = Diff;
+								}
+							}
+						}
+					}
+				}
+			}
+
+			if (ClosestSection)
+			{
+				ClosestSection->Modify();
+				if (bTrimOrExtendLeft)
+				{
+					ClosestSection->SetStartFrame(Time.Time.GetFrame());
+				}
+				else
+				{
+					ClosestSection->SetEndFrame(Time.Time.GetFrame());
+				}
+			}
+		}
+	}
+}
+
+
 void MovieSceneToolHelpers::SplitSection(const TSet<TWeakObjectPtr<UMovieSceneSection>>& Sections, FQualifiedFrameTime Time, bool bDeleteKeys)
 {
 	for (auto Section : Sections)
@@ -545,13 +627,18 @@ bool MovieSceneToolHelpers::SetTakeNumber(const UMovieSceneSection* Section, uin
 	return FMovieSceneToolsModule::Get().SetTakeNumber(Section, InTakeNumber);
 }
 
-int32 MovieSceneToolHelpers::FindAvailableRowIndex(UMovieSceneTrack* InTrack, UMovieSceneSection* InSection)
+int32 MovieSceneToolHelpers::FindAvailableRowIndex(UMovieSceneTrack* InTrack, UMovieSceneSection* InSection, const TArray<UMovieSceneSection*>& SectionsToDisregard)
 {
 	for (int32 RowIndex = 0; RowIndex <= InTrack->GetMaxRowIndex(); ++RowIndex)
 	{
 		bool bFoundIntersect = false;
 		for (UMovieSceneSection* Section : InTrack->GetAllSections())
 		{
+			if (SectionsToDisregard.Contains(Section))
+			{
+				continue;
+			}
+	
 			if (!Section->HasStartFrame() || !Section->HasEndFrame() || !InSection->HasStartFrame() || !InSection->HasEndFrame())
 			{
 				bFoundIntersect = true;
@@ -571,6 +658,30 @@ int32 MovieSceneToolHelpers::FindAvailableRowIndex(UMovieSceneTrack* InTrack, UM
 	}
 
 	return InTrack->GetMaxRowIndex() + 1;
+}
+
+
+bool MovieSceneToolHelpers::OverlapsSection(UMovieSceneTrack* InTrack, UMovieSceneSection* InSection, const TArray<UMovieSceneSection*>& SectionsToDisregard)
+{
+	for (UMovieSceneSection* Section : InTrack->GetAllSections())
+	{
+		if (SectionsToDisregard.Contains(Section))
+		{
+			continue;
+		}
+	
+		if (!Section->HasStartFrame() || !Section->HasEndFrame() || !InSection->HasStartFrame() || !InSection->HasEndFrame())
+		{
+			return true;
+		}
+
+		if (Section != InSection && Section->GetRange().Overlaps(InSection->GetRange()))
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 TSharedRef<SWidget> MovieSceneToolHelpers::MakeEnumComboBox(const UEnum* InEnum, TAttribute<int32> InCurrentValue, SEnumComboBox::FOnEnumSelectionChanged InOnSelectionChanged)
@@ -1004,9 +1115,24 @@ bool ImportFBXProperty(FString NodeName, FString AnimatedPropertyName, FGuid Obj
 	return false;
 }
 
-void MovieSceneToolHelpers::CameraAdded(UMovieScene* OwnerMovieScene, FGuid CameraGuid, FFrameNumber FrameNumber)
-{
 
+void MovieSceneToolHelpers::LockCameraActorToViewport(const TSharedPtr<ISequencer>& Sequencer, ACameraActor* CameraActor)
+{
+	Sequencer->SetPerspectiveViewportCameraCutEnabled(false);
+
+	// Lock the viewport to this camera
+	if (CameraActor && CameraActor->GetLevel())
+	{
+		GCurrentLevelEditingViewportClient->SetCinematicActorLock(nullptr);
+		GCurrentLevelEditingViewportClient->SetActorLock(CameraActor);
+		GCurrentLevelEditingViewportClient->bLockedCameraView = true;
+		GCurrentLevelEditingViewportClient->UpdateViewForLockedActor();
+		GCurrentLevelEditingViewportClient->Invalidate();
+	}
+}
+
+void MovieSceneToolHelpers::CreateCameraCutSectionForCamera(UMovieScene* OwnerMovieScene, FGuid CameraGuid, FFrameNumber FrameNumber)
+{
 	// If there's a cinematic shot track, no need to set this camera to a shot
 	UMovieSceneTrack* CinematicShotTrack = OwnerMovieScene->FindMasterTrack(UMovieSceneCinematicShotTrack::StaticClass());
 	if (CinematicShotTrack)
@@ -1195,28 +1321,6 @@ void ImportTransformChannelToInteger(const FRichCurve& Source, FMovieSceneIntege
 		} //todo need to do a set here?
 	}
 }
-
-
-
-//TArrayView<FMovieSceneFloatChannel*> Channels = TransformSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
-/*
-UMovieScene3DTransformTrack* TransformTrack = InMovieScene->FindTrack<UMovieScene3DTransformTrack>(ObjectBinding);
-	if (!TransformTrack)
-	{
-		InMovieScene->Modify();
-		TransformTrack = InMovieScene->AddTrack<UMovieScene3DTransformTrack>(ObjectBinding);
-	}
-	TransformTrack->Modify();
-
-	bool bSectionAdded = false;
-	UMovieScene3DTransformSection* TransformSection = Cast<UMovieScene3DTransformSection>(TransformTrack->FindOrAddSection(0, bSectionAdded));
-	if (!TransformSection)
-	{
-		return false;
-	}
-		FFrameRate FrameRate = TransformSection->GetTypedOuter<UMovieScene>()->GetTickResolution();
-
-*/
 
 void SetChannelValue(FMovieSceneFloatChannel* Channel, FMovieSceneBoolChannel *BoolChannel, FMovieSceneByteChannel *EnumChannel, FMovieSceneIntegerChannel* IntegerChannel,
 	FFrameRate FrameRate, FFrameNumber StartFrame,
@@ -1591,7 +1695,7 @@ void SetChannelValue(FMovieSceneFloatChannel* Channel, FMovieSceneBoolChannel *B
 //if two channel go to X Y
 //if three channel to to x y z
 // if 9 due full
-static bool ImportFBXTransformToChannels(FString NodeName, FFrameNumber StartFrame, FFrameRate FrameRate, FFBXNodeAndChannels& NodeAndChannels,
+static bool ImportFBXTransformToChannels(FString NodeName, const UMovieSceneUserImportFBXSettings* ImportFBXSettings,UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings,  FFrameNumber StartFrame, FFrameRate FrameRate, FFBXNodeAndChannels& NodeAndChannels,
 	 UnFbx::FFbxCurvesAPI& CurveAPI)
 {
 
@@ -1600,8 +1704,6 @@ static bool ImportFBXTransformToChannels(FString NodeName, FFrameNumber StartFra
 	TArray<FMovieSceneByteChannel*>& EnumChannels = NodeAndChannels.EnumChannels;
 	TArray<FMovieSceneIntegerChannel*>& IntegerChannels = NodeAndChannels.IntegerChannels;
 
-	const UMovieSceneUserImportFBXSettings* ImportFBXSettings = GetDefault<UMovieSceneUserImportFBXSettings>();
-	UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings = GetMutableDefault<UMovieSceneUserImportFBXControlRigSettings>();
 
 	// Look for transforms explicitly
 	FRichCurve Translation[3];
@@ -1609,7 +1711,7 @@ static bool ImportFBXTransformToChannels(FString NodeName, FFrameNumber StartFra
 	FRichCurve Scale[3];
 	FTransform DefaultTransform;
 	const bool bUseSequencerCurve = true;
-	CurveAPI.GetConvertedTransformCurveData(NodeName, Translation[0], Translation[1], Translation[2], EulerRotation[0], EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2], DefaultTransform, true);
+	CurveAPI.GetConvertedTransformCurveData(NodeName, Translation[0], Translation[1], Translation[2], EulerRotation[0], EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2], DefaultTransform, true, ImportFBXSettings->ImportUniformScale);
 
 
 	FVector Location = DefaultTransform.GetLocation(), Rotation = DefaultTransform.GetRotation().Euler(), Scale3D = DefaultTransform.GetScale3D();
@@ -1795,6 +1897,7 @@ static void PrepForInsertReplaceAnimation(bool bInsert, const FFBXNodeAndChannel
 	}
 
 	FFrameNumber Diff = EndFrame - StartFrame;
+	FrameToInsertOrReplace += StartFrame;
 	if (bInsert)
 	{
 		for (FMovieSceneChannel* Channel : Channels)
@@ -2146,12 +2249,14 @@ bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(UMovieScene* MovieSc
 	bool bOldbConvertScene = ImportOptions->bConvertScene;
 	bool bOldbConvertSceneUnit = ImportOptions->bConvertSceneUnit;
 	bool bOldbForceFrontXAxis = ImportOptions->bForceFrontXAxis;
+	float OldUniformScale = ImportOptions->ImportUniformScale;
 	EFBXAnimationLengthImportType OldAnimLengthType = ImportOptions->AnimationLengthImportType;
 
 
 	ImportOptions->bConvertScene = true;
-	ImportOptions->bConvertSceneUnit = true;
+	ImportOptions->bConvertSceneUnit = ImportFBXControlRigSettings->bConvertSceneUnit;
 	ImportOptions->bForceFrontXAxis = ImportFBXControlRigSettings->bForceFrontXAxis;
+	ImportOptions->ImportUniformScale = ImportFBXControlRigSettings->ImportUniformScale;
 	ImportOptions->AnimationLengthImportType = FBXALIT_ExportedTime;
 
 	const FString FileExtension = FPaths::GetExtension(ImportFilename);
@@ -2170,7 +2275,9 @@ bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(UMovieScene* MovieSc
 		FObjectWriter(CurrentImportFBXSettings, OriginalSettings);
 
 		CurrentImportFBXSettings->bMatchByNameOnly = false;
+		CurrentImportFBXSettings->bConvertSceneUnit = ImportFBXControlRigSettings->bConvertSceneUnit;
 		CurrentImportFBXSettings->bForceFrontXAxis = ImportFBXControlRigSettings->bForceFrontXAxis;
+		CurrentImportFBXSettings->ImportUniformScale = ImportFBXControlRigSettings->ImportUniformScale;
 		CurrentImportFBXSettings->bCreateCameras = false;
 		CurrentImportFBXSettings->bReduceKeys = false;
 		CurrentImportFBXSettings->ReduceKeysTolerance = 0.01f;
@@ -2250,7 +2357,7 @@ bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(UMovieScene* MovieSc
 						FrameToInsertOrReplace,
 						StartFrame, EndFrame);
 
-					ImportFBXTransformToChannels(NodeName, FrameToInsertOrReplace, FrameRate, NodeAndChannel, CurveAPI);
+					ImportFBXTransformToChannels(NodeName, CurrentImportFBXSettings, ImportFBXControlRigSettings, FrameToInsertOrReplace, FrameRate, NodeAndChannel, CurveAPI);
 				}
 			}
 		}
@@ -2264,7 +2371,7 @@ bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(UMovieScene* MovieSc
 	ImportOptions->bConvertScene = bOldbConvertScene;
 	ImportOptions->bConvertSceneUnit = bOldbConvertSceneUnit;
 	ImportOptions->bForceFrontXAxis = bOldbForceFrontXAxis;
-	ImportOptions->bForceFrontXAxis = bOldbForceFrontXAxis;
+	ImportOptions->ImportUniformScale = OldUniformScale;;
 	return bValid;
 }
 
@@ -2357,7 +2464,6 @@ bool MovieSceneToolHelpers::ImportFBXIntoChannelsWithDialog(const TSharedRef<ISe
 	return true;
 
 }
-
 bool ImportFBXTransform(FString NodeName, FGuid ObjectBinding, UnFbx::FFbxCurvesAPI& CurveAPI, UMovieSceneSequence* InSequence)
 {
 	UMovieScene* MovieScene = InSequence->GetMovieScene();
@@ -2370,7 +2476,7 @@ bool ImportFBXTransform(FString NodeName, FGuid ObjectBinding, UnFbx::FFbxCurves
 	FRichCurve Scale[3];
 	FTransform DefaultTransform;
 	const bool bUseSequencerCurve = true;
-	CurveAPI.GetConvertedTransformCurveData(NodeName, Translation[0], Translation[1], Translation[2], EulerRotation[0], EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2], DefaultTransform, bUseSequencerCurve);
+	CurveAPI.GetConvertedTransformCurveData(NodeName, Translation[0], Translation[1], Translation[2], EulerRotation[0], EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2], DefaultTransform, bUseSequencerCurve, ImportFBXSettings->ImportUniformScale);
 
  	UMovieScene3DTransformTrack* TransformTrack = MovieScene->FindTrack<UMovieScene3DTransformTrack>(ObjectBinding); 
 	if (!TransformTrack)
@@ -2381,7 +2487,19 @@ bool ImportFBXTransform(FString NodeName, FGuid ObjectBinding, UnFbx::FFbxCurves
 	TransformTrack->Modify();
 
 	bool bSectionAdded = false;
-	UMovieScene3DTransformSection* TransformSection = Cast<UMovieScene3DTransformSection>(TransformTrack->FindOrAddSection(0, bSectionAdded));
+	UMovieScene3DTransformSection* TransformSection = Cast<UMovieScene3DTransformSection>(TransformTrack->FindSection(0));
+	if (TransformSection && !ImportFBXSettings->bReplaceTransformTrack)
+	{
+		TransformSection = Cast<UMovieScene3DTransformSection>(TransformTrack->CreateNewSection());
+		TransformSection->SetRowIndex(TransformTrack->GetMaxRowIndex()+1);
+		TransformTrack->AddSection(*TransformSection);
+		bSectionAdded = true;
+	}
+	else
+	{
+		TransformSection = Cast<UMovieScene3DTransformSection>(TransformTrack->FindOrAddSection(0, bSectionAdded));
+	}
+
 	if (!TransformSection)
 	{
 		return false;
@@ -2718,11 +2836,16 @@ void ImportFBXCamera(UnFbx::FFbxImporter* FbxImporter, UMovieSceneSequence* InSe
 
 	UMovieScene* MovieScene = InSequence->GetMovieScene();
 
+	TArray<FbxCamera*> AllCameras;
+	MovieSceneToolHelpers::GetCameras(FbxImporter->Scene->GetRootNode(), AllCameras);
+
+	if (AllCameras.Num() == 0)
+	{
+		return;
+	}
+
 	if (bCreateCameras)
 	{
-		TArray<FbxCamera*> AllCameras;
-		MovieSceneToolHelpers::GetCameras(FbxImporter->Scene->GetRootNode(), AllCameras);
-
 		UWorld* World = GCurrentLevelEditingViewportClient ? GCurrentLevelEditingViewportClient->GetWorld() : nullptr;
 
 		// Find unmatched cameras
@@ -2876,7 +2999,7 @@ void ImportCameraCut(UnFbx::FFbxImporter* FbxImporter, UMovieScene* InMovieScene
 				FGuid CameraGuid = FindCameraGuid(AllCameras[value], InObjectBindingMap);
 				if (CameraGuid != FGuid())
 				{
-					CameraCutTrack->AddNewCameraCut(FMovieSceneObjectBindingID(CameraGuid, MovieSceneSequenceID::Root), (key.GetTime().GetSecondDouble() * FrameRate).RoundToFrame());
+					CameraCutTrack->AddNewCameraCut(UE::MovieScene::FRelativeObjectBindingID(CameraGuid), (key.GetTime().GetSecondDouble() * FrameRate).RoundToFrame());
 				}
 			}
 		}
@@ -3009,11 +3132,13 @@ bool MovieSceneToolHelpers::ReadyFBXForImport(const FString&  ImportFilename, UM
 	OutParams.bConvertSceneBackup = ImportOptions->bConvertScene;
 	OutParams.bConvertSceneUnitBackup = ImportOptions->bConvertSceneUnit;
 	OutParams.bForceFrontXAxisBackup = ImportOptions->bForceFrontXAxis;
+	OutParams.ImportUniformScaleBackup = ImportOptions->ImportUniformScale;
 
 	ImportOptions->bIsImportCancelable = false;
 	ImportOptions->bConvertScene = true;
-	ImportOptions->bConvertSceneUnit = true;
+	ImportOptions->bConvertSceneUnit = ImportFBXSettings->bConvertSceneUnit;
 	ImportOptions->bForceFrontXAxis = ImportFBXSettings->bForceFrontXAxis;
+	ImportOptions->ImportUniformScale = ImportFBXSettings->ImportUniformScale;
 
 	const FString FileExtension = FPaths::GetExtension(ImportFilename);
 	if (!FbxImporter->ImportFromFile(*ImportFilename, FileExtension, true))
@@ -3023,6 +3148,7 @@ bool MovieSceneToolHelpers::ReadyFBXForImport(const FString&  ImportFilename, UM
 		ImportOptions->bConvertScene = OutParams.bConvertSceneBackup;
 		ImportOptions->bConvertSceneUnit = OutParams.bConvertSceneUnitBackup;
 		ImportOptions->bForceFrontXAxis = OutParams.bForceFrontXAxisBackup;
+		ImportOptions->ImportUniformScale = OutParams.ImportUniformScaleBackup;
 		return false;
 	}
 	return true;
@@ -3041,6 +3167,9 @@ bool ImportFBXOntoControlRigs(UWorld* World, UMovieScene* MovieScene, IMovieScen
 	CurrentImportFBXSettings->bCreateCameras = ImportFBXSettings->bCreateCameras;
 	CurrentImportFBXSettings->bReduceKeys = ImportFBXSettings->bReduceKeys;
 	CurrentImportFBXSettings->ReduceKeysTolerance = ImportFBXSettings->ReduceKeysTolerance;
+	CurrentImportFBXSettings->bConvertSceneUnit = ImportFBXSettings->bConvertSceneUnit;
+	CurrentImportFBXSettings->ImportUniformScale = ImportFBXSettings->ImportUniformScale;
+
 
 	UnFbx::FFbxImporter* FbxImporter = UnFbx::FFbxImporter::GetInstance();
 
@@ -3061,7 +3190,8 @@ bool MovieSceneToolHelpers::ImportFBXIfReady(UWorld* World, UMovieSceneSequence*
 	CurrentImportFBXSettings->bCreateCameras = ImportFBXSettings->bCreateCameras;
 	CurrentImportFBXSettings->bReduceKeys = ImportFBXSettings->bReduceKeys;
 	CurrentImportFBXSettings->ReduceKeysTolerance = ImportFBXSettings->ReduceKeysTolerance;
-
+	CurrentImportFBXSettings->bConvertSceneUnit = ImportFBXSettings->bConvertSceneUnit;
+	CurrentImportFBXSettings->ImportUniformScale = ImportFBXSettings->ImportUniformScale;
 	UnFbx::FFbxImporter* FbxImporter = UnFbx::FFbxImporter::GetInstance();
 
 	UnFbx::FFbxCurvesAPI CurveAPI;
@@ -3147,6 +3277,7 @@ bool MovieSceneToolHelpers::ImportFBXIfReady(UWorld* World, UMovieSceneSequence*
 	ImportOptions->bConvertScene = InParams.bConvertSceneBackup;
 	ImportOptions->bConvertSceneUnit = InParams.bConvertSceneUnitBackup;
 	ImportOptions->bForceFrontXAxis = InParams.bForceFrontXAxisBackup;
+	ImportOptions->ImportUniformScale = InParams.ImportUniformScaleBackup;
 	return true;
 }
 
@@ -3187,7 +3318,7 @@ bool MovieSceneToolHelpers::ImportFBXWithDialog(UMovieSceneSequence* InSequence,
 		.Title(TitleText)
 		.HasCloseButton(true)
 		.SizingRule(ESizingRule::UserSized)
-		.ClientSize(FVector2D(400.0f, 200.0f))
+		.ClientSize(FVector2D(450.0f, 300.0f))
 		.AutoCenter(EAutoCenter::PreferredWorkArea)
 		.SupportsMinimize(false);
 
@@ -3430,17 +3561,56 @@ bool MovieSceneToolHelpers::ExportFBX(UWorld* World, UMovieScene* MovieScene, IM
 
 	return true;
 }
+static void TickLiveLink(ILiveLinkClient* LiveLinkClient, TMap<FGuid, ELiveLinkSourceMode>&  SourceAndMode)
+{
 
-
+	//This first bit lookes for a Sequencer Live Link Source which can show up any frame and we need to set it to Latest mode
+	if (LiveLinkClient)
+	{
+		TArray<FGuid> Sources = LiveLinkClient->GetSources();
+		for (const FGuid& Guid : Sources)
+		{
+			FText SourceTypeText = LiveLinkClient->GetSourceType(Guid);
+			FString SourceTypeStr = SourceTypeText.ToString();
+			if (SourceTypeStr.Contains(TEXT("Sequencer Live Link")))
+			{
+				ULiveLinkSourceSettings* Settings = LiveLinkClient->GetSourceSettings(Guid);
+				if (Settings)
+				{
+					if (Settings->Mode != ELiveLinkSourceMode::Latest)
+					{
+						SourceAndMode.Add(Guid, Settings->Mode);
+						Settings->Mode = ELiveLinkSourceMode::Latest;
+					}
+				}
+			}
+		}
+	
+		LiveLinkClient->ForceTick();
+	}
+}
 bool MovieSceneToolHelpers::BakeToSkelMeshToCallbacks(UMovieScene* MovieScene, IMovieScenePlayer* Player,
-	USkeletalMeshComponent* SkelMeshComp, FMovieSceneSequenceIDRef& Template, FMovieSceneSequenceTransform& RootToLocalTransform,
+	USkeletalMeshComponent* InSkelMeshComp, FMovieSceneSequenceIDRef& Template, FMovieSceneSequenceTransform& RootToLocalTransform, UAnimSeqExportOption* ExportOptions,
 	FInitAnimationCB InitCallback, FStartAnimationCB StartCallback, FTickAnimationCB TickCallback, FEndAnimationCB EndCallback)
 {
-	//if we have no allocated bone space transforms something wrong so try to recalc them
-	if (SkelMeshComp->GetBoneSpaceTransforms().Num() <= 0)
+	TArray< USkeletalMeshComponent*> SkelMeshComps;
+	if (ExportOptions->bEvaluateAllSkeletalMeshComponents)
 	{
-		SkelMeshComp->RecalcRequiredBones(0);
-		if (SkelMeshComp->GetBoneSpaceTransforms().Num() <= 0)
+		AActor* Actor = InSkelMeshComp->GetTypedOuter<AActor>();
+		if (Actor)
+		{
+			Actor->GetComponents(SkelMeshComps, false);
+		}
+	}
+	else
+	{
+		SkelMeshComps.Add(InSkelMeshComp);
+	}
+	//if we have no allocated bone space transforms something wrong so try to recalc them,only need to do this on the recorded skelmesh
+	if (InSkelMeshComp->GetBoneSpaceTransforms().Num() <= 0)
+	{
+		InSkelMeshComp->RecalcRequiredBones(0);
+		if (InSkelMeshComp->GetBoneSpaceTransforms().Num() <= 0)
 		{
 			UE_LOG(LogMovieScene, Error, TEXT("Error Ba"));
 			return false;
@@ -3460,11 +3630,14 @@ bool MovieSceneToolHelpers::BakeToSkelMeshToCallbacks(UMovieScene* MovieScene, I
 	// 1. First test to see if we have one, only way to really do that is to see if we have a source that has the `Sequencer Live Link Track`.  We also evalute the first frame in case we are out of range and the sources aren't created yet.
 	// 2. Make sure Sequencer.AlwaysSendInterpolated.LiveLink is non-zero, and then set it back to zero if it's not.
 	// 3. For each live link sequencer source we need to set the ELiveLinkSourceMode to Latest so that we just get the latest and don't use engine/timecode for any interpolation.
-
 	ILiveLinkClient* LiveLinkClient = nullptr;
 	IModularFeatures& ModularFeatures = IModularFeatures::Get();
+	TMap<FGuid, ELiveLinkSourceMode> SourceAndMode;
+	if (ModularFeatures.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+	{
+		LiveLinkClient = &ModularFeatures.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+	}
 	TOptional<int32> SequencerAlwaysSenedLiveLinkInterpolated;
-	TMap<FGuid, ELiveLinkSourceMode>  SourceAndMode;
 	IConsoleVariable* CVarAlwaysSendInterpolatedLiveLink = IConsoleManager::Get().FindConsoleVariable(TEXT("Sequencer.AlwaysSendInterpolatedLiveLink"));
 	if (CVarAlwaysSendInterpolatedLiveLink)
 	{
@@ -3472,102 +3645,136 @@ bool MovieSceneToolHelpers::BakeToSkelMeshToCallbacks(UMovieScene* MovieScene, I
 		CVarAlwaysSendInterpolatedLiveLink->Set(1, ECVF_SetByConsole);
 	}
 
+	const TArray<IMovieSceneToolsAnimationBakeHelper*>&  BakeHelpers = FMovieSceneToolsModule::Get().GetAnimationBakeHelpers();
+	for (IMovieSceneToolsAnimationBakeHelper* BakeHelper : BakeHelpers)
+	{
+		if (BakeHelper)
+		{
+			BakeHelper->StartBaking(MovieScene);
+		}
+	}
+
 	InitCallback.ExecuteIfBound();
 
+	//if we have warmup frames
+	if (ExportOptions->WarmUpFrames > 0)
+	{
+		for (int32 Index = -ExportOptions->WarmUpFrames.Value; Index < 0; ++Index)
+		{
+			//Begin records a frame so need to set things up first
+			for (IMovieSceneToolsAnimationBakeHelper* BakeHelper : BakeHelpers)
+			{
+				if (BakeHelper)
+				{
+					BakeHelper->PreEvaluation(MovieScene,Index);
+				}
+			}
+			// This will call UpdateSkelPose on the skeletal mesh component to move bones based on animations in the matinee group
+			AnimTrackAdapter.UpdateAnimation(Index);
+			for (IMovieSceneToolsAnimationBakeHelper* BakeHelper : BakeHelpers)
+			{
+				if (BakeHelper)
+				{
+					BakeHelper->PostEvaluation(MovieScene,Index);
+				}
+			}
+			//Live Link sourcer can show up at any time so we unfortunately need to check for it
+			TickLiveLink(LiveLinkClient, SourceAndMode);
+
+			// Update space bases so new animation position has an effect.
+			for (USkeletalMeshComponent* SkelMeshComp : SkelMeshComps)
+			{
+				SkelMeshComp->TickAnimation(DeltaTime, false);
+
+				SkelMeshComp->RefreshBoneTransforms();
+				SkelMeshComp->RefreshSlaveComponents();
+				SkelMeshComp->UpdateComponentToWorld();
+				SkelMeshComp->FinalizeBoneTransform();
+				SkelMeshComp->MarkRenderTransformDirty();
+				SkelMeshComp->MarkRenderDynamicDataDirty();
+			}
+
+		}
+	}
+	
 	//Begin records a frame so need to set things up first
+	for (IMovieSceneToolsAnimationBakeHelper* BakeHelper : BakeHelpers)
+	{
+		if (BakeHelper)
+		{
+			BakeHelper->PreEvaluation(MovieScene,LocalStartFrame);
+		}
+	}
+	// This evaluates the MoviePlayer
 	AnimTrackAdapter.UpdateAnimation(LocalStartFrame);
-	SkelMeshComp->TickAnimation(0.03f, false);
-	SkelMeshComp->RefreshBoneTransforms();
-	SkelMeshComp->RefreshSlaveComponents();
-	SkelMeshComp->UpdateComponentToWorld();
-	SkelMeshComp->FinalizeBoneTransform();
-	SkelMeshComp->MarkRenderTransformDirty();
-	SkelMeshComp->MarkRenderDynamicDataDirty();
-	if (ModularFeatures.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
-	{
-		LiveLinkClient = &ModularFeatures.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
-		if (LiveLinkClient)
+	for (IMovieSceneToolsAnimationBakeHelper* BakeHelper : BakeHelpers)
+	{		
+		if (BakeHelper)
 		{
-			TArray<FGuid> Sources = LiveLinkClient->GetSources();
-			for (const FGuid& Guid : Sources)
-			{
-				FText SourceTypeText = LiveLinkClient->GetSourceType(Guid);
-				FString SourceTypeStr = SourceTypeText.ToString();
-				if (SourceTypeStr.Contains(TEXT("Sequencer Live Link")))
-				{
-					ULiveLinkSourceSettings* Settings = LiveLinkClient->GetSourceSettings(Guid);
-					if (Settings)
-					{
-						if (Settings->Mode != ELiveLinkSourceMode::Latest)
-						{
-							SourceAndMode.Add(Guid, Settings->Mode);
-							Settings->Mode = ELiveLinkSourceMode::Latest;
-						}
-					}
-				}
-			}
+			BakeHelper->PostEvaluation(MovieScene,LocalStartFrame);
 		}
 	}
-	if (LiveLinkClient)
+	for (USkeletalMeshComponent* SkelMeshComp : SkelMeshComps)
 	{
-		LiveLinkClient->ForceTick();
-	}
-
-	StartCallback.ExecuteIfBound();
-	for (int32 FrameCount = 1; FrameCount <= AnimationLength; ++FrameCount)
-	{
-		int32 LocalFrame = LocalStartFrame + FrameCount;
-
-		// This will call UpdateSkelPose on the skeletal mesh component to move bones based on animations in the matinee group
-		AnimTrackAdapter.UpdateAnimation(LocalFrame);
-
-		//Live Link sourcer can show up at any time so we unfortunately need to check for it
-		if (LiveLinkClient)
-		{
-			TArray<FGuid> Sources = LiveLinkClient->GetSources();
-			for (const FGuid& Guid : Sources)
-			{
-				//if we already did it don't do it again,
-				if (!SourceAndMode.Contains(Guid))
-				{
-					FText SourceTypeText = LiveLinkClient->GetSourceType(Guid);
-					FString SourceTypeStr = SourceTypeText.ToString();
-					if (SourceTypeStr.Contains(TEXT("Sequencer Live Link")))
-					{
-						ULiveLinkSourceSettings* Settings = LiveLinkClient->GetSourceSettings(Guid);
-						if (Settings)
-						{
-							if (Settings->Mode != ELiveLinkSourceMode::Latest)
-							{
-								SourceAndMode.Add(Guid, Settings->Mode);
-								Settings->Mode = ELiveLinkSourceMode::Latest;
-							}
-						}
-					}
-				}
-			}
-		}
-
-
-		if (LiveLinkClient)
-		{
-			LiveLinkClient->ForceTick();
-		}
-
-		// Update space bases so new animation position has an effect.
-		// @todo - hack - this will be removed at some point (this comment is all over the place by the way in fbx export code).
-		SkelMeshComp->TickAnimation(0.03f, false);
-
+		SkelMeshComp->TickAnimation(DeltaTime, false);
 		SkelMeshComp->RefreshBoneTransforms();
 		SkelMeshComp->RefreshSlaveComponents();
 		SkelMeshComp->UpdateComponentToWorld();
 		SkelMeshComp->FinalizeBoneTransform();
 		SkelMeshComp->MarkRenderTransformDirty();
 		SkelMeshComp->MarkRenderDynamicDataDirty();
+	}
+	
+	TickLiveLink(LiveLinkClient, SourceAndMode);
+
+	StartCallback.ExecuteIfBound();
+	for (int32 FrameCount = 1; FrameCount <= AnimationLength; ++FrameCount)
+	{
+		int32 LocalFrame = LocalStartFrame + FrameCount;
+
+		for (IMovieSceneToolsAnimationBakeHelper* BakeHelper : BakeHelpers)
+		{
+			if (BakeHelper)
+			{
+				BakeHelper->PreEvaluation(MovieScene, LocalStartFrame);
+			}
+		}
+		// This will call UpdateSkelPose on the skeletal mesh component to move bones based on animations in the matinee group
+		AnimTrackAdapter.UpdateAnimation(LocalFrame);
+		for (IMovieSceneToolsAnimationBakeHelper* BakeHelper : BakeHelpers)
+		{
+			if (BakeHelper)
+			{
+				BakeHelper->PostEvaluation(MovieScene, LocalStartFrame);
+			}
+		}
+
+		//Live Link sourcer can show up at any time so we unfortunately need to check for it
+		TickLiveLink(LiveLinkClient, SourceAndMode);
+
+		// Update space bases so new animation position has an effect.
+		for (USkeletalMeshComponent* SkelMeshComp : SkelMeshComps)
+		{
+			SkelMeshComp->TickAnimation(DeltaTime, false);
+
+			SkelMeshComp->RefreshBoneTransforms();
+			SkelMeshComp->RefreshSlaveComponents();
+			SkelMeshComp->UpdateComponentToWorld();
+			SkelMeshComp->FinalizeBoneTransform();
+			SkelMeshComp->MarkRenderTransformDirty();
+			SkelMeshComp->MarkRenderDynamicDataDirty();
+		}
 
 		TickCallback.ExecuteIfBound(DeltaTime);
 	}
 
+	for (IMovieSceneToolsAnimationBakeHelper* BakeHelper : BakeHelpers)
+	{
+		if (BakeHelper)
+		{
+			BakeHelper->StopBaking(MovieScene);
+		}
+	}
 	EndCallback.ExecuteIfBound();
 
 	//now do any sequencer live link cleanup
@@ -3589,7 +3796,6 @@ bool MovieSceneToolHelpers::BakeToSkelMeshToCallbacks(UMovieScene* MovieScene, I
 	}
 	return true;
 }
-
 
 bool MovieSceneToolHelpers::ExportToAnimSequence(UAnimSequence* AnimSequence, UAnimSeqExportOption* ExportOptions, UMovieScene* MovieScene, IMovieScenePlayer* Player,
 	USkeletalMeshComponent* SkelMeshComp, FMovieSceneSequenceIDRef& Template, FMovieSceneSequenceTransform& RootToLocalTransform)
@@ -3631,7 +3837,7 @@ bool MovieSceneToolHelpers::ExportToAnimSequence(UAnimSequence* AnimSequence, UA
 	
 
 	MovieSceneToolHelpers::BakeToSkelMeshToCallbacks(MovieScene,Player,
-		SkelMeshComp, Template, RootToLocalTransform,
+		SkelMeshComp, Template, RootToLocalTransform, ExportOptions,
 		InitCallback, StartCallback, TickCallback, EndCallback);
 	return true;
 }
@@ -3808,6 +4014,3 @@ void MovieSceneToolHelpers::GetLocationAtTime(const FMovieSceneEvaluationTrack* 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	UE_MOVIESCENE_TODO(Reimplement trajectory rendering)
 }
-
-
-

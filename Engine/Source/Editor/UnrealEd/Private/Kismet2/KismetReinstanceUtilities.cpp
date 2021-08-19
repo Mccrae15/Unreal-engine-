@@ -36,6 +36,12 @@
 #include "Engine/ActorChannel.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 
+// Enabling this will validate cached dependent Blueprints against the full set of loaded Blueprints when updating bytecode references.
+// Note: Enabling this may potentially increase editor/Blueprint load time and/or decrease performance related to Blueprint compilation.
+#ifndef VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
+#define VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE 0
+#endif // VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
+
 DECLARE_CYCLE_STAT(TEXT("Replace Instances"), EKismetReinstancerStats_ReplaceInstancesOfClass, STATGROUP_KismetReinstancer );
 DECLARE_CYCLE_STAT(TEXT("Find Referencers"), EKismetReinstancerStats_FindReferencers, STATGROUP_KismetReinstancer );
 DECLARE_CYCLE_STAT(TEXT("Replace References"), EKismetReinstancerStats_ReplaceReferences, STATGROUP_KismetReinstancer );
@@ -363,6 +369,7 @@ FBlueprintCompileReinstancer::FBlueprintCompileReinstancer(UClass* InClassToRein
 			ReinstClassType = RCT_Native;
 		}
 		bAllowResaveAtTheEndIfRequested = bAutoInferSaveOnCompile && !bIsBytecodeOnly && (ReinstClassType != RCT_BpSkeleton);
+		bUseDeltaSerializationToCopyProperties = !!(Flags & EBlueprintCompileReinstancerFlags::UseDeltaSerialization);
 
 		SaveClassFieldMapping(InClassToReinstance);
 
@@ -447,8 +454,6 @@ FBlueprintCompileReinstancer::FBlueprintCompileReinstancer(UClass* InClassToRein
 		if(!IsReinstancingSkeleton() && GeneratingBP)
 		{
 			ClassToReinstanceDefaultValuesCRC = GeneratingBP->CrcLastCompiledCDO;
-			Dependencies.Empty();
-			FBlueprintEditorUtils::GetDependentBlueprints(GeneratingBP, Dependencies);
 
 			// Never queue for saving when regenerating on load
 			if (!GeneratingBP->bIsRegeneratingOnLoad && !IsReinstancingSkeleton())
@@ -1046,17 +1051,32 @@ void FBlueprintCompileReinstancer::UpdateBytecodeReferences()
 {
 	BP_SCOPED_COMPILER_EVENT_STAT(EKismetReinstancerStats_UpdateBytecodeReferences);
 
-	if(ClassToReinstance != nullptr)
+	if (!ClassToReinstance)
+	{
+		return;
+	}
+
+	if(UBlueprint* CompiledBlueprint = UBlueprint::GetBlueprintFromClass(ClassToReinstance))
 	{
 		TMap<FFieldVariant, FFieldVariant> FieldMappings;
 		GenerateFieldMappings(FieldMappings);
 
+		// Note: This API returns a cached set of blueprints that's updated at compile time.
+		TArray<UBlueprint*> CachedDependentBPs;
+		FBlueprintEditorUtils::GetDependentBlueprints(CompiledBlueprint, CachedDependentBPs);
+
 		// Determine whether or not we will be updating references for an Animation Blueprint class.
 		const bool bIsAnimBlueprintClass = !!Cast<UAnimBlueprint>(ClassToReinstance->ClassGeneratedBy);
 
-		for( auto DependentBP = Dependencies.CreateIterator(); DependentBP; ++DependentBP )
+#if VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
+		TArray<UBlueprint*> ActualDependentBPs;
+		for (TObjectIterator<UBlueprint> BpIt; BpIt; ++BpIt)
+#else
+		for (auto BpIt = CachedDependentBPs.CreateIterator(); BpIt; ++BpIt)
+#endif // VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
 		{
-			UClass* BPClass = (*DependentBP)->GeneratedClass;
+			UBlueprint* DependentBP = *BpIt;
+			UClass* BPClass = DependentBP->GeneratedClass;
 
 			// Skip cases where the class is junk, or haven't finished serializing in yet
 			// Note that BPClass can be null for blueprints that can no longer be compiled:
@@ -1105,19 +1125,43 @@ void FBlueprintCompileReinstancer::UpdateBytecodeReferences()
 				}
 			}
 
-			FArchiveReplaceFieldReferences ReplaceInBPAr(*DependentBP, FieldMappings, false, true, true);
+			FArchiveReplaceFieldReferences ReplaceInBPAr(DependentBP, FieldMappings, false, true, true);
 			if (ReplaceInBPAr.GetCount())
 			{
+#if VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
+				ActualDependentBPs.Add(DependentBP);
+#endif // VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
+
 				bBPWasChanged = true;
-				UE_LOG(LogBlueprint, Log, TEXT("UpdateBytecodeReferences: %d references from %s was replaced in BP %s"), ReplaceInBPAr.GetCount(), *GetPathNameSafe(ClassToReinstance), *GetPathNameSafe(*DependentBP));
+				UE_LOG(LogBlueprint, Log, TEXT("UpdateBytecodeReferences: %d references from %s was replaced in BP %s"), ReplaceInBPAr.GetCount(), *GetPathNameSafe(ClassToReinstance), *GetPathNameSafe(DependentBP));
 			}
 
-			UBlueprint* CompiledBlueprint = UBlueprint::GetBlueprintFromClass(ClassToReinstance);
 			if (bBPWasChanged && CompiledBlueprint && !CompiledBlueprint->bIsRegeneratingOnLoad)
 			{
-				DependentBlueprintsToRefresh.Add(*DependentBP);
+				DependentBlueprintsToRefresh.Add(DependentBP);
 			}
 		}
+
+#if VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
+		bool bHasMissingDependents = false;
+		for (UBlueprint* ChangedBP : ActualDependentBPs)
+		{
+			if (!CachedDependentBPs.Contains(ChangedBP))
+			{
+				UE_LOG(LogBlueprint, Error, TEXT("While updating %s, we needed to update %s but it wasn't cached as a dependent"), *ClassToReinstance->GetName(), *ChangedBP->GetName());
+				bHasMissingDependents = true;
+			}
+		}
+
+		if (bHasMissingDependents)
+		{
+			UE_LOG(LogBlueprint, Error, TEXT("Class: %s, CachedDeps: [%s], ActualDeps: [%s]"),
+				*ClassToReinstance->GetName(),
+				*FString::JoinBy(CachedDependentBPs, TEXT(","), [](UBlueprint* Blueprint) { return Blueprint->GetName(); }),
+				*FString::JoinBy(ActualDependentBPs, TEXT(","), [](UBlueprint* Blueprint) { return Blueprint->GetName(); })
+			);
+		}
+#endif // VALIDATE_BYTECODE_REFERENCE_DEPENDENCY_CACHE
 	}
 }
 
@@ -1606,10 +1650,117 @@ void FBlueprintCompileReinstancer::BatchReplaceInstancesOfClass(TMap<UClass*, UC
 	ReplaceInstancesOfClass_Inner(InOldToNewClassMap, nullptr, Options.ObjectsThatShouldUseOldStuff, false /*bClassObjectReplaced*/, true /*bPreserveRootComponent*/, Options.bArchetypesAreUpToDate, Options.InstancesThatShouldUseOldClass, Options.bReplaceReferencesToOldClasses);
 }
 
+bool FBlueprintCompileReinstancer::ReinstancerOrderingFunction(UClass* A, UClass* B)
+{
+	int32 DepthA = 0;
+	int32 DepthB = 0;
+	UStruct* Iter = A ? A->GetSuperStruct() : nullptr;
+	while (Iter)
+	{
+		++DepthA;
+		Iter = Iter->GetSuperStruct();
+	}
+
+	Iter = B ? B->GetSuperStruct() : nullptr;
+	while (Iter)
+	{
+		++DepthB;
+		Iter = Iter->GetSuperStruct();
+	}
+
+	if (DepthA == DepthB && A && B)
+	{
+		return A->GetFName().LexicalLess(B->GetFName());
+	}
+	return DepthA < DepthB;
+}
+
+void FBlueprintCompileReinstancer::GetSortedClassHierarchy(UClass* ClassToSearch, TArray<UClass*>& OutHierarchy, UClass** OutNativeParent)
+{
+	GetDerivedClasses(ClassToSearch, OutHierarchy);
+
+	UClass* Iter = ClassToSearch;
+	while (Iter)
+	{
+		OutHierarchy.Add(Iter);
+
+		// Store the latest native super struct that we know of
+		if (Iter->IsNative() && OutNativeParent && *OutNativeParent == nullptr)
+		{
+			*OutNativeParent = Iter;
+		}
+
+		Iter = Iter->GetSuperClass();
+	}
+
+	// Sort the hierarchy to get a deterministic result
+	OutHierarchy.Sort([](UClass& A, UClass& B)->bool { return FBlueprintCompileReinstancer::ReinstancerOrderingFunction(&A, &B); });
+}
+
+void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* OwnerClass, TMap<UClass*, UClass*>& OldToNewMap)
+{
+	// Gather the whole class hierarchy up the native class so that we can correctly create the REINST class parented to native
+	TArray<UClass*> ClassHierarchy;
+	UClass* NativeParentClass = nullptr;
+	FBlueprintCompileReinstancer::GetSortedClassHierarchy(OwnerClass, ClassHierarchy, &NativeParentClass);
+	check(NativeParentClass);
+
+	// Traverse the class Hierarchy, and determine if the given class needs to be REINST and have its parent set to the one we created
+	const int32 NewParentIndex = ClassHierarchy.Find(OwnerClass);
+
+	for (int32 i = NewParentIndex; i < ClassHierarchy.Num(); ++i)
+	{
+		UClass* CurClass = ClassHierarchy[i];
+		check(CurClass);
+		const int32 PrevStructSize = CurClass->GetStructureSize();
+
+		GIsDuplicatingClassForReinstancing = true;
+		// Create a REINST version of the given class
+		UObject* OldCDO = OwnerClass->ClassDefaultObject;
+		const FName ReinstanceName = MakeUniqueObjectName(GetTransientPackage(), OwnerClass->GetClass(), *(FString(TEXT("REINST_")) + *OwnerClass->GetName()));
+
+		checkf(!OwnerClass->IsPendingKill(), TEXT("%s is PendingKill - will not duplicate successfully"), *(OwnerClass->GetName()));
+		UClass* ReinstClass = CastChecked<UClass>(StaticDuplicateObject(CurClass, GetTransientPackage(), ReinstanceName, ~RF_Transactional));
+		
+		ReinstClass->RemoveFromRoot();
+		OwnerClass->ClassFlags &= ~CLASS_NewerVersionExists;
+		GIsDuplicatingClassForReinstancing = false;
+
+		UClass** OverridenParent = OldToNewMap.Find(ReinstClass->GetSuperClass());
+		if (OverridenParent && *OverridenParent)
+		{
+			ReinstClass->SetSuperStruct(*OverridenParent);
+		}
+
+		ReinstClass->Bind();
+		ReinstClass->StaticLink(true);
+
+		// Map the old class to the new one
+		OldToNewMap.Add(CurClass, ReinstClass);
+
+		// Actually move the old CDO reference out of the way
+		if (OldCDO)
+		{
+			OwnerClass->ClassDefaultObject = nullptr;
+			OldCDO->Rename(nullptr, ReinstClass->GetOuter(), REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+			ReinstClass->ClassDefaultObject = OldCDO;
+			OldCDO->SetClass(ReinstClass);
+		}
+
+		// Ensure that we are not changing the class layout by setting a new super struct, 
+		// if they do not match we may see crashes because instances of the structs do match the 
+		// correct layout size
+		const int32 NewStructSize = ReinstClass->GetStructureSize();
+		ensure(PrevStructSize == NewStructSize);
+	}
+}
+
 UClass* FBlueprintCompileReinstancer::MoveCDOToNewClass(UClass* OwnerClass, const TMap<UClass*, UClass*>& OldToNewMap, bool bAvoidCDODuplication)
 {
 	GIsDuplicatingClassForReinstancing = true;
 	OwnerClass->ClassFlags |= CLASS_NewerVersionExists;
+	
+	ensureMsgf(!FBlueprintCompileReinstancer::IsReinstClass(OwnerClass), TEXT("OwnerClass should not be 'REINST_'! This means that a REINST class was parented to another REINST class, causing unwanted recursion!"));
 
 	// For consistency I'm moving archetypes that are outered to the UClass aside. The current implementation
 	// of IsDefaultSubobject (used by StaticDuplicateObject) will not duplicate these instances if they 
@@ -1690,6 +1841,12 @@ UClass* FBlueprintCompileReinstancer::MoveCDOToNewClass(UClass* OwnerClass, cons
 		OldCDO->SetClass(CopyOfOwnerClass);
 	}
 	return CopyOfOwnerClass;
+}
+
+bool FBlueprintCompileReinstancer::IsReinstClass(const UClass* Class)
+{
+	static const FString ReinstPrefix = TEXT("REINST");
+	return Class && Class->GetFName().ToString().StartsWith(ReinstPrefix);
 }
 
 static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*& NewUObject, UClass* NewClass, TMap<UObject*, UObject*>& OldToNewInstanceMap, TMap<UObject*, FName>& OldToNewNameMap, int32 OldObjIndex, TArray<UObject*>& ObjectsToReplace, TArray<UObject*>& PotentialEditorsForRefreshing, TSet<AActor*>& OwnersToRerunConstructionScript, TFunctionRef<TArray<USceneComponent*>&(USceneComponent*)> GetAttachChildrenArray, bool bIsComponent, bool bArchetypesAreUpToDate)
@@ -2483,14 +2640,15 @@ void FBlueprintCompileReinstancer::ReparentChild(UClass* ChildClass)
 	ChildClass->StaticLink(true);
 }
 
-void FBlueprintCompileReinstancer::CopyPropertiesForUnrelatedObjects(UObject* OldObject, UObject* NewObject, bool bClearExternalReferences)
+void FBlueprintCompileReinstancer::CopyPropertiesForUnrelatedObjects(UObject* OldObject, UObject* NewObject, bool bClearExternalReferences, bool bForceDeltaSerialization /* = false */)
 {
 	InstancedPropertyUtils::FInstancedPropertyMap InstancedPropertyMap;
 	InstancedPropertyUtils::FArchiveInstancedSubObjCollector  InstancedSubObjCollector(OldObject, InstancedPropertyMap);
 
 	UEngine::FCopyPropertiesForUnrelatedObjectsParams Params;
-	Params.bAggressiveDefaultSubobjectReplacement = false;//true;
-	Params.bDoDelta = !OldObject->HasAnyFlags(RF_ClassDefaultObject);
+	Params.bAggressiveDefaultSubobjectReplacement = false;
+	// During a blueprint reparent, delta serialization must be enabled to correctly copy all properties
+	Params.bDoDelta = bForceDeltaSerialization || !OldObject->HasAnyFlags(RF_ClassDefaultObject);
 	Params.bCopyDeprecatedProperties = true;
 	Params.bSkipCompilerGeneratedDefaults = true;
 	Params.bClearReferences = bClearExternalReferences;

@@ -1,70 +1,132 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Chaos/ParticleRule.h"
 #include "Chaos/Framework/Parallel.h"
-#include "Containers/ArrayView.h"
-#include "Containers/ContainersFwd.h"
+#include "Chaos/PBDStiffness.h"
+#include "ChaosStats.h"
+
+DECLARE_CYCLE_STAT(TEXT("Chaos PBD Anim Drive Constraint"), STAT_PBD_AnimDriveConstraint, STATGROUP_Chaos);
 
 namespace Chaos
 {
-	template<typename T, int d>
-	class TPBDAnimDriveConstraint : public TParticleRule<T, d>
+	class FPBDAnimDriveConstraint final
 	{
 	public:
-		TPBDAnimDriveConstraint(
+		FPBDAnimDriveConstraint(
 			const int32 InParticleOffset,
 			const int32 InParticleCount,
-			const TArray<TVector<T, d>>& InAnimationPositions,  // Use global indexation (will need adding ParticleOffset)
-			const TConstArrayView<T>& InSpringStiffnessMultiplier  // Use local indexation
+			const TArray<FVec3>& InAnimationPositions,  // Use global indexation (will need adding ParticleOffset)
+			const TArray<FVec3>& InOldAnimationPositions,  // Use global indexation (will need adding ParticleOffset)
+			const TConstArrayView<FReal>& StiffnessMultipliers,  // Use local indexation
+			const TConstArrayView<FReal>& DampingMultipliers  // Use local indexation
 		)
 			: AnimationPositions(InAnimationPositions)
-			, SpringStiffnessMultiplier(InSpringStiffnessMultiplier)
+			, OldAnimationPositions(InOldAnimationPositions)
 			, ParticleOffset(InParticleOffset)
-			, SpringStiffness((T)1.)
+			, ParticleCount(InParticleCount)
+			, Stiffness(StiffnessMultipliers, FVec2((FReal)0., (FReal)1.), InParticleCount)
+			, Damping(DampingMultipliers, FVec2((FReal)0., (FReal)1.), InParticleCount)
 		{
-			check(InSpringStiffnessMultiplier.Num() == InParticleCount);
 		}
-		virtual ~TPBDAnimDriveConstraint() {}
 
-		inline virtual void Apply(TPBDParticles<T, d>& InParticles, const T Dt) const override
+		~FPBDAnimDriveConstraint() {}
+
+		// Return the stiffness input values used by the constraint
+		FVec2 GetStiffness() const { return Stiffness.GetWeightedValue(); }
+
+		// Return the damping input values used by the constraint
+		FVec2 GetDamping() const { return Damping.GetWeightedValue(); }
+
+		inline void SetProperties(const FVec2& InStiffness, const FVec2& InDamping)
 		{
-			const int32 ParticleCount = SpringStiffnessMultiplier.Num();
-			PhysicsParallelFor(ParticleCount, [&](int32 Index)  // TODO: profile need for parallel loop based on particle count
+			Stiffness.SetWeightedValue(InStiffness);
+			Damping.SetWeightedValue(InDamping);
+		}
+
+		// Set stiffness offset and range, as well as the simulation stiffness exponent
+		inline void ApplyProperties(const FReal Dt, const int32 NumIterations)
+		{
+			Stiffness.ApplyValues(Dt, NumIterations);
+			Damping.ApplyValues(Dt, NumIterations);
+		}
+
+		inline void Apply(FPBDParticles& InParticles, const FReal Dt) const
+		{
+			SCOPE_CYCLE_COUNTER(STAT_PBD_AnimDriveConstraint);
+
+			if (Stiffness.HasWeightMap())
 			{
-				ApplyAnimDriveConstraint(InParticles, Dt, Index);
-			});
+				if (Damping.HasWeightMap())
+				{
+					PhysicsParallelFor(ParticleCount, [&](int32 Index)  // TODO: profile needed for these parallel loop based on particle count
+					{
+						const FReal ParticleStiffness = Stiffness[Index];
+						const FReal ParticleDamping = Damping[Index];
+						ApplyHelper(InParticles, ParticleStiffness, ParticleDamping, Dt, Index);
+					});
+				}
+				else
+				{
+					const FReal ParticleDamping = (FReal)Damping;
+					PhysicsParallelFor(ParticleCount, [&](int32 Index)
+					{
+						const FReal ParticleStiffness = Stiffness[Index];
+						ApplyHelper(InParticles, ParticleStiffness, ParticleDamping, Dt, Index);
+					});
+				}
+			}
+			else
+			{
+				const FReal ParticleStiffness = (FReal)Stiffness;
+				if (Damping.HasWeightMap())
+				{
+					PhysicsParallelFor(ParticleCount, [&](int32 Index)
+					{
+						const FReal ParticleDamping = Damping[Index];
+						ApplyHelper(InParticles, ParticleStiffness, ParticleDamping, Dt, Index);
+					});
+				}
+				else
+				{
+					const FReal ParticleDamping = (FReal)Damping;
+					PhysicsParallelFor(ParticleCount, [&](int32 Index)
+					{
+						ApplyHelper(InParticles, ParticleStiffness, ParticleDamping, Dt, Index);
+					});
+				}
+			}
 		}
 
-		inline void ApplyAnimDriveConstraint(TPBDParticles<T, d>& InParticles, const T Dt, const int32 Index) const
+	private:
+		inline void ApplyHelper(FPBDParticles& Particles, const FReal InStiffness, const FReal InDamping, const FReal Dt, const int32 Index) const
 		{
 			const int32 ParticleIndex = ParticleOffset + Index;
-			if (InParticles.InvM(ParticleIndex) == (T)0.)
+			if (Particles.InvM(ParticleIndex) == (FReal)0.)
 			{
 				return;
 			}
 
-			const TVector<T, d>& NeutralPosition = AnimationPositions[ParticleIndex];
-			const TVector<T, d>& ParticlePosition = InParticles.P(ParticleIndex);
+			FVec3& ParticlePosition = Particles.P(ParticleIndex);
+			const FVec3& AnimationPosition = AnimationPositions[ParticleIndex];
+			const FVec3& OldAnimationPosition = OldAnimationPositions[ParticleIndex];
 
-			const T RelaxationFactor = FMath::Min(SpringStiffness * SpringStiffnessMultiplier[Index], (T)1.);
-			InParticles.P(ParticleIndex) = RelaxationFactor * NeutralPosition + ((T)1. - RelaxationFactor) * ParticlePosition;
-		}
+			const FVec3 ParticleDisplacement = ParticlePosition - Particles.X(ParticleIndex);
+			const FVec3 AnimationDisplacement = OldAnimationPosition - AnimationPosition;
+			const FVec3 RelativeDisplacement = ParticleDisplacement - AnimationDisplacement;
 
-		inline void SetSpringStiffness(T InSpringStiffness)
-		{
-			SpringStiffness = FMath::Clamp(InSpringStiffness, (T)0., (T)1.);
-		}
-
-		inline T GetSpringStiffness() const
-		{
-			return SpringStiffness;
+			ParticlePosition -= InStiffness * (ParticlePosition - AnimationPosition) + InDamping * RelativeDisplacement;
 		}
 
 	private:
-		const TArray<TVector<T, d>>& AnimationPositions;  // Use global index (needs adding ParticleOffset)
-		const TConstArrayView<T> SpringStiffnessMultiplier; // Use local index
+		const TArray<FVec3>& AnimationPositions;  // Use global index (needs adding ParticleOffset)
+		const TArray<FVec3>& OldAnimationPositions;  // Use global index (needs adding ParticleOffset)
 		const int32 ParticleOffset;
-		T SpringStiffness;
+		const int32 ParticleCount;
+
+		FPBDStiffness Stiffness;
+		FPBDStiffness Damping;
 	};
+
+	template<typename T, int d>
+	using TPBDAnimDriveConstraint UE_DEPRECATED(4.27, "Deprecated. this class is to be deleted, use FPBDAnimDriveConstraint instead") = FPBDAnimDriveConstraint;
 }

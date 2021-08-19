@@ -15,6 +15,8 @@
 
 #include "GroomComponent.generated.h"
 
+class UGroomCache;
+
 UCLASS(HideCategories = (Object, Physics, Activation, Mobility, "Components|Activation"), editinlinenew, meta = (BlueprintSpawnableComponent), ClassGroup = Rendering)
 class HAIRSTRANDSCORE_API UGroomComponent : public UMeshComponent, public ILODSyncInterface
 {
@@ -26,6 +28,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, interp, Category = "Groom")
 	UGroomAsset* GroomAsset;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, interp, Category = "GroomCache", meta = (EditCondition = "BindingAsset == nullptr"))
+	UGroomCache* GroomCache;
+
 	/** Niagara components that will be attached to the system*/
 	UPROPERTY(Transient)
 	TArray<class UNiagaraComponent*> NiagaraComponents;
@@ -35,7 +40,7 @@ public:
 	class USkeletalMesh* SourceSkeletalMesh;
 
 	/** Optional binding asset for binding a groom onto a skeletal mesh. If the binding asset is not provided the projection is done at runtime, which implies a large GPU cost at startup time. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Groom")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Groom", meta = (EditCondition = "GroomCache == nullptr"))
 	class UGroomBindingAsset* BindingAsset;
 
 	/** Physics asset to be used for hair simulation */
@@ -92,7 +97,9 @@ public:
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
+	virtual void BeginDestroy() override;
 	virtual void OnAttachmentChanged() override;
+	virtual void DetachFromComponent(const FDetachmentTransformRules& DetachmentRules) override;
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 	virtual void SendRenderTransform_Concurrent() override;
 	//~ End UActorComponent Interface.
@@ -121,6 +128,8 @@ public:
 	/** Return the guide hairs root resources*/
 	FHairStrandsRestRootResource* GetGuideStrandsRestRootResource(uint32 GroupIndex);
 	FHairStrandsDeformedRootResource* GetGuideStrandsDeformedRootResource(uint32 GroupIndex);
+	const FTransform& GetGuideStrandsLocalToWorld(uint32 GroupIndex) const;
+
 
 #if WITH_EDITOR
 	virtual void CheckForErrors() override;
@@ -181,6 +190,37 @@ public:
 	virtual int32 GetNumMaterials() const override;
 	//~ End UPrimitiveComponent Interface
 
+	/** GroomCache */
+	UGroomCache* GetGroomCache() const { return GroomCache; }
+	void SetGroomCache(UGroomCache* InGroomCache);
+
+	float GetGroomCacheDuration() const;
+
+	void SetManualTick(bool bInManualTick);
+	bool GetManualTick() const;
+	void TickAtThisTime(const float Time, bool bInIsRunning, bool bInBackwards, bool bInIsLooping);
+
+	void ResetAnimationTime();
+	float GetAnimationTime() const;
+	bool IsLooping() const { return bLooping; }
+
+private:
+	void UpdateGroomCache(float Time);
+
+	UPROPERTY(EditAnywhere, Category = GroomCache)
+	bool bRunning;
+
+	UPROPERTY(EditAnywhere, Category = GroomCache)
+	bool bLooping;
+
+	UPROPERTY(EditAnywhere, Category = GroomCache)
+	bool bManualTick;
+
+	UPROPERTY(VisibleAnywhere, transient, Category = GroomCache)
+	float ElapsedTime;
+
+	TSharedPtr<class IGroomCacheBuffers, ESPMode::ThreadSafe> GroomCacheBuffers;
+
 private:
 	TArray<FHairGroupInstance*> HairGroupInstances;
 
@@ -199,7 +239,7 @@ protected:
 
 private:
 	void* InitializedResources;
-	class USkeletalMeshComponent* RegisteredSkeletalMeshComponent;
+	class UMeshComponent* RegisteredMeshComponent;
 	FVector SkeletalPreviousPositionOffset;
 	bool bIsGroomAssetCallbackRegistered;
 	bool bIsGroomBindingAssetCallbackRegistered;

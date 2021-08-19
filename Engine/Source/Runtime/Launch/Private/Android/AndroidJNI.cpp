@@ -120,6 +120,7 @@ void FJavaWrapper::FindClassesAndMethods(JNIEnv* Env)
 	AndroidThunkJava_GetIntentExtrasInt = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_GetIntentExtrasInt", "(Ljava/lang/String;)I", bIsOptional);
 	AndroidThunkJava_GetIntentExtrasString = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_GetIntentExtrasString", "(Ljava/lang/String;)Ljava/lang/String;", bIsOptional);
 	AndroidThunkJava_PushSensorEvents = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_PushSensorEvents", "()V", bIsOptional);
+	AndroidThunkJava_SetOrientation = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_SetOrientation", "(I)V", bIsOptional);
 
 	// Screen capture/recording permission
 	AndroidThunkJava_IsScreenCaptureDisabled = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_IsScreenCaptureDisabled", "()Z", bIsOptional);
@@ -163,6 +164,9 @@ void FJavaWrapper::FindClassesAndMethods(JNIEnv* Env)
 	AndroidThunkJava_GetNativeDisplayRefreshRate = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_GetNativeDisplayRefreshRate", "()I", bIsOptional);
 	AndroidThunkJava_SetNativeDisplayRefreshRate = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_SetNativeDisplayRefreshRate", "(I)Z", bIsOptional);
 	AndroidThunkJava_GetSupportedNativeDisplayRefreshRates = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_GetSupportedNativeDisplayRefreshRates", "()[I", bIsOptional);
+
+	// motion controls
+	AndroidThunkJava_EnableMotion = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_EnableMotion", "(Z)V", bIsOptional);
 
 	// the rest are optional
 	bIsOptional = true;
@@ -413,6 +417,7 @@ jmethodID FJavaWrapper::AndroidThunkJava_SetSustainedPerformanceMode;
 jmethodID FJavaWrapper::AndroidThunkJava_PushSensorEvents;
 jmethodID FJavaWrapper::AndroidThunkJava_IsScreenCaptureDisabled;
 jmethodID FJavaWrapper::AndroidThunkJava_DisableScreenCapture;
+jmethodID FJavaWrapper::AndroidThunkJava_SetOrientation;
 
 jclass FJavaWrapper::InputDeviceInfoClass;
 jfieldID FJavaWrapper::InputDeviceInfo_VendorId;
@@ -454,6 +459,8 @@ jmethodID FJavaWrapper::AndroidThunkJava_RestartApplication;
 jmethodID FJavaWrapper::AndroidThunkJava_GetSupportedNativeDisplayRefreshRates;
 jmethodID FJavaWrapper::AndroidThunkJava_GetNativeDisplayRefreshRate;
 jmethodID FJavaWrapper::AndroidThunkJava_SetNativeDisplayRefreshRate;
+
+jmethodID FJavaWrapper::AndroidThunkJava_EnableMotion;
 
 jclass FJavaWrapper::LaunchNotificationClass;
 jfieldID FJavaWrapper::LaunchNotificationUsed;
@@ -1295,6 +1302,14 @@ void AndroidThunkCpp_ForceQuit()
 	}
 }
 
+void AndroidThunkCpp_SetOrientation(int32 Value)
+{
+	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
+	{
+		FJavaWrapper::CallVoidMethod(Env, FJavaWrapper::GameActivityThis, FJavaWrapper::AndroidThunkJava_SetOrientation, Value);
+	}
+}
+
 bool AndroidThunkCpp_IsMusicActive()
 {
 	bool bIsActive = false;
@@ -1785,6 +1800,15 @@ int32 AndroidThunkCpp_GetNativeDisplayRefreshRate()
 	return Result;
 }
 
+void AndroidThunkCpp_EnableMotion(bool bEnable)
+{
+	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
+	{
+		// call the java side
+		FJavaWrapper::CallVoidMethod(Env, FJavaWrapper::GameActivityThis, FJavaWrapper::AndroidThunkJava_EnableMotion, bEnable);
+	}
+}
+
 JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnSafetyNetAttestationSucceeded(JNIEnv* jenv, jobject thiz, jstring jwsData)
 {
 	FString JwsString = FJavaHelper::FStringFromParam(jenv, jwsData);
@@ -1931,30 +1955,64 @@ JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_AllowSleep(JNIEnv* jenv, jobj
 	FEmbeddedCommunication::AllowSleep(*Requester);
 }
 
+
+#if !BUILD_EMBEDDED_APP
+DEFINE_LOG_CATEGORY_STATIC(LogJava, Log, All);
+#endif
+
 JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogError(JNIEnv* jenv, jobject thiz, jstring InString)
 {
 	const auto chars = jenv->GetStringUTFChars(InString, 0);
+#if BUILD_EMBEDDED_APP
 	FEmbeddedCommunication::UELogError(UTF8_TO_TCHAR(chars));
+#else
+	if (GLog && UE_LOG_ACTIVE(LogJava, Error))
+	{
+		GLog->Log("LogJava", ELogVerbosity::Error, UTF8_TO_TCHAR(chars));
+	}
+#endif
 	jenv->ReleaseStringUTFChars(InString, chars);
 }
 
 JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogWarning(JNIEnv* jenv, jobject thiz, jstring InString)
 {
 	const auto chars = jenv->GetStringUTFChars(InString, 0);
+#if BUILD_EMBEDDED_APP
 	FEmbeddedCommunication::UELogWarning(UTF8_TO_TCHAR(chars));
+#else
+	if (GLog && UE_LOG_ACTIVE(LogJava, Warning))
+	{
+		GLog->Log("LogJava", ELogVerbosity::Warning, UTF8_TO_TCHAR(chars));
+	}
+#endif
 	jenv->ReleaseStringUTFChars(InString, chars);
 }
+
 JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogLog(JNIEnv* jenv, jobject thiz, jstring InString)
 {
 	const auto chars = jenv->GetStringUTFChars(InString, 0);
+#if BUILD_EMBEDDED_APP
 	FEmbeddedCommunication::UELogLog(UTF8_TO_TCHAR(chars));
+#else
+	if (GLog && UE_LOG_ACTIVE(LogJava, Log))
+	{
+		GLog->Log("LogJava", ELogVerbosity::Log, UTF8_TO_TCHAR(chars));
+	}
+#endif
 	jenv->ReleaseStringUTFChars(InString, chars);
 }
 
 JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogVerbose(JNIEnv* jenv, jobject thiz, jstring InString)
 {
 	const auto chars = jenv->GetStringUTFChars(InString, 0);
+#if BUILD_EMBEDDED_APP
 	FEmbeddedCommunication::UELogVerbose(UTF8_TO_TCHAR(chars));
+#else
+	if (GLog && UE_LOG_ACTIVE(LogJava, Verbose))
+	{
+		GLog->Log("LogJava", ELogVerbosity::Verbose, UTF8_TO_TCHAR(chars));
+	}
+#endif
 	jenv->ReleaseStringUTFChars(InString, chars);
 }
 
@@ -2018,15 +2076,23 @@ JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_RouteServiceIntent(JNIEnv* je
 	}
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnThermalStatusChangedListener(JNIEnv* jenv, jobject thiz, jint status)
+JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnThermalStatusChangedListener(JNIEnv* jenv, jobject thiz, jint Status)
 {
-	FAndroidStats::OnThermalStatusChanged(status);
+	FAndroidStats::OnThermalStatusChanged(Status);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnMemoryWarningChanged(JNIEnv* jenv, jobject thiz, jint status)
+JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnTrimMemory(JNIEnv* jenv, jobject thiz, jint MemoryTrimValue)
 {
-	FAndroidStats::OnMemoryWarningChanged(status);
+	FAndroidMisc::UpdateOSMemoryStatus(FAndroidMisc::EOSMemoryStatusCategory::OSTrim, MemoryTrimValue);
+	FAndroidStats::OnTrimMemory(MemoryTrimValue);
 }
+
+JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetMemoryAdvisorState(JNIEnv* jenv, jobject thiz, jint State, jint EstimateAvailableMB, jint OOMScore)
+{
+	FAndroidStats::SetMemoryWarningState(State);
+	FAndroidMisc::UpdateMemoryAdvisorState(State, EstimateAvailableMB, OOMScore);
+}
+
 
 class FAndroidEmbeddedExec : public FSelfRegisteringExec
 {

@@ -26,7 +26,7 @@ struct FRect
 
 struct FRectTexture
 {
-#if COMPILER_HLSLCC
+#if COMPILER_HLSLCC && !COMPILER_METAL
 	uint Dummy;
 #else
 #if USE_SOURCE_TEXTURE_ARRAY
@@ -44,13 +44,13 @@ struct FRectTexture
 #else
 	uint Dummy;
 #endif
-#endif	// COMPILER_HLSLCC
+#endif	// COMPILER_HLSLCC && !COMPILER_METAL
 };
 
 FRectTexture InitRectTexture(Texture2D SourceTexture)
 {
 	FRectTexture Output;
-#if COMPILER_HLSLCC
+#if COMPILER_HLSLCC && !COMPILER_METAL
 	uint Dummy;
 #else
 #if USE_SOURCE_TEXTURE_ARRAY
@@ -68,7 +68,7 @@ FRectTexture InitRectTexture(Texture2D SourceTexture)
 #else
 	Output.Dummy = 0;
 #endif
-#endif	// COMPILER_HLSLCC
+#endif	// COMPILER_HLSLCC && !COMPILER_METAL
 	return Output;
 }
 
@@ -83,7 +83,7 @@ float3 SampleRectTextureInternal(Texture2D RectSourceTexture, float2 RectUV, flo
 // Simple workaround while we don't have bindless support
 float3 SampleRectTexture(FRectTexture RectTexture, float2 RectUV, float Level, bool bIsReference=false)
 {
-#if COMPILER_HLSLCC
+#if COMPILER_HLSLCC && !COMPILER_METAL
 	return 1;
 #else
 #if USE_SOURCE_TEXTURE_ARRAY
@@ -101,7 +101,7 @@ float3 SampleRectTexture(FRectTexture RectTexture, float2 RectUV, float Level, b
 #else
 	return 1;
 #endif
-#endif	// COMPILER_HLSLCC
+#endif	// COMPILER_HLSLCC && !COMPILER_METAL
 }
 
 // Optimized Lambert
@@ -584,23 +584,37 @@ FSphericalRect BuildSphericalRect( FRect Rect )
 	return SphericalRect;
 }
 
-float3 UniformSampleSphericalRect( float2 E, FSphericalRect Rect )
+struct FSphericalRectSample {
+	float3 Direction;
+	float2 UV;
+};
+
+FSphericalRectSample UniformSampleSphericalRectWithUV(float2 E, FSphericalRect Rect)
 {
 	float au = E.x * Rect.SolidAngle + Rect.k;
-	float fu = ( cos(au) * Rect.b0 - Rect.b1 ) / sin(au);
-	float cu = rsqrt( fu*fu + Rect.b0 * Rect.b0 ) * ( fu > 0 ? 1 : -1 );
+	float fu = (cos(au) * Rect.b0 - Rect.b1) / sin(au);
+	float cu = rsqrt(fu * fu + Rect.b0 * Rect.b0) * (fu > 0 ? 1 : -1);
 	cu = clamp(cu, -1, 1);				// avoid NaNs
 
-	float xu = -(cu * Rect.z0) * rsqrt(1 - cu*cu);
-	xu = clamp( xu, Rect.x0, Rect.x1 );	// avoid Infs
+	float xu = -(cu * Rect.z0) * rsqrt(1 - cu * cu);
+	xu = clamp(xu, Rect.x0, Rect.x1);	// avoid Infs
 
-	float d = sqrt( xu*xu + Rect.z0 * Rect.z0 );
-	float h0 = Rect.y0 * rsqrt( d*d + Rect.y0 * Rect.y0 );
-	float h1 = Rect.y1 * rsqrt( d*d + Rect.y1 * Rect.y1 );
+	float d = sqrt(xu * xu + Rect.z0 * Rect.z0);
+	float h0 = Rect.y0 * rsqrt(d * d + Rect.y0 * Rect.y0);
+	float h1 = Rect.y1 * rsqrt(d * d + Rect.y1 * Rect.y1);
 	float hv = h0 + E.y * (h1 - h0);
-	float yv = (hv*hv < 1 - 1e-6) ? (hv * d) * rsqrt( 1 - hv*hv ) : Rect.y1;
+	float yv = (hv * hv < 1 - 1e-6) ? (hv * d) * rsqrt(1 - hv * hv) : Rect.y1;
 
-	return mul( float3( xu, yv, Rect.z0 ), Rect.Axis );
+	FSphericalRectSample Result;
+	Result.Direction = mul(float3(xu, yv, Rect.z0), Rect.Axis);
+	Result.UV = float2(xu - Rect.x0, yv - Rect.y0) / float2(Rect.x1 - Rect.x0, Rect.y1 - Rect.y0);
+
+	return Result;
+}
+
+float3 UniformSampleSphericalRect( float2 E, FSphericalRect Rect )
+{
+	return UniformSampleSphericalRectWithUV(E, Rect).Direction;
 }
 
 float3 RectIrradianceRef( float3 N, FRect Rect, out float BaseIrradiance, out float NoL )
@@ -669,55 +683,48 @@ FRect GetRect(
 	// Only compute the occluded rect if the barn door has an angle less 
 	// than 88 degrees
 	if (bComputeVisibleRect && LightDataRectLightBarnCosAngle > 0.035f)
-	{	
-		const float3 LightNormal	=-Rect.Axis[2];
-		const float3 LightdPdv		=-Rect.Axis[1];
-		const float3 LightdPdu		=-Rect.Axis[0];
-		const float2 LightExtent	= float2(LightDataSourceRadius, LightDataSourceLength);
-		const float BarnLength		= LightDataRectLightBarnLength;
+	{
+		const float3 LightdPdv = -Rect.Axis[1];
+		const float3 LightdPdu = -Rect.Axis[0];
+		const float2 LightExtent = float2(LightDataSourceRadius, LightDataSourceLength);
+		const float BarnLength = LightDataRectLightBarnLength;
 	
 		// Project shading point S into light space
-		const float3 S_World = -ToLight;
-		float3 S_Light = float3(dot(S_World, LightdPdu), dot(S_World, LightdPdv), dot(S_World, LightNormal));
-		
+		float3 S_Light = mul(Rect.Axis, ToLight);
+
 		// Compute barn door projection (D_B). Clamp the projection to the shading point if it is closer 
 		// to the light than the actual barn door
 		// Theta is the angle between the Z axis and the barn door
 		const float CosTheta = LightDataRectLightBarnCosAngle;
-		const float SinTheta = sqrt(1 - max(0, CosTheta * CosTheta));
+		const float SinTheta = sqrt(1 - CosTheta * CosTheta);
 		const float BarnDepth = min(S_Light.z, CosTheta * BarnLength);
 		const float S_ratio = BarnDepth / (CosTheta * BarnLength);
-		const float D_B	= SinTheta * BarnLength * S_ratio;
+		const float D_B = SinTheta * BarnLength * S_ratio;
 		
 		// Clamp shading point onto the closest edge, if it is inside the rect light
 		const float2 SignS = sign(S_Light.xy);
-		S_Light.xy = float2(SignS.x, SignS.y) * max(abs(S_Light.xy), LightExtent + D_B.xx);
+		S_Light.xy = SignS * max(abs(S_Light.xy), LightExtent + D_B.xx);
 		
 		// Compute the closest rect lignt corner, offset by the barn door size
-		const float3 C = float3(SignS.x * (LightExtent.x + D_B), SignS.y * (LightExtent.y + D_B), BarnDepth);
+		const float3 C = float3(SignS * (LightExtent + D_B.xx), BarnDepth);
 			
 		// Compute projected distance (D_S) of barn door onto the rect light
 		// Eta is the angle between the Z axis and the direction vector (S-C)
-		const float3 SProj  = S_Light - C;
-		const float  CosEta = max(SProj.z, 0);
+		const float3 SProj = S_Light - C;
+		const float CosEta = max(SProj.z, 0.001f);
 		const float2 SinEta = abs(SProj.xy);
-		const float2 TanEta	= CosEta > 0.001f ? abs(SProj.xy)/CosEta : 10000.f;
+		const float2 TanEta = abs(SProj.xy) / CosEta;
 		const float2 D_S = BarnDepth * TanEta;
 
 		// Equivalent to (e.g., X axis):
 		//  if (SignS.x < 0) MinMaxX.x += D_S - D_B;
 		//  if (SignS.x > 0) MinMaxX.y -= D_S - D_B;
-		float2 MinMaxX = float2(-LightExtent.x, LightExtent.x);
-		float2 MinMaxY = float2(-LightExtent.y, LightExtent.y);
-		MinMaxX += (D_S.x - D_B) * float2(max(0, -SignS.x), -max(0, SignS.x));
-		MinMaxY += (D_S.y - D_B) * float2(max(0, -SignS.y), -max(0, SignS.y));
-		MinMaxX = clamp(MinMaxX, -LightExtent.x, LightExtent.x);
-		MinMaxY = clamp(MinMaxY, -LightExtent.y, LightExtent.y);
-		
-		const float2 RectOffset = 0.5f * float2(MinMaxX.x + MinMaxX.y, MinMaxY.x + MinMaxY.y);
+		const float2 MinXY = clamp(-LightExtent + (D_S - D_B.xx) * max(0, -SignS), -LightExtent, LightExtent);
+		const float2 MaxXY = clamp( LightExtent - (D_S - D_B.xx) * max(0,  SignS), -LightExtent, LightExtent);
+		const float2 RectOffset = 0.5f * (MinXY + MaxXY);
 
-		Rect.Extent = 0.5f * float2(MinMaxX.y - MinMaxX.x, MinMaxY.y - MinMaxY.x);
-		Rect.Origin = Rect.Origin +  LightdPdu * RectOffset.x + LightdPdv * RectOffset.y;
+		Rect.Extent = 0.5f * (MaxXY - MinXY);
+		Rect.Origin = Rect.Origin + LightdPdu * RectOffset.x + LightdPdv * RectOffset.y;
 		Rect.Offset = -RectOffset;
 		Rect.FullExtent = LightExtent;
 	}
@@ -725,3 +732,8 @@ FRect GetRect(
 	return Rect;
 }
 
+bool IsRectVisible(FRect Rect)
+{
+	// No-visible rect light due to barn door occlusion
+	return Rect.Extent.x != 0 && Rect.Extent.y != 0;
+}

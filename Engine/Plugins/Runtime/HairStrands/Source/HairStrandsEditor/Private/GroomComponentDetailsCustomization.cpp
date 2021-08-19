@@ -86,77 +86,68 @@ void FGroomComponentDetailsCustomization::CustomizeDescGroupProperties(IDetailLa
 	}
 }
 
-void FGroomComponentDetailsCustomization::SetOverride(int32 GroupIndex, TSharedPtr<IPropertyHandle> ChildHandle, bool bValue)
+template <typename T>
+bool AssignIfDifferentHairComponent(T& Dest, const T& Src, bool bSetValue)
 {
-	FName PropertyName = ChildHandle->GetProperty()->GetFName();
-
-	// Reset the override flag so that the groom component will fallback onto the groom asset value
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairWidth))
+	const bool bHasChanged = Dest != Src;
+	if (bHasChanged && bSetValue)
 	{
-		GroomComponentPtr->GroomGroupsDesc[GroupIndex].HairWidth_Override = bValue;
+		Dest = Src;
 	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairRootScale))
-	{
-		GroomComponentPtr->GroomGroupsDesc[GroupIndex].HairRootScale_Override = bValue;
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairTipScale))
-	{
-		GroomComponentPtr->GroomGroupsDesc[GroupIndex].HairTipScale_Override = bValue;
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairClipLength))
-	{
-		GroomComponentPtr->GroomGroupsDesc[GroupIndex].HairClipLength_Override = bValue;
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairShadowDensity))
-	{
-		GroomComponentPtr->GroomGroupsDesc[GroupIndex].HairShadowDensity_Override = bValue;
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairRaytracingRadiusScale))
-	{
-		GroomComponentPtr->GroomGroupsDesc[GroupIndex].HairRaytracingRadiusScale_Override = bValue;
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, bUseHairRaytracingGeometry))
-	{
-		GroomComponentPtr->GroomGroupsDesc[GroupIndex].bUseHairRaytracingGeometry_Override = bValue;
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, bUseStableRasterization))
-	{
-		GroomComponentPtr->GroomGroupsDesc[GroupIndex].bUseStableRasterization_Override = bValue;
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, bScatterSceneLighting))
-	{
-		GroomComponentPtr->GroomGroupsDesc[GroupIndex].bScatterSceneLighting_Override = bValue;
-	}
+	return bHasChanged;
 }
+#define HAIR_RESET_COMPONENT(MemberName) { if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, MemberName)) { bHasChanged = AssignIfDifferentHairComponent(GroomComponentPtr->GroomGroupsDesc[GroupIndex].MemberName, Default.MemberName, bSetValue); } }
 
-void FGroomComponentDetailsCustomization::OnResetToDefault(int32 GroupIndex, TSharedPtr<IPropertyHandle> ChildHandle)
+bool FGroomComponentDetailsCustomization::CommonResetToDefault(TSharedPtr<IPropertyHandle> ChildHandle, int32 GroupIndex, bool bSetValue)
 {
+	bool bHasChanged = false;
 	if (ChildHandle == nullptr || GroomComponentPtr == nullptr || GroupIndex < 0 || GroupIndex >= GroomComponentPtr->GroomGroupsDesc.Num())
 	{
-		return;
+		return bHasChanged;
 	}
 	
-	FScopedTransaction ScopedTransaction(NSLOCTEXT("UnrealEd", "PropertyWindowResetToDefault", "Reset to Default"));
-	//GroomComponentPtr->Modify();
-	SetOverride(GroupIndex, ChildHandle, false);
-	GroomComponentPtr->UpdateHairGroupsDescAndInvalidateRenderState();
-}
+	FName PropertyName = ChildHandle->GetProperty()->GetFName();
 
-void FGroomComponentDetailsCustomization::OnValueChanged(int32 GroupIndex, TSharedPtr<IPropertyHandle> ChildHandle)
-{
-	if (ChildHandle == nullptr || GroomComponentPtr == nullptr || GroupIndex < 0 || GroupIndex >= GroomComponentPtr->GroomGroupsDesc.Num())
+	FHairGroupDesc Default;
+	HAIR_RESET_COMPONENT(HairWidth);
+	HAIR_RESET_COMPONENT(HairClipScale);
+	HAIR_RESET_COMPONENT(HairRootScale);
+	HAIR_RESET_COMPONENT(HairTipScale);
+	HAIR_RESET_COMPONENT(HairShadowDensity);
+	HAIR_RESET_COMPONENT(HairRaytracingRadiusScale);
+	HAIR_RESET_COMPONENT(bUseHairRaytracingGeometry);
+	HAIR_RESET_COMPONENT(bUseStableRasterization);
+	HAIR_RESET_COMPONENT(bScatterSceneLighting);
+	HAIR_RESET_COMPONENT(LODBias);
+
+	if (bSetValue && bHasChanged)
 	{
-		return;
+		FScopedTransaction ScopedTransaction(NSLOCTEXT("UnrealEd", "PropertyWindowResetToDefault", "Reset to Default"));
+		GroomComponentPtr->UpdateHairGroupsDescAndInvalidateRenderState();
 	}
 
-	FScopedTransaction ScopedTransaction(NSLOCTEXT("UnrealEd", "PropertyWindowPreValueChanged", "PreValue Changed"));
-	//GroomComponentPtr->Modify();
-	SetOverride(GroupIndex, ChildHandle, true);
-	GroomComponentPtr->UpdateHairGroupsDescAndInvalidateRenderState();
+	return bHasChanged;
 }
 
+bool FGroomComponentDetailsCustomization::ShouldResetToDefault(TSharedPtr<IPropertyHandle> ChildHandle, int32 GroupIndex)
+{
+	return CommonResetToDefault(ChildHandle, GroupIndex, false);
+}
 
-static TSharedRef<SUniformGridPanel> MakeHairInfoGrid(const FSlateFontInfo& DetailFontInfo, FHairGroupDesc& GroupDesc)
+void FGroomComponentDetailsCustomization::ResetToDefault(TSharedPtr<IPropertyHandle> ChildHandle, int32 GroupIndex)
+{
+	CommonResetToDefault(ChildHandle, GroupIndex, true);
+}
+
+void FGroomComponentDetailsCustomization::AddPropertyWithCustomReset(TSharedPtr<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& Builder, int32 GroupIndex)
+{
+	FIsResetToDefaultVisible IsResetVisible = FIsResetToDefaultVisible::CreateSP(this, &FGroomComponentDetailsCustomization::ShouldResetToDefault, GroupIndex);
+	FResetToDefaultHandler ResetHandler = FResetToDefaultHandler::CreateSP(this, &FGroomComponentDetailsCustomization::ResetToDefault, GroupIndex);
+	FResetToDefaultOverride ResetOverride = FResetToDefaultOverride::Create(IsResetVisible, ResetHandler);
+	Builder.AddProperty(PropertyHandle.ToSharedRef()).OverrideResetToDefault(ResetOverride);
+}
+
+static TSharedRef<SUniformGridPanel> MakeHairInfoGrid(const FSlateFontInfo& DetailFontInfo, const FHairGroupInfo& Infos)
 {
 	TSharedRef<SUniformGridPanel> Grid = SNew(SUniformGridPanel).SlotPadding(2.0f);
 
@@ -191,21 +182,21 @@ static TSharedRef<SUniformGridPanel> MakeHairInfoGrid(const FSlateFontInfo& Deta
 	[
 		SNew(STextBlock)
 		.Font(DetailFontInfo)
-		.Text(FText::AsNumber(GroupDesc.HairCount))
+		.Text(FText::AsNumber(Infos.NumCurves))
 	];
 	Grid->AddSlot(1, 1) // x, y
 	.HAlign(HAlign_Right)
 	[
 		SNew(STextBlock)
 		.Font(DetailFontInfo)
-		.Text(FText::AsNumber(GroupDesc.GuideCount))
+		.Text(FText::AsNumber(Infos.NumGuides))
 	];
 	Grid->AddSlot(2, 1) // x, y
 	.HAlign(HAlign_Right)
 	[
 		SNew(STextBlock)
 		.Font(DetailFontInfo)
-		.Text(FText::AsNumber(GroupDesc.HairLength))
+		.Text(FText::AsNumber(Infos.MaxCurveLength))
 	];
 
 	return Grid;
@@ -249,11 +240,16 @@ void FGroomComponentDetailsCustomization::OnGenerateElementForHairGroup(TSharedR
 
 	if (GroomComponentPtr != nullptr && GroupIndex>=0 && GroupIndex < GroomComponentPtr->GroomGroupsDesc.Num())
 	{
+		FHairGroupInfo Infos;
+		if (GroomComponentPtr->GroomAsset && GroupIndex < GroomComponentPtr->GroomAsset->HairGroupsInfo.Num())
+		{
+			Infos = GroomComponentPtr->GroomAsset->HairGroupsInfo[GroupIndex];
+		}
 		ChildrenBuilder.AddCustomRow(LOCTEXT("HairInfo_Separator", "Separator"))
 		.ValueContent()
 		.HAlign(HAlign_Fill)
 		[
-			MakeHairInfoGrid(DetailFontInfo, GroomComponentPtr->GroomGroupsDesc[GroupIndex])
+			MakeHairInfoGrid(DetailFontInfo, Infos)
 		];
 	}
 
@@ -262,19 +258,7 @@ void FGroomComponentDetailsCustomization::OnGenerateElementForHairGroup(TSharedR
 	for (uint32 ChildIt = 0; ChildIt < ChildrenCount; ++ChildIt)
 	{
 		TSharedPtr<IPropertyHandle> ChildHandle = StructProperty->GetChildHandle(ChildIt);
-
-		// These properties are not display with regular widget but with a dedicated array
-		FName PropertyName = ChildHandle->GetProperty()->GetFName();
-		if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairCount) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairLength) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, GuideCount)) 
-		{
-			continue;
-		}
-
-		ChildHandle->SetOnPropertyResetToDefault(FSimpleDelegate::CreateSP(this, &FGroomComponentDetailsCustomization::OnResetToDefault, GroupIndex, ChildHandle));
-		ChildHandle->SetOnPropertyValuePreChange(FSimpleDelegate::CreateSP(this, &FGroomComponentDetailsCustomization::OnValueChanged, GroupIndex, ChildHandle));
-		ChildrenBuilder.AddProperty(ChildHandle.ToSharedRef());
+		AddPropertyWithCustomReset(ChildHandle, ChildrenBuilder, GroupIndex);
 	}
 }
 

@@ -9,6 +9,7 @@
 #include "Misc/Crc.h"
 #include "Misc/CString.h"
 #include "Templates/AndOrNot.h"
+#include "Templates/ChooseClass.h"
 #include "Templates/Decay.h"
 #include "Templates/EnableIf.h"
 #include "Templates/IsArray.h"
@@ -24,6 +25,31 @@ namespace StringViewPrivate
 	{
 		return GetData(Forward<ArgTypes>(Args)...);
 	}
+
+	template <typename From, typename To>
+	struct TIsConvertibleFromTo
+	{
+		static constexpr bool Value = __is_convertible_to(From, To);
+	};
+
+	template <typename T>
+	struct TIsConvertibleToStringView
+	{
+		static constexpr bool Value = TOr<
+			TIsConvertibleFromTo<T, FAnsiStringView>,
+			TIsConvertibleFromTo<T, FWideStringView>
+			>::Value;
+	};
+
+	template <typename T>
+	struct TCompatibleStringViewType
+	{
+		struct NotCompatible;
+		using Type =
+			typename TChooseClass<TIsConvertibleFromTo<T, FAnsiStringView>::Value, FAnsiStringView,
+			typename TChooseClass<TIsConvertibleFromTo<T, FWideStringView>::Value, FWideStringView,
+			NotCompatible>::Result>::Result;
+	};
 }
 
 /**
@@ -47,6 +73,9 @@ namespace StringViewPrivate
  * which style of string construction is used by the caller. If you accept strings via
  * string views then the caller is free to use FString, FStringBuilder, raw C strings,
  * or any other type which can be converted into a string view.
+ *
+ * The UE::String namespace contains many functions that can operate on string views.
+ * Most of these can be found in String/___.h in Core.
  *
  * @code
  *	void DoFoo(FStringView InString);
@@ -129,19 +158,15 @@ public:
 	inline const CharType& operator[](SizeType Index) const;
 
 	/** Returns a pointer to the start of the view. This is NOT guaranteed to be null-terminated! */
-	constexpr inline const CharType* GetData() const { return DataPtr; }
-
-	/** Returns a pointer to the start of the view. This is NOT guaranteed to be null-terminated! */
-	UE_DEPRECATED(4.25, "'Data' is deprecated. Please use 'GetData' instead!")
-	constexpr inline const CharType* Data() const { return DataPtr; }
+	UE_NODISCARD constexpr inline const CharType* GetData() const { return DataPtr; }
 
 	// Capacity
 
 	/** Returns the length of the string view. */
-	constexpr inline SizeType Len() const { return Size; }
+	UE_NODISCARD constexpr inline SizeType Len() const { return Size; }
 
 	/** Returns whether the string view is empty. */
-	constexpr inline bool IsEmpty() const { return Size == 0; }
+	UE_NODISCARD constexpr inline bool IsEmpty() const { return Size == 0; }
 
 	// Modifiers
 
@@ -166,24 +191,24 @@ public:
 	inline SizeType CopyString(CharType* Dest, SizeType CharCount, SizeType Position = 0) const;
 
 	/** Alias for Mid. */
-	inline ViewType SubStr(SizeType Position, SizeType CharCount) const { return Mid(Position, CharCount); }
+	UE_NODISCARD inline ViewType SubStr(SizeType Position, SizeType CharCount) const { return Mid(Position, CharCount); }
 
 	/** Returns the left-most part of the view by taking the given number of characters from the left. */
-	inline ViewType Left(SizeType CharCount) const;
+	UE_NODISCARD inline ViewType Left(SizeType CharCount) const;
 	/** Returns the left-most part of the view by chopping the given number of characters from the right. */
-	inline ViewType LeftChop(SizeType CharCount) const;
+	UE_NODISCARD inline ViewType LeftChop(SizeType CharCount) const;
 	/** Returns the right-most part of the view by taking the given number of characters from the right. */
-	inline ViewType Right(SizeType CharCount) const;
+	UE_NODISCARD inline ViewType Right(SizeType CharCount) const;
 	/** Returns the right-most part of the view by chopping the given number of characters from the left. */
-	inline ViewType RightChop(SizeType CharCount) const;
+	UE_NODISCARD inline ViewType RightChop(SizeType CharCount) const;
 	/** Returns the middle part of the view by taking up to the given number of characters from the given position. */
-	inline ViewType Mid(SizeType Position, SizeType CharCount = TNumericLimits<SizeType>::Max()) const;
+	UE_NODISCARD inline ViewType Mid(SizeType Position, SizeType CharCount = TNumericLimits<SizeType>::Max()) const;
 	/** Returns the middle part of the view between any whitespace at the start and end. */
-	inline ViewType TrimStartAndEnd() const;
+	UE_NODISCARD inline ViewType TrimStartAndEnd() const;
 	/** Returns the right part of the view after any whitespace at the start. */
-	CORE_API ViewType TrimStart() const;
+	UE_NODISCARD CORE_API ViewType TrimStart() const;
 	/** Returns the left part of the view before any whitespace at the end. */
-	CORE_API ViewType TrimEnd() const;
+	UE_NODISCARD CORE_API ViewType TrimEnd() const;
 
 	/** Modifies the view to be the given number of characters from the left. */
 	inline void LeftInline(SizeType CharCount) { *this = Left(CharCount); }
@@ -209,7 +234,16 @@ public:
 	 *
 	 * @param SearchCase Whether the comparison should ignore case.
 	 */
-	inline bool Equals(ViewType Other, ESearchCase::Type SearchCase = ESearchCase::CaseSensitive) const;
+	template <typename OtherType, typename TEnableIf<StringViewPrivate::TIsConvertibleToStringView<OtherType>::Value>::Type* = nullptr>
+	UE_NODISCARD inline bool Equals(OtherType&& Other, ESearchCase::Type SearchCase = ESearchCase::CaseSensitive) const;
+
+	/**
+	 * Check whether this view is lexicographically equivalent to another view.
+	 *
+	 * @param SearchCase Whether the comparison should ignore case.
+	 */
+	template <typename OtherCharType>
+	UE_NODISCARD inline bool Equals(const OtherCharType* Other, ESearchCase::Type SearchCase = ESearchCase::CaseSensitive) const;
 
 	/**
 	 * Compare this view lexicographically with another view.
@@ -218,17 +252,28 @@ public:
 	 *
 	 * @return 0 is equal, negative if this view is less, positive if this view is greater.
 	 */
-	CORE_API int32 Compare(ViewType Other, ESearchCase::Type SearchCase = ESearchCase::CaseSensitive) const;
+	template <typename OtherType, typename TEnableIf<StringViewPrivate::TIsConvertibleToStringView<OtherType>::Value>::Type* = nullptr>
+	UE_NODISCARD inline int32 Compare(OtherType&& Other, ESearchCase::Type SearchCase = ESearchCase::CaseSensitive) const;
+
+	/**
+	 * Compare this view lexicographically with another view.
+	 *
+	 * @param SearchCase Whether the comparison should ignore case.
+	 *
+	 * @return 0 is equal, negative if this view is less, positive if this view is greater.
+	 */
+	template <typename OtherCharType>
+	UE_NODISCARD inline int32 Compare(const OtherCharType* Other, ESearchCase::Type SearchCase = ESearchCase::CaseSensitive) const;
 
 	/** Returns whether this view starts with the prefix character compared case-sensitively. */
-	inline bool StartsWith(CharType Prefix) const { return Size >= 1 && DataPtr[0] == Prefix; }
+	UE_NODISCARD inline bool StartsWith(CharType Prefix) const { return Size >= 1 && DataPtr[0] == Prefix; }
 	/** Returns whether this view starts with the prefix with optional case sensitivity. */
-	inline bool StartsWith(ViewType Prefix, ESearchCase::Type SearchCase = ESearchCase::IgnoreCase) const;
+	UE_NODISCARD inline bool StartsWith(ViewType Prefix, ESearchCase::Type SearchCase = ESearchCase::IgnoreCase) const;
 
 	/** Returns whether this view ends with the suffix character compared case-sensitively. */
-	inline bool EndsWith(CharType Suffix) const { return Size >= 1 && DataPtr[Size-1] == Suffix; }
+	UE_NODISCARD inline bool EndsWith(CharType Suffix) const { return Size >= 1 && DataPtr[Size-1] == Suffix; }
 	/** Returns whether this view ends with the suffix with optional case sensitivity. */
-	inline bool EndsWith(ViewType Suffix, ESearchCase::Type SearchCase = ESearchCase::IgnoreCase) const;
+	UE_NODISCARD inline bool EndsWith(ViewType Suffix, ESearchCase::Type SearchCase = ESearchCase::IgnoreCase) const;
 
 	// Searching/Finding
 

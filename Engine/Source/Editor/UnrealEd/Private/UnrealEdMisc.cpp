@@ -331,12 +331,10 @@ void FUnrealEdMisc::OnInit()
 			 // If it's not a parameter
 			 ParsedMapName.StartsWith( TEXT("-") ) == false )
 		{
-			FString InitialMapName;
-				
+			FString InitialMapLongPackageName = FindMapFileFromPartialName(ParsedMapName);
+			
 			// If the specified package exists
-			if ( FPackageName::SearchForPackageOnDisk(ParsedMapName, NULL, &InitialMapName) &&
-				// and it's a valid map file
-				FPaths::GetExtension(InitialMapName, /*bIncludeDot=*/true) == FPackageName::GetMapPackageExtension() )
+			if (!InitialMapLongPackageName.IsEmpty())
 			{
 				// Never show loading progress when loading a map at startup.  Loading status will instead
 				// be reflected in the splash screen status
@@ -344,7 +342,7 @@ void FUnrealEdMisc::OnInit()
 				const bool bLoadAsTemplate = false;
 
 				// Load the map
-				FEditorFileUtils::LoadMap(InitialMapName, bLoadAsTemplate, bShowProgress);
+				FEditorFileUtils::LoadMap(InitialMapLongPackageName, bLoadAsTemplate, bShowProgress);
 				bMapLoaded = true;
 			}
 		}
@@ -534,6 +532,73 @@ void FUnrealEdMisc::OnInit()
 	UE_LOG(LogUnrealEdMisc, Log, TEXT("Total Editor Startup Time, took %.3f"), TotalEditorStartupTime);
 
 	FStudioAnalytics::FireEvent_Loading(TEXT("TotalEditorStartup"), TotalEditorStartupTime);
+}
+
+FString FUnrealEdMisc::FindMapFileFromPartialName(const FString& PartialMapName)
+{
+	TArray<FString> CommandLineMapCache;
+	GConfig->GetArray(TEXT("EditorMapCache"), TEXT("CommandLineMapCache"), CommandLineMapCache, GEditorPerProjectIni);
+	bool CommandLineMapCacheDirty = false;
+
+	FString FoundMapFile;
+
+	for (int32 Index = 0; Index < CommandLineMapCache.Num(); Index++)
+	{
+		bool bRemoveEntry = false;
+		FString CurrentCacheEntry = CommandLineMapCache[Index];
+
+		TArray<FString> Tokens;
+		CurrentCacheEntry.ParseIntoArray(Tokens, TEXT(","));
+		if (Tokens.Num() == 2)
+		{
+			FString ShortMapName = Tokens[0];
+			FString RelativeFileName = Tokens[1];
+		
+			if (ShortMapName == PartialMapName)
+			{
+				if (FPaths::FileExists(RelativeFileName))
+				{
+					FoundMapFile = RelativeFileName;
+					break;
+				}
+				else
+				{
+					bRemoveEntry = true;
+				}
+			}
+		}
+		else
+		{
+			bRemoveEntry = true;
+		}
+
+		if (bRemoveEntry)
+		{
+			CommandLineMapCacheDirty = true;
+			CommandLineMapCache.RemoveAt(Index);
+			Index--;
+		}
+	}
+
+	if (FoundMapFile.IsEmpty())
+	{
+		// If the specified package exists
+		if (FPackageName::SearchForPackageOnDisk(PartialMapName, NULL, &FoundMapFile) &&
+			// and it's a valid map file
+			FPaths::GetExtension(FoundMapFile, /*bIncludeDot=*/true) == FPackageName::GetMapPackageExtension())
+		{
+			CommandLineMapCache.Add(PartialMapName + TEXT(",") + FoundMapFile);
+			CommandLineMapCacheDirty = true;
+		}
+	}
+
+	if (CommandLineMapCacheDirty)
+	{
+		GConfig->SetArray(TEXT("EditorMapCache"), TEXT("CommandLineMapCache"), CommandLineMapCache, GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+	}
+
+	return FoundMapFile;
 }
 
 void FUnrealEdMisc::InitEngineAnalytics()
@@ -1522,12 +1587,16 @@ FString FUnrealEdMisc::GenerateURL(const FString& InUDNPage)
 	if( InUDNPage.Len() > 0 )
 	{
 		FInternationalization& I18N = FInternationalization::Get();
-
-		const FString PageURL = FString::Printf( TEXT( "%s/Editor/LevelEditing/MapErrors/index.html" ), *I18N.GetCurrentCulture()->GetUnrealLegacyThreeLetterISOLanguageName() );
+		// The I18N info and version is now stored in MapErrorURL in the ini
+		const FString PageURL =  TEXT("/Editor/LevelEditing/MapErrors/index.html");
 		const FString BookmarkURL = FString::Printf( TEXT( "#%s" ), *InUDNPage );
 
 		// Developers can browse documentation included with the engine distribution, check for file presence...
 		FString MapErrorURL = FString::Printf( TEXT( "%sDocumentation/HTML/%s" ), *FPaths::ConvertRelativePathToFull( FPaths::EngineDir() ), *PageURL );
+
+		static FString Version = FString::FromInt(FEngineVersion::Current().GetMajor()) + TEXT(".") + FString::FromInt(FEngineVersion::Current().GetMinor());
+		const FString PartialPath = FString::Printf(TEXT("%s/%s%s/index.html"), *Version, *(*I18N.GetCurrentCulture()->GetName()), *PageURL);
+		return FString::Printf(TEXT("%sDocumentation/HTML/%s"), *FPaths::ConvertRelativePathToFull(FPaths::EngineDir()), *PartialPath);
 		if (IFileManager::Get().FileSize(*MapErrorURL) != INDEX_NONE)
 		{
 			MapErrorURL = FString::Printf( TEXT( "file://%s%s" ), *MapErrorURL, *BookmarkURL );
@@ -1535,7 +1604,7 @@ FString FUnrealEdMisc::GenerateURL(const FString& InUDNPage)
 		// ... if it's not present, fallback to using the online version, if the full URL is provided...
 		else if(FUnrealEdMisc::Get().GetURL( TEXT("MapErrorURL"), MapErrorURL, true ) && MapErrorURL.EndsWith( TEXT( ".html" ) ))
 		{	
-			MapErrorURL.ReplaceInline( TEXT( "/INT/" ), *FString::Printf( TEXT( "/%s/" ), *I18N.GetCurrentCulture()->GetUnrealLegacyThreeLetterISOLanguageName() ) );
+			FUnrealEdMisc::Get().ReplaceDocumentationURLWildcards(MapErrorURL, I18N.GetCurrentCulture());
 			MapErrorURL += BookmarkURL;
 		}
 		// ...otherwise, attempt to create the URL from what we know here...
@@ -1545,6 +1614,9 @@ FString FUnrealEdMisc::GenerateURL(const FString& InUDNPage)
 			{
 				MapErrorURL += TEXT( "/" );
 			}
+
+			// UDNDocsURL is now stored with placeholders for internalization and version to be replaced
+			FUnrealEdMisc::Get().ReplaceDocumentationURLWildcards(MapErrorURL, I18N.GetCurrentCulture());
 			MapErrorURL += PageURL;
 			MapErrorURL += BookmarkURL;
 		}
@@ -1845,6 +1917,13 @@ bool FUnrealEdMisc::GetURL( const TCHAR* InKey, FString& OutURL, const bool bChe
 	}
 
 	return bFound;
+}
+
+void FUnrealEdMisc::ReplaceDocumentationURLWildcards(FString& Url, const FCultureRef& Culture)
+{
+	static FString Version = FString::FromInt(FEngineVersion::Current().GetMajor()) + TEXT(".") + FString::FromInt(FEngineVersion::Current().GetMinor());
+	Url.ReplaceInline(TEXT("{VERSION}"), *Version);
+	Url.ReplaceInline(TEXT("{I18N}"), *(Culture->GetName()));
 }
 
 FString FUnrealEdMisc::GetExecutableForCommandlets() const

@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioCapturer.h"
-
 #include "AudioMixerDevice.h"
 #include "SampleBuffer.h"
 #include "Engine/GameEngine.h"
@@ -25,6 +24,10 @@ DEFINE_LOG_CATEGORY(LogAudioCapturer);
 		};                       \
 	}
 
+
+constexpr int FAudioCapturer::SampleRate;
+constexpr int FAudioCapturer::NumChannels;
+
 void FAudioCapturer::OnNewSubmixBuffer(const USoundSubmix* OwningSubmix, float* AudioData, int32 NumSamples, int32 InNumChannels, const int32 InSampleRate, double AudioClock)
 {
 	if (!(bInitialized && bRecordingInitialized))
@@ -39,7 +42,7 @@ void FAudioCapturer::OnNewSubmixBuffer(const USoundSubmix* OwningSubmix, float* 
 		if (!bFormatChecked)
 		{
 			bFormatChecked = true;
-			UE_LOG(PixelStreaming, Error, TEXT("Audio samplerate needs to be 48000hz"));
+			UE_LOG(LogAudioCapturer, Error, TEXT("Audio samplerate needs to be 48000hz"));
 		}
 		return;
 	}
@@ -105,7 +108,9 @@ int32 FAudioCapturer::Init()
 
 	{
 		FScopeLock Lock(&DeviceBufferCS);
-		DeviceBuffer = MakeUnique<webrtc::AudioDeviceBuffer>();
+
+		m_taskQueueFactory = webrtc::CreateDefaultTaskQueueFactory();
+		DeviceBuffer = MakeUnique<webrtc::AudioDeviceBuffer>( m_taskQueueFactory.get() );
 	}
 
 	// subscribe to audio data
@@ -115,16 +120,14 @@ int32 FAudioCapturer::Init()
 	}
 
 	FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice();
-	if (AudioDevice)
-	{
-		AudioDevice->RegisterSubmixBufferListener(this);
-	}
-	else
+	if (!AudioDevice)
 	{
 		UE_LOG(LogAudioCapturer, Warning, TEXT("No audio device"));
+		return -1;
 	}
 
 	bInitialized = true;
+	AudioDevice->RegisterSubmixBufferListener(this);
 
 	UE_LOG(LogAudioCapturer, Verbose, TEXT("Init"));
 
@@ -143,11 +146,12 @@ int32 FAudioCapturer::Terminate()
 	}
 
 	FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice();
-	if (AudioDevice)
+	if (!AudioDevice)
 	{
-		AudioDevice->UnregisterSubmixBufferListener(this);
+		return -1;
 	}
 
+	AudioDevice->UnregisterSubmixBufferListener(this);
 	bInitialized = false;
 
 	{
@@ -246,7 +250,7 @@ int32 FAudioCapturer::InitRecording()
 	{
 		FScopeLock Lock(&DeviceBufferCS);
 		// #Audio : Allow dynamic values for samplerate and/or channels ,
-		// or receive those from UE4 ?
+		// or receive those from UnrealEngine ?
 		DeviceBuffer->SetRecordingSampleRate(SampleRate);
 		DeviceBuffer->SetRecordingChannels(NumChannels);
 	}

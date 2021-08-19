@@ -9,6 +9,7 @@
 #include "Misc/QualifiedFrameTime.h"
 #include "TakeRecorderSource.generated.h"
 
+struct FMovieSceneSequenceID;
 class ULevelSequence;
 
 /**
@@ -42,8 +43,6 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category="Source")
 	FColor TrackTint;
 
-	//Timecode source when recording is started via StartRecording.
-	FTimecode TimecodeSource;
 public:
 	/** 
 	* If the source is Valid and ready to be recorded. Tells the Take Recorder that it's really going to record. Note that PreRecord/StartRecord
@@ -64,12 +63,13 @@ public:
 	* Will not be called if this recording source is not enabled.
 	*
 	* @param InSequence - The Level Sequence the take is being recorded into
+	* @param InSequenceID - The sequence ID for InSequence, or MovieSceneSequenceID::Root where InSequence == InMasterSequence (ie, not sub-sequence recording)
 	* @param InMasterSequence - The Master Level Sequence that may contain the InSequence as a child or if no subsequences, is the same as InSequence.
 	* @param InManifestSerializer - Manifest Serializer that we may write into.
 	* @return An array of newly created take recorder sources. Can be an empty list if no additional sources needed to be
 	* created by this source.
 	*/
-	virtual TArray<UTakeRecorderSource*> PreRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence, FManifestSerializer* InManifestSerializer) { return TArray<UTakeRecorderSource*>(); }
+	virtual TArray<UTakeRecorderSource*> PreRecording(ULevelSequence* InSequence, FMovieSceneSequenceID InSequenceID, ULevelSequence* InMasterSequence, FManifestSerializer* InManifestSerializer);
 
 	/**
 	* This is called when the UTakeRecorderSources starts a recording, after all sources have had PreRecording called on them.

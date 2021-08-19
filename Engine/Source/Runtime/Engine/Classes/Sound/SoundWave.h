@@ -57,24 +57,16 @@ constexpr uint64 InvalidAudioStreamCacheLookupID = TNumericLimits<uint64>::Max()
 struct FStreamedAudioChunk
 {
 	/** Size of the chunk of data in bytes including zero padding */
-	int32 DataSize;
+	int32 DataSize = 0;
 
 	/** Size of the audio data. */
-	int32 AudioDataSize;
+	int32 AudioDataSize = 0;
 
 	/** Bulk data if stored in the package. */
 	FByteBulkData BulkData;
 
 	/** This is set by the audio stream cache to speed up lookup. Maps directly to the location into the cache chunk table that we loaded this chunk into. */
-	uint64 CacheLookupID;
-
-	/** Default constructor. */
-	FStreamedAudioChunk()
-		: DataSize(0)
-		, AudioDataSize(0)
-		, CacheLookupID(InvalidAudioStreamCacheLookupID)
-	{
-	}
+	uint64 CacheLookupID = InvalidAudioStreamCacheLookupID;
 
 	/** Serialization. */
 	void Serialize(FArchive& Ar, UObject* Owner, int32 ChunkIndex);
@@ -82,6 +74,9 @@ struct FStreamedAudioChunk
 #if WITH_EDITORONLY_DATA
 	/** Key if stored in the derived data cache. */
 	FString DerivedDataKey;
+
+	/** True if this chunk was loaded from a cooked package. */
+	bool bLoadedFromCookedPackage = false;
 
 	/**
 	 * Place chunk data in the derived data cache associated with the provided
@@ -162,21 +157,15 @@ struct FSoundWaveSpectralData
 
 	// The frequency (in Hz) of the spectrum value
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SpectralData")
-	float FrequencyHz;
+	float FrequencyHz = 0.0f;
 
 	// The magnitude of the spectrum at this frequency
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SpectralData")
-	float Magnitude;
+	float Magnitude = 0.0f;
 
 	// The normalized magnitude of the spectrum at this frequency
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SpectralData")
-	float NormalizedMagnitude;
-
-	FSoundWaveSpectralData()
-		: FrequencyHz(0.0f)
-		, Magnitude(0.0f)
-		, NormalizedMagnitude(0.0f)
-	{}
+	float NormalizedMagnitude = 0.0f;
 };
 
 USTRUCT(BlueprintType)
@@ -190,11 +179,11 @@ struct FSoundWaveSpectralDataPerSound
 
 	// The current playback time of this sound wave
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SpectralData")
-	float PlaybackTime;
+	float PlaybackTime = 0.0f;
 
 	// The sound wave this spectral data is associated with
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SpectralData")
-	USoundWave* SoundWave;
+	USoundWave* SoundWave = nullptr;
 };
 
 USTRUCT(BlueprintType)
@@ -204,15 +193,15 @@ struct FSoundWaveEnvelopeDataPerSound
 
 	// The current envelope of the playing sound
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EnvelopeData")
-	float Envelope;
+	float Envelope = 0.0f;
 
 	// The current playback time of this sound wave
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EnvelopeData")
-	float PlaybackTime;
+	float PlaybackTime = 0.0f;
 
 	// The sound wave this envelope data is associated with
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EnvelopeData")
-	USoundWave* SoundWave;
+	USoundWave* SoundWave = nullptr;
 };
 
 // Sort predicate for sorting spectral data by frequency (lowest first)
@@ -233,11 +222,11 @@ struct FSoundWaveSpectralDataEntry
 
 	// The magnitude of the spectrum at this frequency
 	UPROPERTY()
-	float Magnitude;
+	float Magnitude = 0.0f;
 
 	// The normalized magnitude of the spectrum at this frequency
 	UPROPERTY()
-	float NormalizedMagnitude;
+	float NormalizedMagnitude = 0.0f;
 };
 
 
@@ -253,11 +242,7 @@ struct FSoundWaveSpectralTimeData
 
 	// The timestamp associated with this spectral data
 	UPROPERTY()
-	float TimeSec;
-
-	FSoundWaveSpectralTimeData()
-		: TimeSec(0.0f)
-	{}
+	float TimeSec = 0.0f;
 };
 
 // Struct used to store time-stamped envelope data
@@ -268,16 +253,11 @@ struct FSoundWaveEnvelopeTimeData
 
 	// The normalized linear amplitude of the audio
 	UPROPERTY()
-	float Amplitude;
+	float Amplitude = 0.0f;
 
 	// The timestamp of the audio
 	UPROPERTY()
-	float TimeSec;
-
-	FSoundWaveEnvelopeTimeData()
-		: Amplitude(0.0f)
-		, TimeSec(0.0f)
-	{}
+	float TimeSec = 0.0f;
 };
 
 // The FFT size (in audio frames) to use for baked FFT analysis
@@ -401,6 +381,8 @@ private:
 #if WITH_EDITOR
 	// Whether this was previously cooked with stream caching enabled.
 	uint8 bWasStreamCachingEnabledOnLastCook:1;
+	// Whether this asset is loaded from cooked data.
+	uint8 bLoadedFromCookedData:1;
 #endif // !WITH_EDITOR
 
 	enum class ESoundWaveResourceState : uint8
@@ -464,6 +446,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Analysis|Envelope", meta = (EditCondition = "bEnableAmplitudeEnvelopeAnalysis", ClampMin = "0", UIMin = "0"))
 	int32 EnvelopeFollowerReleaseTime;
 #endif // WITH_EDITORONLY_DATA
+
+	/** Modulation Settings */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modulation")
+	FSoundModulationDefaultRoutingSettings ModulationSettings;
 
 	/** The frequencies (in hz) to analyze when doing baked FFT analysis. */
 	UPROPERTY(EditAnywhere, Category = "Analysis|FFT", meta = (EditCondition = "bEnableBakedFFTAnalysis"))
@@ -806,11 +792,6 @@ public:
 	 * Remove the compressed audio data associated with the passed in wave
 	 */
 	void RemoveAudioResource();
-
-	/**
-	 * Prints the subtitle associated with the SoundWave to the console
-	 */
-	void LogSubtitle( FOutputDevice& Ar );
 
 	/**
 	 * Handle any special requirements when the sound starts (e.g. subtitles)

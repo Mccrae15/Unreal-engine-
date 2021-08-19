@@ -8,6 +8,7 @@
 #include "DynamicAttribute.h"
 #include "GeometryTypes.h"
 #include "InfoTypes.h"
+#include "Containers/IndirectArray.h"
 
 /** Standard UV overlay type - 2-element float */
 typedef TDynamicMeshVectorOverlay<float, 2, FVector2f> FDynamicMeshUVOverlay;
@@ -17,11 +18,15 @@ typedef TDynamicMeshVectorOverlay<float, 3, FVector3f> FDynamicMeshNormalOverlay
 /** Standard per-triangle integer material ID */
 typedef TDynamicMeshScalarTriangleAttribute<int32> FDynamicMeshMaterialAttribute;
 
+/** Per-triangle integer polygroup ID */
+typedef TDynamicMeshScalarTriangleAttribute<int32> FDynamicMeshPolygroupAttribute;
+
 /**
  * FDynamicMeshAttributeSet manages a set of extended attributes for a FDynamicMesh3.
  * This includes UV and Normal overlays, etc.
  * 
- * Currently the default is to always have one UV layer and one Normal layer
+ * Currently the default is to always have one UV layer and one Normal layer, 
+ * but the number of layers can be requested on construction.
  * 
  * @todo current internal structure is a work-in-progress
  */
@@ -30,63 +35,27 @@ class DYNAMICMESH_API FDynamicMeshAttributeSet : public FDynamicMeshAttributeSet
 public:
 
 	FDynamicMeshAttributeSet(FDynamicMesh3* Mesh)
-		: ParentMesh(Mesh), Normals0(Mesh)
+		: ParentMesh(Mesh)
 	{
 		SetNumUVLayers(1);
-		NormalLayers.Add(&Normals0);
+		SetNumNormalLayers(1);
+	}
+
+	FDynamicMeshAttributeSet(FDynamicMesh3* Mesh, int32 NumUVLayers, int32 NumNormalLayers)
+		: ParentMesh(Mesh)
+	{
+		SetNumUVLayers(NumUVLayers);
+		SetNumNormalLayers(NumNormalLayers);
 	}
 
 	virtual ~FDynamicMeshAttributeSet()
 	{
 	}
 
-	void Copy(const FDynamicMeshAttributeSet& Copy)
-	{
-		SetNumUVLayers(Copy.NumUVLayers());
-		for (int UVIdx = 0; UVIdx < NumUVLayers(); UVIdx++)
-		{
-			UVLayers[UVIdx].Copy(Copy.UVLayers[UVIdx]);
-		}
-		Normals0.Copy(Copy.Normals0);
-
-		if (Copy.MaterialIDAttrib)
-		{
-			EnableMaterialID();
-			MaterialIDAttrib->Copy(*(Copy.MaterialIDAttrib));
-		}
-		else
-		{
-			DisableMaterialID();
-		}
-
-		GenericAttributes.Reset();
-		ResetRegisteredAttributes();
-		for (int Idx = 0; Idx < Copy.GenericAttributes.Num(); Idx++)
-		{
-			const FDynamicMeshAttributeBase* SourceAttrib = Copy.GenericAttributes[Idx].Get();
-			AttachAttribute(SourceAttrib->MakeCopy(ParentMesh));
-		}
-
-		// parent mesh is *not* copied!
-	}
+	void Copy(const FDynamicMeshAttributeSet& Copy);
 
 	/** returns true if the attached overlays/attributes are compact */
-	bool IsCompact()
-	{
-		for (int UVIdx = 0; UVIdx < NumUVLayers(); UVIdx++)
-		{
-			if (!UVLayers[UVIdx].IsCompact())
-			{
-				return false;
-			}
-		}
-		if (!Normals0.IsCompact())
-		{
-			return false;
-		}
-		// material ID and generic per-element attributes currently cannot be non-compact
-		return true;
-	}
+	bool IsCompact();
 
 	/**
 	 * Performs a CompactCopy of the attached overlays/attributes.
@@ -95,35 +64,7 @@ public:
 	 * @param CompactMaps Maps indicating how vertices and triangles were changes in the parent
 	 * @param Copy The attribute set to be copied
 	 */
-	void CompactCopy(const FCompactMaps& CompactMaps, const FDynamicMeshAttributeSet& Copy)
-	{
-		SetNumUVLayers(Copy.NumUVLayers());
-		for (int UVIdx = 0; UVIdx < NumUVLayers(); UVIdx++)
-		{
-			UVLayers[UVIdx].CompactCopy(CompactMaps, Copy.UVLayers[UVIdx]);
-		}
-		Normals0.CompactCopy(CompactMaps, Copy.Normals0);
-
-		if (Copy.MaterialIDAttrib)
-		{
-			EnableMaterialID();
-			MaterialIDAttrib->CompactCopy(CompactMaps, *(Copy.MaterialIDAttrib));
-		}
-		else
-		{
-			DisableMaterialID();
-		}
-
-		GenericAttributes.Reset();
-		ResetRegisteredAttributes();
-		for (int Idx = 0; Idx < Copy.GenericAttributes.Num(); Idx++)
-		{
-			const FDynamicMeshAttributeBase* SourceAttrib = Copy.GenericAttributes[Idx].Get();
-			AttachAttribute(SourceAttrib->MakeCompactCopy(CompactMaps, ParentMesh));
-		}
-
-		// parent mesh is *not* copied!
-	}
+	void CompactCopy(const FCompactMaps& CompactMaps, const FDynamicMeshAttributeSet& Copy);
 
 	/**
 	 * Compacts the attribute set in place
@@ -131,55 +72,20 @@ public:
 	 *
 	 * @param CompactMaps Maps of how the vertices and triangles were compacted in the parent
 	 */
-	void CompactInPlace(const FCompactMaps& CompactMaps)
-	{
-		for (int UVIdx = 0; UVIdx < NumUVLayers(); UVIdx++)
-		{
-			UVLayers[UVIdx].CompactInPlace(CompactMaps);
-		}
-		Normals0.CompactInPlace(CompactMaps);
+	void CompactInPlace(const FCompactMaps& CompactMaps);
 
-		if (MaterialIDAttrib.IsValid())
-		{
-			MaterialIDAttrib->CompactInPlace(CompactMaps);
-		}
 
-		for (int Idx = 0; Idx < GenericAttributes.Num(); Idx++)
-		{
-			GenericAttributes[Idx]->CompactInPlace(CompactMaps);
-		}
-	}
+	/**
+	 * Split all bowtie vertices in all layers
+	 * @param bParallel if true, layers are processed in parallel
+	 */
+	void SplitAllBowties(bool bParallel = true);
 
 
 	/**
 	 * Enable the matching attributes and overlay layers as the reference Copy set, but do not copy any data across
 	 */
-	void EnableMatchingAttributes(const FDynamicMeshAttributeSet& ToMatch)
-	{
-		SetNumUVLayers(ToMatch.NumUVLayers());
-		for (int UVIdx = 0; UVIdx < NumUVLayers(); UVIdx++)
-		{
-			UVLayers[UVIdx].ClearElements();
-		}
-		Normals0.ClearElements();
-
-		if (ToMatch.MaterialIDAttrib)
-		{
-			EnableMaterialID();
-		}
-		else
-		{
-			DisableMaterialID();
-		}
-
-		GenericAttributes.Reset();
-		ResetRegisteredAttributes();
-		for (int Idx = 0; Idx < ToMatch.GenericAttributes.Num(); Idx++)
-		{
-			const FDynamicMeshAttributeBase* SourceAttrib = ToMatch.GenericAttributes[Idx].Get();
-			AttachAttribute(SourceAttrib->MakeNew(ParentMesh));
-		}
-	}
+	void EnableMatchingAttributes(const FDynamicMeshAttributeSet& ToMatch);
 
 	/** @return the parent mesh for this overlay */
 	const FDynamicMesh3* GetParentMesh() const { return ParentMesh; }
@@ -188,63 +94,18 @@ public:
 
 private:
 	/** @set the parent mesh for this overlay.  Only safe for use during FDynamicMesh move */
-	void Reparent(FDynamicMesh3* NewParent)
-	{
-		ParentMesh = NewParent;
-
-		for (int UVIdx = 0; UVIdx < NumUVLayers(); UVIdx++)
-		{
-			UVLayers[UVIdx].Reparent( NewParent );
-		}
-		Normals0.Reparent( NewParent );
-
-		if (MaterialIDAttrib)
-		{
-			MaterialIDAttrib->Reparent( NewParent );
-		}
-
-		for (int Idx = 0; Idx < GenericAttributes.Num(); Idx++)
-		{
-			GenericAttributes[Idx]->Reparent( NewParent );
-		}
-	}
+	void Reparent(FDynamicMesh3* NewParent);
 
 public:
-	/** @return number of UV layers */
-	virtual int NumUVLayers() const
-	{
-		return UVLayers.Num();
-	}
-
-	virtual void SetNumUVLayers(int Num)
-	{
-		if (UVLayers.Num() == Num)
-		{
-			return;
-		}
-		if (Num >= UVLayers.Num())
-		{
-			for (int i = (int)UVLayers.Num(); i < Num; ++i)
-			{
-				UVLayers.Add(new FDynamicMeshUVOverlay(ParentMesh));
-			}
-		}
-		else
-		{
-			UVLayers.RemoveAt(Num, UVLayers.Num() - Num);
-		}
-		check(UVLayers.Num() == Num);
-	}
-
-	/** @return number of Normals layers */
-	virtual int NumNormalLayers() const
-	{
-		checkSlow(NormalLayers.Num() == 1);
-		return 1;
-	}
 
 	/** @return true if the given edge is a seam edge in any overlay */
 	virtual bool IsSeamEdge(int EdgeID) const;
+
+	/** @return true if the given edge is the termination of a seam in any overlay*/
+	virtual bool IsSeamEndEdge(int EdgeID) const;
+
+	/** @return true if the given edge is a seam edge in any overlay */
+	virtual bool IsSeamEdge(int EdgeID, bool& bIsUVSeamOut, bool& bIsNormalSeamOut) const;
 
 	/** @return true if the given vertex is a seam vertex in any overlay */
 	virtual bool IsSeamVertex(int VertexID, bool bBoundaryIsSeam = true) const;
@@ -256,27 +117,44 @@ public:
 	// UV Layers 
 	//
 
-	/** @return the UV layer at the given Index */
-	FDynamicMeshUVOverlay* GetUVLayer(int Index)
+	/** @return number of UV layers */
+	virtual int NumUVLayers() const
 	{
-		return &UVLayers[Index];
+		return UVLayers.Num();
 	}
 
-	/** @return the UV layer at the given Index */
+	/** Set number of UV (2-vector float overlay) layers */
+	virtual void SetNumUVLayers(int Num);
+
+	/** @return the UV layer at the given Index  if exists, else nullptr*/
+	FDynamicMeshUVOverlay* GetUVLayer(int Index)
+	{
+		if (Index < UVLayers.Num() && Index > -1)
+		{ 
+			return &UVLayers[Index];
+		}
+		return nullptr;
+	}
+
+	/** @return the UV layer at the given Index if exists, else nullptr */
 	const FDynamicMeshUVOverlay* GetUVLayer(int Index) const
 	{
-		return &UVLayers[Index];
+		if (Index < UVLayers.Num() && Index > -1)
+		{
+			return &UVLayers[Index];
+		}
+		return nullptr;
 	}
 
 	/** @return the primary UV layer (layer 0) */
 	FDynamicMeshUVOverlay* PrimaryUV()
 	{
-		return &UVLayers[0];
+		return GetUVLayer(0);
 	}
 	/** @return the primary UV layer (layer 0) */
 	const FDynamicMeshUVOverlay* PrimaryUV() const
 	{
-		return &UVLayers[0];
+		return GetUVLayer(0);
 	}
 
 
@@ -284,34 +162,96 @@ public:
 	// Normal Layers 
 	//
 
-	/** @return the Normal layer at the given Index */
+	/** @return number of Normals layers */
+	virtual int NumNormalLayers() const
+	{
+		return NormalLayers.Num();
+	}
+
+	/** Set number of Normals (3-vector float overlay) layers */
+	virtual void SetNumNormalLayers(int Num);
+
+	/** Enable Tangents overlays (Tangent = Normal layer 1, Bitangent = Normal layer 2) */
+	void EnableTangents();
+
+	/** Disable Tangents overlays */
+	void DisableTangents();
+
+	/** @return the Normal layer at the given Index if exists, else nullptr */
 	FDynamicMeshNormalOverlay* GetNormalLayer(int Index)
 	{
-		return (Index == 0) ? &Normals0 : nullptr;
+		if (Index < NormalLayers.Num() && Index > -1)
+		{ 
+			return &NormalLayers[Index];
+		}
+		return nullptr;
 	}
 
-	/** @return the Normal layer at the given Index */
+	/** @return the Normal layer at the given Index if exists, else nullptr */
 	const FDynamicMeshNormalOverlay* GetNormalLayer(int Index) const
 	{
-		return (Index == 0) ? &Normals0 : nullptr;
+		if (Index < NormalLayers.Num() && Index > -1)
+		{
+			return &NormalLayers[Index];
+		}
+		return nullptr;
 	}
 
-	/** @return list of all Normal layers */
-	const TArray<FDynamicMeshNormalOverlay*>& GetAllNormalLayers() const
-	{
-		return NormalLayers;
-	}
 
-	/** @return the primary Normal layer (layer 0) */
+	/** @return the primary Normal layer (normal layer 0) if exists, else nullptr */
 	FDynamicMeshNormalOverlay* PrimaryNormals()
 	{
-		return &Normals0;
+		return GetNormalLayer(0);
 	}
-	/** @return the primary Normal layer (layer 0) */
+	/** @return the primary Normal layer (normal layer 0) if exists, else nullptr */
 	const FDynamicMeshNormalOverlay* PrimaryNormals() const
 	{
-		return &Normals0;
+		return GetNormalLayer(0);
 	}
+	/** @return the primary tangent layer ( normal layer 1) if exists, else nullptr */
+	FDynamicMeshNormalOverlay* PrimaryTangents()
+	{
+		return GetNormalLayer(1);
+	}
+	/** @return the primary tangent layer ( normal layer 1) if exists, else nullptr */
+	const FDynamicMeshNormalOverlay* PrimaryTangents() const 
+	{
+		return GetNormalLayer(1);
+	}
+	/** @return the primary biTangent layer ( normal layer 2) if exists, else nullptr */
+	FDynamicMeshNormalOverlay* PrimaryBiTangents()
+	{
+		return GetNormalLayer(2);
+	}
+	/** @return the primary biTangent layer ( normal layer 2) if exists, else nullptr */
+	const FDynamicMeshNormalOverlay* PrimaryBiTangents() const
+	{
+		return GetNormalLayer(2);
+	}
+
+	/** @return true if normal layers exist for the normal, tangent, and bitangent */
+	bool HasTangentSpace() const
+	{
+		return (PrimaryNormals() != nullptr && PrimaryTangents()  != nullptr && PrimaryBiTangents() != nullptr);
+	}
+
+
+	//
+	// Polygroup layers
+	//
+
+	/** @return number of Polygroup layers */
+	virtual int32 NumPolygroupLayers() const;
+
+	/** Set the number of Polygroup layers */
+	virtual void SetNumPolygroupLayers(int32 Num);
+
+	/** @return the Polygroup layer at the given Index */
+	FDynamicMeshPolygroupAttribute* GetPolygroupLayer(int Index);
+
+	/** @return the Polygroup layer at the given Index */
+	const FDynamicMeshPolygroupAttribute* GetPolygroupLayer(int Index) const;
+
 
 
 
@@ -340,36 +280,58 @@ public:
 	}
 
 	// Attach a new attribute (and transfer ownership of it to the attribute set)
-	int AttachAttribute(FDynamicMeshAttributeBase* Attribute)
+	void AttachAttribute(FName AttribName, FDynamicMeshAttributeBase* Attribute)
 	{
-		int AttributeID = GenericAttributes.Add(TUniquePtr<FDynamicMeshAttributeBase>(Attribute));
+		if (GenericAttributes.Contains(AttribName))
+		{
+			UnregisterExternalAttribute(GenericAttributes[AttribName].Get());
+		}
+		GenericAttributes.Add(AttribName, TUniquePtr<FDynamicMeshAttributeBase>(Attribute));
 		RegisterExternalAttribute(Attribute);
-		return AttributeID;
 	}
 
-	FDynamicMeshAttributeBase* GetAttachedAttribute(int AttributeID)
+	void RemoveAttribute(FName AttribName)
 	{
-		return GenericAttributes[AttributeID].Get();
+		if (GenericAttributes.Contains(AttribName))
+		{
+			UnregisterExternalAttribute(GenericAttributes[AttribName].Get());
+			GenericAttributes.Remove(AttribName);
+		}
 	}
 
-	int NumAttachedAttributes()
+	FDynamicMeshAttributeBase* GetAttachedAttribute(FName AttribName) const
+	{
+		return GenericAttributes[AttribName].Get();
+	}
+
+	int NumAttachedAttributes() const
 	{
 		return GenericAttributes.Num();
+	}
+
+	bool HasAttachedAttribute(FName AttribName) const
+	{
+		return GenericAttributes.Contains(AttribName);
+	}
+
+	const TMap<FName, TUniquePtr<FDynamicMeshAttributeBase>>& GetAttachedAttributes() const
+	{
+		return GenericAttributes;
 	}
 
 protected:
 	/** Parent mesh of this attribute set */
 	FDynamicMesh3* ParentMesh;
 
-	/** Default Normals layer */
-	FDynamicMeshNormalOverlay Normals0;
-
+	
 	TIndirectArray<FDynamicMeshUVOverlay> UVLayers;
-	TArray<FDynamicMeshNormalOverlay*> NormalLayers;
+	TIndirectArray<FDynamicMeshNormalOverlay> NormalLayers;
 
 	TUniquePtr<FDynamicMeshMaterialAttribute> MaterialIDAttrib;
 
-	TArray<TUniquePtr<FDynamicMeshAttributeBase>> GenericAttributes;
+	TIndirectArray<FDynamicMeshPolygroupAttribute> PolygroupLayers;
+
+	TMap<FName, TUniquePtr<FDynamicMeshAttributeBase>> GenericAttributes;
 
 protected:
 	friend class FDynamicMesh3;
@@ -383,7 +345,10 @@ protected:
 		{
 			UVLayer.InitializeTriangles(MaxTriangleID);
 		}
-		Normals0.InitializeTriangles(MaxTriangleID);
+		for (FDynamicMeshNormalOverlay& NormalLayer : NormalLayers)
+		{
+			NormalLayer.InitializeTriangles(MaxTriangleID);
+		}
 	}
 
 	// These functions are called by the FDynamicMesh3 to update the various
@@ -415,6 +380,14 @@ protected:
 			bValid = GetUVLayer(UVLayerIndex)->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
 		}
 		bValid = PrimaryNormals()->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+		if (MaterialIDAttrib)
+		{
+			bValid = MaterialIDAttrib->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+		}
+		for (int PolygroupLayerIndex = 0; PolygroupLayerIndex < NumPolygroupLayers(); PolygroupLayerIndex++)
+		{
+			bValid = GetPolygroupLayer(PolygroupLayerIndex)->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+		}
 		return bValid;
 	}
 };

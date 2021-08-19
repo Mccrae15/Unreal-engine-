@@ -158,7 +158,7 @@ protected:
 	VkAttachmentReference ResolveReferences[MaxSimultaneousRenderTargets];
 	VkAttachmentReference InputAttachments[MaxSimultaneousRenderTargets + 1];
 
-	// Depth goes in the "+1" slot and the Fixed Foveation texture goes in the "+2" slot.
+	// Depth goes in the "+1" slot and the Shading Rate texture goes in the "+2" slot.
 	VkAttachmentDescription Desc[MaxSimultaneousRenderTargets * 2 + 2];
 
 	uint8 NumAttachmentDescriptions;
@@ -693,6 +693,35 @@ static inline VkFormat UEToVkBufferFormat(EVertexElementType Type)
 	return VK_FORMAT_UNDEFINED;
 }
 
+static inline bool IsAstcLdrFormat(VkFormat Format)
+{
+	return Format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && Format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
+}
+
+static inline bool IsAstcSrgbFormat(VkFormat Format)
+{
+	switch (Format)
+	{
+	case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_5x4_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_5x5_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_6x5_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_6x6_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_8x5_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_8x6_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_8x8_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_10x5_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_10x6_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_10x8_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_10x10_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_12x10_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_12x12_SRGB_BLOCK:
+		return true;
+	default:
+		return false;
+	}
+}
+
 #if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
 extern TAutoConsoleVariable<int32> CVarVulkanDebugBarrier;
 #endif
@@ -837,3 +866,7 @@ extern TAtomic<uint64> GVulkanBufferViewHandleIdCounter;
 extern TAtomic<uint64> GVulkanImageViewHandleIdCounter;
 extern TAtomic<uint64> GVulkanSamplerHandleIdCounter;
 extern TAtomic<uint64> GVulkanDSetLayoutHandleIdCounter;
+
+#if NV_AFTERMATH
+extern bool GVulkanNVAftermathModuleLoaded;
+#endif

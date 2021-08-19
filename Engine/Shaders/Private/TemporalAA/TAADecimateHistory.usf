@@ -156,7 +156,7 @@ void MainCS(
 	if (all(InputPixelPos < InputInfo_ViewportMax))
 	{
 		PredictionSceneColorOutput[InputPixelPos] = DecimatedColor;
-		ParallaxRejectionMaskOutput[InputPixelPos] = ParallaxRejectionMask;
+		ParallaxRejectionMaskOutput[InputPixelPos] = taa_half(ParallaxRejectionMask);
 		
 		#if DEBUG_OUTPUT
 		{

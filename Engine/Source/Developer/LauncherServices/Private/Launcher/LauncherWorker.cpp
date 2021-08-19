@@ -669,6 +669,11 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 				UATCommand += TEXT(" -iostore");
 			}
 
+			if (InProfile->MakeBinaryConfig())
+			{
+				UATCommand += TEXT(" -makebinaryconfig");
+			}
+
 			if ( InProfile->IsCreatingReleaseVersion() )
 			{
 				UATCommand += TEXT(" -createreleaseversion=");
@@ -779,6 +784,10 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 	case ELauncherProfileCookModes::ByTheBookInEditor:
 		UATCommand += MapList;
 		UATCommand += TEXT(" -skipcook -CookInEditor"); // don't cook anything the editor is doing it ;)
+		if (InProfile->IsPackingWithUnrealPak())
+		{
+			UATCommand += TEXT(" -pak");
+		}
 		break;
 	case ELauncherProfileCookModes::DoNotCook:
 		UATCommand += TEXT(" -skipcook");

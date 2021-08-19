@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Camera/CameraShakeBase.h"
+#include "CineCameraComponent.h"
 #include "CameraAnimationSequence.h"
 #include "EntitySystem/MovieSceneBoundSceneComponentInstantiator.h"
 #include "EntitySystem/MovieSceneEntityIDs.h"
@@ -24,30 +25,80 @@ public:
 
 	GENERATED_BODY()
 
-	USequenceCameraShakeCameraStandIn(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
+	USequenceCameraShakeCameraStandIn(const FObjectInitializer& ObjInit);
 
-	FTransform GetTransform() const { return Transform; }
+public:
+	/**
+	 * Scene component properties
+	 *
+	 * Transform doesn't need to be a UPROPERTY because we register a custom getter/setter. This is
+	 * because the sequence runtime expects that in order to use the intermediate transform struct.
+	 */
+	const FTransform& GetTransform() const { return Transform; }
 	void SetTransform(const FTransform& InTransform) { Transform = InTransform; }
 
+	/** Camera component properties */
 	UPROPERTY()
 	float FieldOfView;
 
-private:
+	UPROPERTY()
+	uint8 bConstrainAspectRatio : 1;
 
+	UPROPERTY()
+	float AspectRatio;
+
+	UPROPERTY()
+	FPostProcessSettings PostProcessSettings;
+
+	UPROPERTY()
+	float PostProcessBlendWeight;
+
+	/** Cine camera component properties */
+	UPROPERTY()
+	FCameraFilmbackSettings Filmback;
+
+	UPROPERTY()
+	FCameraLensSettings LensSettings;
+
+	UPROPERTY()
+	FCameraFocusSettings FocusSettings;
+
+	UPROPERTY()
+	float CurrentFocalLength;
+
+	UPROPERTY()
+	float CurrentAperture;
+
+	UPROPERTY()
+	float CurrentFocusDistance;
+
+public:
+	/** Initialize this object's properties based on the given sequence's root object template */
+	void Initialize(UTemplateSequence* TemplateSequence);
+
+	void Reset(const FMinimalViewInfo& ViewInfo);
+
+	/** Recompute camera and lens settings after each frame */
+	void RecalcDerivedData();
+
+private:
 	FTransform Transform;
+
+	bool bIsCineCamera = false;
+	float WorldToMeters = 0.f;
 };
 
 /**
- * A camera shake that plays a sequencer animation.
+ * A camera shake pattern that plays a sequencer animation.
  */
-UCLASS(Blueprintable)
-class TEMPLATESEQUENCE_API USequenceCameraShake : public UCameraShakeBase
+UCLASS()
+class TEMPLATESEQUENCE_API USequenceCameraShakePattern : public UCameraShakePattern
 {
 public:
 
 	GENERATED_BODY()
 
-	USequenceCameraShake(const FObjectInitializer& ObjInit);
+	USequenceCameraShakePattern(const FObjectInitializer& ObjInit);
 
 public:
 
@@ -87,22 +138,26 @@ public:
 private:
 
 	// UCameraShakeBase interface
-	virtual void GetShakeInfoImpl(FCameraShakeInfo& OutInfo) const override;
-	virtual void StartShakeImpl() override;
-	virtual void UpdateShakeImpl(const FCameraShakeUpdateParams& Params, FCameraShakeUpdateResult& OutResult) override;
-	virtual void StopShakeImpl(bool bImmediately) override;
-	virtual void TeardownShakeImpl() override;
+	virtual void GetShakePatternInfoImpl(FCameraShakeInfo& OutInfo) const override;
+	virtual void StartShakePatternImpl(const FCameraShakeStartParams& Params) override;
+	virtual void UpdateShakePatternImpl(const FCameraShakeUpdateParams& Params, FCameraShakeUpdateResult& OutResult) override;
+	virtual void ScrubShakePatternImpl(const FCameraShakeScrubParams& Params, FCameraShakeUpdateResult& OutResult) override;
+	virtual void StopShakePatternImpl(const FCameraShakeStopParams& Params) override;
+	virtual void TeardownShakePatternImpl() override;
 
 	static void RegisterCameraStandIn();
+
+	void UpdateCamera(FFrameTime NewPosition, const FMinimalViewInfo& InPOV, FCameraShakeUpdateResult& OutResult);
+	void UpdateInitialCameraStandInPropertyValues();
 
 private:
 
 	/** The player we use to play the camera animation sequence */
-	UPROPERTY(transient)
+	UPROPERTY(Instanced, Transient)
 	USequenceCameraShakeSequencePlayer* Player;
 
 	/** Standin for the camera actor and components */
-	UPROPERTY(transient)
+	UPROPERTY(Instanced, Transient)
 	USequenceCameraShakeCameraStandIn* CameraStandIn;
 };
 
@@ -149,6 +204,11 @@ public:
 	void Jump(FFrameTime NewPosition);
 	/** Stop playing the sequence */
 	void Stop();
+
+	/** Sets the player in scrub mode */
+	void StartScrubbing();
+	/** Ends scrub mode */
+	void EndScrubbing();
 
 	/** Gets the current play position */
 	FFrameTime GetCurrentPosition() const { return PlayPosition.GetCurrentPosition(); }
@@ -209,3 +269,4 @@ private:
 	/** Movie player status. */
 	TEnumAsByte<EMovieScenePlayerStatus::Type> Status;
 };
+

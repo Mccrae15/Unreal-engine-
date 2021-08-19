@@ -15,10 +15,13 @@ namespace UnrealBuildTool.Rules
 					"Core",
 					"CoreUObject",
 					"Engine",
+					"GeometryCache",
 					"InputCore",
 					"JsonUtilities",
+					"LevelSequence",
 					"MainFrame",
 					"MessageLog",
+					"MovieScene",
 					"RenderCore", // So that we can release resources of reimported meshes
 					"Slate",
 					"SlateCore",

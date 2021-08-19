@@ -1,18 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DMXProtocolSACNModule.h"
+
+#include "DMXProtocolModule.h"
+#include "DMXProtocolSACN.h"
+#include "DMXProtocolSACNConstants.h"
+#include "DMXProtocolTypes.h"
+#include "IO/DMXOutputPort.h"
+#include "IO/DMXPortManager.h"
+
 #include "CoreMinimal.h"
+#include "Dom/JsonObject.h"
 #include "Modules/ModuleManager.h"
 
-#include "Interfaces/IDMXProtocol.h"
-#include "DMXProtocolSACN.h"
-#include "DMXProtocolTypes.h"
-#include "Dom/JsonObject.h"
-
-#include "Managers/DMXProtocolUniverseManager.h"
-
-#include "DMXProtocolUniverseSACN.h"
-#include "DMXProtocolSACNConstants.h"
 
 IMPLEMENT_MODULE(FDMXProtocolSACNModule, DMXProtocolSACN);
 
@@ -30,10 +30,9 @@ FAutoConsoleCommand FDMXProtocolSACNModule::ResetDMXSendUniverseCommand(
 	FConsoleCommandWithArgsDelegate::CreateStatic(&FDMXProtocolSACNModule::ResetDMXSendUniverseHandler)
 	);
 
-IDMXProtocolPtr FDMXProtocolFactorySACN::CreateProtocol(const FName & ProtocolName)
+IDMXProtocolPtr FDMXProtocolFactorySACN::CreateProtocol(const FName& ProtocolName)
 {
-	FJsonObject ProtocolSettings;
-	IDMXProtocolPtr ProtocolSACNPtr = MakeShared<FDMXProtocolSACN, ESPMode::ThreadSafe>(ProtocolName, ProtocolSettings);
+	IDMXProtocolPtr ProtocolSACNPtr = MakeShared<FDMXProtocolSACN, ESPMode::ThreadSafe>(ProtocolName);
 	if (ProtocolSACNPtr->IsEnabled())
 	{
 		if (!ProtocolSACNPtr->Init())
@@ -57,18 +56,19 @@ void FDMXProtocolSACNModule::StartupModule()
 {
 	FactorySACN = MakeUnique<FDMXProtocolFactorySACN>();
 
-	// Create and register our singleton factory with the main online subsystem for easy access
-	FDMXProtocolModule& DMXProtocolModule = FModuleManager::GetModuleChecked<FDMXProtocolModule>("DMXProtocol");
-	DMXProtocolModule.RegisterProtocol(NAME_SACN, FactorySACN.Get());
+	// Bind to the protocol module requesting registration of protocols
+	FDMXProtocolModule::GetOnRequestProtocolRegistration().AddRaw(this, &FDMXProtocolSACNModule::RegisterWithProtocolModule);
 }
 
 void FDMXProtocolSACNModule::ShutdownModule()
 {
+	FDMXProtocolModule::GetOnRequestProtocolRegistration().RemoveAll(this);
+
 	// Unregister and destroy protocol
 	FDMXProtocolModule* DMXProtocolModule = FModuleManager::GetModulePtr<FDMXProtocolModule>("DMXProtocol");
 	if (DMXProtocolModule != nullptr)
 	{
-		DMXProtocolModule->UnregisterProtocol(NAME_SACN);
+		DMXProtocolModule->UnregisterProtocol(DMX_PROTOCOLNAME_SACN);
 	}
 
 	FactorySACN.Release();
@@ -77,6 +77,15 @@ void FDMXProtocolSACNModule::ShutdownModule()
 FDMXProtocolSACNModule& FDMXProtocolSACNModule::Get()
 {
 	return FModuleManager::GetModuleChecked<FDMXProtocolSACNModule>("DMXProtocolSACN");
+}
+
+void FDMXProtocolSACNModule::RegisterWithProtocolModule(TArray<FDMXProtocolRegistrationParams>& InOutProtocolRegistrationParamsArray)
+{
+	FDMXProtocolRegistrationParams RegistrationParams;
+	RegistrationParams.ProtocolName = DMX_PROTOCOLNAME_SACN;
+	RegistrationParams.ProtocolFactory = FactorySACN.Get();
+
+	InOutProtocolRegistrationParamsArray.Add(RegistrationParams);
 }
 
 void FDMXProtocolSACNModule::SendDMXCommandHandler(const TArray<FString>& Args)
@@ -91,15 +100,15 @@ void FDMXProtocolSACNModule::SendDMXCommandHandler(const TArray<FString>& Args)
 
 	uint32 UniverseID = 0;
 	LexTryParseString<uint32>(UniverseID, *Args[0]);
-	if (UniverseID > ACN_MAX_UNIVERSES)
+	if (UniverseID > ACN_MAX_UNIVERSE)
 	{
 		UE_LOG_DMXPROTOCOL(Verbose, TEXT("The UniverseID is bigger then the max universe value. It won't be sent. It won't be sent\n"
 			"For example: DMX.SACN.SendDMX 17 10:6 11:7 12:8 13:9\n"
-			"Where Universe %d should be less then %d"), UniverseID, ACN_MAX_UNIVERSES);
+			"Where Universe %d should be less then %d"), UniverseID, ACN_MAX_UNIVERSE);
 		return;
 	}
 
-	IDMXFragmentMap DMXFragment;
+	TMap<int32, uint8> ChannelToValueMap;
 	for (int32 i = 1; i < Args.Num(); i++)
 	{
 		FString ChannelAndValue = Args[i];
@@ -126,13 +135,15 @@ void FDMXProtocolSACNModule::SendDMXCommandHandler(const TArray<FString>& Args)
 				"Where value %d should be less then %d"), Value, DMX_MAX_CHANNEL_VALUE);
 			return;
 		}
-		DMXFragment.Add(Key, Value);
+		ChannelToValueMap.Add(Key, Value);
 	}
 
-	IDMXProtocolPtr DMXProtocol = IDMXProtocol::Get(FDMXProtocolSACNModule::NAME_SACN);
-	if (DMXProtocol.IsValid())
+	for (const FDMXOutputPortSharedRef& OutputPort : FDMXPortManager::Get().GetOutputPorts())
 	{
-		DMXProtocol->SendDMXFragmentCreate(UniverseID, DMXFragment);
+		if (OutputPort->GetProtocol()->GetProtocolName() == DMX_PROTOCOLNAME_SACN)
+		{
+			OutputPort->SendDMX(UniverseID, ChannelToValueMap);
+		}
 	}
 }
 
@@ -147,16 +158,25 @@ void FDMXProtocolSACNModule::ResetDMXSendUniverseHandler(const TArray<FString>& 
 
 	uint32 UniverseID = 0;
 	LexTryParseString<uint32>(UniverseID, *Args[0]);
-	if (UniverseID > ACN_MAX_UNIVERSES)
+	if (UniverseID > ACN_MAX_UNIVERSE)
 	{
 		UE_LOG_DMXPROTOCOL(Verbose, TEXT("The UniverseID is bigger then the max universe value. It won't be sent. It won't be sent\n"
-			"Where Universe %d should be less then %d"), UniverseID, ACN_MAX_UNIVERSES);
+			"Where Universe %d should be less then %d"), UniverseID, ACN_MAX_UNIVERSE);
 		return;
 	}
 
-	IDMXProtocolPtr DMXProtocol = IDMXProtocol::Get(FDMXProtocolSACNModule::NAME_SACN);
-	if (DMXProtocol.IsValid())
+	// Create Channel To Value map with all channels being set to 0
+	TMap<int32, uint8> ChannelToValueMap;
+	for (int ChannelID = 1; ChannelID <= DMX_MAX_ADDRESS; ChannelID++)
 	{
-		DMXProtocol->SendDMXZeroUniverse(UniverseID, true);
+		ChannelToValueMap.Add(ChannelID, 0);
+	}
+
+	for (const FDMXOutputPortSharedRef& OutputPort : FDMXPortManager::Get().GetOutputPorts())
+	{
+		if (OutputPort->GetProtocol()->GetProtocolName() == DMX_PROTOCOLNAME_SACN)
+		{
+			OutputPort->SendDMX(UniverseID, ChannelToValueMap);
+		}
 	}
 }

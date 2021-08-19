@@ -6,13 +6,17 @@
 #include "DetailCustomizations/NiagaraDataInterfaceCurveDetails.h"
 #include "DetailCustomizations/NiagaraDataInterfaceDetails.h"
 #include "DetailCustomizations/NiagaraDataInterfaceGrid2DCollectionDetails.h"
+#include "DetailCustomizations/NiagaraDataInterfaceGrid3DCollectionDetails.h"
 #include "DetailCustomizations/NiagaraDataInterfaceSkeletalMeshDetails.h"
 #include "DetailCustomizations/NiagaraDataInterfaceStaticMeshDetails.h"
+#include "DetailCustomizations/NiagaraDataInterfaceMeshRendererInfoDetails.h"
+#include "DetailCustomizations/NiagaraMeshRendererDetails.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "SNiagaraOverviewGraph.h"
 #include "NiagaraEditorWidgetsUtilities.h"
 #include "Stack/SNiagaraStackIssueIcon.h"
 #include "SNiagaraScratchPad.h"
+#include "SNiagaraCurveOverview.h"
 
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
@@ -26,9 +30,9 @@ FNiagaraStackCurveEditorOptions::FNiagaraStackCurveEditorOptions()
 	, ViewMaxInput(1)
 	, ViewMinOutput(0)
 	, ViewMaxOutput(1)
-	, bAreCurvesVisible(true)
+	, bIsGradientVisible(true)
 	, bNeedsInitializeView(true)
-	, Height(100)
+	, Height(180)
 {
 }
 
@@ -93,14 +97,14 @@ void FNiagaraStackCurveEditorOptions::SetHeight(float InHeight)
 	Height = InHeight;
 }
 
-bool FNiagaraStackCurveEditorOptions::GetAreCurvesVisible() const
+bool FNiagaraStackCurveEditorOptions::GetIsGradientVisible() const
 {
-	return bAreCurvesVisible;
+	return bIsGradientVisible;
 }
 
-void FNiagaraStackCurveEditorOptions::SetAreCurvesVisible(bool bInAreCurvesVisible)
+void FNiagaraStackCurveEditorOptions::SetIsGradientVisible(bool bInIsGradientVisible)
 {
-	bAreCurvesVisible = bInAreCurvesVisible;
+	bIsGradientVisible = bInIsGradientVisible;
 }
 
 void FNiagaraEditorWidgetsModule::StartupModule()
@@ -121,6 +125,9 @@ void FNiagaraEditorWidgetsModule::StartupModule()
 	PropertyModule.RegisterCustomClassLayout("NiagaraDataInterfaceSkeletalMesh", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraDataInterfaceSkeletalMeshDetails::MakeInstance));
 	PropertyModule.RegisterCustomClassLayout("NiagaraDataInterfaceStaticMesh", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraDataInterfaceStaticMeshDetails::MakeInstance));
 	PropertyModule.RegisterCustomClassLayout("NiagaraDataInterfaceGrid2DCollection", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraDataInterfaceGrid2DCollectionDetails::MakeInstance));
+	PropertyModule.RegisterCustomClassLayout("NiagaraDataInterfaceGrid3DCollection", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraDataInterfaceGrid3DCollectionDetails::MakeInstance));
+	PropertyModule.RegisterCustomClassLayout("NiagaraDataInterfaceMeshRendererInfo", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraDataInterfaceMeshRendererInfoDetails::MakeInstance));
+	PropertyModule.RegisterCustomClassLayout("NiagaraMeshRendererProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraMeshRendererDetails::MakeInstance));
 
 	ReinitializeStyleCommand = IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("fx.NiagaraEditorWidgets.ReinitializeStyle"),
@@ -160,19 +167,23 @@ void FNiagaraEditorWidgetsModule::ShutdownModule()
 	FNiagaraEditorWidgetsStyle::Shutdown();
 }
 
+FNiagaraEditorWidgetsModule& FNiagaraEditorWidgetsModule::Get()
+{
+	return FModuleManager::GetModuleChecked<FNiagaraEditorWidgetsModule>("NiagaraEditorWidgets");
+}
+
 void FNiagaraEditorWidgetsModule::ReinitializeStyle()
 {
 	FNiagaraEditorWidgetsStyle::Shutdown();
 	FNiagaraEditorWidgetsStyle::Initialize();
 }
 
-TSharedRef<FNiagaraStackCurveEditorOptions> FNiagaraEditorWidgetsModule::GetOrCreateStackCurveEditorOptionsForObject(UObject* Object, bool bDefaultAreCurvesVisible, float DefaultHeight)
+TSharedRef<FNiagaraStackCurveEditorOptions> FNiagaraEditorWidgetsModule::GetOrCreateStackCurveEditorOptionsForObject(UObject* Object, float DefaultHeight)
 {
 	TSharedRef<FNiagaraStackCurveEditorOptions>* StackCurveEditorOptions = ObjectToStackCurveEditorOptionsMap.Find(FObjectKey(Object));
 	if (StackCurveEditorOptions == nullptr)
 	{
 		StackCurveEditorOptions = &ObjectToStackCurveEditorOptionsMap.Add(FObjectKey(Object), MakeShared<FNiagaraStackCurveEditorOptions>());
-		(*StackCurveEditorOptions)->SetAreCurvesVisible(bDefaultAreCurvesVisible);
 		(*StackCurveEditorOptions)->SetHeight(DefaultHeight);
 	}
 	return *StackCurveEditorOptions;
@@ -198,12 +209,12 @@ TSharedRef<SWidget> FNiagaraEditorWidgetsModule::FNiagaraEditorWidgetProvider::C
 	return SNew(SNiagaraScratchPad, &ScriptScratchPadViewModel);
 }
 
+TSharedRef<SWidget> FNiagaraEditorWidgetsModule::FNiagaraEditorWidgetProvider::CreateCurveOverview(TSharedRef<FNiagaraSystemViewModel> SystemViewModel) const
+{
+	return SNew(SNiagaraCurveOverview, SystemViewModel);
+}
+
 FLinearColor FNiagaraEditorWidgetsModule::FNiagaraEditorWidgetProvider::GetColorForExecutionCategory(FName ExecutionCategory) const
 {
 	return FNiagaraEditorWidgetsStyle::Get().GetColor(FNiagaraStackEditorWidgetsUtilities::GetIconColorNameForExecutionCategory(ExecutionCategory));
-}
-
-FLinearColor FNiagaraEditorWidgetsModule::FNiagaraEditorWidgetProvider::GetColorForParameterScope(ENiagaraParameterScope ParameterScope) const
-{
-	return FNiagaraEditorWidgetsStyle::Get().GetColor(FNiagaraStackEditorWidgetsUtilities::GetColorNameForParameterScope(ParameterScope));
 }

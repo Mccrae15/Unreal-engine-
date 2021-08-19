@@ -2,10 +2,16 @@
 
 #pragma once
 
+#include "CoreMinimal.h"
 #include "PropertyEditorModule.h"
 
 class IDetailTreeNode;
+class FComplexPropertyNode;
 class FStructOnScope;
+
+typedef TArray<TSharedPtr<FComplexPropertyNode>> FRootPropertyNodeList;
+
+DECLARE_DELEGATE_RetVal_OneParam(bool, FOnValidatePropertyRowGeneratorNodes, const FRootPropertyNodeList&)
 
 struct FPropertyRowGeneratorArgs
 {
@@ -81,7 +87,7 @@ public:
 	* 
 	* @return The found tree nodes (in the same order, a pointer will be null if the node cannot be found)
 	*/
-	virtual TArray<TSharedPtr<IDetailTreeNode>> FindTreeNodes(TArray<TSharedPtr<IPropertyHandle>> PropertyHandles) const = 0;
+	virtual TArray<TSharedPtr<IDetailTreeNode>> FindTreeNodes(const TArray<TSharedPtr<IPropertyHandle>>& PropertyHandles) const = 0;
 
 	/**
 	 * Registers a custom detail layout delegate for a specific class in this instance of the generator only
@@ -102,4 +108,8 @@ public:
 
 	virtual TSharedPtr<class FAssetThumbnailPool> GetGeneratedThumbnailPool() = 0;
 	virtual FOnFinishedChangingProperties& OnFinishedChangingProperties() = 0;
+
+	/* Use this function to set a callback on FPropertyRowGenerator that will override the ValidatePropertyNodes function.
+	 * This is useful if your implementation doesn't need to validate nodes every tick or needs to perform some other form of validation. */
+	virtual void SetCustomValidatePropertyNodesFunction(FOnValidatePropertyRowGeneratorNodes InCustomValidatePropertyNodesFunction) = 0;
 };

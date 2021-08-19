@@ -704,8 +704,9 @@ struct TStructOpsTypeTraitsBase2
 		WithNetDeltaSerializer         = false,                         // struct has a NetDeltaSerialize function for serializing differences in state from a previous NetSerialize operation.
 		WithSerializeFromMismatchedTag = false,                         // struct has a SerializeFromMismatchedTag function for converting from other property tags.
 		WithStructuredSerializeFromMismatchedTag = false,               // struct has an FStructuredArchive-based SerializeFromMismatchedTag function for converting from other property tags.
-		WithPostScriptConstruct        = false,				// struct has a PostScriptConstruct function which is called after it is constructed in blueprints
+		WithPostScriptConstruct        = false,                         // struct has a PostScriptConstruct function which is called after it is constructed in blueprints
 		WithNetSharedSerialization     = false,                         // struct has a NetSerialize function that does not require the package map to serialize its state.
+		WithPureVirtual                = false,                         // struct has PURE_VIRTUAL functions and cannot be constructed when CHECK_PUREVIRTUALS is true
 	};
 };
 
@@ -714,6 +715,12 @@ struct TStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<CPPSTRUCT>
 {
 };
 
+#if CHECK_PUREVIRTUALS
+#define DISABLE_ABSTRACT_CONSTRUCT TStructOpsTypeTraits<CPPSTRUCT>::WithPureVirtual
+#else
+#define DISABLE_ABSTRACT_CONSTRUCT (false && TStructOpsTypeTraits<CPPSTRUCT>::WithPureVirtual)
+#endif
+
 
 #if !PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 
@@ -721,17 +728,38 @@ struct TStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<CPPSTRUCT>
 	 * Selection of constructor behavior.
 	 */
 	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructWithNoInitOrNot(void *Data)
+	FORCEINLINE typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT && !TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructWithNoInitOrNot(void* Data)
 	{
 		new (Data) CPPSTRUCT();
 	}
 
 	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructWithNoInitOrNot(void *Data)
+	FORCEINLINE typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT && TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructWithNoInitOrNot(void* Data)
 	{
 		new (Data) CPPSTRUCT(ForceInit);
 	}
 
+	template<class CPPSTRUCT>
+	FORCEINLINE typename TEnableIf<DISABLE_ABSTRACT_CONSTRUCT>::Type ConstructWithNoInitOrNot(void* Data)
+	{
+	}
+
+	template<class CPPSTRUCT>
+	FORCEINLINE typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT && !TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructForTestsWithNoInitOrNot(void* Data)
+	{
+		new (Data) CPPSTRUCT;
+	}
+
+	template<class CPPSTRUCT>
+	FORCEINLINE typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT && TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructForTestsWithNoInitOrNot(void* Data)
+	{
+		new (Data) CPPSTRUCT(ForceInit);
+	}
+
+	template<class CPPSTRUCT>
+	FORCEINLINE typename TEnableIf<DISABLE_ABSTRACT_CONSTRUCT>::Type ConstructForTestsWithNoInitOrNot(void* Data)
+	{
+	}
 
 	/**
 	 * Selection of Serialize call.
@@ -1011,7 +1039,9 @@ public:
 		/** return true if memset can be used instead of the constructor **/
 		virtual bool HasZeroConstructor() = 0;
 		/** Call the C++ constructor **/
-		virtual void Construct(void *Dest)=0;
+		virtual void Construct(void *Dest) = 0;
+		/** Call the C++ constructor without value-init (new T instead of new T()) **/
+		virtual void ConstructForTests(void* Dest) = 0;
 		/** return false if this destructor can be skipped **/
 		virtual bool HasDestructor() = 0;
 		/** Call the C++ destructor **/
@@ -1158,22 +1188,50 @@ public:
 		{
 			return TTraits::WithZeroConstructor;
 		}
-		virtual void Construct(void *Dest) override
+		virtual void Construct(void* Dest) override
 		{
 			check(!TTraits::WithZeroConstructor); // don't call this if we have indicated it is not necessary
 			// that could have been an if statement, but we might as well force optimization above the virtual call
 			// could also not attempt to call the constructor for types where this is not possible, but I didn't do that here
 #if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
-			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor)
+#if CHECK_PUREVIRTUALS
+			if constexpr (!TStructOpsTypeTraits<CPPSTRUCT>::WithPureVirtual)
+#endif
 			{
-				new (Dest) CPPSTRUCT(ForceInit);
-			}
-			else
-			{
-				new (Dest) CPPSTRUCT();
+				if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor)
+				{
+					new (Dest) CPPSTRUCT(ForceInit);
+				}
+				else
+				{
+					new (Dest) CPPSTRUCT();
+				}
 			}
 #else
 			ConstructWithNoInitOrNot<CPPSTRUCT>(Dest);
+#endif
+		}
+		virtual void ConstructForTests(void* Dest) override
+		{
+			check(!TTraits::WithZeroConstructor); // don't call this if we have indicated it is not necessary
+			// that could have been an if statement, but we might as well force optimization above the virtual call
+			// could also not attempt to call the constructor for types where this is not possible, but I didn't do that here
+#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
+#if CHECK_PUREVIRTUALS
+			if constexpr (!TStructOpsTypeTraits<CPPSTRUCT>::WithPureVirtual)
+#endif
+			{
+				if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor)
+				{
+					new (Dest) CPPSTRUCT(ForceInit);
+				}
+				else
+				{
+					new (Dest) CPPSTRUCT;
+				}
+			}
+#else
+			ConstructForTestsWithNoInitOrNot<CPPSTRUCT>(Dest);
 #endif
 		}
 		virtual bool HasDestructor() override
@@ -1545,6 +1603,17 @@ public:
 	 * @param InCppStructOps Cpp ops for this struct
 	 */
 	static COREUOBJECT_API void DeferCppStructOps(FName Target, ICppStructOps* InCppStructOps);
+
+	template<class CPPSTRUCT>
+	static typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT>::Type DeferCppStructOps(FName Target)
+	{
+		DeferCppStructOps(Target, new UScriptStruct::TCppStructOps<CPPSTRUCT>);
+	}
+	template<class CPPSTRUCT>
+	static typename TEnableIf<DISABLE_ABSTRACT_CONSTRUCT>::Type DeferCppStructOps(FName Target)
+	{
+		DeferCppStructOps(Target, nullptr);
+	}
 
 	/** Look for the CppStructOps and hook it up **/
 	virtual COREUOBJECT_API void PrepareCppStructOps();
@@ -3478,8 +3547,6 @@ public:
 		bLoadingObject = bIsLoading;
 	}
 
-	const TMap<UObject*, UObject*> GetReplaceMap() const { return ReplaceMap; }
-
 private:
 	/**
 	 * Returns whether this instancing graph has a valid destination root.
@@ -3567,11 +3634,6 @@ private:
 	 * Maps the source (think archetype) to the destination (think instance)
 	 */
 	TMap<class UObject*,class UObject*>			SourceToDestinationMap;
-
-	/**
-	* Maps instanced objects that need to have references updated
-	*/
-	TMap<UObject*, UObject*> ReplaceMap;
 };
 
 // UFunction interface.
@@ -3647,6 +3709,14 @@ struct FStructUtils
 	/** Looks for uninitialized script struct pointers. Returns the number found */
 	COREUOBJECT_API static int32 AttemptToFindUninitializedScriptStructMembers();
 #endif
+};
+
+// Helper struct to test if member initialization tests work properly
+struct FTestUninitializedScriptStructMembersTest
+{
+	UObject* UninitializedObjectReference;
+	UObject* InitializedObjectReference = nullptr;
+	float UnusedValue;
 };
 
 /*-----------------------------------------------------------------------------
@@ -3808,6 +3878,11 @@ template<> struct TBaseStructure<FPolyglotTextData>
 
 struct FAssetBundleData;
 template<> struct TBaseStructure<FAssetBundleData>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
+
+template<> struct TBaseStructure<FTestUninitializedScriptStructMembersTest>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };

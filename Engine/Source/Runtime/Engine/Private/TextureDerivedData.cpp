@@ -48,11 +48,11 @@
 // In case of merge conflicts with DDC versions, you MUST generate a new GUID and set this new
 // guid as version
 
-#define TEXTURE_DERIVEDDATA_VER		TEXT("2D528FAD496A42E180956107C6FFBD67")
+#define TEXTURE_DERIVEDDATA_VER		TEXT("E01F4250BECD420DA9CE63B5EECEC2C2")
 
 // This GUID is mixed into DDC version for virtual textures only, this allows updating DDC version for VT without invalidating DDC for all textures
 // This is useful during development, but once large numbers of VT are present in shipped content, it will have the same problem as TEXTURE_DERIVEDDATA_VER
-#define TEXTURE_VT_DERIVEDDATA_VER	TEXT("AD48F7C9E1A64C3F8D8119A7582B4A34")
+#define TEXTURE_VT_DERIVEDDATA_VER	TEXT("85E6EE5DBB194A38A8309D7F6FA4855A")
 
 #if ENABLE_COOK_STATS
 namespace TextureCookStats
@@ -157,6 +157,12 @@ static void SerializeForKey(FArchive& Ar, const FTextureBuildSettings& Settings)
 		TempFloat = Settings.Downscale; Ar << TempFloat;
 		TempByte = Settings.DownscaleOptions; Ar << TempByte;
 	}
+
+	//Settings.LossyCompressionAmount
+	//Settings.CompressionQuality
+
+	//note : LossyCompressionAmount and CompressionQuality are not put in DDC key
+	// it is up to textureformats that use them to put them in
 }
 
 /**
@@ -199,7 +205,7 @@ static void SerializeForKey(FArchive& Ar, const FTextureBuildSettings& Settings)
 		*Texture.Source.GetIdString(),
 		*CompositeTextureStr,
 		(uint32)NUM_INLINE_DERIVED_MIPS,
-		(TextureFormat == NULL) ? TEXT("") : *TextureFormat->GetDerivedDataKeyString(Texture)
+		(TextureFormat == NULL) ? TEXT("") : *TextureFormat->GetDerivedDataKeyString(Texture, &BuildSettings)
 		);
 
 	// Add key data for extra layers beyond the first
@@ -221,7 +227,7 @@ static void SerializeForKey(FArchive& Ar, const FTextureBuildSettings& Settings)
 		OutKeySuffix.Append(FString::Printf(TEXT("%s%d%s_"),
 			*LayerBuildSettings.TextureFormatName.GetPlainNameString(),
 			LayerVersion,
-			(LayerTextureFormat == NULL) ? TEXT("") : *LayerTextureFormat->GetDerivedDataKeyString(Texture)));
+			(LayerTextureFormat == NULL) ? TEXT("") : *LayerTextureFormat->GetDerivedDataKeyString(Texture, &LayerBuildSettings)));
 	}
 
 	if (BuildSettings.bVirtualStreamable)
@@ -379,11 +385,6 @@ static void GetTextureBuildSettings(
 		OutBuildSettings.DiffuseConvolveMipLevel = GDiffuseConvolveMipLevel;
 		const UTextureCube* Cube = CastChecked<UTextureCube>(&Texture);
 		OutBuildSettings.bLongLatSource = (Cube->Source.GetNumSlices() == 1);
-		if (OutBuildSettings.bLongLatSource && Texture.MaxTextureSize <= 0)
-		{
-			// long/lat source use 512 as default
-			OutBuildSettings.MaxTextureResolution = 512;
-		}
 	}
 	else if (Texture.IsA(UTexture2DArray::StaticClass()))
 	{
@@ -435,8 +436,13 @@ static void GetTextureBuildSettings(
 	OutBuildSettings.bChromaKeyTexture = Texture.bChromaKeyTexture;
 	OutBuildSettings.ChromaKeyThreshold = Texture.ChromaKeyThreshold;
 	OutBuildSettings.CompressionQuality = Texture.CompressionQuality - 1; // translate from enum's 0 .. 5 to desired compression (-1 .. 4, where -1 is default while 0 .. 4 are actual quality setting override)
-	// TODO - get default value from config/CVAR/LODGroup?
-	OutBuildSettings.LossyCompressionAmount = (Texture.LossyCompressionAmount == TLCA_Default) ? TLCA_Lowest : Texture.LossyCompressionAmount.GetValue();
+	
+	OutBuildSettings.LossyCompressionAmount = Texture.LossyCompressionAmount.GetValue();
+
+	// if LossyCompressionAmount is Default, inherit from LODGroup :
+	const FTextureLODGroup& LODGroup = TextureLODSettings.GetTextureLODGroup(Texture.LODGroup);
+	if ( OutBuildSettings.LossyCompressionAmount == TLCA_Default )
+		OutBuildSettings.LossyCompressionAmount = LODGroup.LossyCompressionAmount;
 
 	OutBuildSettings.Downscale = 1.0f;
 	if (MipGenSettings == TMGS_NoMipmaps && 
@@ -890,6 +896,11 @@ void FTexturePlatformData::Cache(
 	}
 }
 
+bool FTexturePlatformData::IsAsyncWorkComplete() const
+{
+	return AsyncTask == nullptr || AsyncTask->IsWorkDone();
+}
+
 void FTexturePlatformData::FinishCache()
 {
 	if (AsyncTask)
@@ -1076,6 +1087,14 @@ FTexturePlatformData::~FTexturePlatformData()
 
 bool FTexturePlatformData::IsReadyForAsyncPostLoad() const
 {
+#if WITH_EDITOR
+	// Can't touch the Mips until async work is finished
+	if (!IsAsyncWorkComplete())
+	{
+		return false;
+	}
+#endif
+
 	for (int32 MipIndex = 0; MipIndex < Mips.Num(); ++MipIndex)
 	{
 		const FTexture2DMipMap& Mip = Mips[MipIndex];

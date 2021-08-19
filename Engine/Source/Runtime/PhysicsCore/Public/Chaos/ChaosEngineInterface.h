@@ -7,6 +7,7 @@
 #include "PhysicsInterfaceDeclaresCore.h"
 #include "PhysicsInterfaceWrapperShared.h"
 #include "PhysicsInterfaceTypesCore.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxyFwd.h"
 #include "ChaosEngineInterface.generated.h"
 
 //NOTE: Do not include Chaos headers directly as it means recompiling all of engine. This should be reworked to avoid allocations
@@ -185,25 +186,20 @@ typedef uint8 FMaskFilter;
 
 namespace Chaos
 {
-	template <typename T, int>
-	class TBVHParticles;
+	class FBVHParticles;
 
 	template <typename T, int>
 	class TPBDRigidParticles;
 
-	template <typename T, int>
-	class PerParticleGravity;
+	class FPerParticleGravity;
 
-	template <typename T, int>
-	class TPBDSpringConstraints;
-
+	class FPBDSpringConstraints;
 	class FConvex;
-
-	template <typename T>
-	class TCapsule;
+	class FCapsule;
 
 	template <typename T, int>
 	class TAABB;
+	using FAABB3 = TAABB<FReal, 3>;
 
 	template <typename T, int>
 	class TBox;
@@ -301,9 +297,9 @@ struct PHYSICSCORE_API FPhysicsGeometryCollection_Chaos
 
 	ECollisionShapeType GetType() const;
 	const Chaos::FImplicitObject& GetGeometry() const;
-	const Chaos::TBox<float, 3>& GetBoxGeometry() const;
-	const Chaos::TSphere<float, 3>&  GetSphereGeometry() const;
-	const Chaos::TCapsule<float>&  GetCapsuleGeometry() const;
+	const Chaos::TBox<Chaos::FReal, 3>& GetBoxGeometry() const;
+	const Chaos::TSphere<Chaos::FReal, 3>&  GetSphereGeometry() const;
+	const Chaos::FCapsule&  GetCapsuleGeometry() const;
 	const Chaos::FConvex& GetConvexGeometry() const;
 	const Chaos::FTriangleMeshImplicitObject& GetTriMeshGeometry() const;
 
@@ -415,6 +411,9 @@ public:
 	static void SetMaxDepenetrationVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference,float InMaxDepenetrationVelocity);
 
 	static FVector GetWorldVelocityAtPoint_AssumesLocked(const FPhysicsActorHandle& InActorReference,const FVector& InPoint);
+#if WITH_CHAOS
+	static FVector GetWorldVelocityAtPoint_AssumesLocked(const Chaos::FRigidBodyHandle_Internal* InActorReference, const FVector& InPoint);
+#endif
 
 	static FTransform GetComTransform_AssumesLocked(const FPhysicsActorHandle& InActorReference);
 	static FTransform GetComTransformLocal_AssumesLocked(const FPhysicsActorHandle& InActorReference);
@@ -434,6 +433,8 @@ public:
 
 	static bool IsGravityEnabled_AssumesLocked(const FPhysicsActorHandle& InActorReference);
 	static void SetGravityEnabled_AssumesLocked(const FPhysicsActorHandle& InActorReference,bool bEnabled);
+
+	static void SetOneWayInteraction_AssumesLocked(const FPhysicsActorHandle& InHandle, bool InOneWayInteraction);
 
 	static float GetSleepEnergyThreshold_AssumesLocked(const FPhysicsActorHandle& InActorReference);
 	static void SetSleepEnergyThreshold_AssumesLocked(const FPhysicsActorHandle& InActorReference,float InEnergyThreshold);
@@ -476,7 +477,8 @@ public:
 	static void SetProjectionEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInProjectionEnabled,float InLinearAlpah = 1.0f,float InAngularAlpha = 0.0f);
 	static void SetParentDominates_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInParentDominates);
 	static void SetBreakForces_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,float InLinearBreakForce,float InAngularBreakForce);
-	static void SetLocalPose(const FPhysicsConstraintHandle& InConstraintRef,const FTransform& InPose,EConstraintFrame::Type InFrame);
+	static void SetPlasticityLimits_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float InLinearPlasticityLimit, float InAngularPlasticityLimit);
+	static void SetLocalPose(const FPhysicsConstraintHandle& InConstraintRef, const FTransform& InPose, EConstraintFrame::Type InFrame);
 
 	static void SetDrivePosition(const FPhysicsConstraintHandle& InConstraintRef,const FVector& InPosition);
 	static void SetDriveOrientation(const FPhysicsConstraintHandle& InConstraintRef,const FQuat& InOrientation);

@@ -196,11 +196,16 @@ void SafeReleaseMetalTexture(FMetalSurface* Surface, FMetalTexture& Texture)
 	}
 }
 
-mtlpp::PixelFormat ToSRGBFormat(mtlpp::PixelFormat LinMTLFormat)
+#if PLATFORM_MAC
+mtlpp::PixelFormat ToSRGBFormat_NonAppleMacGPU(mtlpp::PixelFormat MTLFormat)
 {
-	mtlpp::PixelFormat MTLFormat = LinMTLFormat;
-	
-	switch (LinMTLFormat)
+	// Expand as R8_sRGB is Apple Silicon only.
+	if (MTLFormat == mtlpp::PixelFormat::R8Unorm)
+	{
+		MTLFormat = mtlpp::PixelFormat::RGBA8Unorm;
+	}
+
+	switch (MTLFormat)
 	{
 		case mtlpp::PixelFormat::RGBA8Unorm:
 			MTLFormat = mtlpp::PixelFormat::RGBA8Unorm_sRGB;
@@ -208,7 +213,6 @@ mtlpp::PixelFormat ToSRGBFormat(mtlpp::PixelFormat LinMTLFormat)
 		case mtlpp::PixelFormat::BGRA8Unorm:
 			MTLFormat = mtlpp::PixelFormat::BGRA8Unorm_sRGB;
 			break;
-#if PLATFORM_MAC
 		case mtlpp::PixelFormat::BC1_RGBA:
 			MTLFormat = mtlpp::PixelFormat::BC1_RGBA_sRGB;
 			break;
@@ -221,8 +225,23 @@ mtlpp::PixelFormat ToSRGBFormat(mtlpp::PixelFormat LinMTLFormat)
 		case mtlpp::PixelFormat::BC7_RGBAUnorm:
 			MTLFormat = mtlpp::PixelFormat::BC7_RGBAUnorm_sRGB;
 			break;
-#endif //PLATFORM_MAC
-#if PLATFORM_IOS
+		default:
+			break;
+	}
+	return MTLFormat;
+}
+#endif
+
+mtlpp::PixelFormat ToSRGBFormat_AppleGPU(mtlpp::PixelFormat MTLFormat)
+{
+	switch (MTLFormat)
+	{
+		case mtlpp::PixelFormat::RGBA8Unorm:
+			MTLFormat = mtlpp::PixelFormat::RGBA8Unorm_sRGB;
+			break;
+		case mtlpp::PixelFormat::BGRA8Unorm:
+			MTLFormat = mtlpp::PixelFormat::BGRA8Unorm_sRGB;
+			break;
 		case mtlpp::PixelFormat::R8Unorm:
 			MTLFormat = mtlpp::PixelFormat::R8Unorm_sRGB;
 			break;
@@ -247,32 +266,44 @@ mtlpp::PixelFormat ToSRGBFormat(mtlpp::PixelFormat LinMTLFormat)
 		case mtlpp::PixelFormat::ASTC_12x12_LDR:
 			MTLFormat = mtlpp::PixelFormat::ASTC_12x12_sRGB;
 			break;
-#endif //PLATFORM_IOS
 		default:
 			break;
 	}
-	
 	return MTLFormat;
 }
 
-static inline mtlpp::PixelFormat ToSRGBFormat(mtlpp::PixelFormat InMTLFormat, ERHIResourceType InResourceType)
+mtlpp::PixelFormat ToSRGBFormat(mtlpp::PixelFormat MTLFormat)
 {
 #if PLATFORM_MAC
-	// R8Unorm_sRGB is not available on macOS
-	// For now R8 sRGB expansion is 2D only, log other usage for later.
-	if (InMTLFormat == mtlpp::PixelFormat::R8Unorm)
+	// Mojave doesn't support Apple Silicon and also doesn't have the Device supportsFamily: selector
+	static bool bUnsupportedFamilyCheck = FPlatformMisc::MacOSXVersionCompare(10,15,0) < 0;
+	if(bUnsupportedFamilyCheck)
 	{
-		if (InResourceType == RRT_Texture2D)
-		{
-			InMTLFormat = mtlpp::PixelFormat::RGBA8Unorm;
-		}
-		else
-		{
-			UE_LOG(LogMetal, Error, TEXT("Attempting to use unsupported mtlpp::PixelFormat::R8Unorm_sRGB on Mac with texture type: %d, no format expansion will be provided so rendering errors may occur."), InResourceType);
-		}
+		return ToSRGBFormat_NonAppleMacGPU(MTLFormat);
 	}
 #endif
-	return ToSRGBFormat(InMTLFormat);
+    
+#if PLATFORM_IOS
+    // iOS 12 doesn't have the Device supportsFamily: selector
+    static bool bUnsupportedFamilyCheck = FPlatformMisc::IOSVersionCompare(13,0,0) < 0;
+    if(bUnsupportedFamilyCheck)
+    {
+        return ToSRGBFormat_AppleGPU(MTLFormat);
+    }
+#endif
+      
+	if([GetMetalDeviceContext().GetDevice().GetPtr() supportsFamily:MTLGPUFamilyApple1])
+	{
+		MTLFormat = ToSRGBFormat_AppleGPU(MTLFormat);
+	}
+#if PLATFORM_MAC
+	else if([GetMetalDeviceContext().GetDevice().GetPtr() supportsFamily:MTLGPUFamilyMac1])
+	{
+		MTLFormat = ToSRGBFormat_NonAppleMacGPU(MTLFormat);
+	}
+#endif
+	
+	return MTLFormat;
 }
 
 void FMetalSurface::PrepareTextureView()
@@ -516,7 +547,7 @@ void FMetalSurface::Init(FMetalSurface& Source, NSRange MipRange)
 	if (Flags & TexCreate_SRGB)
 	{
 		// Ensure we have the correct sRGB target format if we create a new texture view rather than using the source texture
-		MetalFormat = ToSRGBFormat(MetalFormat, Type);
+		MetalFormat = ToSRGBFormat(MetalFormat);
 	}
 	
 	bool const bUseSourceTex = (Source.PixelFormat != PF_DepthStencil) && MipRange.location == 0 && MipRange.length == Source.Texture.GetMipmapLevelCount();
@@ -549,7 +580,6 @@ void FMetalSurface::Init(FMetalSurface& Source, NSRange MipRange)
 
 void FMetalSurface::Init(FMetalSurface& Source, NSRange MipRange, EPixelFormat Format, bool bSRGBForceDisable)
 {
-	check(!Source.MSAATexture || Format == PF_X24_G8);
 #if PLATFORM_IOS
 	// Mmeory;ess targets can't have texture views (SRVs or UAVs)
 	if (Source.Texture.GetStorageMode() == mtlpp::StorageMode::Memoryless)
@@ -572,7 +602,7 @@ void FMetalSurface::Init(FMetalSurface& Source, NSRange MipRange, EPixelFormat F
 		else
 		{
 			// Ensure we have the correct sRGB target format if we create a new texture view rather than using the source texture
-			MetalFormat = ToSRGBFormat(MetalFormat, Type);
+			MetalFormat = ToSRGBFormat(MetalFormat);
 		}
 	}
 	
@@ -726,7 +756,7 @@ FMetalSurface::FMetalSurface(ERHIResourceType ResourceType, EPixelFormat Format,
 	
 	if (Flags & TexCreate_SRGB)
 	{
-		MTLFormat = ToSRGBFormat(MTLFormat, Type);
+		MTLFormat = ToSRGBFormat(MTLFormat);
 	}
 	
 	// set the key
@@ -1206,8 +1236,8 @@ id <MTLBuffer> FMetalSurface::AllocSurface(uint32 MipIndex, uint32 ArrayIndex, E
 	GRHILockTracker.Lock(this, Buffer, MipIndex, 0, LockMode, false);
 	
 #if PLATFORM_MAC
-	// Expand R8_sRGB into RGBA8_sRGB for Mac.
-	if (PixelFormat == PF_G8 && (Flags & TexCreate_SRGB) && Type == RRT_Texture2D && LockMode == RLM_WriteOnly)
+	// Expand R8_sRGB into RGBA8_sRGB for non Apple Silicon Mac.
+	if (PixelFormat == PF_G8 && (Flags & TexCreate_SRGB) && Type == RRT_Texture2D && LockMode == RLM_WriteOnly && Texture.GetPixelFormat() == mtlpp::PixelFormat::RGBA8Unorm_sRGB)
 	{
 		DestStride = FMath::Max<uint32>(SizeX >> MipIndex, 1);
 	}
@@ -1240,8 +1270,8 @@ void FMetalSurface::UpdateSurfaceAndDestroySourceBuffer(id <MTLBuffer> SourceBuf
 		Region = mtlpp::Region(0, 0, 0, FMath::Max<uint32>(SizeX >> MipIndex, 1), FMath::Max<uint32>(SizeY >> MipIndex, 1), FMath::Max<uint32>(SizeZ >> MipIndex, 1));
 	}
 #if PLATFORM_MAC
-	// Expand R8_sRGB into RGBA8_sRGB for Mac.
-	if (PixelFormat == PF_G8 && (Flags & TexCreate_SRGB) && Type == RRT_Texture2D)
+	// Expand R8_sRGB into RGBA8_sRGB for non Apple Silicon Mac.
+	if (PixelFormat == PF_G8 && (Flags & TexCreate_SRGB) && Type == RRT_Texture2D && Texture.GetPixelFormat() == mtlpp::PixelFormat::RGBA8Unorm_sRGB)
 	{
 		TArray<uint8> Data;
 		uint8* ExpandedMem = (uint8*) SourceBuffer.contents;
@@ -1447,8 +1477,8 @@ void* FMetalSurface::Lock(uint32 MipIndex, uint32 ArrayIndex, EResourceLockMode 
 			}
 			
 #if PLATFORM_MAC
-			// Pack RGBA8_sRGB into R8_sRGB for Mac.
-			if (PixelFormat == PF_G8 && (Flags & TexCreate_SRGB) && Type == RRT_Texture2D)
+			// Pack RGBA8_sRGB into R8_sRGB for non Apple Silicon Mac.
+			if (PixelFormat == PF_G8 && (Flags & TexCreate_SRGB) && Type == RRT_Texture2D && Texture.GetPixelFormat() == mtlpp::PixelFormat::RGBA8Unorm_sRGB)
 			{
 				TArray<uint8> Data;
 				uint8* ExpandedMem = (uint8*)SourceData.GetContents();
@@ -1593,7 +1623,7 @@ uint32 FMetalSurface::GetMipSize(uint32 MipIndex, uint32* Stride, bool bSingleLa
 		NumBlocksY = FMath::Max<uint32>(NumBlocksY, 2);
 	}
 #if PLATFORM_MAC
-	else if (PixelFormat == PF_G8 && (Flags & TexCreate_SRGB))
+	else if (PixelFormat == PF_G8 && (Flags & TexCreate_SRGB) && Texture.GetPixelFormat() == mtlpp::PixelFormat::RGBA8Unorm_sRGB)
 	{
 		// RGBA_sRGB is the closest match - so expand the data.
 		NumBlocksX *= 4;
@@ -1978,6 +2008,7 @@ void FMetalDynamicRHI::RHIUnlockTexture2DArray(FRHITexture2DArray* TextureRHI,ui
 #if PLATFORM_MAC
 static void InternalExpandR8ToStandardRGBA(uint32* pDest, const struct FUpdateTextureRegion2D& UpdateRegion, uint32& InOutSourcePitch, const uint8* pSrc)
 {
+	// Should only be required for non Apple Silicon Macs
 	const uint32 ExpandedPitch = UpdateRegion.Width * sizeof(uint32);
 	
 	for(uint y = 0; y < UpdateRegion.Height; y++)
@@ -2002,8 +2033,9 @@ static FMetalBuffer InternalCopyTexture2DUpdateRegion(FRHITexture2D* TextureRHI,
 	FMetalTexture2D* Texture = ResourceCast(TextureRHI);	
 
 #if PLATFORM_MAC
-	// Expand R8_sRGB into RGBA8_sRGB for Mac.
-	if(Texture->GetFormat() == PF_G8 && (Texture->GetFlags() & TexCreate_SRGB))
+	// Expand R8_sRGB into RGBA8_sRGB for non Apple Silicon Mac.
+	FMetalTexture Tex = Texture->Surface.Texture;
+	if(Texture->GetFormat() == PF_G8 && (Texture->GetFlags() & TexCreate_SRGB) && Tex.GetPixelFormat() == mtlpp::PixelFormat::RGBA8Unorm_sRGB)
 	{
 		const uint32 BufferSize = UpdateRegion.Height * UpdateRegion.Width * sizeof(uint32);		
 		Buffer = GetMetalDeviceContext().CreatePooledBuffer(FMetalPooledBufferArgs(GetMetalDeviceContext().GetDevice(), BufferSize, BUF_Dynamic, mtlpp::StorageMode::Shared));
@@ -2125,8 +2157,9 @@ void FMetalDynamicRHI::RHIUpdateTexture2D(FRHITexture2D* TextureRHI, uint32 MipI
 		else
 		{
 #if PLATFORM_MAC
+			// Expand R8_sRGB into RGBA8_sRGB for non Apple Silicon Mac.
 			TArray<uint32> ExpandedData;
-			if(Texture->GetFormat() == PF_G8 && (Texture->GetFlags() & TexCreate_SRGB))
+			if(Texture->GetFormat() == PF_G8 && (Texture->GetFlags() & TexCreate_SRGB) && Tex.GetPixelFormat() == mtlpp::PixelFormat::RGBA8Unorm_sRGB)
 			{
 				ExpandedData.AddZeroed(UpdateRegion.Height * UpdateRegion.Width);
 				InternalExpandR8ToStandardRGBA((uint32*)ExpandedData.GetData(), UpdateRegion, SourcePitch, SourceData);
@@ -2282,7 +2315,7 @@ void FMetalDynamicRHI::RHIUpdateTexture3D(FRHITexture3D* TextureRHI,uint32 MipIn
 		FMetalTexture Tex = Texture->Surface.Texture;
 		
 #if PLATFORM_MAC
-		checkf(!(Texture->GetFormat() == PF_G8 && (Texture->GetFlags() & TexCreate_SRGB)), TEXT("MetalRHI does not support PF_G8_sRGB on 3D, array or cube textures as it requires manual, CPU-side expansion to RGBA8_sRGB which is expensive!"));
+		checkf(!(Texture->GetFormat() == PF_G8 && (Texture->GetFlags() & TexCreate_SRGB) && Tex.GetPixelFormat() == mtlpp::PixelFormat::RGBA8Unorm_sRGB), TEXT("MetalRHI on non Apple Silicon does not support PF_G8_sRGB on 3D, array or cube textures as it requires manual, CPU-side expansion to RGBA8_sRGB which is expensive!"));
 #endif
 		if(Tex.GetStorageMode() == mtlpp::StorageMode::Private)
 		{

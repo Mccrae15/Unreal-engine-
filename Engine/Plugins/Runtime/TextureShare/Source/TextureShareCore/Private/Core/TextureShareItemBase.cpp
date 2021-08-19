@@ -322,6 +322,11 @@ namespace TextureShareItem
 		return WriteLocalProcessData();
 	}
 
+	void FTextureShareItemBase::SetSyncWaitTime(float InSyncWaitTime)
+	{
+		SyncWaitTime = InSyncWaitTime;
+	}
+
 	/*ESharedResourceTextureState FTextureShareItemBase::GetLocalTextureState(const FString& TextureName)
 	{
 		FSharedResourceProcessData& Data = GetLocalProcessData();
@@ -356,6 +361,12 @@ namespace TextureShareItem
 			OutAdditionalData = RemoteData.AdditionalData;
 			return true;
 		}
+		return false;
+	}
+
+	bool FTextureShareItemBase::SetCustomProjectionData(const FTextureShareCustomProjectionData& InCustomProjectionData)
+	{
+		// NOT IMPLEMETED
 		return false;
 	}
 
@@ -416,7 +427,7 @@ namespace TextureShareItem
 		/** [Required] Waiting until remote process register texture (Required texture pairing) */
 		case ETextureShareSyncSurface::SyncPairingRead:
 		{
-			FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TexturePairingSync, ESyncProcessFailAction::ConnectionLost);
+			FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TexturePairingSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
 			while (RemoteTextureIndex < 0)
 			{
 				if (!SyncProcess.Tick())
@@ -452,7 +463,7 @@ namespace TextureShareItem
 						}
 					}
 #endif
-					FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TextureSync, ESyncProcessFailAction::ConnectionLost);
+					FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TextureSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
 					FSharedResourceProcessData& LocalData = GetLocalProcessData();
 					FSharedResourceProcessData& RemoteData = GetRemoteProcessData();
 
@@ -512,7 +523,7 @@ namespace TextureShareItem
 			case ETextureShareSyncFrame::FrameSync:
 			{
 				// Wait for remote handle initialized
-				FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TextureResourceSync, ESyncProcessFailAction::ConnectionLost);
+				FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TextureResourceSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
 				while (!GetRemoteProcessData().Textures[RemoteTextureIndex].SharingData.IsValid())
 				{
 					if (!SyncProcess.Tick())
@@ -553,7 +564,7 @@ namespace TextureShareItem
 			case ETextureShareSyncConnect::SyncSession:
 			{
 				// Wait for other process
-				FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.ConnectionSync, ESyncProcessFailAction::ConnectionLost);
+				FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.ConnectionSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
 				while (!IsConnectionValid())
 				{
 					if (!SyncProcess.Tick())
@@ -584,7 +595,7 @@ namespace TextureShareItem
 		{
 		case ETextureShareSyncFrame::FrameSync:
 		{
-			FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.FrameSync, ESyncProcessFailAction::ConnectionLost);
+			FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.FrameSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
 			while (!ResourceData.IsSyncFrameValid(IsClient()))
 			{
 				if (!SyncProcess.Tick())
@@ -761,11 +772,17 @@ namespace TextureShareItem
 						switch (ServerTextureData.OperationType)
 						{
 						case ETextureShareSurfaceOp::Write:
-							RHICmdList.TransferTexture(RHITexture, TextureRect, ServerGPUIndex, ClientGPUIndex, true);
+						{
+							FTransferTextureParams Param(RHITexture, TextureRect, ServerGPUIndex, ClientGPUIndex, true, true);
+							RHICmdList.TransferTextures(TArrayView<const FTransferTextureParams>(&Param, 1));
 							break;
+						}
 						case ETextureShareSurfaceOp::Read:
-							RHICmdList.TransferTexture(RHITexture, TextureRect, ClientGPUIndex, ServerGPUIndex, true);
+						{
+							FTransferTextureParams Param(RHITexture, TextureRect, ClientGPUIndex, ServerGPUIndex, true, true);
+							RHICmdList.TransferTextures(TArrayView<const FTransferTextureParams>(&Param, 1));
 							break;
+						}
 						}
 						return true;
 					}

@@ -18,6 +18,49 @@
 
 #define LOCTEXT_NAMESPACE "LevelVariantSets"
 
+namespace UE
+{
+	namespace LevelVariantSets
+	{
+		namespace Private
+		{
+			/** Makes it so that all others variants that depend on a variant of 'VariantSet' have those particular dependencies deleted */
+			void ResetVariantSetDependents( UVariantSet* VariantSet )
+			{
+				if ( !VariantSet )
+				{
+					return;
+				}
+
+				ULevelVariantSets* LevelVariantSets = VariantSet->GetTypedOuter<ULevelVariantSets>();
+				if ( !LevelVariantSets )
+				{
+					return;
+				}
+
+				for ( UVariant* Variant : VariantSet->GetVariants() )
+				{
+					const bool bOnlyEnabledDependencies = false;
+					for ( UVariant* Dependent : Variant->GetDependents( LevelVariantSets, bOnlyEnabledDependencies ) )
+					{
+						for ( int32 DependencyIndex = Dependent->GetNumDependencies() - 1; DependencyIndex >= 0; --DependencyIndex )
+						{
+							FVariantDependency& Dependency = Dependent->GetDependency( DependencyIndex );
+							UVariant* TargetVariant = Dependency.Variant.Get();
+							if ( TargetVariant == Variant )
+							{
+								// Delete the entire dependency because we can't leave a dependency without a valid Variant selected or
+								// we may run into minor slightly awkward states (i.e. not being able to pick *any* variant)
+								Dependent->DeleteDependency( DependencyIndex );
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 ULevelVariantSets::ULevelVariantSets(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -156,6 +199,7 @@ void ULevelVariantSets::RemoveVariantSets(const TArray<UVariantSet*> InVariantSe
 	for (UVariantSet* VariantSet : InVariantSets)
 	{
 		VariantSets.Remove(VariantSet);
+		UE::LevelVariantSets::Private::ResetVariantSetDependents( VariantSet );
 		VariantSet->Rename(nullptr, GetTransientPackage());
 	}
 }
@@ -205,27 +249,36 @@ UObject* ULevelVariantSets::GetDirectorInstance(UObject* WorldContext)
 		return nullptr;
 	}
 
+	// This will always pick the persistent world, even if WorldContext is in a streamed-in level.
+	// This is important as the UWorld that is actually outer to streamed-in levels shouldn't be used generally.
 	UWorld* TargetWorld = WorldContext->GetWorld();
 
 	// Check if we already created a director for this world
-	UObject** FoundDirectorPtr = WorldToDirectorInstance.Find(TargetWorld);
-	if (FoundDirectorPtr)
+	TWeakObjectPtr<UObject> FoundDirector = WorldToDirectorInstance.FindRef( TargetWorld );
+	if ( FoundDirector.IsValid() )
 	{
-		UObject* FoundDirector = *FoundDirectorPtr;
-		if (FoundDirector != nullptr && FoundDirector->IsValidLowLevel() && !FoundDirector->IsPendingKillOrUnreachable())
-		{
-			return FoundDirector;
-		}
+		return FoundDirector.Get();
 	}
 
 	// If not we'll need to create one. It will need to be parented to a LVSActor in that world
-	AActor* DirectorOuter = nullptr;
+	ALevelVariantSetsActor* DirectorOuter = nullptr;
 
 	// Look for a LVSActor in that world that is referencing us
 	TArray<AActor*> FoundActors;
 	UGameplayStatics::GetAllActorsOfClass(TargetWorld, ALevelVariantSetsActor::StaticClass(), FoundActors);
 	for (AActor* Actor : FoundActors)
 	{
+		// We can never use ALevelVariantSetsActors on streamed-in levels for this, because some functions will fetch the UObject's
+		// UWorld by going through ULevel::OwningWorld, and others will just travel up the outer chain, which can leads to different results for streamed levels.
+		// Here we ignore those actors by making sure that we only consider the ones directly outer'ed to the persistent world,
+		// where this duality won't exist. It may be slightly weird that we will ignore ALevelVariantSetsActors on streamed-in levels that
+		// the user may have manually placed, but it should work more consistently this way. These actors don't really have any state anyway,
+		// so there is no harm in having an additional actor. Also, see the comment on ULevel::OwningWorld.
+		if ( Actor->GetTypedOuter<UWorld>() != TargetWorld )
+		{
+			continue;
+		}
+
 		ALevelVariantSetsActor* ActorAsLVSActor = Cast<ALevelVariantSetsActor>(Actor);
 		if (ActorAsLVSActor && ActorAsLVSActor->GetLevelVariantSets() == this)
 		{
@@ -240,6 +293,7 @@ UObject* ULevelVariantSets::GetDirectorInstance(UObject* WorldContext)
 		FVector Location(0.0f, 0.0f, 0.0f);
 		FRotator Rotation(0.0f, 0.0f, 0.0f);
 		FActorSpawnParameters SpawnInfo;
+		SpawnInfo.OverrideLevel = TargetWorld->PersistentLevel; // If we leave it null it will pick the persistent level *of the streamed in world* instead, which is not actually *the* persistent level
 		ALevelVariantSetsActor* NewActor = TargetWorld->SpawnActor<ALevelVariantSetsActor>(Location, Rotation, SpawnInfo);
 		NewActor->SetLevelVariantSets(this);
 		DirectorOuter = NewActor;
@@ -250,9 +304,18 @@ UObject* ULevelVariantSets::GetDirectorInstance(UObject* WorldContext)
 		return nullptr;
 	}
 
-	// Finally create our new director and return it
-	ULevelVariantSetsFunctionDirector* NewDirector = NewObject<ULevelVariantSetsFunctionDirector>(DirectorOuter, DirectorClass, NAME_None, RF_Transient);
-	NewDirector->GetOnDestroy().AddLambda([this](ULevelVariantSetsFunctionDirector* Director)
+	ULevelVariantSetsFunctionDirector* TargetDirector = nullptr;
+	if ( ULevelVariantSetsFunctionDirector** ExistingDirector = DirectorOuter->DirectorInstances.Find( DirectorClass ) )
+	{
+		TargetDirector = *ExistingDirector;
+	}
+	if ( !TargetDirector )
+	{
+		TargetDirector = NewObject<ULevelVariantSetsFunctionDirector>(DirectorOuter, DirectorClass, NAME_None, RF_Transient);
+		DirectorOuter->DirectorInstances.Add( DirectorClass, TargetDirector );
+	}
+
+	TargetDirector->GetOnDestroy().AddLambda([this](ULevelVariantSetsFunctionDirector* Director)
 	{
 		if (this != nullptr && this->IsValidLowLevel() && !this->IsPendingKillOrUnreachable())
 		{
@@ -260,8 +323,8 @@ UObject* ULevelVariantSets::GetDirectorInstance(UObject* WorldContext)
 		}
 	});
 
-	WorldToDirectorInstance.Add(TargetWorld, NewDirector);
-	return NewDirector;
+	WorldToDirectorInstance.Add( TargetWorld, TargetDirector );
+	return TargetDirector;
 }
 
 int32 ULevelVariantSets::GetNumVariantSets()
@@ -426,19 +489,12 @@ void ULevelVariantSets::UnsubscribeToDirectorCompiled()
 
 void ULevelVariantSets::HandleDirectorDestroyed(ULevelVariantSetsFunctionDirector* Director)
 {
-	TArray<UWorld*> KeyOfPairsToRemove;
-
-	for (const auto& Pair : WorldToDirectorInstance)
+	for (TMap<UWorld*, TWeakObjectPtr<UObject>>::TIterator Iter(WorldToDirectorInstance); Iter; ++Iter )
 	{
-		if (Pair.Value == Director)
+		if ( Iter->Value == Director)
 		{
-			KeyOfPairsToRemove.Add(Pair.Key);
+			Iter.RemoveCurrent();
 		}
-	}
-
-	for (UWorld* World : KeyOfPairsToRemove)
-	{
-		WorldToDirectorInstance.Remove(World);
 	}
 }
 

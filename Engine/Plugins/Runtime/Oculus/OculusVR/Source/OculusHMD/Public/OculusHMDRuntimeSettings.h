@@ -82,6 +82,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool bFocusAware;
 
+	/** [Experimental]Enable Late latching for reducing HMD and controller latency, improve tracking prediction quality, multiview and vulkan must be enabled for this feature. */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	bool bLateLatching;
+
 	/** If enabled the app will use the Oculus system keyboard for input fields. This requires that the app be focus aware. */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool bRequiresSystemKeyboard;
@@ -89,6 +93,10 @@ public:
 	/** Whether controllers and/or hands can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	EHandTrackingSupport HandTrackingSupport;
+
+	/** Enable phase sync on mobile, reducing HMD and controller latency, improve tracking prediction quality */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	bool bPhaseSync;
 
 private:
 	void LoadFromIni();

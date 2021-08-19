@@ -7,16 +7,16 @@
 
 #include "Game/IDisplayClusterGameManager.h"
 
-#include "Misc/DisplayClusterHelpers.h"
-
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Camera/CameraComponent.h"
 #include "ComposurePostMoves.h"
 
+#include "Render/Viewport/IDisplayClusterViewport.h"
+#include "Render/Viewport/IDisplayClusterViewportManager.h"
 
-FDisplayClusterProjectionCameraPolicy::FDisplayClusterProjectionCameraPolicy(const FString& ViewportId, const TMap<FString, FString>& Parameters)
-	: FDisplayClusterProjectionPolicyBase(ViewportId, Parameters)
+FDisplayClusterProjectionCameraPolicy::FDisplayClusterProjectionCameraPolicy(const FString& ProjectionPolicyId, const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy)
+	: FDisplayClusterProjectionPolicyBase(ProjectionPolicyId, InConfigurationProjectionPolicy)
 {
 }
 
@@ -24,130 +24,136 @@ FDisplayClusterProjectionCameraPolicy::~FDisplayClusterProjectionCameraPolicy()
 {
 }
 
-
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterProjectionPolicy
 //////////////////////////////////////////////////////////////////////////////////////////////
-void FDisplayClusterProjectionCameraPolicy::StartScene(UWorld* InWorld)
+bool FDisplayClusterProjectionCameraPolicy::HandleStartScene(class IDisplayClusterViewport* InViewport)
 {
 	check(IsInGameThread());
 
-	World = InWorld;
-}
-
-void FDisplayClusterProjectionCameraPolicy::EndScene()
-{
-	check(IsInGameThread());
-
-	AssignedCamera = nullptr;
-}
-
-bool FDisplayClusterProjectionCameraPolicy::HandleAddViewport(const FIntPoint& InViewportSize, const uint32 InViewsAmount)
-{
-	check(IsInGameThread());
-
-	UE_LOG(LogDisplayClusterProjectionCamera, Log, TEXT("Initializing internals for the viewport '%s'"), *GetViewportId());
-	
 	return true;
 }
 
-void FDisplayClusterProjectionCameraPolicy::HandleRemoveViewport()
+void FDisplayClusterProjectionCameraPolicy::HandleEndScene(class IDisplayClusterViewport* InViewport)
 {
 	check(IsInGameThread());
-	UE_LOG(LogDisplayClusterProjectionCamera, Log, TEXT("Removing viewport '%s'"), *GetViewportId());
+
+	CameraRef.ResetSceneComponent();
 }
 
-bool FDisplayClusterProjectionCameraPolicy::CalculateView(const uint32 ViewIdx, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
+APlayerCameraManager* const GetCurPlayerCameraManager(IDisplayClusterViewport* InViewport)
+{
+	if (InViewport)
+	{
+		UWorld* World = InViewport->GetOwner().GetCurrentWorld();
+		if (World)
+		{
+			APlayerController* const CurPlayerController = World->GetFirstPlayerController();
+			if (CurPlayerController)
+			{
+				return CurPlayerController->PlayerCameraManager;
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+UCameraComponent* FDisplayClusterProjectionCameraPolicy::GetCameraComponent()
+{
+	USceneComponent* SceneComponent = CameraRef.GetOrFindSceneComponent();
+	if (SceneComponent)
+	{
+		UCameraComponent* CameraComponent = Cast<UCameraComponent>(SceneComponent);
+		if (CameraComponent)
+		{
+			return CameraComponent;
+		}
+	}
+	
+	return  nullptr;
+}
+
+bool FDisplayClusterProjectionCameraPolicy::CalculateView(class IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
 {
 	check(IsInGameThread());
 
 	InOutViewLocation = FVector::ZeroVector;
 	InOutViewRotation = FRotator::ZeroRotator;
-
+	
 	// Use transform of an assigned camera
-	if (AssignedCamera)
+	if (UCameraComponent* CameraComponent = GetCameraComponent())
 	{
-		InOutViewLocation = AssignedCamera->GetComponentLocation();
-		InOutViewRotation = AssignedCamera->GetComponentRotation();
+		InOutViewLocation = CameraComponent->GetComponentLocation();
+		InOutViewRotation = CameraComponent->GetComponentRotation();
 	}
-	// Otherwise default UE4 camera is used
+	// Otherwise default UE camera is used
 	else
 	{
-		if (World)
+		APlayerCameraManager* const CurPlayerCameraManager = GetCurPlayerCameraManager(InViewport);
+		if (CurPlayerCameraManager)
 		{
-			APlayerController* const CurPlayerController = World->GetFirstPlayerController();
-			if (CurPlayerController)
-			{
-				APlayerCameraManager* const CurPlayerCameraManager = CurPlayerController->PlayerCameraManager;
-				if (CurPlayerCameraManager)
-				{
-					InOutViewLocation = CurPlayerCameraManager->GetCameraLocation();
-					InOutViewRotation = CurPlayerCameraManager->GetCameraRotation();
-				}
-			}
+			InOutViewLocation = CurPlayerCameraManager->GetCameraLocation();
+			InOutViewRotation = CurPlayerCameraManager->GetCameraRotation();
 		}
 	}
+
+	// Fix camera lens deffects (prototype)
+	InOutViewLocation += CameraSettings.FrustumOffset;
+	InOutViewRotation += CameraSettings.FrustumRotation;
 
 	return true;
 }
 
-bool FDisplayClusterProjectionCameraPolicy::GetProjectionMatrix(const uint32 ViewIdx, FMatrix& OutPrjMatrix)
+bool FDisplayClusterProjectionCameraPolicy::GetProjectionMatrix(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FMatrix& OutPrjMatrix)
 {
 	check(IsInGameThread());
 
 	FComposurePostMoveSettings ComposureSettings;
 
-	if (AssignedCamera)
+	if (UCameraComponent* CameraComponent = GetCameraComponent())
 	{
-		OutPrjMatrix = ComposureSettings.GetProjectionMatrix(AssignedCamera->FieldOfView * CurrentFovMultiplier, AssignedCamera->AspectRatio);
+		// The horizontal field of view (in degrees)
+		float CameraFOV = CameraComponent->FieldOfView * CameraSettings.FOVMultiplier;
+
+		// Clamp camera fov to valid range [1.f, 178.f]
+		float ClampedCameraFOV = FMath::Clamp(CameraFOV, 1.f, 178.f);
+		if (ClampedCameraFOV != CameraFOV)
+		{
+			UE_LOG(LogDisplayClusterProjectionCamera, Warning, TEXT("CameraFOV clamped: '%d' -> '%d'. (FieldOfView='%d', FOVMultiplier='%d'"), CameraFOV, ClampedCameraFOV, CameraComponent->FieldOfView, CameraSettings.FOVMultiplier);
+		}
+
+		OutPrjMatrix = ComposureSettings.GetProjectionMatrix(ClampedCameraFOV, CameraComponent->AspectRatio);
 		return true;
 	}
 	else
 	{
-		if (World)
+		APlayerCameraManager* const CurPlayerCameraManager = GetCurPlayerCameraManager(InViewport);
+		if (CurPlayerCameraManager)
 		{
-			APlayerController* const CurPlayerController = World->GetFirstPlayerController();
-			if (CurPlayerController)
-			{
-				APlayerCameraManager* const CurPlayerCameraManager = CurPlayerController->PlayerCameraManager;
-				if (CurPlayerCameraManager)
-				{
-					OutPrjMatrix = ComposureSettings.GetProjectionMatrix(CurPlayerCameraManager->GetFOVAngle() * CurrentFovMultiplier, CurPlayerCameraManager->DefaultAspectRatio);
-					return true;
-				}
-			}
+			OutPrjMatrix = ComposureSettings.GetProjectionMatrix(CurPlayerCameraManager->GetFOVAngle() * CameraSettings.FOVMultiplier, CurPlayerCameraManager->DefaultAspectRatio);
+			return true;
 		}
 	}
 
 	return false;
 }
 
-
 //////////////////////////////////////////////////////////////////////////////////////////////
 // FDisplayClusterProjectionCameraPolicy
 //////////////////////////////////////////////////////////////////////////////////////////////
-void FDisplayClusterProjectionCameraPolicy::SetCamera(UCameraComponent* NewCamera, float FOVMultiplier)
+void FDisplayClusterProjectionCameraPolicy::SetCamera(UCameraComponent* NewCamera, const FDisplayClusterProjectionCameraPolicySettings& InCameraSettings)
 {
-	check(NewCamera);
-	check(FOVMultiplier >= 0.1f);
-
 	if (NewCamera)
 	{
 		UE_LOG(LogDisplayClusterProjectionCamera, Verbose, TEXT("New camera set: %s"), *NewCamera->GetFullName());
-		AssignedCamera = NewCamera;
+		CameraRef.SetSceneComponent(NewCamera);
 	}
 	else
 	{
+		CameraRef.ResetSceneComponent();
 		UE_LOG(LogDisplayClusterProjectionCamera, Warning, TEXT("Trying to set nullptr camera pointer"));
 	}
 
-	if (FOVMultiplier >= 0.1f)
-	{
-		UE_LOG(LogDisplayClusterProjectionCamera, Verbose, TEXT("New FOV multiplier set: %f"), FOVMultiplier);
-		CurrentFovMultiplier = FOVMultiplier;
-	}
-	else
-	{
-		UE_LOG(LogDisplayClusterProjectionCamera, Warning, TEXT("FOV multiplier is too small"));
-	}
+	CameraSettings = InCameraSettings;
 }

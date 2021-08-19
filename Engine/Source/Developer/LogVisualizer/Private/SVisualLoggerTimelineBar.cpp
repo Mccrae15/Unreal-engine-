@@ -12,8 +12,11 @@
 FReply SVisualLoggerTimelineBar::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	TimelineOwner.Pin()->OnMouseButtonDown(MyGeometry, MouseEvent);
-	FReply Replay = TimeSliderController->OnMouseButtonDown(*this, MyGeometry, MouseEvent);
-	if (Replay.IsEventHandled())
+	FReply Reply = TimeSliderController->OnMouseButtonDown(*this, MyGeometry, MouseEvent);
+	bool bHandleLeftMouseButton = MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton;
+
+	// Only snap to closest item for the left button. We keep right button to pan.
+	if (Reply.IsEventHandled() && bHandleLeftMouseButton)
 	{
 		FName RowName = TimelineOwner.Pin()->GetName();
 		FVisualLoggerDBRow& DBRow = FVisualLoggerDatabase::Get().GetRowByName(RowName);
@@ -25,15 +28,18 @@ FReply SVisualLoggerTimelineBar::OnMouseButtonDown(const FGeometry& MyGeometry, 
 			TimeSliderController->CommitScrubPosition(Items[ClosestItem].Entry.TimeStamp, false);
 		}
 	}
-	return Replay;
+	return Reply;
 }
 
 FReply SVisualLoggerTimelineBar::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	TimelineOwner.Pin()->OnMouseButtonUp(MyGeometry, MouseEvent);
 
-	FReply  Replay = TimeSliderController->OnMouseButtonUp(*this, MyGeometry, MouseEvent);
-	if (Replay.IsEventHandled())
+	// Only snap to closest item for the left button. We keep right button to pan.
+	FReply Reply = TimeSliderController->OnMouseButtonUp(*this, MyGeometry, MouseEvent);
+	bool bHandleLeftMouseButton = MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton;
+
+	if (Reply.IsEventHandled() && bHandleLeftMouseButton)
 	{
 		FName RowName = TimelineOwner.Pin()->GetName();
 		FVisualLoggerDBRow& DBRow = FVisualLoggerDatabase::Get().GetRowByName(RowName);
@@ -45,7 +51,7 @@ FReply SVisualLoggerTimelineBar::OnMouseButtonUp(const FGeometry& MyGeometry, co
 			TimeSliderController->CommitScrubPosition(Items[ClosestItem].Entry.TimeStamp, false);
 		}
 	}
-	return Replay;
+	return Reply;
 }
 
 FReply SVisualLoggerTimelineBar::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
@@ -71,12 +77,12 @@ FReply SVisualLoggerTimelineBar::OnMouseMove(const FGeometry& MyGeometry, const 
 
 			for (const FVisualLogShapeElement& Shape : CurrentEntry.ElementsToDraw)
 			{
-				TooltipBuilder += FString::Printf(TEXT("\n(shape) %s: %s"), FOutputDeviceHelper::VerbosityToString(Shape.Verbosity), *Shape.Description);
+				TooltipBuilder += FString::Printf(TEXT("\n(shape) %s: %s"), ::ToString(Shape.Verbosity), *Shape.Description);
 			}
 
 			for (const FVisualLogLine& Line : CurrentEntry.LogLines)
 			{
-				TooltipBuilder += FString::Printf(TEXT("\n(log) %s: %s"), FOutputDeviceHelper::VerbosityToString(Line.Verbosity), *Line.Line);
+				TooltipBuilder += FString::Printf(TEXT("\n(log) %s: %s"), ::ToString(Line.Verbosity), *Line.Line);
 			}
 		}
 

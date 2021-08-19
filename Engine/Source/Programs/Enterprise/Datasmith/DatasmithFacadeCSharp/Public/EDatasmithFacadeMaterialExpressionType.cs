@@ -19,5 +19,6 @@ public enum EDatasmithFacadeMaterialExpressionType {
   FunctionCall,
   Generic,
   Texture,
-  TextureCoordinate
+  TextureCoordinate,
+  None = 255
 }

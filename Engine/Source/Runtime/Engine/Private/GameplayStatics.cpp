@@ -976,6 +976,33 @@ void UGameplayStatics::GetAllActorsOfClassWithTag(const UObject* WorldContextObj
 	}
 }
 
+AActor* UGameplayStatics::FindNearestActor(FVector Origin, const TArray<AActor*>& ActorsToCheck, float& Distance)
+{
+	AActor* NearestActor = nullptr;
+	float DistanceFromNearestActor = Distance = TNumericLimits<float>::Max();
+
+	for (AActor* ActorToCheck : ActorsToCheck)
+	{
+		if (ActorToCheck)
+		{
+			const float DistanceFromActorToCheck = (Origin - ActorToCheck->GetActorLocation()).SizeSquared();
+			if (DistanceFromActorToCheck < DistanceFromNearestActor)
+			{
+				NearestActor = ActorToCheck;
+				DistanceFromNearestActor = DistanceFromActorToCheck;
+			}
+		}
+	}
+
+	if (NearestActor)
+	{
+		Distance = FMath::Sqrt(DistanceFromNearestActor);
+	}
+
+	return NearestActor;
+}
+
+
 void UGameplayStatics::PlayWorldCameraShake(const UObject* WorldContextObject, TSubclassOf<class UCameraShakeBase> Shake, FVector Epicenter, float InnerRadius, float OuterRadius, float Falloff, bool bOrientShakeTowardsEpicenter)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
@@ -1157,7 +1184,7 @@ UParticleSystemComponent* UGameplayStatics::SpawnEmitterAttached(UParticleSystem
 	return PSC;
 }
 
-void UGameplayStatics::BreakHitResult(const FHitResult& Hit, bool& bBlockingHit, bool& bInitialOverlap, float& Time, float& Distance, FVector& Location, FVector& ImpactPoint, FVector& Normal, FVector& ImpactNormal, UPhysicalMaterial*& PhysMat, AActor*& HitActor, UPrimitiveComponent*& HitComponent, FName& HitBoneName, int32& HitItem, int32& FaceIndex, FVector& TraceStart, FVector& TraceEnd)
+void UGameplayStatics::BreakHitResult(const FHitResult& Hit, bool& bBlockingHit, bool& bInitialOverlap, float& Time, float& Distance, FVector& Location, FVector& ImpactPoint, FVector& Normal, FVector& ImpactNormal, UPhysicalMaterial*& PhysMat, AActor*& HitActor, UPrimitiveComponent*& HitComponent, FName& HitBoneName, int32& HitItem, int32& ElementIndex, int32& FaceIndex, FVector& TraceStart, FVector& TraceEnd)
 {
 	SCOPE_CYCLE_COUNTER(STAT_BreakHitResult);
 	bBlockingHit = Hit.bBlockingHit;
@@ -1173,12 +1200,13 @@ void UGameplayStatics::BreakHitResult(const FHitResult& Hit, bool& bBlockingHit,
 	HitComponent = Hit.GetComponent();
 	HitBoneName = Hit.BoneName;
 	HitItem = Hit.Item;
+	ElementIndex = Hit.ElementIndex;
 	TraceStart = Hit.TraceStart;
 	TraceEnd = Hit.TraceEnd;
 	FaceIndex = Hit.FaceIndex;
 }
 
-FHitResult UGameplayStatics::MakeHitResult(bool bBlockingHit, bool bInitialOverlap, float Time, float Distance, FVector Location, FVector ImpactPoint, FVector Normal, FVector ImpactNormal, class UPhysicalMaterial* PhysMat, class AActor* HitActor, class UPrimitiveComponent* HitComponent, FName HitBoneName, int32 HitItem, int32 FaceIndex, FVector TraceStart, FVector TraceEnd)
+FHitResult UGameplayStatics::MakeHitResult(bool bBlockingHit, bool bInitialOverlap, float Time, float Distance, FVector Location, FVector ImpactPoint, FVector Normal, FVector ImpactNormal, class UPhysicalMaterial* PhysMat, class AActor* HitActor, class UPrimitiveComponent* HitComponent, FName HitBoneName, int32 HitItem, int32 ElementIndex, int32 FaceIndex, FVector TraceStart, FVector TraceEnd)
 {
 	SCOPE_CYCLE_COUNTER(STAT_MakeHitResult);
 	FHitResult Hit;
@@ -1195,6 +1223,7 @@ FHitResult UGameplayStatics::MakeHitResult(bool bBlockingHit, bool bInitialOverl
 	Hit.Component = HitComponent;
 	Hit.BoneName = HitBoneName;
 	Hit.Item = HitItem;
+	Hit.ElementIndex = ElementIndex;
 	Hit.TraceStart = TraceStart;
 	Hit.TraceEnd = TraceEnd;
 	Hit.FaceIndex = FaceIndex;
@@ -1489,7 +1518,7 @@ UAudioComponent* UGameplayStatics::SpawnSoundAtLocation(const UObject* WorldCont
 		AudioComponent->SetWorldLocationAndRotation(Location, Rotation);
 		AudioComponent->SetVolumeMultiplier(VolumeMultiplier);
 		AudioComponent->SetPitchMultiplier(PitchMultiplier);
-		AudioComponent->bAllowSpatialization	= bIsInGameWorld;
+		AudioComponent->bAllowSpatialization	= Params.ShouldUseAttenuation();
 		AudioComponent->bIsUISound				= !bIsInGameWorld;
 		AudioComponent->bAutoDestroy			= bAutoDestroy;
 		AudioComponent->SubtitlePriority		= Sound->GetSubtitlePriority();
@@ -1574,7 +1603,7 @@ UAudioComponent* UGameplayStatics::SpawnSoundAttached(USoundBase* Sound, USceneC
 
 			AudioComponent->SetVolumeMultiplier(VolumeMultiplier);
 			AudioComponent->SetPitchMultiplier(PitchMultiplier);
-			AudioComponent->bAllowSpatialization = bIsInGameWorld;
+			AudioComponent->bAllowSpatialization = Params.ShouldUseAttenuation();
 			AudioComponent->bIsUISound = !bIsInGameWorld;
 			AudioComponent->bAutoDestroy = bAutoDestroy;
 			AudioComponent->SubtitlePriority = Sound->GetSubtitlePriority();
@@ -1696,9 +1725,37 @@ void UGameplayStatics::PrimeSound(USoundBase* InSound)
 	}
 	else if (USoundWave* InSoundWave = Cast<USoundWave>(InSound))
 	{
-		if (InSoundWave->GetNumChunks() > 1)
+#if WITH_EDITORONLY_DATA
+		InSoundWave->CachePlatformData(false); // (an ensure told me to do this)
+#endif // WITH_EDITORONLY_DATA
+
+		if (InSoundWave->HasStreamingChunks() && InSoundWave->GetNumChunks() > 1)
 		{
-			IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InSoundWave, 1, TFunction<void(EAudioChunkLoadResult)>());
+			IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InSoundWave, 1, [](EAudioChunkLoadResult) {});
+		}
+	}
+}
+
+void UGameplayStatics::PrimeAllSoundsInSoundClass(class USoundClass* InSoundClass)
+{
+	for (TObjectIterator<USoundWave> Itr; Itr; ++Itr)
+	{
+		const USoundClass* SoundClass = Itr->GetSoundClass();	
+		if (SoundClass && (SoundClass->GetName() == InSoundClass->GetName()))
+		{
+			PrimeSound(*Itr);
+		}
+	}
+}
+
+void UGameplayStatics::UnRetainAllSoundsInSoundClass(USoundClass* InSoundClass)
+{
+	for (TObjectIterator<USoundWave> Itr; Itr; ++Itr)
+	{
+		const USoundClass* SoundClass = Itr->GetSoundClass();
+		if (SoundClass && (SoundClass->GetName() == InSoundClass->GetName()))
+		{
+			Itr->ReleaseCompressedAudio();
 		}
 	}
 }
@@ -1881,6 +1938,11 @@ int32 UGameplayStatics::GetMaxAudioChannelCount(const UObject* WorldContextObjec
 
 UDecalComponent* CreateDecalComponent(class UMaterialInterface* DecalMaterial, FVector DecalSize, UWorld* World, AActor* Actor, float LifeSpan)
 {
+	if (World && World->GetNetMode() == NM_DedicatedServer)
+	{
+		return nullptr;
+	}
+
 	UDecalComponent* DecalComp = NewObject<UDecalComponent>((Actor ? Actor : (UObject*)World));
 	DecalComp->bAllowAnyoneToDestroyMe = true;
 	DecalComp->SetDecalMaterial(DecalMaterial);
@@ -1903,7 +1965,10 @@ UDecalComponent* UGameplayStatics::SpawnDecalAtLocation(const UObject* WorldCont
 		if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
 		{
 			UDecalComponent* DecalComp = CreateDecalComponent(DecalMaterial, DecalSize, World, World->GetWorldSettings(), LifeSpan);
-			DecalComp->SetWorldLocationAndRotation(Location, Rotation);
+			if (DecalComp)
+			{
+				DecalComp->SetWorldLocationAndRotation(Location, Rotation);
+			}
 			return DecalComp;
 		}
 	}
@@ -1931,15 +1996,19 @@ UDecalComponent* UGameplayStatics::SpawnDecalAttached(class UMaterialInterface* 
 				else
 				{
 					UDecalComponent* DecalComp = CreateDecalComponent(DecalMaterial, DecalSize, AttachToComponent->GetWorld(), AttachToComponent->GetOwner(), LifeSpan);
-					DecalComp->AttachToComponent(AttachToComponent, FAttachmentTransformRules::KeepRelativeTransform, AttachPointName);
-					if (LocationType == EAttachLocation::KeepWorldPosition)
+					if (DecalComp)
 					{
-						DecalComp->SetWorldLocationAndRotation(Location, Rotation);
+						DecalComp->AttachToComponent(AttachToComponent, FAttachmentTransformRules::KeepRelativeTransform, AttachPointName);
+						if (LocationType == EAttachLocation::KeepWorldPosition)
+						{
+							DecalComp->SetWorldLocationAndRotation(Location, Rotation);
+						}
+						else
+						{
+							DecalComp->SetRelativeLocationAndRotation(Location, Rotation);
+						}
 					}
-					else
-					{
-						DecalComp->SetRelativeLocationAndRotation(Location, Rotation);
-					}
+					
 					return DecalComp;
 				}
 			}
@@ -2221,7 +2290,7 @@ float UGameplayStatics::GetAudioTimeSeconds(const UObject* WorldContextObject)
 	return World ? World->GetAudioTimeSeconds() : 0.f;
 }
 
-void UGameplayStatics::GetAccurateRealTime(const UObject* WorldContextObject, int32& Seconds, float& PartialSeconds)
+void UGameplayStatics::GetAccurateRealTime(int32& Seconds, float& PartialSeconds)
 {
 	double TimeSeconds = FPlatformTime::Seconds() - GStartTime;
 	Seconds = floor(TimeSeconds);

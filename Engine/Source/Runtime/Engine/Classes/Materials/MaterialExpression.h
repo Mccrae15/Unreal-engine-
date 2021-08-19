@@ -17,7 +17,7 @@ class UMaterial;
 class UTexture;
 struct FPropertyChangedEvent;
 
-//@warning: FExpressionInput is mirrored in MaterialShared.h and manually "subclassed" in Material.h (FMaterialInput)
+//@warning: FExpressionInput is mirrored in MaterialExpressionIO.h and manually "subclassed" in Material.h (FMaterialInput)
 #if !CPP      //noexport struct
 USTRUCT(noexport)
 struct FExpressionInput
@@ -32,7 +32,6 @@ struct FExpressionInput
 	UPROPERTY()
 	int32 OutputIndex;
 
-#if WITH_EDITORONLY_DATA
 	/** 
 	 * optional FName of the input.  
 	 * Note that this is the only member which is not derived from the output currently connected. 
@@ -40,6 +39,7 @@ struct FExpressionInput
 	UPROPERTY()
 	FName InputName;
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	int32 Mask;
 
@@ -211,7 +211,14 @@ class ENGINE_API UMaterialExpression : public UObject
 	{
 		return true;
 	}
+	virtual bool HasNonEditorOnlyReferences() const override
+	{
+		return true;
+	}
 	//~ End UObject Interface.
+
+	UObject* GetAssetOwner() const;
+	FString GetAssetPathName() const;
 
 #if WITH_EDITOR
 	/**
@@ -417,6 +424,12 @@ class ENGINE_API UMaterialExpression : public UObject
 
 	virtual FName GetParameterName() const { return NAME_None; }
 	virtual void SetParameterName(const FName& Name) {}
+
+	/**
+	 * Called after a node copy, once the Material and Function properties are set correctly and that all new expressions are added to Material->Expressions
+	 * @param	CopiedExpressions	The expressions copied in this copy
+	 */
+	virtual void PostCopyNode(const TArray<UMaterialExpression*>& CopiedExpressions) {}
 
 	virtual bool HasConnectedOutputs() const;
 

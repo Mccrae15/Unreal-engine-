@@ -69,14 +69,4 @@ void UMovieSceneStringTrack::RemoveSectionAt(int32 SectionIndex)
 	Sections.RemoveAt(SectionIndex);
 }
 
-#if WITH_EDITORONLY_DATA
-
-FText UMovieSceneStringTrack::GetDefaultDisplayName() const
-{ 
-	return Super::GetDefaultDisplayName();
-}
-
-#endif
-
-
 #undef LOCTEXT_NAMESPACE

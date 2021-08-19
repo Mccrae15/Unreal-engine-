@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "DMXProtocolCommon.h"
+#include "Serialization/BufferArchive.h"
 
 struct IDMXProtocolPacket
 {
 public:
 	virtual ~IDMXProtocolPacket() {}
 
-	virtual TSharedPtr<FBufferArchive> Pack() { return nullptr; };
+	virtual TSharedPtr<FBufferArchive> Pack(const uint16 PropertiesNum) { return nullptr; };
 };

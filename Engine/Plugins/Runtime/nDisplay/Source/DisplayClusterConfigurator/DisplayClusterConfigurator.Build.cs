@@ -10,28 +10,39 @@ public class DisplayClusterConfigurator : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"DisplayCluster",
+				"DisplayClusterConfiguration",
+				"DisplayClusterProjection",
+
 				"AdvancedPreviewScene",
+				"ApplicationCore",
+				"AppFramework",
 				"AssetTools",
+				"CinematicCamera",
 				"Core",
 				"CoreUObject",
 				"DesktopPlatform",
-				"DisplayCluster",
-				"DisplayClusterConfiguration",
+				"BlueprintGraph",
 				"GraphEditor",
 				"EditorStyle",
 				"EditorSubsystem",
 				"EditorWidgets",
 				"Engine",
+				"ImageWrapper",
 				"InputCore",
+				"Kismet",
+				"KismetCompiler",
+				"MainFrame",
 				"MessageLog",
 				"PinnedCommandList",
 				"Projects",
+				"PropertyEditor",
 				"Serialization",
 				"Settings",
 				"Slate",
 				"SlateCore",
 				"ToolMenus",
-				"UnrealEd"
+				"UnrealEd",
 			});
 	}
 }

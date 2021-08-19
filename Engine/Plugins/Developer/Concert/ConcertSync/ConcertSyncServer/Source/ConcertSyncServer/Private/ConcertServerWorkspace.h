@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "IConcertSessionHandler.h"
 #include "ConcertWorkspaceMessages.h"
-
+#include "Misc/Optional.h"
 class IConcertServerSession;
 class IConcertFileSharingService;
 class FConcertSyncServerLiveSession;
@@ -30,6 +30,25 @@ public:
 	~FConcertServerWorkspace();
 
 private:
+	/**
+	 * Get the sync event for a transaction activity in the session database.
+	 *
+	 * @param InSyncActivityId			The ID of the activity to send the sync event for.
+	 * @param InNumRemainingSyncEvents	The number of items left in the sync queue.
+	 * @param InLiveOnly				True if the bulk of the transaction data should only be sent if this transaction is live.
+	 * Returns the transaction activity event for the given activity id.
+	 */
+	TOptional<FConcertWorkspaceSyncActivityEvent> SyncTransactionActivityEvent(const int64 InSyncActivityId, const int32 InNumRemainingSyncEvents, const bool InLiveOnly = true) const;
+
+	/**
+	 * Get the sync event for a package activity in the session database.
+	 *
+	 * @param InSyncActivityId			The ID of the activity to send the sync event for.
+	 * @param InHeadOnly				True if we are only interested in the head revision
+	 * Returns the package activity event for the given activity id.
+	 */
+	TOptional<FConcertWorkspaceSyncActivityEvent> MakeSyncActivityEvent(const int64 InSyncActivityId, const bool bInHeadOnly = true) const;
+
 	/** Bind the workspace to this session. */
 	void BindSession(const TSharedRef<FConcertSyncServerLiveSession>& InLiveSession);
 
@@ -77,6 +96,9 @@ private:
 
 	/** Invoked when the cient corresponding to the specified endpoint exits a "Play" mode such as PIE or SIE. */
 	void HandleEndPlaySessions(const FGuid& InEndpointId);
+
+	/** A special event sent from the client to enable / disable additional logging on the server. */
+	void HandleServerLoggingEvent(const FConcertSessionContext& Context, const FConcertServerLogging& Event);
 
 	/** Returns the package name being played (PIE/SIE) by the specified client endpoint if that endpoint is in such play mode, otherwise, returns an empty name. */
 	FName FindPlaySession(const FGuid& InEndpointId);
@@ -208,13 +230,10 @@ private:
 	/**
 	 * Send a sync event for a package activity in the session database.
 	 *
-	 * @param InTargetEndpointId		The ID of the endpoint to send the sync event to.
-	 * @param InSyncActivityId			The ID of the activity to send the sync event for.
-	 * @param InNumRemainingSyncEvents	The number of items left in the sync queue.
-	 * @param InHeadOnly				True if the bulk of the package data should only be sent if this package is the head revision.
+	 * @param SyncEvent				The ID of the endpoint to send the sync event to.
+	 * @param InSyncActivityId		The ID of the activity to send the sync event for.
 	 */
-	void SendSyncPackageActivityEvent(const FGuid& InTargetEndpointId, const int64 InSyncActivityId, const int32 InNumRemainingSyncEvents, const bool InHeadOnly = true) const;
-
+	void SendSyncPackageActivityEvent(const FConcertWorkspaceSyncActivityEvent& SyncEvent, const FGuid& InTargetEndpointId) const;
 	/**
 	 * Called after any activity is added to the session database.
 	 *

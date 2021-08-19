@@ -4,36 +4,53 @@
 #include "DatasmithPlmXmlImporter.h"
 #include "DatasmithPlmXmlTranslatorModule.h"
 
-#ifdef CAD_LIBRARY
 #include "CADInterfacesModule.h"
-#endif
 
 #include "DatasmithSceneFactory.h"
 #include "DatasmithSceneSource.h"
 #include "DatasmithImportOptions.h"
 #include "IDatasmithSceneElements.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogDatasmithXMLPLMTranslator, Log, All);
+#include "CoreGlobals.h"
+#if WITH_EDITOR
+#include "Editor.h"
+#endif
+
+DEFINE_LOG_CATEGORY_STATIC(LogDatasmithXMLPLMTranslator, Log, All)
 
 
 void FDatasmithPlmXmlTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCapabilities)
 {
-#ifdef CAD_LIBRARY
-	if (ICADInterfacesModule::IsAvailable() == ECADInterfaceAvailability::Unavailable)
+#if WITH_EDITOR
+	if (GIsEditor && !GEditor->PlayWorld && !GIsPlayInEditorWorld)
 	{
-		UE_LOG(LogDatasmithXMLPLMTranslator, Warning, TEXT("CAD Interface module is unavailable. Most of CAD formats (except to Rhino and Alias formats) cannot be imported."));
+		if (ICADInterfacesModule::GetAvailability() == ECADInterfaceAvailability::Unavailable)
+		{
+			UE_LOG(LogDatasmithXMLPLMTranslator, Warning, TEXT("CAD Interface module is unavailable. Most of CAD formats (except to Rhino and Alias formats) cannot be imported."));
+		}
+
+		OutCapabilities.bIsEnabled = true;
+		OutCapabilities.bParallelLoadStaticMeshSupported = true;
+
+		TArray<FFileFormatInfo>& Formats = OutCapabilities.SupportedFileFormats;
+		Formats.Emplace(TEXT("plmxml"), TEXT("PLMXML"));
+		Formats.Emplace(TEXT("xml"), TEXT("PLMXML"));
+
+		return;
 	}
-#else
+#endif
+
 	OutCapabilities.bIsEnabled = false;
-	return;
-#endif // CAD_INTERFACE
+}
 
-	OutCapabilities.bIsEnabled = true;
-	OutCapabilities.bParallelLoadStaticMeshSupported = true;
+bool FDatasmithPlmXmlTranslator::IsSourceSupported(const FDatasmithSceneSource& Source)
+{
+	if (Source.GetSourceFileExtension() != TEXT("xml"))
+	{
+		return true;
+	}
 
-	TArray<FFileFormatInfo>& Formats = OutCapabilities.SupportedFileFormats;
-    Formats.Emplace(TEXT("plmxml"), TEXT("PLMXML"));
-    Formats.Emplace(TEXT("xml"), TEXT("PLMXML"));
+	return Datasmith::CheckXMLFileSchema(Source.GetSourceFile(), TEXT("PLMXML"));
 }
 
 bool FDatasmithPlmXmlTranslator::LoadScene(TSharedRef<IDatasmithScene> OutScene)

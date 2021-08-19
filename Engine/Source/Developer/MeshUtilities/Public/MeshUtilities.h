@@ -7,7 +7,6 @@
 #include "Modules/ModuleInterface.h"
 #include "Components.h"
 #include "Engine/MeshMerging.h"
-#include "SkelImport.h"
 #include "MeshBuild.h"
 
 #include "IMeshMergeUtilities.h"
@@ -19,6 +18,8 @@ class UStaticMeshComponent;
 struct FFlattenMaterial;
 struct FRawMesh;
 struct FStaticMeshLODResources;
+class FSkeletalMeshLODModel;
+struct FRawSkinWeight;
 
 typedef FIntPoint FMeshIdAndLOD;
 struct FFlattenMaterial;
@@ -26,6 +27,13 @@ struct FReferenceSkeleton;
 struct FStaticMeshLODResources;
 class UMeshComponent;
 class UStaticMesh;
+
+namespace SkeletalMeshImportData
+{
+	struct FMeshFace;
+	struct FMeshWedge;
+	struct FVertInfluence;
+};
 
 namespace ETangentOptions
 {
@@ -232,6 +240,7 @@ public:
 		, bComputeTangents(true)
 		, bUseMikkTSpace(false)
 		, bComputeWeightedNormals(false)
+		, TargetPlatform(nullptr)
 		{
 		}
 
@@ -241,6 +250,7 @@ public:
 		bool bUseMikkTSpace;
 		bool bComputeWeightedNormals;
 		FOverlappingThresholds OverlappingThresholds;
+		const class ITargetPlatform* TargetPlatform;
 
 		void FillOptions(const FSkeletalMeshBuildSettings& SkeletalMeshBuildSettings)
 		{
@@ -287,6 +297,19 @@ public:
 		const TArray<uint32>& Indices,
 		TArray<uint32>& OutPnAenIndices
 		) = 0;
+
+	/**
+	 *  Calculate The tangent, bi normal and normal for the triangle define by the tree SoftSkinVertex.
+	 *
+	 *  @note The function will always fill properly the OutTangents array with 3 FVector. If the triangle is degenerated the OutTangent will contain zeroed vectors.
+	 *
+	 *  @param VertexA - First triangle vertex.
+	 *  @param VertexB - Second triangle vertex.
+	 *  @param VertexC - Third triangle vertex.
+	 *  @param OutTangents - The function allocate the TArray with 3 FVector, to represent the triangle tangent, bi normal and normal.
+	 *  @param CompareThreshold - The threshold use to compare a tangent vector with zero.
+	 */
+	virtual void CalculateTriangleTangent(const FSoftSkinVertex& VertexA, const FSoftSkinVertex& VertexB, const FSoftSkinVertex& VertexC, TArray<FVector>& OutTangents, float CompareThreshold) = 0;
 
 	/**
 	 *	Calculate the verts associated weighted to each bone of the skeleton.
@@ -391,4 +414,10 @@ public:
 
 	/** Used to generate runtime skin weight data from Editor-only data */
 	virtual void GenerateRuntimeSkinWeightData(const FSkeletalMeshLODModel* ImportedModel, const TArray<FRawSkinWeight>& InRawSkinWeights, struct FRuntimeSkinWeightProfileData& InOutSkinWeightOverrideData) const = 0;
+
+	/*
+	 * This function create the import data using the LODModel. You can call this function if you load an asset that was not re-import since the build refactor and the chunking is more agressive than the bake data in the LODModel.
+	 * You can also need this function if you create a skeletalmesh with LODModel instead of import data, so your newly created skeletalmesh can be build properly.
+	 */
+	virtual void CreateImportDataFromLODModel(USkeletalMesh* SkeletalMesh) const = 0;
 };

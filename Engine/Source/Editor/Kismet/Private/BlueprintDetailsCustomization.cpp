@@ -359,13 +359,16 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 		.Font( DetailFontInfo )
 	]
 	.ValueContent()
+	.MinDesiredWidth(250.f)
+	.MaxDesiredWidth(250.f)
 	[
-		SNew(SEditableTextBox)
+		SNew(SMultiLineEditableTextBox)
 		.Text( this, &FBlueprintVarActionDetails::OnGetTooltipText )
 		.ToolTipText( this, &FBlueprintVarActionDetails::OnGetTooltipText )
 		.OnTextCommitted( this, &FBlueprintVarActionDetails::OnTooltipTextCommitted, CachedVariableName )
 		.IsEnabled(IsVariableInBlueprint())
 		.Font( DetailFontInfo )
+		.ModiferKeyForNewLine(EModifierKey::Shift)
 	];
 
 	TSharedPtr<SToolTip> Widget3DTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("VariableWidget3D_Tooltip", "When true, allows the user to tweak the vector variable by using a 3D transform widget in the viewport (usable when varible is public/enabled)."), NULL, DocLink, TEXT("Widget3D"));
@@ -3452,6 +3455,23 @@ void FBlueprintGraphActionDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 					.OnCheckStateChanged( this, &FBlueprintGraphActionDetails::OnIsConstFunctionModified )
 				];
 			}
+			if (IsExecFunctionVisible())
+			{
+				Category.AddCustomRow( LOCTEXT( "FunctionExec_Tooltip", "Exec" ), true )
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text( LOCTEXT( "FunctionExec_Tooltip", "Exec" ) )
+					.ToolTipText( LOCTEXT("FunctionIsExec_Tooltip", "Cause this function to be able to process console commands?") )
+					.Font( IDetailLayoutBuilder::GetDetailFont() )
+				]
+				.ValueContent()
+				[
+					SNew( SCheckBox )
+					.IsChecked( this, &FBlueprintGraphActionDetails::GetIsExecFunction )
+					.OnCheckStateChanged( this, &FBlueprintGraphActionDetails::OnIsExecFunctionModified )
+				];
+			}
 		}
 
 		if (bIsCustomEvent)
@@ -4346,7 +4366,7 @@ bool FBaseBlueprintGraphActionDetails::OnVerifyPinRename(UK2Node_EditablePinBase
 		return true;
 	}
 
-	if (InNewName.Len() > NAME_SIZE)
+	if (InNewName.Len() >= NAME_SIZE)
 	{
 		OutErrorMessage = FText::Format( LOCTEXT("PinNameTooLong", "The name you entered is too long. Names must be less than {0} characters"), FText::AsNumber( NAME_SIZE ) );
 		return false;
@@ -5033,6 +5053,48 @@ ECheckBoxState FBlueprintGraphActionDetails::GetIsConstFunction() const
 		return ECheckBoxState::Undetermined;
 	}
 	return (EntryNode->GetFunctionFlags() & FUNC_Const) ? ECheckBoxState::Checked :  ECheckBoxState::Unchecked;
+}
+
+bool FBlueprintGraphActionDetails::IsExecFunctionVisible() const
+{
+	bool bSupportedType = false;
+	bool bIsEditable = false;
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
+	if (FunctionEntryNode)
+	{
+		bSupportedType = FunctionEntryNode->IsA<UK2Node_FunctionEntry>();
+		bIsEditable = FunctionEntryNode->IsEditable();
+	}
+	return bSupportedType && bIsEditable;
+}
+
+void FBlueprintGraphActionDetails::OnIsExecFunctionModified(const ECheckBoxState NewCheckedState)
+{
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UFunction* Function = FindFunction();
+	UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(FunctionEntryNode);
+	if (EntryNode && Function)
+	{
+		const FScopedTransaction Transaction(LOCTEXT("ChangeExec", "Change Exec"));
+		EntryNode->Modify();
+		Function->Modify();
+
+		//set flags on function entry node also
+		Function->FunctionFlags ^= FUNC_Exec;
+		EntryNode->SetExtraFlags(EntryNode->GetExtraFlags() ^ FUNC_Exec);
+		OnParamsChanged(FunctionEntryNode);
+	}
+}
+
+ECheckBoxState FBlueprintGraphActionDetails::GetIsExecFunction() const
+{
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(FunctionEntryNode);
+	if (!EntryNode)
+	{
+		return ECheckBoxState::Undetermined;
+	}
+	return (EntryNode->GetFunctionFlags() & FUNC_Exec) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
 FReply FBaseBlueprintGraphActionDetails::OnAddNewInputClicked()

@@ -24,6 +24,22 @@
 #define JSON_SERIALIZE(JsonName, JsonValue) \
 		Serializer.Serialize(TEXT(JsonName), JsonValue)
 
+#define JSON_SERIALIZE_OPTIONAL(JsonName, OptionalJsonValue) \
+		if (Serializer.IsLoading()) \
+		{ \
+			if (Serializer.GetObject()->HasField(TEXT(JsonName))) \
+			{ \
+				Serializer.Serialize(TEXT(JsonName), OptionalJsonValue.Emplace()); \
+			} \
+		} \
+		else \
+		{ \
+			if (OptionalJsonValue.IsSet()) \
+			{ \
+				Serializer.Serialize(TEXT(JsonName), OptionalJsonValue.GetValue()); \
+			} \
+		}
+
 #define JSON_SERIALIZE_ARRAY(JsonName, JsonArray) \
 		Serializer.SerializeArray(TEXT(JsonName), JsonArray)
 
@@ -87,6 +103,32 @@
 			Serializer.EndArray(); \
 		}
 
+#define JSON_SERIALIZE_OPTIONAL_ARRAY_SERIALIZABLE(JsonName, OptionalJsonArray, ElementType) \
+		if (Serializer.IsLoading()) \
+		{ \
+			if (Serializer.GetObject()->HasTypedField<EJson::Array>(JsonName)) \
+			{ \
+				TArray<ElementType>& JsonArray = OptionalJsonArray.Emplace(); \
+				for (auto It = Serializer.GetObject()->GetArrayField(JsonName).CreateConstIterator(); It; ++It) \
+				{ \
+					ElementType* Obj = new(JsonArray) ElementType(); \
+					Obj->FromJson((*It)->AsObject()); \
+				} \
+			} \
+		} \
+		else \
+		{ \
+			if (OptionalJsonArray.IsSet()) \
+			{ \
+				Serializer.StartArray(JsonName); \
+				for (auto It = OptionalJsonArray->CreateIterator(); It; ++It) \
+				{ \
+					It->Serialize(Serializer, false); \
+				} \
+				Serializer.EndArray(); \
+			} \
+		}
+
 #define JSON_SERIALIZE_MAP_SERIALIZABLE(JsonName, JsonMap, ElementType) \
 		if (Serializer.IsLoading()) \
 		{ \
@@ -133,6 +175,30 @@
 			Serializer.StartObject(JsonName); \
 			(JsonSerializableObject).Serialize(Serializer, true); \
 			Serializer.EndObject(); \
+		}
+
+#define JSON_SERIALIZE_OPTIONAL_OBJECT_SERIALIZABLE(JsonName, JsonSerializableObject) \
+		if (Serializer.IsLoading()) \
+		{ \
+			using ObjectType = TRemoveReference<decltype(JsonSerializableObject.GetValue())>::Type; \
+			if (Serializer.GetObject()->HasTypedField<EJson::Object>(JsonName)) \
+			{ \
+				TSharedPtr<FJsonObject> JsonObj = Serializer.GetObject()->GetObjectField(JsonName); \
+				if (JsonObj.IsValid()) \
+				{ \
+					JsonSerializableObject = ObjectType{}; \
+					JsonSerializableObject.GetValue().FromJson(JsonObj); \
+				} \
+			} \
+		} \
+		else \
+		{ \
+			if (JsonSerializableObject.IsSet()) \
+			{ \
+				Serializer.StartObject(JsonName); \
+				(JsonSerializableObject.GetValue()).Serialize(Serializer, true); \
+				Serializer.EndObject(); \
+			} \
 		}
 
 #define JSON_SERIALIZE_DATETIME_UNIX_TIMESTAMP(JsonName, JsonDateTime) \

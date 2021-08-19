@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraMessages.h"
+
+#include "NiagaraEditorUtilities.h"
 #include "NiagaraMessageManager.h"
+#include "NiagaraMessageUtilities.h"
 #include "NiagaraScriptSourceBase.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraNodeEmitter.h"
@@ -10,6 +13,16 @@
 
 const FName FNiagaraMessageTopics::CompilerTopicName = "Compiler";
 const FName FNiagaraMessageTopics::ObjectTopicName = "Object";
+
+FText INiagaraMessage::GenerateMessageTitle() const
+{
+	return FText::GetEmpty();
+}
+
+bool INiagaraMessage::AllowDismissal() const
+{
+	return false;
+}
 
 FNiagaraMessageCompileEvent::FNiagaraMessageCompileEvent(
 	const FNiagaraCompileEvent& InCompileEvent
@@ -129,6 +142,40 @@ FText FNiagaraMessageCompileEvent::GenerateMessageText() const
 	}
 }
 
+FText FNiagaraMessageCompileEvent::GenerateMessageTitle() const
+{
+	EStackIssueSeverity StackIssueSeverity;
+	switch (CompileEvent.Severity)
+	{
+	case FNiagaraCompileEventSeverity::Error:
+		StackIssueSeverity = EStackIssueSeverity::Error;
+		break;
+	case FNiagaraCompileEventSeverity::Warning:
+		StackIssueSeverity = EStackIssueSeverity::Warning;
+		break;
+	case FNiagaraCompileEventSeverity::Log:
+		StackIssueSeverity = EStackIssueSeverity::Info;
+		break;
+	default:
+		StackIssueSeverity = EStackIssueSeverity::Info;
+		break;
+	}
+
+	if (!CompileEvent.ShortDescription.IsEmpty())
+	{
+		return FText::FromString(CompileEvent.ShortDescription);
+	}
+	else
+	{
+		return FNiagaraMessageUtilities::GetShortDescriptionFromSeverity(StackIssueSeverity);
+	}
+}
+
+bool FNiagaraMessageCompileEvent::AllowDismissal() const
+{
+	return CompileEvent.bDismissable;
+}
+
 void FNiagaraMessageCompileEvent::GenerateLinks(TArray<FText>& OutLinkDisplayNames, TArray<FSimpleDelegate>& OutLinkNavigationActions) const
 {
 	// TODO: Do this without instantiating these tokens.
@@ -173,11 +220,13 @@ void FNiagaraMessageCompileEvent::GenerateLinks(TArray<FText>& OutLinkDisplayNam
 FNiagaraMessageJobCompileEvent::FNiagaraMessageJobCompileEvent(
 	const FNiagaraCompileEvent& InCompileEvent
 	, const TWeakObjectPtr<const UNiagaraScript>& InOriginatingScriptWeakObjPtr
+	, FGuid InCompiledScriptVersion
 	, const TOptional<const FString>& InOwningScriptNameString
 	, const TOptional<const FString>& InSourceScriptAssetPath
 	)
 	: CompileEvent(InCompileEvent)
 	, OriginatingScriptWeakObjPtr(InOriginatingScriptWeakObjPtr)
+	, CompiledScriptVersion(InCompiledScriptVersion)
 	, OwningScriptNameString(InOwningScriptNameString)
 	, SourceScriptAssetPath(InSourceScriptAssetPath)
 {
@@ -189,7 +238,7 @@ TSharedRef<const INiagaraMessage> FNiagaraMessageJobCompileEvent::GenerateNiagar
 
 	if (OriginatingScriptWeakObjPtr.IsValid())
 	{
-		const UNiagaraScriptSourceBase* FunctionScriptSourceBase = OriginatingScriptWeakObjPtr->GetSource();
+		const UNiagaraScriptSourceBase* FunctionScriptSourceBase = OriginatingScriptWeakObjPtr->GetSource(CompiledScriptVersion);
 		checkf(FunctionScriptSourceBase->IsA<UNiagaraScriptSource>(), TEXT("Script source for function call node is not assigned or is not of type UNiagaraScriptSource!"))
 			const UNiagaraScriptSource* FunctionScriptSource = Cast<UNiagaraScriptSource>(FunctionScriptSourceBase);
 		checkf(FunctionScriptSource, TEXT("Script source base was somehow not a derived type!"));
@@ -297,7 +346,7 @@ bool FNiagaraMessageJobCompileEvent::RecursiveGetScriptNamesAndAssetPathsFromCon
 				OutFailureReason = FText::Format(FailureReason, FText::FromString(FunctionCallNode->GetFunctionName()));
 				return false;
 			}
-			UNiagaraScriptSourceBase* FunctionScriptSourceBase = FunctionCallNodeAssignedScript->GetSource();
+			UNiagaraScriptSourceBase* FunctionScriptSourceBase = FunctionCallNode->GetFunctionScriptSource();
 			if (FunctionScriptSourceBase == nullptr)
 			{
 				FText FailureReason = LOCTEXT("GenerateCompileEventMessage_FunctionCallNodeScriptSourceBaseNotFound", "Source Script for Function Call Node \"{0}\" not found!");
@@ -333,9 +382,21 @@ bool FNiagaraMessageJobCompileEvent::RecursiveGetScriptNamesAndAssetPathsFromCon
 		checkf(false, TEXT("Matching node is not a function call or emitter node!"));
 	}
 	FText FailureReason = LOCTEXT("CompileEventMessageGenerator_CouldNotFindMatchingNodeGUID", "Failed to walk the entire context stack, is this compile event out of date ? Event: '{0}'");
-	FText::Format(FailureReason, FText::FromString(CompileEvent.Message));
-	OutFailureReason = FailureReason;
+	OutFailureReason = FText::Format(FailureReason, FText::FromString(CompileEvent.Message));
 	return false;
+}
+
+FNiagaraStackMessage::FNiagaraStackMessage()
+{
+}
+
+FNiagaraStackMessage::FNiagaraStackMessage(const FText& InMessageText, const FText& InShortDescription,	ENiagaraMessageSeverity InSeverity, bool bInAllowDismissal, FGuid InGuid)
+{
+	MessageText = InMessageText;
+	ShortDescription = InShortDescription;
+	MessageSeverity = InSeverity;
+	bAllowDismissal = bInAllowDismissal;
+	Guid = InGuid;
 }
 
 TSharedRef<FTokenizedMessage> FNiagaraMessageText::GenerateTokenizedMessage() const
@@ -346,6 +407,16 @@ TSharedRef<FTokenizedMessage> FNiagaraMessageText::GenerateTokenizedMessage() co
 FText FNiagaraMessageText::GenerateMessageText() const
 {
 	return MessageText;
+}
+
+FText FNiagaraMessageText::GenerateMessageTitle() const
+{
+	return ShortDescription;
+}
+
+bool FNiagaraMessageText::AllowDismissal() const
+{
+	return bAllowDismissal;
 }
 
 const uint32 INiagaraMessage::GetMessageTopicBitflag() const
@@ -364,14 +435,22 @@ void UNiagaraMessageDataText::Init(const FText& InMessageText, const ENiagaraMes
 	TopicName = InTopicName;
 }
 
+void UNiagaraMessageDataText::Init(const FText& InMessageText, const FText& InShortDescription,	const ENiagaraMessageSeverity InMessageSeverity, const FName& InTopicName)
+{
+	MessageText = InMessageText;
+	ShortDescription = InShortDescription;
+	MessageSeverity = InMessageSeverity;
+	TopicName = InTopicName;
+}
+
 TSharedRef<const INiagaraMessage> UNiagaraMessageDataText::GenerateNiagaraMessage(const FGenerateNiagaraMessageInfo& InGenerateInfo) const
 {
 	const TArray<FLinkNameAndDelegate>& Links = InGenerateInfo.GetLinks();
 	if (Links.Num() > 0)
 	{
-		return MakeShared<const FNiagaraMessageTextWithLinks>(MessageText, EMessageSeverity::Type(MessageSeverity), TopicName, Links, InGenerateInfo.GetAssociatedObjectKeys());
+		return MakeShared<const FNiagaraMessageTextWithLinks>(MessageText, ShortDescription, EMessageSeverity::Type(MessageSeverity), TopicName, bAllowDismissal, Links, InGenerateInfo.GetAssociatedObjectKeys());
 	}
-	return MakeShared<const FNiagaraMessageText>(MessageText, EMessageSeverity::Type(MessageSeverity), TopicName, InGenerateInfo.GetAssociatedObjectKeys());
+	return MakeShared<const FNiagaraMessageText>(MessageText, ShortDescription, EMessageSeverity::Type(MessageSeverity), TopicName, bAllowDismissal, InGenerateInfo.GetAssociatedObjectKeys());
 }
 
 TSharedRef<FTokenizedMessage> FNiagaraMessageTextWithLinks::GenerateTokenizedMessage() const

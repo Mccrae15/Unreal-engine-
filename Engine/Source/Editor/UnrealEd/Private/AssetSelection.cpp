@@ -273,7 +273,7 @@ namespace AssetSelectionUtils
 						{
 							UStaticMesh* StaticMesh = StaticMeshActor->GetStaticMeshComponent()->GetStaticMesh();
 
-							ActorInfo.bAllSelectedStaticMeshesHaveCollisionModels &= ( (StaticMesh && StaticMesh->BodySetup) ? true : false );
+							ActorInfo.bAllSelectedStaticMeshesHaveCollisionModels &= ( (StaticMesh && StaticMesh->GetBodySetup()) ? true : false );
 						}
 					}
 
@@ -604,10 +604,13 @@ static AActor* PrivateAddActor( UObject* Asset, UActorFactory* Factory, bool Sel
 	if(bSpawnActor)
 	{
 		FScopedTransaction Transaction( NSLOCTEXT("UnrealEd", "CreateActor", "Create Actor"), (ObjectFlags & RF_Transactional) != 0 );
-
+		
 		// Create the actor.
-		Actor = Factory->CreateActor( Asset, DesiredLevel, ActorTransform, ObjectFlags, Name );
-		if(Actor)
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.ObjectFlags = ObjectFlags;
+		SpawnParams.Name = Name;
+		Actor = Factory->CreateActor(Asset, DesiredLevel, ActorTransform, SpawnParams);
+		if (Actor)
 		{
 			if ( SelectActor )
 			{
@@ -666,14 +669,15 @@ namespace AssetUtil
 				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 				IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 
-				for (int Index = 0; Index < DroppedAssetStrings.Num(); Index++)
+				for (const FString& DroppedAssetString : DroppedAssetStrings)
 				{
-					// Truncate each string so that it doesn't exceed the maximum allowed length of characters to be converted to an FName
-					FString TruncatedString = DroppedAssetStrings[ Index ].Left( NAME_SIZE );
-					FAssetData AssetData = AssetRegistry.GetAssetByObjectPath( FName( *TruncatedString ) );
-					if ( AssetData.IsValid() )
+					if (DroppedAssetString.Len() < NAME_SIZE && FName::IsValidXName(DroppedAssetString, INVALID_OBJECTNAME_CHARACTERS INVALID_LONGPACKAGE_CHARACTERS))
 					{
-						DroppedAssetData.Add( AssetData );
+						FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FName(*DroppedAssetString));
+						if (AssetData.IsValid())
+						{
+							DroppedAssetData.Add(AssetData);
+						}
 					}
 				}
 			}
@@ -718,7 +722,7 @@ FActorFactoryAssetProxy
 void FActorFactoryAssetProxy::GenerateActorFactoryMenuItems( const FAssetData& AssetData, TArray<FMenuItem>* OutMenuItems, bool ExcludeStandAloneFactories  )
 {
 	FText UnusedErrorMessage;
-	const FAssetData NoAssetData;
+	const FAssetData NoAssetData {};
 	for ( int32 FactoryIdx = 0; FactoryIdx < GEditor->ActorFactories.Num(); FactoryIdx++ )
 	{
 		UActorFactory* Factory = GEditor->ActorFactories[FactoryIdx];

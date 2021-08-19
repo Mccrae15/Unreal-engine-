@@ -17,25 +17,26 @@ struct FInstancedPropertyPath
 private:
 	struct FPropertyLink
 	{
-		FPropertyLink(const FProperty* Property, int32 ArrayIndexIn = INDEX_NONE)
-			: PropertyPtr(Property), ArrayIndex(ArrayIndexIn)
+		FPropertyLink(const FProperty* Property, int32 ArrayIndexIn, bool bIsMapValueIn)
+			: PropertyPtr(Property), ArrayIndex(ArrayIndexIn), bIsMapValue(bIsMapValueIn)
 		{}
 
 		const FProperty* PropertyPtr;
 		int32            ArrayIndex;
+		bool             bIsMapValue;
 	};
 
 public:
 	//--------------------------------------------------------------------------
-	FInstancedPropertyPath(FProperty* RootProperty, int32 ArrayIndex = INDEX_NONE)
+	FInstancedPropertyPath(FProperty* RootProperty, int32 ArrayIndex = INDEX_NONE, bool bIsMapValue = false)
 	{
-		Push(RootProperty, ArrayIndex);
+		Push(RootProperty, ArrayIndex, bIsMapValue);
 	}
 
 	//--------------------------------------------------------------------------
-	void Push(const FProperty* Property, int32 ArrayIndex = INDEX_NONE)
+	void Push(const FProperty* Property, int32 ArrayIndex = INDEX_NONE, bool bIsMapValue = false)
 	{
-		PropertyChain.Add(FPropertyLink(Property, ArrayIndex));		
+		PropertyChain.Add(FPropertyLink(Property, ArrayIndex, bIsMapValue));		
 	}
 
 	//--------------------------------------------------------------------------
@@ -108,13 +109,13 @@ public:
 			{
 				FInstancedPropertyPath RootPropertyPath(Prop, ArrayIdx);
 				const uint8* ValuePtr = Prop->ContainerPtrToValuePtr<uint8>(Container, ArrayIdx);
-				GetInstancedSubObjects_Inner(RootPropertyPath, ValuePtr, [&OutObjects](const FInstancedSubObjRef& Ref) { OutObjects.Add(Ref); });
+				ForEachInstancedSubObject<const void*>(RootPropertyPath, ValuePtr, [&OutObjects](const FInstancedSubObjRef& Ref, const void*){ OutObjects.Add(Ref); });
 			}
 		}
 	}
 
 	static void Duplicate(UObject* OldObject, UObject* NewObject, TMap<UObject*, UObject*>& ReferenceReplacementMap, TArray<UObject*>& DuplicatedObjects);
 
-private:
-	static void GetInstancedSubObjects_Inner(FInstancedPropertyPath& PropertyPath, const uint8* ContainerAddress, TFunctionRef<void(const FInstancedSubObjRef& Ref)> OutObjects);
+	template<typename T>
+	static void ForEachInstancedSubObject(FInstancedPropertyPath& PropertyPath, T ContainerAddress, TFunctionRef<void(const FInstancedSubObjRef& Ref, T PropertyValueAddress)> ObjRefFunc);
 };

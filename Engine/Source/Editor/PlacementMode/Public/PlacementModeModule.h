@@ -4,7 +4,6 @@
 
 #include "CoreMinimal.h"
 #include "IPlacementModeModule.h"
-
 #include "Framework/MultiBox/MultiBoxExtender.h"
 
 struct FPlacementCategory : FPlacementCategoryInfo
@@ -36,6 +35,8 @@ class FPlacementModeModule : public IPlacementModeModule
 {
 public:
 
+	FPlacementModeModule();
+
 	/**
 	 * Called right after the module's DLL has been loaded and the module object has been created
 	 */
@@ -46,6 +47,9 @@ public:
 	 */
 	virtual void PreUnloadCallback() override;
 
+	DECLARE_DERIVED_EVENT(FPlacementModeModule, IPlacementModeModule::FOnPlacementModeCategoryListChanged, FOnPlacementModeCategoryListChanged);
+	virtual FOnPlacementModeCategoryListChanged& OnPlacementModeCategoryListChanged() override { return PlacementModeCategoryListChanged; }
+
 	DECLARE_DERIVED_EVENT(FPlacementModeModule, IPlacementModeModule::FOnPlacementModeCategoryRefreshed, FOnPlacementModeCategoryRefreshed);
 	virtual FOnPlacementModeCategoryRefreshed& OnPlacementModeCategoryRefreshed() override { return PlacementModeCategoryRefreshed; }
 
@@ -55,16 +59,13 @@ public:
 	DECLARE_DERIVED_EVENT(FPlacementModeModule, IPlacementModeModule::FOnAllPlaceableAssetsChanged, FOnAllPlaceableAssetsChanged);
 	virtual FOnAllPlaceableAssetsChanged& OnAllPlaceableAssetsChanged() override { return AllPlaceableAssetsChanged; }
 
+	DECLARE_DERIVED_EVENT(FPlacementModeModule, IPlacementModeModule::FOnPlaceableItemFilteringChanged, FOnPlaceableItemFilteringChanged);
+	virtual FOnPlaceableItemFilteringChanged& OnPlaceableItemFilteringChanged() override { return PlaceableItemFilteringChanged; };
+
 	/**
 	 * Add the specified assets to the recently placed items list
 	 */
 	virtual void AddToRecentlyPlaced(const TArray< UObject* >& PlacedObjects, UActorFactory* FactoryUsed = NULL) override;
-
-	void OnAssetRemoved(const FAssetData& /*InRemovedAssetData*/);
-
-	void OnAssetRenamed(const FAssetData& AssetData, const FString& OldObjectPath);
-
-	void OnAssetAdded(const FAssetData& AssetData);
 
 	/**
 	 * Add the specified asset to the recently placed items list
@@ -112,11 +113,17 @@ public:
 
 	virtual void UnregisterPlacementCategory(FName Handle);
 
+	virtual TSharedRef<FBlacklistNames>& GetCategoryBlacklist() override { return CategoryBlacklist; }
+
 	virtual void GetSortedCategories(TArray<FPlacementCategoryInfo>& OutCategories) const;
 
 	virtual TOptional<FPlacementModeID> RegisterPlaceableItem(FName CategoryName, const TSharedRef<FPlaceableItem>& InItem);
 
 	virtual void UnregisterPlaceableItem(FPlacementModeID ID);
+
+	virtual bool RegisterPlaceableItemFilter(TPlaceableItemPredicate Predicate, FName OwnerName) override;
+
+	virtual void UnregisterPlaceableItemFilter(FName OwnerName) override;
 
 	virtual void GetItemsForCategory(FName CategoryName, TArray<TSharedPtr<FPlaceableItem>>& OutItems) const;
 
@@ -126,28 +133,40 @@ public:
 
 private:
 
+	void OnAssetRemoved(const FAssetData& /*InRemovedAssetData*/);
+	void OnAssetRenamed(const FAssetData& AssetData, const FString& OldObjectPath);
+	void OnAssetAdded(const FAssetData& AssetData);
+	void OnInitialAssetsScanComplete();
+
 	void RefreshRecentlyPlaced();
-
 	void RefreshVolumes();
-
 	void RefreshAllPlaceableClasses();
 
 	FGuid CreateID();
-
 	FPlacementModeID CreateID(FName InCategory);
+
+	bool PassesFilters(const TSharedPtr<FPlaceableItem>& Item) const;
+
+	void OnCategoryBlacklistChanged();
 
 private:
 
 	TMap<FName, FPlacementCategory> Categories;
 
-	TArray< FActorPlacementInfo >	RecentlyPlaced;
-	FOnRecentlyPlacedChanged		RecentlyPlacedChanged;
+	TSharedRef<FBlacklistNames> CategoryBlacklist;
 
-	FOnAllPlaceableAssetsChanged	AllPlaceableAssetsChanged;
+	TMap<FName, TPlaceableItemPredicate> PlaceableItemPredicates;
+
+	TArray< FActorPlacementInfo > RecentlyPlaced;
+	FOnRecentlyPlacedChanged RecentlyPlacedChanged;
+
+	FOnAllPlaceableAssetsChanged AllPlaceableAssetsChanged;
 	FOnPlacementModeCategoryRefreshed PlacementModeCategoryRefreshed;
+	FOnPlaceableItemFilteringChanged PlaceableItemFilteringChanged;
+	FOnPlacementModeCategoryListChanged PlacementModeCategoryListChanged;
 
-	FOnStartedPlacingEvent			StartedPlacingEvent;
-	FOnStoppedPlacingEvent			StoppedPlacingEvent;
+	FOnStartedPlacingEvent StartedPlacingEvent;
+	FOnStoppedPlacingEvent StoppedPlacingEvent;
 
 	TArray< TSharedPtr<FExtender> > ContentPaletteFiltersExtenders;
 	TArray< TSharedPtr<FExtender> > PaletteExtenders;

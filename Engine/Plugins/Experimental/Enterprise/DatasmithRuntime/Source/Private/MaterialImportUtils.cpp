@@ -19,6 +19,8 @@
 
 namespace DatasmithRuntime
 {
+	const TCHAR* MATERIAL_HOST = TEXT("_Runtime_");
+
 	namespace EPbrTexturePropertySlot
 	{
 		enum Type
@@ -49,8 +51,10 @@ namespace DatasmithRuntime
 		TEXT("SpecularMap"),
 	};
 
-	constexpr const TCHAR* OpaqueMaterialPath = TEXT("Material'/DatasmithRuntime/Materials/M_PbrOpaque.M_PbrOpaque'");
-	constexpr const TCHAR* TranslucentMaterialPath = TEXT("Material'/DatasmithRuntime/Materials/M_PbrTranslucent.M_PbrTranslucent'");
+	constexpr const TCHAR* OpaqueMaterialPath = TEXT("/DatasmithRuntime/Materials/M_PbrOpaque.M_PbrOpaque");
+	constexpr const TCHAR* OpaqueMaterialPath_2Sided = TEXT("/DatasmithRuntime/Materials/M_PbrOpaque_2Sided.M_PbrOpaque_2Sided");
+	constexpr const TCHAR* TranslucentMaterialPath = TEXT("/DatasmithRuntime/Materials/M_PbrTranslucent.M_PbrTranslucent");
+	constexpr const TCHAR* TranslucentMaterialPath_2Sided = TEXT("/DatasmithRuntime/Materials/M_PbrTranslucent_2Sided.M_PbrTranslucent_2Sided");
 
 	struct FMaterialParameters
 	{
@@ -64,9 +68,9 @@ namespace DatasmithRuntime
 	extern const FString MaterialPrefix;
 	extern const FString MeshPrefix;
 
-	static TMap< UMaterial*, FMaterialParameters > MaterialParametersCache;
+	static TMap< UMaterialInterface*, FMaterialParameters > MaterialParametersCache;
 
-	const FMaterialParameters& GetMaterialParameters(UMaterial* Material)
+	const FMaterialParameters& GetMaterialParameters(UMaterialInterface* Material)
 	{
 		check(Material);
 
@@ -121,7 +125,7 @@ namespace DatasmithRuntime
 		return ParametersRef;
 	}
 
-	int32 ProcessMaterialElement(TSharedPtr< IDatasmithMasterMaterialElement > MasterMaterialElement, const TCHAR* Host, FTextureCallback TextureCallback)
+	int32 ProcessMaterialElement(TSharedPtr< IDatasmithMasterMaterialElement > MasterMaterialElement, FTextureCallback TextureCallback)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(DatasmithRuntime::ProcessMasterMaterialElement);
 
@@ -133,9 +137,9 @@ namespace DatasmithRuntime
 			return MaterialRequirement;
 		}
 
-		TSharedPtr< FDatasmithMasterMaterialSelector > MaterialSelector = FDatasmithMasterMaterialManager::Get().GetSelector(Host);
+		TSharedPtr< FDatasmithMasterMaterialSelector > MaterialSelector = FDatasmithMasterMaterialManager::Get().GetSelector(MATERIAL_HOST);
 
-		UMaterial* Material = nullptr;
+		UMaterialInterface* Material = nullptr;
 
 		if (MasterMaterialElement->GetMaterialType() == EDatasmithMasterMaterialType::Custom)
 		{
@@ -145,7 +149,7 @@ namespace DatasmithRuntime
 
 			if (CustomMasterMaterial.IsValid())
 			{
-				Material =  CustomMasterMaterial.GetMaterial();
+				Material = CustomMasterMaterial.GetMaterial();
 			}
 		}
 		else if (MaterialSelector.IsValid() && MaterialSelector->IsValid())
@@ -154,23 +158,26 @@ namespace DatasmithRuntime
 
 			if (MasterMaterial.IsValid())
 			{
-				Material =  MasterMaterial.GetMaterial();
+				Material = MasterMaterial.GetMaterial();
 			}
 		}
 
 		if (Material)
 		{
-			// Material with displacement or support for PNT requires adjacency and has their TessellationMultiplier set
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			if (UMaterial* MasterMaterial = Cast<UMaterial>(Material))
+			{
+				// Material with displacement or support for PNT requires adjacency and has their TessellationMultiplier set
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 #if WITH_EDITORONLY_DATA
-				if (Material->TessellationMultiplier.Expression != nullptr || Material->D3D11TessellationMode != EMaterialTessellationMode::MTM_NoTessellation)
+				if (MasterMaterial->TessellationMultiplier.Expression != nullptr || MasterMaterial->D3D11TessellationMode != EMaterialTessellationMode::MTM_NoTessellation)
 #else
-				if (Material->D3D11TessellationMode != EMaterialTessellationMode::MTM_NoTessellation)
+				if (MasterMaterial->D3D11TessellationMode != EMaterialTessellationMode::MTM_NoTessellation)
 #endif
-					PRAGMA_ENABLE_DEPRECATION_WARNINGS
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				{
 					MaterialRequirement |= EMaterialRequirements::RequiresAdjacency;
 				}
+			}
 
 			const TMap< FName, int32 >& TextureParams = GetMaterialParameters(Material).TextureParams;
 
@@ -188,21 +195,20 @@ namespace DatasmithRuntime
 					}
 				}
 			}
-
 		}
 
 		return MaterialRequirement;
 	}
 
-	bool LoadMasterMaterial(UMaterialInstanceDynamic* MaterialInstance, TSharedPtr<IDatasmithMasterMaterialElement>& MaterialElement, const FString& HostString )
+	bool LoadMasterMaterial(UMaterialInstanceDynamic* MaterialInstance, TSharedPtr<IDatasmithMasterMaterialElement>& MaterialElement)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(DatasmithRuntime::LoadMasterMaterial);
 
 		FDatasmithMasterMaterialManager& MaterialManager = FDatasmithMasterMaterialManager::Get();
-		const FString Host = MaterialManager.GetHostFromString( HostString );
-		TSharedPtr< FDatasmithMasterMaterialSelector > MaterialSelector = MaterialManager.GetSelector( *Host );
+		const FString Host = MaterialManager.GetHostFromString( MATERIAL_HOST );
+		TSharedPtr< FDatasmithMasterMaterialSelector > MaterialSelector = MaterialManager.GetSelector( MATERIAL_HOST );
 
-		UMaterial* MasterMaterial = nullptr;
+		UMaterialInterface* ParentMaterial = nullptr;
 
 		{
 			if ( MaterialElement->GetMaterialType() == EDatasmithMasterMaterialType::Custom )
@@ -210,27 +216,27 @@ namespace DatasmithRuntime
 				FDatasmithMasterMaterial CustomMasterMaterial;
 
 				CustomMasterMaterial.FromSoftObjectPath( FSoftObjectPath( MaterialElement->GetCustomMaterialPathName() ) );
-				MasterMaterial = CustomMasterMaterial.GetMaterial();
+				ParentMaterial = CustomMasterMaterial.GetMaterial();
 			}
 			else if ( MaterialSelector.IsValid() )
 			{
 				const FDatasmithMasterMaterial& DatasmithMasterMaterial = MaterialSelector->GetMasterMaterial(MaterialElement);
-				MasterMaterial = DatasmithMasterMaterial.GetMaterial();
+				ParentMaterial = DatasmithMasterMaterial.GetMaterial();
 			}
 		}
 
-		if (MasterMaterial == nullptr)
+		if (ParentMaterial == nullptr)
 		{
 			return false;
 		}
 
-		MaterialInstance->Parent = MasterMaterial;
+		MaterialInstance->Parent = ParentMaterial;
 
-		const FMaterialParameters& MaterialParameters = GetMaterialParameters(MasterMaterial);
+		const FMaterialParameters& MaterialParameters = GetMaterialParameters(ParentMaterial);
 
 		for (int Index = 0; Index < MaterialElement->GetPropertiesCount(); ++Index)
 		{
-			const TSharedPtr< IDatasmithKeyValueProperty > Property = MaterialElement->GetProperty(Index);
+			const TSharedPtr< IDatasmithKeyValueProperty >& Property = MaterialElement->GetProperty(Index);
 			FName PropertyName(Property->GetName());
 
 			// Vector Params
@@ -264,7 +270,7 @@ namespace DatasmithRuntime
 			for (int32 Index = 0; Index < PbrMaterialElement->GetExpressionsCount(); ++Index)
 			{
 				IDatasmithMaterialExpression* Expression = PbrMaterialElement->GetExpression(Index);
-				if (Expression && Expression->IsA(EDatasmithMaterialExpressionType::FunctionCall))
+				if (Expression && Expression->IsSubType(EDatasmithMaterialExpressionType::FunctionCall))
 				{
 					IDatasmithMaterialExpressionFunctionCall* FunctionCall = static_cast<IDatasmithMaterialExpressionFunctionCall*>(Expression);
 					TSharedPtr< IDatasmithElement > ElementPtr = SceneImporter.GetElementFromName(MaterialPrefix + FunctionCall->GetFunctionPathName());
@@ -291,7 +297,7 @@ namespace DatasmithRuntime
 			int32           CoordinateIndex = 0;
 			bool            bMirrorU = false;
 			bool            bMirrorV = false;
-			float           Fading = 0.0f;
+			float           Fading = 1.0f;
 			float           UTiling = 1.0f;
 			float           VTiling = 1.0f;
 			float           UTilingPivot = 0.5f;
@@ -355,7 +361,7 @@ namespace DatasmithRuntime
 		{
 			if (const IDatasmithMaterialExpression* MaterialExpression = Input.GetExpression())
 			{
-				if (MaterialExpression->IsA(EDatasmithMaterialExpressionType::Texture))
+				if (MaterialExpression->IsSubType(EDatasmithMaterialExpressionType::Texture))
 				{
 					const IDatasmithMaterialExpressionTexture* TextureExpression = static_cast<const IDatasmithMaterialExpressionTexture*>(MaterialExpression);
 					TextureCallback(TexturePrefix + TextureExpression->GetTexturePathName(), -1);
@@ -417,13 +423,16 @@ namespace DatasmithRuntime
 					}
 
 					FString RootName(PbrTexturePropertyNames[SlotIndex].ToString());
-					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("Fading")), 1.f /*Texture->Fading*/);
-					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_UVOffsetX")), Texture->UOffset);
-					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_UVOffsetY")), Texture->VOffset);
-					//MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_UVScaleX")), Texture->UOffset);
-					//MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_UVScaleY")), Texture->UOffset);
-					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_UVWAngle")), Texture->Rotation);
-					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_UVOffsetX")), Texture->UVOffset);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("Fading")), Texture->Fading);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_UOffset")), Texture->UOffset);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_VOffset")), Texture->VOffset);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_UTiling")), Texture->UTiling);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_VTiling")), Texture->VTiling);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_UTilingPivot")), Texture->UTilingPivot);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_VTilingPivot")), Texture->VTilingPivot);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_RotAngle")), Texture->Rotation);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_URotPivot")), Texture->URotationPivot);
+					MaterialInstance->SetScalarParameterValue(*(RootName + TEXT("_VRotPivot")), Texture->VRotationPivot);
 				}
 			};
 
@@ -432,8 +441,16 @@ namespace DatasmithRuntime
 
 			bool bNeedsTranslucent = (OpacityValue.bNumericValid && OpacityValue.GetScalar() != 1.0f) || OpacityValue.Texture || RefractionValue.bNumericValid || RefractionValue.Texture;
 
-			FSoftObjectPath SoftObject(bNeedsTranslucent ? TranslucentMaterialPath : OpaqueMaterialPath);
-			MaterialInstance->Parent = Cast<UMaterial>(SoftObject.TryLoad());
+			if (UEPbrMaterial.GetTwoSided())
+			{
+				FSoftObjectPath SoftObject(bNeedsTranslucent ? TranslucentMaterialPath_2Sided : OpaqueMaterialPath_2Sided);
+				MaterialInstance->Parent = Cast<UMaterial>(SoftObject.TryLoad());
+			}
+			else
+			{
+				FSoftObjectPath SoftObject(bNeedsTranslucent ? TranslucentMaterialPath : OpaqueMaterialPath);
+				MaterialInstance->Parent = Cast<UMaterial>(SoftObject.TryLoad());
+			}
 			check(MaterialInstance->Parent);
 
 			// PBR Material are too complex to be fully supported with simple Twinmotion material
@@ -515,7 +532,7 @@ namespace DatasmithRuntime
 				SetTextureParams(InputValue.Texture.Get(), EPbrTexturePropertySlot::SpecularMapSlot);
 			}
 
-			// GetTwoSided(), GetWorldDisplacement() & GetAmbientOcclusion() Not supported
+			// GetWorldDisplacement() & GetAmbientOcclusion() Not supported
 
 			return true;
 		}
@@ -591,22 +608,22 @@ namespace DatasmithRuntime
 	void FDatasmithExpressionEvaluator::EvaluateExpression(const IDatasmithMaterialExpression& InExpression, FDatasmithInputValue& OutValue)
 	{
 		// Call the evaluator depending of the expression type
-		if (InExpression.IsA(EDatasmithMaterialExpressionType::ConstantBool))
+		if (InExpression.IsSubType(EDatasmithMaterialExpressionType::ConstantBool))
 		{
 			const IDatasmithMaterialExpressionBool& boolExpression = static_cast<const IDatasmithMaterialExpressionBool&>(InExpression);
 			OutValue.Set(boolExpression.GetBool() ? 1.0f : 0.0f);
 		}
-		else if (InExpression.IsA(EDatasmithMaterialExpressionType::ConstantColor))
+		else if (InExpression.IsSubType(EDatasmithMaterialExpressionType::ConstantColor))
 		{
 			const IDatasmithMaterialExpressionColor& ColorExpression = static_cast<const IDatasmithMaterialExpressionColor&>(InExpression);
 			OutValue.Set(ColorExpression.GetColor());
 		}
-		else if (InExpression.IsA(EDatasmithMaterialExpressionType::ConstantScalar))
+		else if (InExpression.IsSubType(EDatasmithMaterialExpressionType::ConstantScalar))
 		{
 			const IDatasmithMaterialExpressionScalar& ScalarExpression = static_cast<const IDatasmithMaterialExpressionScalar&>(InExpression);
 			OutValue.Set(ScalarExpression.GetScalar());
 		}
-		else if (InExpression.IsA(EDatasmithMaterialExpressionType::FlattenNormal))
+		else if (InExpression.IsSubType(EDatasmithMaterialExpressionType::FlattenNormal))
 		{
 			const IDatasmithMaterialExpressionFlattenNormal& NormalExpression = static_cast<const IDatasmithMaterialExpressionFlattenNormal&>(InExpression);
 			FDatasmithInputValue Normal(NormalExpression.GetNormal());
@@ -618,23 +635,23 @@ namespace DatasmithRuntime
 				OutValue.Set(Flatness.Numeric);
 			}
 		}
-		else if (InExpression.IsA(EDatasmithMaterialExpressionType::FunctionCall))
+		else if (InExpression.IsSubType(EDatasmithMaterialExpressionType::FunctionCall))
 		{
 			const IDatasmithMaterialExpressionFunctionCall& FctCallExpression = static_cast<const IDatasmithMaterialExpressionFunctionCall&>(InExpression);
 			EvalExpressionFctCall(FctCallExpression, OutValue);
 		}
-		else if (InExpression.IsA(EDatasmithMaterialExpressionType::Generic))
+		else if (InExpression.IsSubType(EDatasmithMaterialExpressionType::Generic))
 		{
 			const IDatasmithMaterialExpressionGeneric& GenericExpression = static_cast<const IDatasmithMaterialExpressionGeneric&>(InExpression);
 			EvalExpressionGeneric(GenericExpression, OutValue);
 		}
-		else if (InExpression.IsA(EDatasmithMaterialExpressionType::Texture))
+		else if (InExpression.IsSubType(EDatasmithMaterialExpressionType::Texture))
 		{
 			const IDatasmithMaterialExpressionTexture& TextureExpression = static_cast<const IDatasmithMaterialExpressionTexture&>(InExpression);
 			OutValue.Set(TextureExpression.GetTexturePathName());
 			EvaluateInput(TextureExpression.GetInputCoordinate(), OutValue);
 		}
-		else if (InExpression.IsA(EDatasmithMaterialExpressionType::TextureCoordinate))
+		else if (InExpression.IsSubType(EDatasmithMaterialExpressionType::TextureCoordinate))
 		{
 			const IDatasmithMaterialExpressionTextureCoordinate& CoordinateExpression = static_cast<const IDatasmithMaterialExpressionTextureCoordinate&>(InExpression);
 			if (!OutValue.Texture)

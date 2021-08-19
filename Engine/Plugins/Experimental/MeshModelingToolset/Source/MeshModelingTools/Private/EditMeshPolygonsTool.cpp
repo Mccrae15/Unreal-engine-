@@ -37,13 +37,6 @@
 
 #define LOCTEXT_NAMESPACE "UEditMeshPolygonsTool"
 
-/**
- * 4.26 HOTFIX: this is used to keep dynamically-created Material Instances that we pass to USimpleDynamicMeshComponent
- * from being Garbage Collected. USimpleDynamicMeshComponent stores raw UMaterialInterface* pointers, instead of proper UProperty 
- * pointers, which cannot be fixed in a Hotfix.
- */
-#include "MeshModelingToolsObjectKeepaliveFix.h"
-static FModelingModeObjectsKeepaliveHelper EditMeshPolygonsToolObjectKeepalive;
 
 
 /*
@@ -88,8 +81,6 @@ void UEditMeshPolygonsTool::Setup()
 {
 	UMeshSurfacePointTool::Setup();
 
-	EditMeshPolygonsToolObjectKeepalive.Enable();
-
 	// register click behavior
 	USingleClickInputBehavior* ClickBehavior = NewObject<USingleClickInputBehavior>();
 	ClickBehavior->Initialize(this);
@@ -115,7 +106,6 @@ void UEditMeshPolygonsTool::Setup()
 	if (SelectionMaterial != nullptr)
 	{
 		DynamicMeshComponent->SetSecondaryRenderMaterial(SelectionMaterial);
-		EditMeshPolygonsToolObjectKeepalive.AddKeepaliveObject(SelectionMaterial);
 	}
 
 	// enable secondary triangle buffers
@@ -314,8 +304,6 @@ void UEditMeshPolygonsTool::Shutdown(EToolShutdownType ShutdownType)
 		DynamicMeshComponent->DestroyComponent();
 		DynamicMeshComponent = nullptr;
 	}
-
-	EditMeshPolygonsToolObjectKeepalive.Disable();
 }
 
 
@@ -595,16 +583,16 @@ void UEditMeshPolygonsTool::UpdateDeformerFromSelection(const FGroupTopologySele
 	if (Selection.SelectedCornerIDs.Num() > 0)
 	{
 		//Add all the the Corner's adjacent poly-groups (NbrGroups) to the ongoing array of groups.
-		LinearDeformer.SetActiveHandleCorners(Selection.SelectedCornerIDs);
+		LinearDeformer.SetActiveHandleCorners(Selection.SelectedCornerIDs.Array());
 	}
 	else if (Selection.SelectedEdgeIDs.Num() > 0)
 	{
 		//Add all the the edge's adjacent poly-groups (NbrGroups) to the ongoing array of groups.
-		LinearDeformer.SetActiveHandleEdges(Selection.SelectedEdgeIDs);
+		LinearDeformer.SetActiveHandleEdges(Selection.SelectedEdgeIDs.Array());
 	}
 	else if (Selection.SelectedGroupIDs.Num() > 0)
 	{
-		LinearDeformer.SetActiveHandleFaces(Selection.SelectedGroupIDs);
+		LinearDeformer.SetActiveHandleFaces(Selection.SelectedGroupIDs.Array());
 	}
 }
 
@@ -840,7 +828,6 @@ void UEditMeshPolygonsTool::PrecomputeTopology()
 		[this]() { return &GetSpatial(); },
 		[this]() { return GetShiftToggle(); }
 		);
-	SelectionMechanic->SetShouldSelectEdgeLoopsFunc([this]() { return CommonProps->bSelectEdgeLoops; });
 
 	LinearDeformer.Initialize(Mesh, Topology.Get());
 }
@@ -2087,9 +2074,8 @@ bool UEditMeshPolygonsTool::BeginMeshEdgeEditChange(TFunctionRef<bool(int32)> Gr
 		return false;
 	}
 	ActiveEdgeSelection.Reserve(NumEdges);
-	for (int32 k = 0; k < NumEdges; ++k)
+	for (int32 EdgeID : ActiveSelection.SelectedEdgeIDs)
 	{
-		int32 EdgeID = ActiveSelection.SelectedEdgeIDs[k];
 		if (GroupEdgeIDFilterFunc(EdgeID))
 		{
 			FSelectedEdge& Edge = ActiveEdgeSelection.Emplace_GetRef();
@@ -2144,9 +2130,8 @@ void UEditMeshPolygonsTool::UpdateEditPreviewMaterials(EPreviewMaterialType Mate
 		else if (MaterialType == EPreviewMaterialType::PreviewMaterial)
 		{
 			EditPreview->ClearOverrideRenderMaterial();
-			UMaterialInterface* SelectionMaterial = ToolSetupUtil::GetSelectionMaterial(FLinearColor(0.8f, 0.75f, 0.0f), GetToolManager());
-			EditMeshPolygonsToolObjectKeepalive.AddKeepaliveObject(SelectionMaterial);
-			EditPreview->SetMaterial(SelectionMaterial);
+			EditPreview->SetMaterial(
+				ToolSetupUtil::GetSelectionMaterial(FLinearColor(0.8f, 0.75f, 0.0f), GetToolManager()));
 		}
 		else if (MaterialType == EPreviewMaterialType::UVMaterial)
 		{
@@ -2155,7 +2140,6 @@ void UEditMeshPolygonsTool::UpdateEditPreviewMaterials(EPreviewMaterialType Mate
 			{
 				UMaterialInstanceDynamic* CheckerMaterial = UMaterialInstanceDynamic::Create(CheckerMaterialBase, NULL);
 				CheckerMaterial->SetScalarParameterValue("Density", 1);
-				EditMeshPolygonsToolObjectKeepalive.AddKeepaliveObject(CheckerMaterial);
 				EditPreview->SetOverrideRenderMaterial(CheckerMaterial);
 			}
 		}

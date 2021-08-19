@@ -113,9 +113,15 @@ public:
 	FMeshPassProcessorRenderState PassDrawRenderState;
 
 private:
+	bool TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatch,
+		uint64 BatchElementMask,
+		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+		int32 StaticMeshId,
+		const FMaterialRenderProxy& MaterialRenderProxy,
+		const FMaterial& Material);
 
 	template<bool bRenderReflectiveShadowMap>
-	void Process(
+	bool Process(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
 		int32 StaticMeshId,
@@ -423,13 +429,13 @@ public:
 
 	FRDGTextureRef BeginRenderRayTracedDistanceFieldProjection(
 		FRDGBuilder& GraphBuilder,
-		TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer,
+		const FSceneTextureShaderParameters& SceneTextures,
 		const FViewInfo& View) const;
 
 	/** Renders ray traced distance field shadows. */
 	void RenderRayTracedDistanceFieldProjection(
 		FRDGBuilder& GraphBuilder,
-		TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer,
+		const FSceneTextureShaderParameters& SceneTextures,
 		FRDGTextureRef ScreenShadowMaskTexture,
 		FRDGTextureRef SceneDepthTexture,
 		const FViewInfo& View,
@@ -646,6 +652,15 @@ private:
 		struct FAddSubjectPrimitiveResult& OutResult,
 		struct FAddSubjectPrimitiveStats& OutStats,
 		struct FAddSubjectPrimitiveOverflowedIndices& OverflowBuffer) const;
+
+
+	/*
+	 * Helper to calculate the LOD such that we do not repeat this in threaded & non threaded versions
+	 * NOTE: Reads and modifies the CurrentView.PrimitivesLODMask for the given primitive. 
+	 * Storing it is an optimization for the case where a primitive is not visible in the main view but in several shadow views (e.g., cascades).
+	 * This also creates a potential data race if we ever process multiple shadows infos for the same view and primitive in parallel (e.g., cascades).
+	 */
+	FORCEINLINE_DEBUGGABLE FLODMask CalcAndUpdateLODToRender(FViewInfo& CurrentView, const FBoxSphereBounds& Bounds, const FPrimitiveSceneInfo* PrimitiveSceneInfo, int32 ForcedLOD) const;
 
 	/** Will return if we should draw the static mesh for the shadow, and will perform lazy init of primitive if it wasn't visible */
 	bool ShouldDrawStaticMeshes(FViewInfo& InCurrentView, FPrimitiveSceneInfo* InPrimitiveSceneInfo);

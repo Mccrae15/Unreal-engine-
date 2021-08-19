@@ -38,7 +38,7 @@ public:
 	 * In case of extension like asm.1, the return name is the part before the full extension (asm.1)
 	 * The right part of extension must to be a numeric value
 	 *
-	 * @param	InPath	the path of the file
+	 * @param	InFilePath the path of the file
 	 * @param	OutFilename the filename (without extension), minus any path information.
 	 * @param	OutExtension the extension
 	 */
@@ -112,10 +112,10 @@ public:
 
 		case EModelCoordSystem::ZUp_RightHanded:
 			return FVector(-V[0], V[1], V[2]);
-		
+
 		case EModelCoordSystem::ZUp_RightHanded_FBXLegacy:
 			return FVector(V[0], -V[1], V[2]);
-		
+
 		case EModelCoordSystem::ZUp_LeftHanded:
 		default:
 			return FVector(V[0], V[1], V[2]);
@@ -141,7 +141,7 @@ public:
 	/**
 	 * Validates that the given UV Channel does not contain a degenerated triangle.
 	 *
-	 * @param DSMesh	The DatasmithMesh to validate.
+	 * @param DsMesh	The DatasmithMesh to validate.
 	 * @param Channel	The UV channel to validate, starting at 0
 	 */
 	static bool IsUVChannelValid(const FDatasmithMesh& DsMesh, const int32 Channel);
@@ -240,9 +240,10 @@ public:
 	/**
 	 * Generates a unique name
 	 * @param BaseName Name that will be suffixed with an index to be unique
+	 * @param CharBudget Max character allowed in the name.
 	 * @return FString unique name. Calling "Contains()" with this name will be false
 	 */
-	FString GenerateUniqueName(const FString& BaseName);
+	FString GenerateUniqueName(const FString& BaseName, int32 CharBudget=INT32_MAX);
 
 	/**
 	 * Register a name as known

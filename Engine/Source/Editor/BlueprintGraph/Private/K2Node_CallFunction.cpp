@@ -41,6 +41,7 @@
 #include "SourceCodeNavigation.h"
 #include "HAL/FileManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "BlueprintNodeStatics.h"
 
 #define LOCTEXT_NAMESPACE "K2Node"
 
@@ -738,43 +739,7 @@ void UK2Node_CallFunction::ReallocatePinsDuringReconstruction(TArray<UEdGraphPin
 
 UEdGraphPin* UK2Node_CallFunction::CreateSelfPin(const UFunction* Function)
 {
-	// Chase up the function's Super chain, the function can be called on any object that is at least that specific
-	const UFunction* FirstDeclaredFunction = Function;
-	while (FirstDeclaredFunction->GetSuperFunction() != nullptr)
-	{
-		FirstDeclaredFunction = FirstDeclaredFunction->GetSuperFunction();
-	}
-
-	// Create the self pin
-	UClass* FunctionClass = CastChecked<UClass>(FirstDeclaredFunction->GetOuter());
-	// we don't want blueprint-function target pins to be formed from the
-	// skeleton class (otherwise, they could be incompatible with other pins
-	// that represent the same type)... this here could lead to a compiler 
-	// warning (the GeneratedClass could not have the function yet), but in
-	// that, the user would be reminded to compile the other blueprint
-	if (FunctionClass->ClassGeneratedBy)
-	{
-		FunctionClass = FunctionClass->GetAuthoritativeClass();
-	}
-
-	UEdGraphPin* SelfPin = NULL;
-	if (FunctionClass == GetBlueprint()->GeneratedClass)
-	{
-		// This means the function is defined within the blueprint, so the pin should be a true "self" pin
-		SelfPin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Object, UEdGraphSchema_K2::PSC_Self, nullptr, UEdGraphSchema_K2::PN_Self);
-	}
-	else if (FunctionClass->IsChildOf(UInterface::StaticClass()))
-	{
-		SelfPin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Interface, FunctionClass, UEdGraphSchema_K2::PN_Self);
-	}
-	else
-	{
-		// This means that the function is declared in an external class, and should reference that class
-		SelfPin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Object, FunctionClass, UEdGraphSchema_K2::PN_Self);
-	}
-	check(SelfPin != nullptr);
-
-	return SelfPin;
+	return FBlueprintNodeStatics::CreateSelfPin(this, Function);
 }
 
 void UK2Node_CallFunction::CreateExecPinsForFunctionCall(const UFunction* Function)
@@ -991,8 +956,10 @@ void UK2Node_CallFunction::GetExpandEnumPinNames(const UFunction* Function, TArr
 
 	TArray<FString> RawGroupings;
 	EnumParamString.ParseIntoArray(RawGroupings, TEXT(","), false);
-	for (const FString& RawGroup : RawGroupings)
+	for (FString& RawGroup : RawGroupings)
 	{
+		RawGroup.TrimStartAndEndInline();
+
 		TArray<FString> IndividualEntries;
 		RawGroup.ParseIntoArray(IndividualEntries, TEXT("|"));
 
@@ -3359,6 +3326,26 @@ void UK2Node_CallFunction::JumpToDefinition() const
 	Super::JumpToDefinition();
 }
 
+FString UK2Node_CallFunction::GetPinMetaData(FName InPinName, FName InKey)
+{
+	FString MetaData = Super::GetPinMetaData(InPinName, InKey);
+
+	// If there's no metadata directly on the pin then check for metadata on the function
+	if (MetaData.IsEmpty())
+	{
+		if (UFunction* Function = GetTargetFunction())
+		{
+			// Find the corresponding property for the pin
+			if (FProperty* Property = Function->FindPropertyByName(InPinName))
+			{
+				MetaData = Property->GetMetaData(InKey);
+			}
+		}
+	}
+
+	return MetaData;
+}
+
 bool UK2Node_CallFunction::IsConnectionDisallowed(const UEdGraphPin* MyPin, const UEdGraphPin* OtherPin, FString& OutReason) const
 {
 	bool bIsDisallowed = Super::IsConnectionDisallowed(MyPin, OtherPin, OutReason);
@@ -3433,15 +3420,27 @@ bool UK2Node_CallFunction::IsConnectionDisallowed(const UEdGraphPin* MyPin, cons
 
 					if (!ConnectResponse)
 					{
-						// Display the necessary tooltip on the pin hover, and log it if we are compiling
-						FFormatNamedArguments MessageArgs;
-						MessageArgs.Add(TEXT("PinAType"), UEdGraphSchema_K2::TypeToText(Pin->PinType));
-						MessageArgs.Add(TEXT("PinBType"), UEdGraphSchema_K2::TypeToText(OtherPin->PinType));
-						UBlueprint* BP = GetBlueprint();
-						UEdGraph* OwningGraph = GetGraph();
+						// For sets, we have to check if the other pin is a valid child that can actually 
+						// be connected in cases like the "Union" function
+						UStruct const* OutputObject = (OtherPin->PinType.PinSubCategory == UEdGraphSchema_K2::PSC_Self) ? Context : Cast<UStruct>(OtherPin->PinType.PinSubCategoryObject.Get());
+						UStruct const* InputObject = (Pin->PinType.PinSubCategory == UEdGraphSchema_K2::PSC_Self) ? Context : Cast<UStruct>(Pin->PinType.PinSubCategoryObject.Get());
 
-						OutReason = FText::Format(LOCTEXT("DefaultPinIncompatibilityMessage", "{PinAType} is not compatible with {PinBType}."), MessageArgs).ToString();
-						return true;
+						if (OtherPin->PinType.IsSet() && OutputObject && InputObject && OutputObject->IsChildOf(InputObject))
+						{
+							bIsDisallowed = false;
+						}
+						else
+						{
+							// Display the necessary tooltip on the pin hover, and log it if we are compiling
+							FFormatNamedArguments MessageArgs;
+							MessageArgs.Add(TEXT("PinAType"), UEdGraphSchema_K2::TypeToText(Pin->PinType));
+							MessageArgs.Add(TEXT("PinBType"), UEdGraphSchema_K2::TypeToText(OtherPin->PinType));
+							UBlueprint* BP = GetBlueprint();
+							UEdGraph* OwningGraph = GetGraph();
+
+							OutReason = FText::Format(LOCTEXT("DefaultPinIncompatibilityMessage", "{PinAType} is not compatible with {PinBType}."), MessageArgs).ToString();
+							return true;
+						}
 					}
 				}
 			}

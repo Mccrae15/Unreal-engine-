@@ -87,6 +87,8 @@ void UNiagaraDataInterfaceCurveBase::Serialize(FArchive& Ar)
 	{
 #if WITH_EDITORONLY_DATA
 		HasEditorData = !Ar.IsFilterEditorOnly();
+		// Sometimes curves are out of date which needs to be tracked down
+		// Temporarily we will make sure they are up to date in editor builds
 		if (HasEditorData && GetClass() != UNiagaraDataInterfaceCurveBase::StaticClass())
 		{
 			UpdateLUT(true);
@@ -99,8 +101,8 @@ void UNiagaraDataInterfaceCurveBase::Serialize(FArchive& Ar)
 #if WITH_EDITOR
 void UNiagaraDataInterfaceCurveBase::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 	FName PropertyName = (PropertyChangedEvent.Property != nullptr) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
-
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UNiagaraDataInterfaceCurveBase, bExposeCurve))
 	{
 		UpdateExposedTexture();
@@ -289,6 +291,9 @@ void UNiagaraDataInterfaceCurveBase::UpdateExposedTexture()
 	ExposedTexture->Source.UnlockMip(0);
 
 	ExposedTexture->PostEditChange();
+
+	// PostEditChange() will assign a random GUID to the texture, which leads to non-deterministic builds.
+	ExposedTexture->SetDeterministicLightingGuid();
 }
 #endif
 
@@ -320,6 +325,7 @@ bool UNiagaraDataInterfaceCurveBase::Equals(const UNiagaraDataInterface* Other) 
 }
 
 
+#if WITH_EDITORONLY_DATA
 void UNiagaraDataInterfaceCurveBase::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
 	OutHLSL += TEXT("\n");
@@ -342,6 +348,7 @@ void UNiagaraDataInterfaceCurveBase::GetParameterDefinitionHLSL(const FNiagaraDa
 	OutHLSL += FString::Printf(TEXT("float SampleCurve_%s(float T)\n{\n\treturn %s[(uint)T];\n}\n"), *ParamInfo.DataInterfaceHLSLSymbol, *BufferName);
 	OutHLSL += TEXT("\n");
 }
+#endif
 
 //FReadBuffer& UNiagaraDataInterfaceCurveBase::GetCurveLUTGPUBuffer()
 //{

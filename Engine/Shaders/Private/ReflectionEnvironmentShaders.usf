@@ -352,7 +352,7 @@ void FilterPS(
 	}
 
 	uint CubeSize = 1 << ( NumMips - 1 );
-	const float SolidAngleTexel = 4*PI / ( 6 * CubeSize * CubeSize ) * 2;
+	const float SolidAngleTexel = 4.0f * PI / float(6 * CubeSize * CubeSize) * 2.0f;
 
 	//const uint NumSamples = 1024;
 	const uint NumSamples = Roughness < 0.1 ? 32 : 64;
@@ -688,7 +688,7 @@ void RenderRealTimeReflectionHeightFogPS(
 	float4 WorldVector = mul(float4((SVPos.xy / 128.0f) * float2(2.0, -2.0) + float2(1.0, -1.0), 0.0, 0), ResolvedView.ScreenToTranslatedWorld);
 
 #if PERMUTATION_DEPTHTEXTURE
-	float DeviceZ = DepthTexture.Load(int3(SVPos.xy, 0));
+	float DeviceZ = DepthTexture.Load(int3(SVPos.xy, 0)).x;
 	const float HeightFogDistance = ConvertFromDeviceZ(DeviceZ);
 #else
 	const float HeightFogDistance = 100000.0f * 10.0f;	// 10 kilometers

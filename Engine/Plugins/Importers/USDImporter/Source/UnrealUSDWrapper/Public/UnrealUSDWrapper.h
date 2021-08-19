@@ -72,12 +72,6 @@ enum class EUsdSubdivisionScheme
 
 };
 
-enum class EUsdUpAxis
-{
-	YAxis,
-	ZAxis,
-};
-
 UENUM(meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
 enum class EUsdPurpose : int32
 {
@@ -158,7 +152,7 @@ struct FUsdQuatData
 };
 
 UENUM()
-enum class EUsdInitialLoadSet
+enum class EUsdInitialLoadSet : uint8
 {
 	LoadAll,
 	LoadNone
@@ -174,22 +168,42 @@ public:
 #if USE_USD_SDK
 	UNREALUSDWRAPPER_API static double GetDefaultTimeCode();
 
+	/** DEPRECATED: Prefer OpenStage */
 	UNREALUSDWRAPPER_API static TUsdStore< pxr::TfRefPtr< pxr::UsdStage > > OpenUsdStage(const char* Path, const char* Filename);
 #endif  // #if USE_USD_SDK
 
-	// Returns the file extensions the USD SDK supports reading from (e.g. ["usd", "usda", "usdc", etc.])
+	/** Returns the file extensions the USD SDK supports reading from (e.g. ["usd", "usda", "usdc", etc.]) */
 	UNREALUSDWRAPPER_API static TArray<FString> GetAllSupportedFileFormats();
 
-	UNREALUSDWRAPPER_API static UE::FUsdStage OpenStage( const TCHAR* FilePath, EUsdInitialLoadSet InitialLoadSet, bool bUseStageCache = true );
+	/**
+	 * Opens a file as a root layer of an USD stage, and returns that stage.
+	 * @param Identifier - Path to a file that the USD SDK can open (or the identifier of a root layer), which will become the root layer of the new stage
+	 * @param InitialLoadSet - How to handle USD payloads when opening this stage
+	 * @param bUseStageCache - If true, and the stage is already opened in the stage cache (or the layers are already loaded in the registry) then
+	 *						   the file reading may be skipped, and the existing stage returned. When false, the stage and all its referenced layers
+	 *						   will be re-read anew, and the stage will not be added to the stage cache.
+	 * @return The opened stage, which may be invalid.
+	 */
+	UNREALUSDWRAPPER_API static UE::FUsdStage OpenStage( const TCHAR* Identifier, EUsdInitialLoadSet InitialLoadSet, bool bUseStageCache = true );
+
+	/** Creates a new USD root layer file, opens it as a new stage and returns that stage */
 	UNREALUSDWRAPPER_API static UE::FUsdStage NewStage( const TCHAR* FilePath );
 
+	/** Creates a new memory USD root layer, opens it as a new stage and returns that stage */
+	UNREALUSDWRAPPER_API static UE::FUsdStage NewStage();
+
+	/** Returns all the stages that are currently opened in the USD utils stage cache, shared between C++ and Python */
 	UNREALUSDWRAPPER_API static TArray< UE::FUsdStage > GetAllStagesFromCache();
 
-	// Removes the stage from the stage cache. See UsdStageCache::Erase.
+	/** Removes the stage from the stage cache. See UsdStageCache::Erase. */
 	UNREALUSDWRAPPER_API static void EraseStageFromCache( const UE::FUsdStage& Stage );
 
+	/** Starts listening to error/warning/log messages emitted by USD */
 	UNREALUSDWRAPPER_API static void SetupDiagnosticDelegate();
+
+	/** Stops listening to error/warning/log messages emitted by USD */
 	UNREALUSDWRAPPER_API static void ClearDiagnosticDelegate();
+
 private:
 	static TUniquePtr<FUsdDiagnosticDelegate> Delegate;
 };
@@ -235,6 +249,7 @@ public:
 	static UNREALUSDWRAPPER_API bool IsKindChildOf(const pxr::UsdPrim& Prim, const std::string& InBaseKind);
 	static UNREALUSDWRAPPER_API pxr::TfToken GetKind(const pxr::UsdPrim& Prim);
 	static UNREALUSDWRAPPER_API bool SetKind(const pxr::UsdPrim& Prim, const pxr::TfToken& Kind);
+	static UNREALUSDWRAPPER_API bool ClearKind(const pxr::UsdPrim& Prim);
 
 	static UNREALUSDWRAPPER_API pxr::GfMatrix4d GetLocalTransform(const pxr::UsdPrim& Prim);
 	static UNREALUSDWRAPPER_API pxr::GfMatrix4d GetLocalToWorldTransform(const pxr::UsdPrim& Prim );
@@ -296,7 +311,13 @@ namespace UnrealIdentifiers
 	extern UNREALUSDWRAPPER_API const pxr::TfToken UsdPrimvarReader_float2;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken UsdUVTexture;
 
+	// Token used to indicate that a material parsed from a material prim should use world space normals
+	extern UNREALUSDWRAPPER_API const pxr::TfToken WorldSpaceNormals;
 #endif // #if USE_USD_SDK
+
+	extern UNREALUSDWRAPPER_API const TCHAR* Invisible;
+	extern UNREALUSDWRAPPER_API const TCHAR* Inherited;
+	extern UNREALUSDWRAPPER_API const TCHAR* IdentifierPrefix;
 }
 
 struct UNREALUSDWRAPPER_API FUsdDelegates

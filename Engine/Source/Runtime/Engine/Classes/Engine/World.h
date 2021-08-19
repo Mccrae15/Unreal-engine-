@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "HAL/ThreadSafeCounter.h"
+#include "UObject/CoreOnlineFwd.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Object.h"
@@ -26,6 +27,7 @@
 #include "AudioDeviceManager.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
+#include "CollisionProfile.h"
 
 #include "World.generated.h"
 
@@ -40,7 +42,6 @@ class APlayerController;
 class AWorldSettings;
 class Error;
 class FTimerManager;
-class FUniqueNetId;
 class FWorldInGamePerformanceTrackers;
 class IInterface_PostProcessVolume;
 class UAISystemBase;
@@ -62,6 +63,7 @@ class FPhysScene_Chaos;
 class FSceneView;
 struct FUniqueNetIdRepl;
 struct FEncryptionKeyResponse;
+struct FParticlePerfStats;
 
 template<typename,typename> class TOctree2;
 
@@ -286,7 +288,14 @@ public:
 	 * @param InGuid the GUID of the destination map package
 	 * @return whether or not we succeeded in starting the travel
 	 */
+	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time. Please use StartTravel without a InGuid.")
 	bool StartTravel(UWorld* InCurrentWorld, const FURL& InURL, const FGuid& InGuid);
+	bool StartTravel(UWorld* InCurrentWorld, const FURL& InURL)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return StartTravel(InCurrentWorld, InURL, FGuid());
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
 
 	/** @return whether a transition is already in progress */
 	FORCEINLINE bool IsInTransition() const
@@ -814,7 +823,7 @@ struct FStreamingLevelsToConsider
 	GENERATED_BODY()
 
 	FStreamingLevelsToConsider()
-		: bStreamingLevelsBeingConsidered(false)
+		: StreamingLevelsBeingConsidered(0)
 	{}
 
 private:
@@ -832,8 +841,8 @@ private:
 	/** Streaming levels that had their priority changed or were added to the container while consideration was underway. */
 	TSortedMap<ULevelStreaming*, EProcessReason> LevelsToProcess;
 
-	/** Whether the streaming levels are under active consideration or not */
-	bool bStreamingLevelsBeingConsidered;
+	/** Whether the streaming levels are under active consideration */
+	int32 StreamingLevelsBeingConsidered;
 
 	/** 
 	 * Add an element to the container. 
@@ -849,6 +858,7 @@ public:
 
 	void BeginConsideration();
 	void EndConsideration();
+	bool AreStreamingLevelsBeingConsidered() { return StreamingLevelsBeingConsidered > 0; }
 
 	/** Add an element to the container if not already in the container. */
 	void Add(ULevelStreaming* StreamingLevel) { Add_Internal(StreamingLevel, false); }
@@ -955,7 +965,11 @@ public:
 	/** Return a const version of the streaming levels array */
 	const TArray<ULevelStreaming*>& GetStreamingLevels() const { return StreamingLevels; }
 
+	/** Returns true if StreamingLevel is part of the levels being considered for update */
 	bool IsStreamingLevelBeingConsidered(ULevelStreaming* StreamingLevel) const { return StreamingLevelsToConsider.Contains(StreamingLevel); }
+	
+	/** Returns true if there is at least one level being considered for update */
+	bool HasStreamingLevelsToConsider() const { return StreamingLevelsToConsider.GetStreamingLevels().Num() > 0; }
 
 	/** Returns the level, if any, in the process of being made visible */
 	ULevel* GetCurrentLevelPendingVisibility() const { return CurrentLevelPendingVisibility; }
@@ -1222,6 +1236,7 @@ private:
 	/** Creates the dynamic source and static level collections if they don't already exist. */
 	void ConditionallyCreateDefaultLevelCollections();
 
+
 public:
 
 	/** Handle to the active audio device for this world. */
@@ -1350,6 +1365,11 @@ public:
 	/** Default global physics scene. */
 	TSharedPtr<FPhysScene_Chaos> DefaultPhysicsScene_Chaos;
 #endif
+
+	/** Physics Field component. */
+	UPROPERTY(Transient)
+	class UPhysicsFieldComponent* PhysicsField;
+
 private:
 
 	/** Array of components that need to wait on tasks before end of frame updates */
@@ -1632,6 +1652,9 @@ public:
 
 	//Experimental: In game performance tracking.
 	FWorldInGamePerformanceTrackers* PerfTrackers;
+
+	//Tracking for VFX cost for this world.
+	mutable FParticlePerfStats* ParticlePerfStats = nullptr;
 
 	/**
 	 * UWorld default constructor
@@ -2040,6 +2063,27 @@ public:
 	FTraceHandle	AsyncLineTraceByObjectType(EAsyncTraceType InTraceType, const FVector& Start,const FVector& End, const FCollisionObjectQueryParams& ObjectQueryParams, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FTraceDelegate * InDelegate=NULL, uint32 UserData = 0 );
 
 	/**
+	 * Interface for Async. Pretty much same parameter set except you can optional set delegate to be called when execution is completed and you can set UserData if you'd like
+	 * if no delegate, you can query trace data using QueryTraceData or QueryOverlapData
+	 * the data is available only in the next frame after request is made - in other words, if request is made in frame X, you can get the result in frame (X+1)
+	 *
+	 *	@param	InTraceType		Indicates if you want multiple results, single result, or just yes/no (no hit information)
+	 *  @param  Start           Start location of the ray
+	 *  @param  End             End location of the ray
+	 *  @param  ProfileName		The 'profile' used to determine which components to hit
+	 *  @param  Params          Additional parameters used for the trace
+	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
+	 *							Before sending to the function,
+	 *
+	 *							FTraceDelegate TraceDelegate;
+	 *							TraceDelegate.BindRaw(this, &MyActor::TraceDone);
+	 *
+	 *	@param	UserData		UserData
+	 */
+	FTraceHandle	AsyncLineTraceByProfile(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, FName ProfileName, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FTraceDelegate* InDelegate = NULL, uint32 UserData = 0);
+
+	/**
 	 * Interface for Async trace
 	 * Pretty much same parameter set except you can optional set delegate to be called when execution is completed and you can set UserData if you'd like
 	 * if no delegate, you can query trace data using QueryTraceData or QueryOverlapData
@@ -2085,6 +2129,29 @@ public:
 	 *	@param	UserData		UserData
 	 */ 
 	FTraceHandle	AsyncSweepByObjectType(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, const FQuat& Rot, const FCollisionObjectQueryParams& ObjectQueryParams, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FTraceDelegate * InDelegate = NULL, uint32 UserData = 0);
+
+	/**
+	 * Interface for Async trace
+	 * Pretty much same parameter set except you can optional set delegate to be called when execution is completed and you can set UserData if you'd like
+	 * if no delegate, you can query trace data using QueryTraceData or QueryOverlapData
+	 * the data is available only in the next frame after request is made - in other words, if request is made in frame X, you can get the result in frame (X+1)
+	 *
+	 *	@param	InTraceType		Indicates if you want multiple results, single hit result, or just yes/no (no hit information)
+	 *  @param  Start           Start location of the shape
+	 *  @param  End             End location of the shape
+	 *  @param  ProfileName     The 'profile' used to determine which components to hit
+	 *  @param	CollisionShape	CollisionShape - supports Box, Sphere, Capsule
+	 *  @param  Params          Additional parameters used for the trace
+	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
+	 *							Before sending to the function,
+	 *
+	 *							FTraceDelegate TraceDelegate;
+	 *							TraceDelegate.BindRaw(this, &MyActor::TraceDone);
+	 *
+	 *	@param	UserData		UserData
+	 */
+	FTraceHandle	AsyncSweepByProfile(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, const FQuat& Rot, FName ProfileName, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FTraceDelegate* InDelegate = NULL, uint32 UserData = 0);
 
 	// overlap functions
 
@@ -2157,6 +2224,23 @@ public:
 	 * return false if it already has expired Or not valid 
 	 */
 	bool IsTraceHandleValid(const FTraceHandle& Handle, bool bOverlapTrace);
+
+private:
+	static void GetCollisionProfileChannelAndResponseParams(FName ProfileName, ECollisionChannel& CollisionChannel, FCollisionResponseParams& ResponseParams)
+	{
+		if (UCollisionProfile::GetChannelAndResponseParams(ProfileName, CollisionChannel, ResponseParams))
+		{
+			return;
+		}
+
+		// No profile found
+		UE_LOG(LogPhysics, Warning, TEXT("COLLISION PROFILE [%s] is not found"), *ProfileName.ToString());
+
+		CollisionChannel = ECC_WorldStatic;
+		ResponseParams = FCollisionResponseParams::DefaultResponseParam;
+	}
+
+public:
 
 	/** NavigationSystem getter */
 	FORCEINLINE UNavigationSystemBase* GetNavigationSystem() { return NavigationSystem; }
@@ -2356,6 +2440,9 @@ public:
 	AWorldSettings* K2_GetWorldSettings();
 	AWorldSettings* GetWorldSettings( bool bCheckStreamingPersistent = false, bool bChecked = true ) const;
 
+	/** Returns a human friendly display string for the current world (showing the kind of world when in multiplayer PIE) */
+	FString GetDebugDisplayName() const;
+
 	/**
 	 * Returns the current levels BSP model.
 	 *
@@ -2462,11 +2549,14 @@ public:
 	FDelegateHandle AddMovieSceneSequenceTickHandler(const FOnMovieSceneSequenceTick::FDelegate& InHandler);
 	/** Removes a tick handler for sequences */
 	void RemoveMovieSceneSequenceTickHandler(FDelegateHandle InHandle);
+	/** Check if movie sequences tick handler is bound at all */
+	bool IsMovieSceneSequenceTickHandlerBound() const;
 
 	//~ Begin UObject Interface
 	virtual void Serialize( FArchive& Ar ) override;
 	virtual void BeginDestroy() override;
 	virtual void FinishDestroy() override;
+	virtual bool IsReadyForFinishDestroy() override;
 	virtual void PostLoad() override;
 	virtual void PreDuplicate(FObjectDuplicationParameters& DupParams) override;
 	virtual bool PreSaveRoot(const TCHAR* Filename) override;
@@ -2661,6 +2751,7 @@ public:
 		/** Should the FX system be created for this world. */
 		uint32 bCreateFXSystem:1;
 
+		/** The default game mode for this world (if any) */
 		TSubclassOf<class AGameModeBase> DefaultGameMode;
 
 		InitializationValues& InitializeScenes(const bool bInitialize) { bInitializeScenes = bInitialize; return *this; }
@@ -3215,7 +3306,7 @@ public:
 	 * @param InNetPlayerIndex (optional) - the NetPlayerIndex to set on the PlayerController
 	 * @return the PlayerController that was spawned (may fail and return NULL)
 	 */
-	APlayerController* SpawnPlayActor(class UPlayer* Player, ENetRole RemoteRole, const FURL& InURL, const TSharedPtr<const FUniqueNetId>& UniqueId, FString& Error, uint8 InNetPlayerIndex = 0);
+	APlayerController* SpawnPlayActor(class UPlayer* Player, ENetRole RemoteRole, const FURL& InURL, const FUniqueNetIdPtr& UniqueId, FString& Error, uint8 InNetPlayerIndex = 0);
 	APlayerController* SpawnPlayActor(class UPlayer* Player, ENetRole RemoteRole, const FURL& InURL, const FUniqueNetIdRepl& UniqueId, FString& Error, uint8 InNetPlayerIndex = 0);
 	
 	/**
@@ -3304,6 +3395,9 @@ public:
 	void SetPlayInEditorInitialNetMode(ENetMode InNetMode)
 	{
 		PlayInEditorNetMode = InNetMode;
+
+		// Disable audio playback on PIE dedicated server
+		bAllowAudioPlayback = bAllowAudioPlayback && PlayInEditorNetMode != NM_DedicatedServer;
 	}
 
 private:
@@ -3487,7 +3581,14 @@ public:
 	 * @param MapPackageGuid (opt) - the GUID of the map package to travel to - this is used to find the file when it has been auto-downloaded,
 	 * 				so it is only needed for clients
 	 */
-	void SeamlessTravel(const FString& InURL, bool bAbsolute = false, FGuid MapPackageGuid = FGuid());
+	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time. Please use SeamlessTravel without a NextMapGuid.")
+	void SeamlessTravel(const FString& InURL, bool bAbsolute, FGuid MapPackageGuid);
+	void SeamlessTravel(const FString& InURL, bool bAbsolute = false)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		SeamlessTravel(InURL, bAbsolute, FGuid());
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
 
 	/** @return whether we're currently in a seamless transition */
 	bool IsInSeamlessTravel();
@@ -3728,6 +3829,9 @@ public:
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnWorldPostActorTick, UWorld* /*World*/, ELevelTick/**Tick Type*/, float/**Delta Seconds*/);
 	static FOnWorldPostActorTick OnWorldPostActorTick;
 
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnWorldPreSendAllEndOfFrameUpdates, UWorld* /*World*/);
+	static FOnWorldPreSendAllEndOfFrameUpdates OnWorldPreSendAllEndOfFrameUpdates;
+
 	// Callback for world creation
 	static FWorldEvent OnPostWorldCreation;
 	
@@ -3790,6 +3894,9 @@ public:
 
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCopyWorldData, UWorld*, UWorld*);
 	static FOnCopyWorldData OnCopyWorldData;
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FGameInstanceEvent, UGameInstance* /*GameInstance*/);
+	static FGameInstanceEvent OnStartGameInstance;
 
 private:
 	FWorldDelegates() {}
@@ -3907,3 +4014,5 @@ FORCEINLINE_DEBUGGABLE bool UWorld::IsNetMode(ENetMode Mode) const
 #endif
 }
 
+FString ENGINE_API ToString(EWorldType::Type Type);
+FString ENGINE_API ToString(ENetMode NetMode);

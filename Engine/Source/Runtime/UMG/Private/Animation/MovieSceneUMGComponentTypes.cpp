@@ -5,6 +5,7 @@
 #include "EntitySystem/MovieScenePropertyComponentHandler.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "MovieSceneTracksComponentTypes.h"
+#include "EntitySystem/MovieSceneEntityFactoryTemplates.h"
 
 #include "Components/Widget.h"
 
@@ -16,17 +17,6 @@ namespace MovieScene
 static bool GMovieSceneUMGComponentTypesDestroyed = false;
 static TUniquePtr<FMovieSceneUMGComponentTypes> GMovieSceneUMGComponentTypes;
 
-
-struct FIntermediateWidgetTransform
-{
-	float TranslationX;
-	float TranslationY;
-	float Rotation;
-	float ScaleX;
-	float ScaleY;
-	float ShearX;
-	float ShearY;
-};
 
 void ConvertOperationalProperty(const FIntermediateWidgetTransform& In, FWidgetTransform& Out)
 {
@@ -59,23 +49,30 @@ static void SetRenderOpacity(UObject* Object, float InRenderOpacity)
 	CastChecked<UWidget>(Object)->SetRenderOpacity(InRenderOpacity);
 }
 
-static FWidgetTransform GetRenderTransform(const UObject* Object)
+static FIntermediateWidgetTransform GetRenderTransform(const UObject* Object)
 {
-	return CastChecked<const UWidget>(Object)->RenderTransform;
+	FWidgetTransform Transform = CastChecked<const UWidget>(Object)->RenderTransform;
+
+	FIntermediateWidgetTransform IntermediateTransform{};
+	ConvertOperationalProperty(Transform, IntermediateTransform);
+	return IntermediateTransform;
 }
 
-static void SetRenderTransform(UObject* Object, const FWidgetTransform& InRenderTransform)
+static void SetRenderTransform(UObject* Object, const FIntermediateWidgetTransform& InRenderTransform)
 {
-	CastChecked<UWidget>(Object)->SetRenderTransform(InRenderTransform);
+	FWidgetTransform Transform{};
+	ConvertOperationalProperty(InRenderTransform, Transform);
+
+	CastChecked<UWidget>(Object)->SetRenderTransform(Transform);
 }
 
 FMovieSceneUMGComponentTypes::FMovieSceneUMGComponentTypes()
 {
 	FComponentRegistry* ComponentRegistry = UMovieSceneEntitySystemLinker::GetComponents();
 
-	WidgetTransform.PropertyTag = ComponentRegistry->NewTag(TEXT("FWidgetTransform Property"),  EComponentTypeFlags::CopyToChildren);
-	ComponentRegistry->NewComponentType(&WidgetTransform.PreAnimatedValue, TEXT("Pre-Animated 2D Transform"),     EComponentTypeFlags::Preserved);
-	ComponentRegistry->NewComponentType(&WidgetTransform.InitialValue,     TEXT("Initial 2D Transform"),          EComponentTypeFlags::Preserved);
+	ComponentRegistry->NewPropertyType(Margin, TEXT("FMargin Property"));
+
+	ComponentRegistry->NewPropertyType(WidgetTransform, TEXT("FWidgetTransform Property"));
 
 	FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
 
@@ -83,14 +80,21 @@ FMovieSceneUMGComponentTypes::FMovieSceneUMGComponentTypes()
 
 	CustomWidgetTransformAccessors.Add(UWidget::StaticClass(), "RenderTransform", &GetRenderTransform, &SetRenderTransform);
 
+	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(Margin)
+	.AddComposite(BuiltInComponents->FloatResult[0], &FMargin::Left)
+	.AddComposite(BuiltInComponents->FloatResult[1], &FMargin::Top)
+	.AddComposite(BuiltInComponents->FloatResult[2], &FMargin::Right)
+	.AddComposite(BuiltInComponents->FloatResult[3], &FMargin::Bottom)
+	.Commit();
+
 	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(WidgetTransform)
-	.AddComposite<&FIntermediateWidgetTransform::TranslationX>(BuiltInComponents->FloatResult[0])
-	.AddComposite<&FIntermediateWidgetTransform::TranslationY>(BuiltInComponents->FloatResult[1])
-	.AddComposite<&FIntermediateWidgetTransform::Rotation>(BuiltInComponents->FloatResult[2])
-	.AddComposite<&FIntermediateWidgetTransform::ScaleX>(BuiltInComponents->FloatResult[3])
-	.AddComposite<&FIntermediateWidgetTransform::ScaleY>(BuiltInComponents->FloatResult[4])
-	.AddComposite<&FIntermediateWidgetTransform::ShearX>(BuiltInComponents->FloatResult[5])
-	.AddComposite<&FIntermediateWidgetTransform::ShearY>(BuiltInComponents->FloatResult[6])
+	.AddComposite(BuiltInComponents->FloatResult[0], &FIntermediateWidgetTransform::TranslationX)
+	.AddComposite(BuiltInComponents->FloatResult[1], &FIntermediateWidgetTransform::TranslationY)
+	.AddComposite(BuiltInComponents->FloatResult[2], &FIntermediateWidgetTransform::Rotation)
+	.AddComposite(BuiltInComponents->FloatResult[3], &FIntermediateWidgetTransform::ScaleX)
+	.AddComposite(BuiltInComponents->FloatResult[4], &FIntermediateWidgetTransform::ScaleY)
+	.AddComposite(BuiltInComponents->FloatResult[5], &FIntermediateWidgetTransform::ShearX)
+	.AddComposite(BuiltInComponents->FloatResult[6], &FIntermediateWidgetTransform::ShearY)
 	.SetCustomAccessors(&CustomWidgetTransformAccessors)
 	.Commit();
 }

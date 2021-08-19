@@ -20,32 +20,33 @@
 #define LOCTEXT_NAMESPACE "ChaosNiagaraDestructionDataInterface"
 //#pragma optimize("", off)
 
-DECLARE_CYCLE_STAT(TEXT("CollisionCallback"), STAT_CollisionCallback, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("TrailingCallback"), STAT_NiagaraTrailingCallback, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("BreakingCallback"), STAT_NiagaraBreakingCallback, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("CollisionCallbackSorting"), STAT_CollisionCallbackSorting, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("BreakingCallbackSorting"), STAT_BreakingCallbackSorting, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("TrailingCallbackSorting"), STAT_TrailingCallbackSorting, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumAllCollisions"), STAT_NiagaraNumAllCollisions, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumFilteredAllCollisions"), STAT_NiagaraNumFilteredAllCollisions, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumCollisionsToSpawnParticles"), STAT_NiagaraNumCollisionsToSpawnParticles, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumAllTrailings"), STAT_NiagaraNumAllTrailings, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumFilteredAllTrailings"), STAT_NiagaraNumFilteredAllTrailings, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumTrailingsToSpawnParticles"), STAT_NiagaraNumTrailingsToSpawnParticles, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumAllBreakings"), STAT_NiagaraNumAllBreakings, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumFilteredAllBreakings"), STAT_NiagaraNumFilteredAllBreakings, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumBreakingsToSpawnParticles"), STAT_NiagaraNumBreakingsToSpawnParticles, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumParticlesSpawnedFromCollisions"), STAT_NiagaraNumParticlesSpawnedFromCollisions, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumParticlesSpawnedFromTrailings"), STAT_NiagaraNumParticlesSpawnedFromTrailings, STATGROUP_Niagara);
-DECLARE_DWORD_COUNTER_STAT(TEXT("NumParticlesSpawnedFromBreaking"), STAT_NiagaraNumParticlesSpawnedFromBreakings, STATGROUP_Niagara);
-DECLARE_MEMORY_STAT(TEXT("PhysicsProxyReverseMapping"), STAT_PhysicsProxyReverseMappingMemory, STATGROUP_Niagara);
-DECLARE_MEMORY_STAT(TEXT("ParticleIndexReverseMapping"), STAT_ParticleIndexReverseMappingMemory, STATGROUP_Niagara);
-DECLARE_MEMORY_STAT(TEXT("AllCollisionsData"), STAT_AllCollisionsDataMemory, STATGROUP_Niagara);
-DECLARE_MEMORY_STAT(TEXT("AllCollisionsIndicesByPhysicsProxy"), STAT_AllCollisionsIndicesByPhysicsProxyMemory, STATGROUP_Niagara);
-DECLARE_MEMORY_STAT(TEXT("AllBreakingsData"), STAT_AllBreakingsDataMemory, STATGROUP_Niagara);
-DECLARE_MEMORY_STAT(TEXT("AllBreakingsIndicesByPhysicsProxy"), STAT_AllBreakingsIndicesByPhysicsProxyMemory, STATGROUP_Niagara);
-DECLARE_MEMORY_STAT(TEXT("AllTrailingsData"), STAT_AllTrailingsDataMemory, STATGROUP_Niagara);
-DECLARE_MEMORY_STAT(TEXT("AllTrailingsIndicesByPhysicsProxy"), STAT_AllTrailingsIndicesByPhysicsProxyMemory, STATGROUP_Niagara);
+DECLARE_STATS_GROUP(TEXT("ChaosNiagara"), STATGROUP_ChaosNiagara, STATCAT_Advanced);
+DECLARE_CYCLE_STAT(TEXT("CollisionCallback"), STAT_CollisionCallback, STATGROUP_ChaosNiagara);
+DECLARE_CYCLE_STAT(TEXT("TrailingCallback"), STAT_NiagaraTrailingCallback, STATGROUP_ChaosNiagara);
+DECLARE_CYCLE_STAT(TEXT("BreakingCallback"), STAT_NiagaraBreakingCallback, STATGROUP_ChaosNiagara);
+DECLARE_CYCLE_STAT(TEXT("CollisionCallbackSorting"), STAT_CollisionCallbackSorting, STATGROUP_ChaosNiagara);
+DECLARE_CYCLE_STAT(TEXT("BreakingCallbackSorting"), STAT_BreakingCallbackSorting, STATGROUP_ChaosNiagara);
+DECLARE_CYCLE_STAT(TEXT("TrailingCallbackSorting"), STAT_TrailingCallbackSorting, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumAllCollisions"), STAT_NiagaraNumAllCollisions, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumFilteredAllCollisions"), STAT_NiagaraNumFilteredAllCollisions, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumCollisionsToSpawnParticles"), STAT_NiagaraNumCollisionsToSpawnParticles, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumAllTrailings"), STAT_NiagaraNumAllTrailings, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumFilteredAllTrailings"), STAT_NiagaraNumFilteredAllTrailings, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumTrailingsToSpawnParticles"), STAT_NiagaraNumTrailingsToSpawnParticles, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumAllBreakings"), STAT_NiagaraNumAllBreakings, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumFilteredAllBreakings"), STAT_NiagaraNumFilteredAllBreakings, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumBreakingsToSpawnParticles"), STAT_NiagaraNumBreakingsToSpawnParticles, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumParticlesSpawnedFromCollisions"), STAT_NiagaraNumParticlesSpawnedFromCollisions, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumParticlesSpawnedFromTrailings"), STAT_NiagaraNumParticlesSpawnedFromTrailings, STATGROUP_ChaosNiagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumParticlesSpawnedFromBreaking"), STAT_NiagaraNumParticlesSpawnedFromBreakings, STATGROUP_ChaosNiagara);
+DECLARE_MEMORY_STAT(TEXT("PhysicsProxyReverseMapping"), STAT_PhysicsProxyReverseMappingMemory, STATGROUP_ChaosNiagara);
+DECLARE_MEMORY_STAT(TEXT("ParticleIndexReverseMapping"), STAT_ParticleIndexReverseMappingMemory, STATGROUP_ChaosNiagara);
+DECLARE_MEMORY_STAT(TEXT("AllCollisionsData"), STAT_AllCollisionsDataMemory, STATGROUP_ChaosNiagara);
+DECLARE_MEMORY_STAT(TEXT("AllCollisionsIndicesByPhysicsProxy"), STAT_AllCollisionsIndicesByPhysicsProxyMemory, STATGROUP_ChaosNiagara);
+DECLARE_MEMORY_STAT(TEXT("AllBreakingsData"), STAT_AllBreakingsDataMemory, STATGROUP_ChaosNiagara);
+DECLARE_MEMORY_STAT(TEXT("AllBreakingsIndicesByPhysicsProxy"), STAT_AllBreakingsIndicesByPhysicsProxyMemory, STATGROUP_ChaosNiagara);
+DECLARE_MEMORY_STAT(TEXT("AllTrailingsData"), STAT_AllTrailingsDataMemory, STATGROUP_ChaosNiagara);
+DECLARE_MEMORY_STAT(TEXT("AllTrailingsIndicesByPhysicsProxy"), STAT_AllTrailingsIndicesByPhysicsProxyMemory, STATGROUP_ChaosNiagara);
 
 // Name of all the functions available in the data interface
 static const FName GetPositionName("GetPosition");
@@ -143,7 +144,7 @@ UNiagaraDataInterfaceChaosDestruction::UNiagaraDataInterfaceChaosDestruction(FOb
 	Solvers.Reset();
 
 	Proxy.Reset(new FNiagaraDataInterfaceProxyChaosDestruction());
-	PushToRenderThread();
+	MarkRenderDataDirty();
 }
 
 void UNiagaraDataInterfaceChaosDestruction::PostInitProperties()
@@ -152,14 +153,22 @@ void UNiagaraDataInterfaceChaosDestruction::PostInitProperties()
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
-		FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(GetClass()), true, false, false);
-		FNiagaraTypeRegistry::Register(FChaosDestructionEvent::StaticStruct(), true, true, false);
+		ENiagaraTypeRegistryFlags DIFlags =
+			ENiagaraTypeRegistryFlags::AllowAnyVariable |
+			ENiagaraTypeRegistryFlags::AllowParameter;
+		FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(GetClass()), DIFlags);
+
+		ENiagaraTypeRegistryFlags EventFlags =
+			ENiagaraTypeRegistryFlags::AllowAnyVariable |
+			ENiagaraTypeRegistryFlags::AllowParameter |
+			ENiagaraTypeRegistryFlags::AllowPayload;
+		FNiagaraTypeRegistry::Register(FChaosDestructionEvent::StaticStruct(), EventFlags);
 	}
 
 	LastSpawnedPointID = -1;
 	LastSpawnTime = -1.f;
 	TimeStampOfLastProcessedData = -1.f;
-	PushToRenderThread();
+	MarkRenderDataDirty();
 }
 
 void UNiagaraDataInterfaceChaosDestruction::PostLoad()
@@ -170,7 +179,7 @@ void UNiagaraDataInterfaceChaosDestruction::PostLoad()
 	LastSpawnTime = -1.f;
 	TimeStampOfLastProcessedData = -1.f;
 
-	PushToRenderThread();
+	MarkRenderDataDirty();
 }
 
 void UNiagaraDataInterfaceChaosDestruction::BeginDestroy()
@@ -274,7 +283,7 @@ void UNiagaraDataInterfaceChaosDestruction::PostEditChangeProperty(struct FPrope
 		}
 	}
 
-	PushToRenderThread();
+	MarkRenderDataDirty();
 }
 
 #endif
@@ -336,7 +345,7 @@ bool UNiagaraDataInterfaceChaosDestruction::CopyToInternal(UNiagaraDataInterface
 		DestinationChaosDestruction->LastSpawnTime = LastSpawnTime;
 		DestinationChaosDestruction->TimeStampOfLastProcessedData = TimeStampOfLastProcessedData;
 		DestinationChaosDestruction->SolverTime = SolverTime;
-		DestinationChaosDestruction->PushToRenderThread();
+		DestinationChaosDestruction->MarkRenderDataDirty();
 
 		return true;
 	}
@@ -501,14 +510,17 @@ bool UNiagaraDataInterfaceChaosDestruction::InitPerInstanceData(void* PerInstanc
 
 	ResetInstData(InstData);
 
-	FNiagaraDataInterfaceProxyChaosDestruction* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxyChaosDestruction>();
-	ENQUEUE_RENDER_COMMAND(FNiagaraChaosDestructionDICreateRTInstance)(
-		[ThisProxy, InstanceID = SystemInstance->GetId()](FRHICommandList& CmdList)
+	check(SystemInstance);
+	if (SystemInstance)
 	{
-		ThisProxy->CreatePerInstanceData(InstanceID);
+		FNiagaraDataInterfaceProxyChaosDestruction* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxyChaosDestruction>();
+		ENQUEUE_RENDER_COMMAND(FNiagaraChaosDestructionDICreateRTInstance)(
+			[ThisProxy, InstanceID = SystemInstance->GetId()](FRHICommandList& CmdList)
+		{
+			ThisProxy->CreatePerInstanceData(InstanceID);
+		}
+		);
 	}
-	);
-
 	return true;
 }
 
@@ -517,14 +529,18 @@ void UNiagaraDataInterfaceChaosDestruction::DestroyPerInstanceData(void* PerInst
 	FNDIChaosDestruction_InstanceData* InstData = (FNDIChaosDestruction_InstanceData*)PerInstanceData;
 	InstData->~FNDIChaosDestruction_InstanceData();
 
+	check(SystemInstance);
 	check(Proxy);
-	FNiagaraDataInterfaceProxyChaosDestruction* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxyChaosDestruction>();
-	ENQUEUE_RENDER_COMMAND(FNiagaraDIChaosDestructionDestroyInstanceData) (
-		[ThisProxy, InstanceID = SystemInstance->GetId(), Batcher = SystemInstance->GetBatcher()](FRHICommandListImmediate& CmdList)
+	if (SystemInstance)
+	{
+		FNiagaraDataInterfaceProxyChaosDestruction* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxyChaosDestruction>();
+		ENQUEUE_RENDER_COMMAND(FNiagaraDIChaosDestructionDestroyInstanceData) (
+			[ThisProxy, InstanceID = SystemInstance->GetId(), Batcher = SystemInstance->GetBatcher()](FRHICommandListImmediate& CmdList)
 		{
 			ThisProxy->DestroyInstanceData(Batcher, InstanceID);
 		}
-	);
+		);
+	}
 }
 
 #if CHAOS_PARTICLEHANDLE_TODO
@@ -718,7 +734,7 @@ void UNiagaraDataInterfaceChaosDestruction::HandleCollisionEvents(const Chaos::F
 	CollisionEvents.AddUninitialized(Event.CollisionData.AllCollisionsArray.Num());
 
 	int32 Idx = 0;
-	for (Chaos::TCollisionData<float, 3> const& DataIn : CollisionDataIn)
+	for (Chaos::FCollidingData const& DataIn : CollisionDataIn)
 	{
 		auto& CopyData = CollisionEvents[Idx];
 
@@ -746,7 +762,7 @@ void UNiagaraDataInterfaceChaosDestruction::HandleCollisionEvents(const Chaos::F
 }
 
 
-void UNiagaraDataInterfaceChaosDestruction::FilterAllCollisions(TArray<Chaos::TCollisionDataExt<float, 3>>& AllCollisionsArray)
+void UNiagaraDataInterfaceChaosDestruction::FilterAllCollisions(TArray<Chaos::FCollidingDataExt>& AllCollisionsArray)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FilterAllCollisions);
 
@@ -770,7 +786,7 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllCollisions(TArray<Chaos::TC
 		LocationYToSpawn != ELocationYToSpawnEnum::ChaosNiagara_LocationYToSpawn_None ||
 		LocationZToSpawn != ELocationZToSpawnEnum::ChaosNiagara_LocationZToSpawn_None)
 	{
-		TArray<Chaos::TCollisionDataExt<float, 3>> FilteredAllCollisionsArray;
+		TArray<Chaos::FCollidingDataExt> FilteredAllCollisionsArray;
 		FilteredAllCollisionsArray.SetNumUninitialized(AllCollisionsArray.Num());
 
 		int32 IdxFilteredCollisions = 0;
@@ -850,7 +866,7 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllCollisions(TArray<Chaos::TC
 	}
 }
 
-void UNiagaraDataInterfaceChaosDestruction::SortCollisions(TArray<Chaos::TCollisionDataExt<float, 3>>& CollisionsArray)
+void UNiagaraDataInterfaceChaosDestruction::SortCollisions(TArray<Chaos::FCollidingDataExt>& CollisionsArray)
 {
 	SCOPE_CYCLE_COUNTER(STAT_CollisionCallbackSorting);
 
@@ -868,7 +884,7 @@ void UNiagaraDataInterfaceChaosDestruction::SortCollisions(TArray<Chaos::TCollis
 	}
 }
 
-void ComputeHashTable(const TArray<Chaos::TCollisionDataExt<float, 3>>& CollisionsArray, const FBox& SpatialHashVolume, const FVector& SpatialHashVolumeCellSize, const uint32 NumberOfCellsX, const uint32 NumberOfCellsY, const uint32 NumberOfCellsZ, TMultiMap<uint32, int32>& HashTableMap)
+void ComputeHashTable(const TArray<Chaos::FCollidingDataExt>& CollisionsArray, const FBox& SpatialHashVolume, const FVector& SpatialHashVolumeCellSize, const uint32 NumberOfCellsX, const uint32 NumberOfCellsY, const uint32 NumberOfCellsZ, TMultiMap<uint32, int32>& HashTableMap)
 {
 	FVector CellSizeInv(1.f / SpatialHashVolumeCellSize.X, 1.f / SpatialHashVolumeCellSize.Y, 1.f / SpatialHashVolumeCellSize.Z);
 
@@ -893,8 +909,8 @@ void ComputeHashTable(const TArray<Chaos::TCollisionDataExt<float, 3>>& Collisio
 	}
 }
 
-void UNiagaraDataInterfaceChaosDestruction::GetCollisionsToSpawnFromCollisions(TArray<Chaos::TCollisionDataExt<float, 3>>& AllCollisionsArray,
-	TArray<Chaos::TCollisionDataExt<float, 3>>& CollisionsToSpawnArray)
+void UNiagaraDataInterfaceChaosDestruction::GetCollisionsToSpawnFromCollisions(TArray<Chaos::FCollidingDataExt>& AllCollisionsArray,
+	TArray<Chaos::FCollidingDataExt>& CollisionsToSpawnArray)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_GetCollisionsToSpawnFromCollisions);
 
@@ -947,7 +963,7 @@ void UNiagaraDataInterfaceChaosDestruction::GetCollisionsToSpawnFromCollisions(T
 		// CollisionsToSpawnArray has too many elements
 		if (CollisionsToSpawnArray.Num() > MaxNumberOfDataEntriesToSpawn)
 		{
-			TArray<Chaos::TCollisionDataExt<float, 3>> CollisionsArray1;
+			TArray<Chaos::FCollidingDataExt> CollisionsArray1;
 
 			float FInc = (float)CollisionsToSpawnArray.Num() / (float)MaxNumberOfDataEntriesToSpawn;
 
@@ -992,7 +1008,7 @@ void UNiagaraDataInterfaceChaosDestruction::GetCollisionsToSpawnFromCollisions(T
 }
 
 int32 UNiagaraDataInterfaceChaosDestruction::SpawnParticlesFromCollision(FSolverData SolverData,
-																		 Chaos::TCollisionDataExt<float, 3>& Collision,
+																		 Chaos::FCollidingDataExt& Collision,
 																		 FNDIChaosDestruction_InstanceData* InstData,
 																		 float TimeData_MapsCreated,
 																		 int32 IdxSolver)
@@ -1132,13 +1148,13 @@ bool UNiagaraDataInterfaceChaosDestruction::CollisionCallback(FNDIChaosDestructi
 	{
 		if (SolverData.Solver->GetEventFilters()->IsCollisionEventEnabled() && CollisionEvents.Num() > 0 && SolverData.Solver->GetSolverTime() > 0.f && MaxNumberOfDataEntriesToSpawn > 0)
 		{
-			TArray<Chaos::TCollisionDataExt<float, 3>>& AllCollisionsArray = CollisionEvents;
+			TArray<Chaos::FCollidingDataExt>& AllCollisionsArray = CollisionEvents;
 			float TimeData_MapsCreated = SolverData.Solver->GetSolverTime();
 
 #if STATS
 			{
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_GatherMemoryStats);
-				size_t SizeOfAllCollisions = sizeof(Chaos::TCollisionData<float, 3>) * AllCollisionsArray.Num();
+				size_t SizeOfAllCollisions = sizeof(Chaos::FCollidingData) * AllCollisionsArray.Num();
 				SET_MEMORY_STAT(STAT_AllCollisionsDataMemory, SizeOfAllCollisions);
 			}
 
@@ -1156,7 +1172,7 @@ bool UNiagaraDataInterfaceChaosDestruction::CollisionCallback(FNDIChaosDestructi
 				SortCollisions(AllCollisionsArray);
 
 				// Get the collisions which will spawn particles
-				TArray<Chaos::TCollisionDataExt<float, 3>> CollisionsToSpawnArray;
+				TArray<Chaos::FCollidingDataExt> CollisionsToSpawnArray;
 
 				GetCollisionsToSpawnFromCollisions(AllCollisionsArray, CollisionsToSpawnArray);
 
@@ -1217,14 +1233,14 @@ void UNiagaraDataInterfaceChaosDestruction::HandleBreakingEvents(const Chaos::FB
 	BreakingEvents.InsertZeroed(0, BreakingDataIn.Num());
 
 	int32 Idx = 0;
-	for (Chaos::TBreakingData<float, 3> const& DataIn : BreakingDataIn)
+	for (Chaos::FBreakingData const& DataIn : BreakingDataIn)
 	{
 		if (bGetExternalBreakingData)
 		{
 			auto& CopyData = BreakingEvents[Idx];
 			CopyData = DataIn;
 
-			Chaos::TRigidTransform<float, 3> Transform;
+			Chaos::FRigidTransform3 Transform;
 
 			// Ext Data..
 			CopyData.TransformTranslation = Transform.GetTranslation();
@@ -1291,7 +1307,7 @@ void UNiagaraDataInterfaceChaosDestruction::HandleBreakingEvents(const Chaos::FB
 }
 
 
-void UNiagaraDataInterfaceChaosDestruction::FilterAllBreakings(TArray<Chaos::TBreakingDataExt<float, 3>>& AllBreakingsArray)
+void UNiagaraDataInterfaceChaosDestruction::FilterAllBreakings(TArray<Chaos::FBreakingDataExt>& AllBreakingsArray)
 {
 	if (bApplyMaterialsFilter || 
 		SpeedToSpawnMinMax.X > 0.f ||
@@ -1311,7 +1327,7 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllBreakings(TArray<Chaos::TBr
 		LocationYToSpawn != ELocationYToSpawnEnum::ChaosNiagara_LocationYToSpawn_None ||
 		LocationZToSpawn != ELocationZToSpawnEnum::ChaosNiagara_LocationZToSpawn_None)
 	{ 
-		TArray<Chaos::TBreakingDataExt<float, 3>> FilteredAllBreakingsArray;
+		TArray<Chaos::FBreakingDataExt> FilteredAllBreakingsArray;
 		FilteredAllBreakingsArray.SetNumUninitialized(AllBreakingsArray.Num());
 
 		int32 IdxFilteredBreakings = 0;
@@ -1407,7 +1423,7 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllBreakings(TArray<Chaos::TBr
 	}
 }
 
-void UNiagaraDataInterfaceChaosDestruction::SortBreakings(TArray<Chaos::TBreakingDataExt<float, 3>>& BreakingsArray)
+void UNiagaraDataInterfaceChaosDestruction::SortBreakings(TArray<Chaos::FBreakingDataExt>& BreakingsArray)
 {
 	SCOPE_CYCLE_COUNTER(STAT_BreakingCallbackSorting);
 
@@ -1425,7 +1441,7 @@ void UNiagaraDataInterfaceChaosDestruction::SortBreakings(TArray<Chaos::TBreakin
 	}
 }
 
-void ComputeHashTable(const TArray<Chaos::TBreakingDataExt<float, 3>>& BreakingsArray, const FBox& SpatialHashVolume, const FVector& SpatialHashVolumeCellSize, const uint32 NumberOfCellsX, const uint32 NumberOfCellsY, const uint32 NumberOfCellsZ, TMultiMap<uint32, int32>& HashTableMap)
+void ComputeHashTable(const TArray<Chaos::FBreakingDataExt>& BreakingsArray, const FBox& SpatialHashVolume, const FVector& SpatialHashVolumeCellSize, const uint32 NumberOfCellsX, const uint32 NumberOfCellsY, const uint32 NumberOfCellsZ, TMultiMap<uint32, int32>& HashTableMap)
 {
 	FVector CellSizeInv(1.f / SpatialHashVolumeCellSize.X, 1.f / SpatialHashVolumeCellSize.Y, 1.f / SpatialHashVolumeCellSize.Z);
 
@@ -1450,8 +1466,8 @@ void ComputeHashTable(const TArray<Chaos::TBreakingDataExt<float, 3>>& Breakings
 	}
 }
 
-void UNiagaraDataInterfaceChaosDestruction::GetBreakingsToSpawnFromBreakings(TArray<Chaos::TBreakingDataExt<float, 3>>& AllBreakingsArray,
-																			 TArray<Chaos::TBreakingDataExt<float, 3>>& BreakingsToSpawnArray)
+void UNiagaraDataInterfaceChaosDestruction::GetBreakingsToSpawnFromBreakings(TArray<Chaos::FBreakingDataExt>& AllBreakingsArray,
+																			 TArray<Chaos::FBreakingDataExt>& BreakingsToSpawnArray)
 {
 	const float SpatialHasVolumeExtentMin = 100.f;
 	const float SpatialHasVolumeExtentMax = 1e8;
@@ -1502,7 +1518,7 @@ void UNiagaraDataInterfaceChaosDestruction::GetBreakingsToSpawnFromBreakings(TAr
 		// BreakingsToSpawnArray has too many elements
 		if (BreakingsToSpawnArray.Num() > MaxNumberOfDataEntriesToSpawn)
 		{
-			TArray<Chaos::TBreakingDataExt<float, 3>> BreakingsArray1;
+			TArray<Chaos::FBreakingDataExt> BreakingsArray1;
 
 			float FInc = (float)BreakingsToSpawnArray.Num() / (float)MaxNumberOfDataEntriesToSpawn;
 
@@ -1547,7 +1563,7 @@ void UNiagaraDataInterfaceChaosDestruction::GetBreakingsToSpawnFromBreakings(TAr
 }
 
 int32 UNiagaraDataInterfaceChaosDestruction::SpawnParticlesFromBreaking(FSolverData SolverData,
-																		Chaos::TBreakingDataExt<float, 3>& Breaking,
+																		Chaos::FBreakingDataExt& Breaking,
 																		FNDIChaosDestruction_InstanceData* InstData,
 																		float TimeData_MapsCreated,
 																		int32 IdxSolver)
@@ -1680,12 +1696,12 @@ bool UNiagaraDataInterfaceChaosDestruction::BreakingCallback(FNDIChaosDestructio
 	{
 		if (SolverData.Solver->GetEventFilters()->IsBreakingEventEnabled() && BreakingEvents.Num() > 0 && SolverData.Solver->GetSolverTime() > 0.f && MaxNumberOfDataEntriesToSpawn > 0)
 		{
-			TArray<Chaos::TBreakingDataExt<float, 3>>& AllBreakingsArray = BreakingEvents;
+			TArray<Chaos::FBreakingDataExt>& AllBreakingsArray = BreakingEvents;
 			TMap<IPhysicsProxyBase*, TArray<int32>> AllBreakingsIndicesByPhysicsProxyMap;
 			float TimeData_MapsCreated = SolverData.Solver->GetSolverTime();
 
 			{
-				size_t SizeOfAllBreakings = sizeof(Chaos::TBreakingData<float, 3>) * AllBreakingsArray.Num();
+				size_t SizeOfAllBreakings = sizeof(Chaos::FBreakingData) * AllBreakingsArray.Num();
 				size_t SizeOfAllBreakingsIndicesByPhysicsProxy = 0;
 				for (auto& Elem : AllBreakingsIndicesByPhysicsProxyMap)
 				{
@@ -1707,7 +1723,7 @@ bool UNiagaraDataInterfaceChaosDestruction::BreakingCallback(FNDIChaosDestructio
 				SortBreakings(AllBreakingsArray);
 
 				// Get the Breakings which will spawn particles
-				TArray<Chaos::TBreakingDataExt<float, 3>> BreakingsToSpawnArray;
+				TArray<Chaos::FBreakingDataExt> BreakingsToSpawnArray;
 
 				GetBreakingsToSpawnFromBreakings(AllBreakingsArray, BreakingsToSpawnArray);
 
@@ -1777,7 +1793,7 @@ void UNiagaraDataInterfaceChaosDestruction::HandleTrailingEvents(const Chaos::FT
 	TrailingEvents.AddUninitialized(Event.TrailingData.AllTrailingsArray.Num());
 
 	int32 Idx = 0;
-	for (Chaos::TTrailingData<float, 3> const& DataIn : TrailingDataIn)
+	for (Chaos::FTrailingData const& DataIn : TrailingDataIn)
 	{
 		auto& CopyData = TrailingEvents[Idx];
 		CopyData = DataIn;
@@ -1803,7 +1819,7 @@ void UNiagaraDataInterfaceChaosDestruction::HandleTrailingEvents(const Chaos::FT
 	}
 }
 
-void UNiagaraDataInterfaceChaosDestruction::FilterAllTrailings(TArray<Chaos::TTrailingDataExt<float, 3>>& AllTrailingsArray)
+void UNiagaraDataInterfaceChaosDestruction::FilterAllTrailings(TArray<Chaos::FTrailingDataExt>& AllTrailingsArray)
 {
 	if (SpeedToSpawnMinMax.X > 0.f ||
 		SpeedToSpawnMinMax.Y > 0.f ||
@@ -1822,7 +1838,7 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllTrailings(TArray<Chaos::TTr
 		LocationYToSpawn != ELocationYToSpawnEnum::ChaosNiagara_LocationYToSpawn_None ||
 		LocationZToSpawn != ELocationZToSpawnEnum::ChaosNiagara_LocationZToSpawn_None)
 	{
-		TArray<Chaos::TTrailingDataExt<float, 3>> FilteredAllTrailingsArray;
+		TArray<Chaos::FTrailingDataExt> FilteredAllTrailingsArray;
 		FilteredAllTrailingsArray.SetNumUninitialized(AllTrailingsArray.Num());
 
 		int32 IdxFilteredTrailings = 0;
@@ -1895,7 +1911,7 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllTrailings(TArray<Chaos::TTr
 	}
 }
 
-void UNiagaraDataInterfaceChaosDestruction::SortTrailings(TArray<Chaos::TTrailingDataExt<float, 3>>& TrailingsArray)
+void UNiagaraDataInterfaceChaosDestruction::SortTrailings(TArray<Chaos::FTrailingDataExt>& TrailingsArray)
 {
 	SCOPE_CYCLE_COUNTER(STAT_TrailingCallbackSorting);
 
@@ -1913,8 +1929,8 @@ void UNiagaraDataInterfaceChaosDestruction::SortTrailings(TArray<Chaos::TTrailin
 	}
 }
 
-void UNiagaraDataInterfaceChaosDestruction::GetTrailingsToSpawnFromTrailings(TArray<Chaos::TTrailingDataExt<float, 3>>& AllTrailingsArray,
-																			 TArray<Chaos::TTrailingDataExt<float, 3>>& TrailingsToSpawnArray)
+void UNiagaraDataInterfaceChaosDestruction::GetTrailingsToSpawnFromTrailings(TArray<Chaos::FTrailingDataExt>& AllTrailingsArray,
+																			 TArray<Chaos::FTrailingDataExt>& TrailingsToSpawnArray)
 {
 	if (AllTrailingsArray.Num() <= MaxNumberOfDataEntriesToSpawn)
 	{
@@ -1940,7 +1956,7 @@ void UNiagaraDataInterfaceChaosDestruction::GetTrailingsToSpawnFromTrailings(TAr
 }
 
 int32 UNiagaraDataInterfaceChaosDestruction::SpawnParticlesFromTrailing(FSolverData SolverData,
-																		Chaos::TTrailingDataExt<float, 3>& Trailing,
+																		Chaos::FTrailingDataExt& Trailing,
 																		FNDIChaosDestruction_InstanceData* InstData,
 																		float TimeData_MapsCreated,
 																		int32 IdxSolver)
@@ -2072,12 +2088,12 @@ bool UNiagaraDataInterfaceChaosDestruction::TrailingCallback(FNDIChaosDestructio
 	{
 		if (SolverData.Solver->GetEventFilters()->IsTrailingEventEnabled() && TrailingEvents.Num() > 0 && SolverData.Solver->GetSolverTime() > 0.f && MaxNumberOfDataEntriesToSpawn > 0)
 		{
-			TArray<Chaos::TTrailingDataExt<float, 3>>& AllTrailingsArray = TrailingEvents;
+			TArray<Chaos::FTrailingDataExt>& AllTrailingsArray = TrailingEvents;
 			TMap<IPhysicsProxyBase*, TArray<int32>> AllTrailingsIndicesByPhysicsProxyMap;
 			float TimeData_MapsCreated = SolverData.Solver->GetSolverTime();
 
 			{
-				size_t SizeOfAllTrailings = sizeof(Chaos::TTrailingData<float, 3>) * AllTrailingsArray.Num();
+				size_t SizeOfAllTrailings = sizeof(Chaos::FTrailingData) * AllTrailingsArray.Num();
 				size_t SizeOfAllTrailingsIndicesByPhysicsProxy = 0;
 				for (auto& Elem : AllTrailingsIndicesByPhysicsProxyMap)
 				{
@@ -2099,7 +2115,7 @@ bool UNiagaraDataInterfaceChaosDestruction::TrailingCallback(FNDIChaosDestructio
 				SortTrailings(AllTrailingsArray);
 
 				// Get the Trailings which will spawn particles
-				TArray<Chaos::TTrailingDataExt<float, 3>> TrailingsToSpawnArray;
+				TArray<Chaos::FTrailingDataExt> TrailingsToSpawnArray;
 
 				GetTrailingsToSpawnFromTrailings(AllTrailingsArray, TrailingsToSpawnArray);
 
@@ -3387,6 +3403,7 @@ void UNiagaraDataInterfaceChaosDestruction::GetTrailingData(FVectorVMContext& Co
 //----------------------------------------------------------------------------
 // GPU sim functionality
 //
+#if WITH_EDITORONLY_DATA
 void UNiagaraDataInterfaceChaosDestruction::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
 
@@ -3826,6 +3843,7 @@ bool UNiagaraDataInterfaceChaosDestruction::GetFunctionHLSL(const FNiagaraDataIn
 
 	return false;
 }
+#endif
 
 template<typename T>
 void LoadGPUBufferFromArray(FDynamicReadBuffer& Buffer,
@@ -3937,7 +3955,7 @@ static void SetBuffer(FRHICommandList& CmdList,
 	SetSRVParameter(CmdList, Shader, Param, Buffer.SRV);
 }
 
-void UNiagaraDataInterfaceChaosDestruction::PushToRenderThread()
+void UNiagaraDataInterfaceChaosDestruction::PushToRenderThreadImpl()
 {
 	check(Proxy);
 	FNiagaraDataInterfaceProxyChaosDestruction* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyChaosDestruction>();

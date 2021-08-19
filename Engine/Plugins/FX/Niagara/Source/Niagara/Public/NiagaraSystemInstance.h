@@ -16,11 +16,58 @@ class FNiagaraSystemInstance;
 class FNiagaraSystemSimulation;
 class NiagaraEmitterInstanceBatcher;
 class FNiagaraGPUSystemTick;
+class FNiagaraSystemGpuComputeProxy;
+
+struct FNiagaraSystemInstanceFinalizeRef
+{
+	FNiagaraSystemInstanceFinalizeRef() {}
+	explicit FNiagaraSystemInstanceFinalizeRef(FNiagaraSystemInstance** InTaskEntry) : TaskEntry(InTaskEntry) {}
+
+	bool IsPending() const
+	{
+		return TaskEntry != nullptr;
+	}
+	void Clear()
+	{
+		check(TaskEntry != nullptr);
+		*TaskEntry = nullptr;
+		TaskEntry = nullptr;
+#if DO_CHECK
+		--(*DebugCounter);
+#endif
+	}
+	void ConditionalClear()
+	{
+		if ( TaskEntry != nullptr )
+		{
+			*TaskEntry = nullptr;
+			TaskEntry = nullptr;
+#if DO_CHECK
+			--(*DebugCounter);
+#endif
+		}
+	}
+
+#if DO_CHECK
+	void SetDebugCounter(std::atomic<int>* InDebugCounter)
+	{
+		DebugCounter = InDebugCounter;
+		++(*DebugCounter);
+	}
+#endif
+
+private:
+	class FNiagaraSystemInstance** TaskEntry = nullptr;
+#if DO_CHECK
+	std::atomic<int>* DebugCounter = nullptr;
+#endif
+};
 
 class NIAGARA_API FNiagaraSystemInstance 
 {
 	friend class FNiagaraSystemSimulation;
 	friend class FNiagaraGPUSystemTick;
+	friend class FNiagaraDebugHud;
 
 public:
 	DECLARE_DELEGATE(FOnPostTick);
@@ -48,6 +95,8 @@ public:
 		None
 	};
 
+	ENiagaraSystemInstanceState SystemInstanceState = ENiagaraSystemInstanceState::None;
+
 	FORCEINLINE bool GetAreDataInterfacesInitialized() const { return bDataInterfacesInitialized; }
 
 	/** Creates a new Niagara system instance. */
@@ -69,13 +118,13 @@ public:
 	void OnPooledReuse(UWorld& NewWorld);
 
 	void SetPaused(bool bInPaused);
-	FORCEINLINE bool IsPaused()const { return bPaused; }
+	FORCEINLINE bool IsPaused() const { return (SystemInstanceState == ENiagaraSystemInstanceState::PendingSpawnPaused) || (SystemInstanceState == ENiagaraSystemInstanceState::Paused); }
 
 	void SetSolo(bool bInSolo);
 
 	void SetGpuComputeDebug(bool bEnableDebug);
 
-	void UpdatePrereqs();
+	UActorComponent* GetPrereqComponent() const;
 
 	//void RebindParameterCollection(UNiagaraParameterCollectionInstance* OldInstance, UNiagaraParameterCollectionInstance* NewInstance);
 	void BindParameters();
@@ -124,24 +173,25 @@ public:
 		Final phase of system instance tick. Must be executed on the game thread. 
 		Returns whether the Finalize was actually done. It's possible for the finalize in a task to have already been done earlier on the GT by a WaitForAsyncAndFinalize call.
 	*/
-	bool FinalizeTick_GameThread(bool bEnqueueGPUTickIfNeeded = true);
+	void FinalizeTick_GameThread(bool bEnqueueGPUTickIfNeeded = true);
 
 	void GenerateAndSubmitGPUTick();
 	void InitGPUTick(FNiagaraGPUSystemTick& OutTick);
 
-	/**
-		Blocks until any async work for this system instance has completed, must be called on the GameThread.
-		This will NOT call finalize on the instance, be very careful when using to avoid leaving the instance in an undefined state.
-		Note: This only waits for the instance to be safe to touch, it does not wait for the owning system simulation to be safe.
-	*/
-	void WaitForAsyncTickDoNotFinalize(bool bEnsureComplete = false);
+	void SetPendingFinalize(FNiagaraSystemInstanceFinalizeRef InFinalizeRef) { FinalizeRef = InFinalizeRef; }
+	bool HasPendingFinalize() const { return FinalizeRef.IsPending(); }
 
 	/**
-		Blocks until any async work for this system instance has completed, must be called on the GameThread.
-		This will call finalize if required by the instance and can therefore complete leaving removing the instance from the owning system simulation.
-		Note: This only waits for the instance to be safe to touch, it does not wait for the owning system simulation to be safe.
+	Wait for any pending concurrent work to complete, must be called on the GameThread.
+	This will NOT call finalize on the instance so can leave a dangling finalize task.
 	*/
-	void WaitForAsyncTickAndFinalize(bool bEnsureComplete = false);
+	void WaitForConcurrentTickDoNotFinalize(bool bEnsureComplete = false);
+
+	/**
+	Wait for any pending concurrent work to complete, must be called on the GameThread.
+	The instance will be finalized if pending, this can complete the instance and remove it from the system simulation.
+	*/
+	void WaitForConcurrentTickAndFinalize(bool bEnsureComplete = false);
 
 	/** Handles completion of the system and returns true if the system is complete. */
 	bool HandleCompletion();
@@ -174,9 +224,10 @@ public:
 	FORCEINLINE UNiagaraSystem* GetSystem() const { return Asset.Get(); }
 	FORCEINLINE USceneComponent* GetAttachComponent() { return AttachComponent.Get(); }
 	FORCEINLINE FNiagaraUserRedirectionParameterStore* GetOverrideParameters() { return OverrideParameters; }
+	FORCEINLINE const FNiagaraUserRedirectionParameterStore* GetOverrideParameters() const { return OverrideParameters; }
 	FORCEINLINE TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> > &GetEmitters() { return Emitters; }
 	FORCEINLINE const TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> >& GetEmitters() const { return Emitters; }
-	FORCEINLINE const FBox& GetLocalBounds() { return LocalBounds;  }
+	FORCEINLINE const FBox& GetLocalBounds() const { return LocalBounds;  }
 	TConstArrayView<FNiagaraEmitterExecutionIndex> GetEmitterExecutionOrder() const;
 
 	FNiagaraEmitterInstance* GetEmitterByID(FGuid InID);
@@ -185,7 +236,7 @@ public:
 
 	FORCEINLINE bool NeedsGPUTick() const { return ActiveGPUEmitterCount > 0 /*&& Component->IsRegistered()*/ && !IsComplete();}
 
-	struct FNiagaraComputeSharedContext* GetComputeSharedContext() { check(SharedContext.Get()); return SharedContext.Get(); }
+	FNiagaraSystemGpuComputeProxy* GetSystemGpuComputeProxy() { return SystemGpuComputeProxy.Get(); }
 
 	/** Gets a multicast delegate which is called after this instance has finished ticking for the frame on the game thread */
 	FORCEINLINE void SetOnPostTick(const FOnPostTick& InPostTickDelegate) { OnPostTickDelegate = InPostTickDelegate; }
@@ -206,7 +257,7 @@ public:
 	bool GetIsolateEnabled() const;
 #endif
 
-	FNiagaraSystemInstanceID GetId() { return ID; }
+	FNiagaraSystemInstanceID GetId() const { return ID; }
 
 	/** Returns the instance data for a particular interface for this System. */
 	FORCEINLINE void* FindDataInterfaceInstanceData(UNiagaraDataInterface* Interface) 
@@ -220,6 +271,8 @@ public:
 
 	FORCEINLINE const FNiagaraPerInstanceDIFuncInfo& GetPerInstanceDIFunction(ENiagaraSystemSimulationScript ScriptType, int32 FuncIndex)const { return PerInstanceDIFunctions[(int32)ScriptType][FuncIndex]; }
 
+	void EvaluateBoundFunction(FName FunctionName, bool& UsedOnCpu, bool& UsedOnGpu) const;
+
 #if WITH_EDITORONLY_DATA
 	bool UsesEmitter(const UNiagaraEmitter* Emitter) const;
 	bool UsesScript(const UNiagaraScript* Script) const;
@@ -227,12 +280,10 @@ public:
 	bool UsesCollection(const UNiagaraParameterCollection* Collection) const;
 #endif
 
-	FORCEINLINE bool IsPendingSpawn() const { return bPendingSpawn; }
-	FORCEINLINE void SetPendingSpawn(bool bInValue) { bPendingSpawn = bInValue; }
+	FORCEINLINE bool IsPendingSpawn() const { return (SystemInstanceState == ENiagaraSystemInstanceState::PendingSpawn) || (SystemInstanceState == ENiagaraSystemInstanceState::PendingSpawnPaused); }
 
 	FORCEINLINE float GetAge() const { return Age; }
 	FORCEINLINE int32 GetTickCount() const { return TickCount; }
-	FORCEINLINE bool RequiresGpuBufferReset() const { return bHasSimulationReset && (TickCount == 1); }
 
 	FORCEINLINE float GetLastRenderTime() const { return LastRenderTime; }
 	FORCEINLINE void SetLastRenderTime(float TimeSeconds) { LastRenderTime = TimeSeconds; }
@@ -288,12 +339,6 @@ public:
 	/*void SetHasGPUEmitters(bool bInHasGPUEmitters) { bHasGPUEmitters = bInHasGPUEmitters; }*/
 	bool HasGPUEmitters() { return bHasGPUEmitters;  }
 
-	FORCEINLINE void BeginAsyncWork()
-	{
-		bAsyncWorkInProgress = true;
-		bNeedsFinalize = true;
-	}
-
 	void TickInstanceParameters_GameThread(float DeltaSeconds);
 
 	void TickInstanceParameters_Concurrent();
@@ -319,13 +364,6 @@ public:
 	/** Calculates which tick group the instance should be in. */
 	ETickingGroup CalculateTickGroup() const;
 
-	bool EnqueueComponentUpdateTask(const FNiagaraComponentUpdateTask& Task)
-	{
-		return ComponentTasks.Enqueue(Task);
-	}
-
-	TSet<int32> GetParticlesWithActiveComponents(USceneComponent* const Component);
-
 	/** Gets the current world transform of the system */
 	FORCEINLINE const FTransform& GetWorldTransform() const { return WorldTransform; }
 	/** Sets the world transform */
@@ -344,8 +382,12 @@ public:
 
 	/** Calculates the distance to use for distance based LODing / culling. */
 	float GetLODDistance();
+	float GetMaxLODDistance() const { return MaxLODDistance ;}
 
 	void OnSimulationDestroyed();
+
+	void SetRandomSeedOffset(int32 Offset) { RandomSeedOffset = Offset; }
+	int32 GetRandomSeedOffset() const { return RandomSeedOffset; }
 
 private:
 	void DestroyDataInterfaceInstanceData();
@@ -362,12 +404,7 @@ private:
 	void ResetParameters();
 
 	/** Call PrepareForSImulation on each data source from the simulations and determine which need per-tick updates.*/
-	void InitDataInterfaces();	
-	
-	void ProcessComponentRendererTasks();
-
-	/** Callback for whenever any blueprint components are reinstanced */
-	void OnObjectsReplacedCallback(const TMap<UObject*, UObject*>& ReplacementsMap);
+	void InitDataInterfaces();
 
 	/** Index of this instance in the system simulation. */
 	int32 SystemInstanceIndex;
@@ -381,7 +418,6 @@ private:
 	TWeakObjectPtr<UNiagaraSystem> Asset;
 	FNiagaraUserRedirectionParameterStore* OverrideParameters;
 	TWeakObjectPtr<USceneComponent> AttachComponent;
-	UActorComponent* PrereqComponent;
 
 	FTransform WorldTransform;
 
@@ -395,6 +431,9 @@ private:
 
 	/** The tick count of the System instance. */
 	int32 TickCount;
+
+	/** A system-wide offset to permute the deterministic random seed (allows for variance among multiple instances while still being deterministic) */
+	int32 RandomSeedOffset;
 
 	/** LODDistance driven by our component. */
 	float LODDistance;
@@ -457,18 +496,12 @@ private:
 	uint32 bSolo : 1;
 	uint32 bForceSolo : 1;
 
-	uint32 bPendingSpawn : 1;
 	uint32 bNotifyOnCompletion : 1;
 
-	/** If this system is paused. When paused it will not tick and never complete etc. */
-	uint32 bPaused : 1;
 	/** If this system has emitters that will run GPU Simulations */
 	uint32 bHasGPUEmitters : 1;
 	/** The system contains data interfaces that can have tick group prerequisites. */
 	uint32 bDataInterfacesHaveTickPrereqs : 1;
-
-	/** True if we require a call to FinalizeTick_GameThread(). Typically this is called from a GT task but can be called in WaitForAsync. */
-	uint32 bNeedsFinalize : 1;
 
 	uint32 bDataInterfacesInitialized : 1;
 
@@ -479,9 +512,6 @@ private:
 	/** True if the system instance is pooled. Prevents unbinding of parameters on completing the system */
 	uint32 bPooled : 1;
 
-	/** Will be set to true when the the simulation needs a full reset from ResetInternal() */
-	uint32 bHasSimulationReset : 1;
-
 #if WITH_EDITOR
 	uint32 bNeedsUIResync : 1;
 #endif
@@ -489,8 +519,11 @@ private:
 	/** If async work was running when we request an Activate we will store the reset mode and perform in finalize to avoid stalling the GameThread. */
 	EResetMode DeferredResetMode = EResetMode::None;
 
-	/** True if we have async work in flight. */
-	volatile bool bAsyncWorkInProgress;
+	/** Graph event to track pending concurrent work. */
+	FGraphEventRef ConcurrentTickGraphEvent;
+
+	/** When using concurrent ticking this will be valid until it's complete. */
+	FNiagaraSystemInstanceFinalizeRef FinalizeRef;
 
 	/** Cached delta time, written during Tick_GameThread and used during other phases. */
 	float CachedDeltaSeconds;
@@ -508,18 +541,13 @@ private:
 	ENiagaraExecutionState ActualExecutionState;
 
 	NiagaraEmitterInstanceBatcher* Batcher = nullptr;
+	TUniquePtr<FNiagaraSystemGpuComputeProxy> SystemGpuComputeProxy;
 
 	/** Tag we feed into crash reporter for this instance. */
 	mutable FString CrashReporterTag;
 
 	/** The feature level of for this component instance. */
 	ERHIFeatureLevel::Type FeatureLevel = ERHIFeatureLevel::Num;
-
-	/** The component renderer can queue update tasks that are executed on the game thread on finalization. */
-	TQueue<FNiagaraComponentUpdateTask, EQueueMode::Mpsc> ComponentTasks;
-	FNiagaraComponentRenderPool ComponentRenderPool;
-	mutable FRWLock ComponentPoolLock;
-	void ResetComponentRenderPool();
 
 public:
 
@@ -528,7 +556,6 @@ public:
 	// Transient data that is accumulated during tick.
 	uint32 TotalGPUParamSize = 0;
 	uint32 ActiveGPUEmitterCount = 0;
-	TUniquePtr<FNiagaraComputeSharedContext, FNiagaraComputeSharedContextDeleter> SharedContext;
 
 	int32 GPUDataInterfaceInstanceDataSize = 0;
 	bool GPUParamIncludeInterpolation = false;

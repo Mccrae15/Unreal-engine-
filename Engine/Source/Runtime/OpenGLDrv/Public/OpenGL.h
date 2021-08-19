@@ -93,7 +93,6 @@ public:
 	static FORCEINLINE bool SupportsExactOcclusionQueries()				{ return true; }
 	static FORCEINLINE bool SupportsDepthStencilReadSurface()			{ return true; }
 	static FORCEINLINE bool SupportsFloatReadSurface()					{ return true; }
-	static FORCEINLINE bool SupportsMultipleRenderTargets()				{ return true; }
 	static FORCEINLINE bool SupportsWideMRT()							{ return true; }
 	static FORCEINLINE bool SupportsMultisampledTextures()				{ return true; }
 	static FORCEINLINE bool SupportsPolygonMode()						{ return true; }
@@ -129,7 +128,6 @@ public:
 	static FORCEINLINE bool SupportsSeamlessCubeMap()					{ return false; }
 	static FORCEINLINE bool SupportsDrawIndirect()						{ return false; }
 	static FORCEINLINE bool SupportsGenerateMipmap()					{ return false; }
-	static FORCEINLINE bool SupportsVertexAttribBinding()				{ return false; }
 	static FORCEINLINE bool SupportsBufferStorage()						{ return false; }
 	static FORCEINLINE bool SupportsDepthBoundsTest()					{ return false; }
 	static FORCEINLINE bool SupportsTextureRange()						{ return false; }
@@ -139,6 +137,8 @@ public:
 	static FORCEINLINE bool SupportsSeparateShaderObjects()				{ return false; }
 	static FORCEINLINE bool SupportsProgramBinary()						{ return false; }
 	
+	static FORCEINLINE bool SupportsASTCDecodeMode()					{ return false; }
+
 	static FORCEINLINE GLenum GetDepthFormat()							{ return GL_DEPTH_COMPONENT16; }
 	static FORCEINLINE GLenum GetShadowDepthFormat()					{ return GL_DEPTH_COMPONENT16; }
 
@@ -276,7 +276,7 @@ public:
 	static FORCEINLINE GLuint GetMajorVersion() UGL_REQUIRED(0)
 	static FORCEINLINE GLuint GetMinorVersion() UGL_REQUIRED(0)
 	static FORCEINLINE ERHIFeatureLevel::Type GetFeatureLevel() UGL_REQUIRED(ERHIFeatureLevel::SM5)
-	static FORCEINLINE EShaderPlatform GetShaderPlatform() UGL_REQUIRED(SP_OPENGL_SM4_REMOVED)
+	static FORCEINLINE EShaderPlatform GetShaderPlatform() UGL_REQUIRED(SP_NumPlatforms)
 	static FORCEINLINE FString GetAdapterName() UGL_REQUIRED(TEXT(""))
 	static FORCEINLINE void BlendFuncSeparatei(GLuint Buf, GLenum SrcRGB, GLenum DstRGB, GLenum SrcAlpha, GLenum DstAlpha) UGL_REQUIRED_VOID
 	static FORCEINLINE void BlendEquationSeparatei(GLuint Buf, GLenum ModeRGB, GLenum ModeAlpha) UGL_REQUIRED_VOID
@@ -638,4 +638,8 @@ protected:
 #define GL_STORAGE_PRIVATE_APPLE          0x85BD
 #define GL_STORAGE_CACHED_APPLE           0x85BE
 #define GL_STORAGE_SHARED_APPLE           0x85BF
+#endif
+
+#ifndef TEXTURE_ASTC_DECODE_PRECISION_EXT
+#define TEXTURE_ASTC_DECODE_PRECISION_EXT 0x8F69
 #endif

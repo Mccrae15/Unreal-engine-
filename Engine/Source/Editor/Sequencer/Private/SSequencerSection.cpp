@@ -25,7 +25,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "KeyDrawParams.h"
 #include "MovieSceneTimeHelpers.h"
-#include "Tracks/MovieScenePropertyTrack.h"
+#include "Sections/MovieSceneSubSection.h"
 
 double SSequencerSection::SectionSelectionThrobEndTime = 0;
 double SSequencerSection::KeySelectionThrobEndTime = 0;
@@ -80,6 +80,9 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 			float Lum = FinalTint.ComputeLuminance() * 0.2f;
 			FinalTint = FinalTint + FLinearColor(Lum, Lum, Lum, 0.f);
 		}
+
+		FinalTint.A *= GhostAlpha;
+
 		return FinalTint;
 	}
 
@@ -272,6 +275,8 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 
 			SelectionColor = SelectionColor.GetValue().HSVToLinearRGB();
 		}
+
+		SelectionColor->A *= GhostAlpha;
 	}
 
 	void DrawBlendType()
@@ -679,7 +684,7 @@ FVector2D SSequencerSection::ComputeDesiredSize(float) const
 }
 
 
-void SSequencerSection::GetKeysUnderMouse( const FVector2D& MousePosition, const FGeometry& AllottedGeometry, TArray<FSequencerSelectedKey>& OutKeys ) const
+void SSequencerSection::GetKeysUnderMouse( const FVector2D& MousePosition, const FGeometry& AllottedGeometry, TArray<FSequencerSelectedKey>& OutKeys, float KeyHeightFraction ) const
 {
 	FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles( AllottedGeometry, SectionInterface );
 
@@ -709,7 +714,7 @@ void SSequencerSection::GetKeysUnderMouse( const FVector2D& MousePosition, const
 		// Check that this section is under our mouse, and discard it from potential selection if the mouse is higher than the key's height. We have to
 		// check keys on a per-section basis (and not for the overall SectionGeometry) because keys are offset on tracks that have expandable 
 		// ranges (ie: Audio, Animation) which otherwise makes them fail the height-threshold check.
-		if (!KeyAreaGeometry.IsUnderLocation(MousePosition) || FMath::Abs(LocalKeyPosY - LocalMousePixel.Y) > SequencerSectionConstants::KeySize.Y *.5f)
+		if (!KeyAreaGeometry.IsUnderLocation(MousePosition) || FMath::Abs(LocalKeyPosY - LocalMousePixel.Y) > SequencerSectionConstants::KeySize.Y * KeyHeightFraction)
 		{
 			continue;
 		}
@@ -801,6 +806,10 @@ void SSequencerSection::CreateKeysUnderMouse( const FVector2D& MousePosition, co
 
 		FScopedTransaction Transaction(NSLOCTEXT("Sequencer", "CreateKeysUnderMouse", "Create keys under mouse"));
 		FAddKeyOperation::FromKeyAreas(&TrackEditor, ValidKeyAreasUnderCursor).Commit(CurrentTime.FrameNumber, GetSequencer());
+
+		// Get the keys under the mouse as the newly created keys. Check with the full height of the key track area.
+		const float KeyHeightFraction = 1.f;
+		GetKeysUnderMouse(MousePosition, AllottedGeometry, OutKeys, KeyHeightFraction);
 	}
 
 	if (OutKeys.Num())
@@ -1014,19 +1023,16 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 	}
 
 	UMovieSceneTrack* Track = SectionObject->GetTypedOuter<UMovieSceneTrack>();
-	const bool bEnabled = bParentEnabled && SectionObject->IsActive() && !(Track && Track->IsEvalDisabled());
+	const bool bTrackDisabled = Track && (Track->IsEvalDisabled() || Track->IsRowEvalDisabled(SectionObject->GetRowIndex()));
+	const bool bEnabled = bParentEnabled && SectionObject->IsActive() && !(bTrackDisabled);
 	const bool bLocked = SectionObject->IsLocked() || SectionObject->IsReadOnly();
 
-	UMovieScenePropertyTrack* PropertyTrack = Cast<UMovieScenePropertyTrack>(Track);
 	bool bSetSectionToKey = false;
-	if (PropertyTrack)
-	{
-		if (PropertyTrack->GetSectionToKey() == SectionObject)
-		{
-			bSetSectionToKey = true;
-		}
-	}
 
+	if (Track && Track->GetSectionToKey() == SectionObject)
+	{
+		bSetSectionToKey = true;
+	}
 
 	const ESlateDrawEffect DrawEffects = bEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
 
@@ -1048,6 +1054,14 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 	Painter.LayerId = LayerId;
 	Painter.bParentEnabled = bEnabled;
 	Painter.bIsHighlighted = IsSectionHighlighted(SectionObject, Hotspot);
+	if (UMovieSceneSubSection* SubSection = Cast<UMovieSceneSubSection>(SectionObject))
+	{
+		if (( SubSection->GetNetworkMask() & GetSequencer().GetEvaluationTemplate().GetEmulatedNetworkMask() ) == EMovieSceneServerClientMask::None)
+		{
+			Painter.GhostAlpha = .3f;
+		}
+	}
+	
 	auto& Selection = ParentSectionArea->GetSequencer().GetSelection();
 	Painter.bIsSelected = Selection.IsSelected(SectionObject);
 
@@ -1171,7 +1185,7 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 			SectionTitle,
 			FontInfo,
 			DrawEffects,
-			FLinearColor(0,0,0,.5f)
+			FLinearColor(0,0,0,.5f * Painter.GhostAlpha)
 		);
 
 		FSlateDrawElement::MakeText(
@@ -1184,7 +1198,7 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 			SectionTitle,
 			FontInfo,
 			DrawEffects,
-			FColor(200, 200, 200)
+			FColor(200, 200, 200, static_cast<uint8>(Painter.GhostAlpha * 255))
 		);
 	}
 
@@ -1620,9 +1634,23 @@ FReply SSequencerSection::OnMouseButtonUp(const FGeometry& MyGeometry, const FPo
 {
 	if (MouseEvent.GetEffectingButton() == EKeys::MiddleMouseButton)
 	{
+		// Snap keys on mouse up since we want to create keys at the exact mouse position (ie. to keep the newly created keys under the mouse 
+		// while dragging) but obey snapping rules if necessary
+		if (GetSequencer().GetSequencerSettings()->GetIsSnapEnabled() && GetSequencer().GetSequencerSettings()->GetSnapKeyTimesToInterval())
+		{
+			GetSequencer().SnapToFrame();
+
+			for (const FSequencerSelectedKey& SelectedKey : GetSequencer().GetSelection().GetSelectedKeys())
+			{
+				const FFrameNumber CurrentTime = SelectedKey.KeyArea->GetKeyTime(SelectedKey.KeyHandle.GetValue());
+				GetSequencer().SetLocalTime(CurrentTime, ESnapTimeMode::STM_Interval);
+				break;
+			}
+		}
 		GEditor->EndTransaction();
 
-		return FReply::Handled();
+		// Return unhandled so that the EditTool can handle the mouse up based on the newly created keyframe and finish moving it
+		return FReply::Unhandled();
 	}
 	return FReply::Unhandled();
 }

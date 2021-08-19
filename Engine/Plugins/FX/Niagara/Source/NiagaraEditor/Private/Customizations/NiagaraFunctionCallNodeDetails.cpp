@@ -1,18 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraFunctionCallNodeDetails.h"
-#include "UObject/WeakObjectPtr.h"
-#include "NiagaraNodeFunctionCall.h"
+
 #include "DetailCategoryBuilder.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/Layout/SBox.h"
-#include "Layout/Margin.h"
-#include "NiagaraEditorStyle.h"
+#include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "Widgets/Input/SComboBox.h"
-#include "Widgets/Input/SNumericEntryBox.h"
+#include "NiagaraEditorStyle.h"
+#include "NiagaraNodeFunctionCall.h"
+#include "ScopedTransaction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "EdGraphSchema_Niagara.h"
+#include "Layout/Margin.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Layout/SBox.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraFunctionCallNodeDetails"
 
@@ -24,6 +27,10 @@ TSharedRef<IDetailCustomization> FNiagaraFunctionCallNodeDetails::MakeInstance()
 void FNiagaraFunctionCallNodeDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
 	static const FName SwitchCategoryName = TEXT("Propagated Static Switch Values");
+	static const FName VersionCategoryName = TEXT("Version Details");
+	static const FName FunctionCategoryName = TEXT("Function");
+	const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
+    
 
 	TArray<TWeakObjectPtr<UObject>> ObjectsCustomized;
 	DetailBuilder.GetObjectsBeingCustomized(ObjectsCustomized);
@@ -33,10 +40,52 @@ void FNiagaraFunctionCallNodeDetails::CustomizeDetails(IDetailLayoutBuilder& Det
 	}
 	
 	Node = CastChecked<UNiagaraNodeFunctionCall>(ObjectsCustomized[0].Get());
+	FPinCollectorArray InputPins;
+	Node->GetInputPins(InputPins);
+	bool IsDIFunction = Node->FunctionScript == nullptr && InputPins.Num() > 0 && UNiagaraDataInterface::IsDataInterfaceType(NiagaraSchema->PinToTypeDefinition(InputPins[0]));
+	if (IsDIFunction)
+	{
+		DetailBuilder.EditCategory(FunctionCategoryName).SetCategoryVisibility(false);
+		DetailBuilder.EditCategory(VersionCategoryName).SetCategoryVisibility(false);
+		DetailBuilder.EditCategory(SwitchCategoryName).SetCategoryVisibility(false);
+	}
+
 	UNiagaraGraph* CalledGraph = Node->GetCalledGraph();
 	if (!CalledGraph)
 	{
 		return;
+	}
+
+	if (Node->FunctionScript->IsVersioningEnabled())
+	{
+		IDetailCategoryBuilder& CategoryBuilder = DetailBuilder.EditCategory(VersionCategoryName);
+		FDetailWidgetRow& Row = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraFunctionVersionCategoryFilterText", "Version Details"));
+		Row.NameContent()
+		[
+			SNew(SBox)
+	        .Padding(FMargin(0.0f, 2.0f))
+	        [
+	            SNew(STextBlock)
+	            .TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.ParameterText")
+	            .Text(LOCTEXT("NiagaraFunctionVersionPropertyName", "Script Version"))
+	        ]
+		]
+		.ValueContent()
+		[
+			SNew(SComboButton)
+			.OnGetMenuContent(this, &FNiagaraFunctionCallNodeDetails::OnGetVersionMenuContent)
+			.ContentPadding(2)
+			.ButtonContent()
+			[
+				SNew(STextBlock)
+	            .Font(IDetailLayoutBuilder::GetDetailFont())
+	            .Text_Lambda([this]()
+	            {
+		            FVersionedNiagaraScriptData* ScriptData = Node->GetScriptData();
+		            return FText::Format(FText::FromString("{0}.{1}"), ScriptData->Version.MajorVersion, ScriptData->Version.MinorVersion);
+	            })
+			]
+		];
 	}
 
 	// For each static switch value inside the function graph we add a checkbox row to allow the user to propagate it up in the call hierachy.
@@ -83,6 +132,7 @@ void FNiagaraFunctionCallNodeDetails::CustomizeDetails(IDetailLayoutBuilder& Det
 						CopyMetadataFromCalledGraph(SwitchInput);
 					}
 					Node->RefreshFromExternalChanges();
+					Node->GetGraph()->NotifyGraphChanged();
 				})
 			]
 			+ SVerticalBox::Slot()
@@ -153,6 +203,56 @@ void FNiagaraFunctionCallNodeDetails::CopyMetadataForNameOverride(FNiagaraVariab
 		NodeGraph->SetMetaData(ToVariable, OriginalData.GetValue());
 		NodeGraph->NotifyGraphChanged();
 	}
+}
+
+TSharedRef<SWidget> FNiagaraFunctionCallNodeDetails::OnGetVersionMenuContent()
+{
+	const bool bShouldCloseWindowAfterMenuSelection = true;
+	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, nullptr);
+
+	TArray<FNiagaraAssetVersion> AssetVersions = Node->FunctionScript->GetAllAvailableVersions();
+	for (FNiagaraAssetVersion& Version : AssetVersions)
+	{
+		if (!Version.bIsVisibleInVersionSelector)
+		{
+			continue;
+		}
+		FVersionedNiagaraScriptData* ScriptData = Node->FunctionScript->GetScriptData(Version.VersionGuid);
+		
+		FText Tooltip = LOCTEXT("NiagaraFunctionCallNodeSelectVersion", "Select this script version to use by the function call node");
+		if (!ScriptData->VersionChangeDescription.IsEmpty())
+		{
+			Tooltip = FText::Format(LOCTEXT("NiagaraSelectVersionChangelist_Tooltip", "Select this script version to use by the function call node. Change description for this version:\n{0}"), ScriptData->VersionChangeDescription);
+		}
+		FUIAction UIAction(FExecuteAction::CreateSP(this, &FNiagaraFunctionCallNodeDetails::SwitchToVersion, Version),
+        FCanExecuteAction(),
+        FIsActionChecked::CreateSP(this, &FNiagaraFunctionCallNodeDetails::IsVersionSelected, Version));
+		TAttribute<FText> Label = TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &FNiagaraFunctionCallNodeDetails::GetVersionMenuLabel, Version));
+		MenuBuilder.AddMenuEntry(Label, Tooltip, FSlateIcon(), UIAction, NAME_None, EUserInterfaceActionType::RadioButton);	
+	}
+
+	return MenuBuilder.MakeWidget();
+}
+
+void FNiagaraFunctionCallNodeDetails::SwitchToVersion(FNiagaraAssetVersion Version)
+{
+	FScopedTransaction ScopedTransaction(LOCTEXT("NiagaraChangeVersion_Transaction", "Changing script version"));
+	FNiagaraScriptVersionUpgradeContext UpgradeContext = FNiagaraScriptVersionUpgradeContext();
+	// we skip the python script here because this version change is done directly in the graph and not in the stack, so we don't need to remap any inputs 
+	UpgradeContext.bSkipPythonScript = true;
+	Node->ChangeScriptVersion(Version.VersionGuid, UpgradeContext);
+	Node->RefreshFromExternalChanges();
+}
+
+bool FNiagaraFunctionCallNodeDetails::IsVersionSelected(FNiagaraAssetVersion Version) const
+{
+	return Node->SelectedScriptVersion == Version.VersionGuid || (!Node->SelectedScriptVersion.IsValid() && Version == Node->FunctionScript->GetExposedVersion());
+}
+
+FText FNiagaraFunctionCallNodeDetails::GetVersionMenuLabel(FNiagaraAssetVersion Version) const
+{
+	bool bIsExposed = Version == Node->FunctionScript->GetExposedVersion();
+	return FText::Format(FText::FromString("{0}.{1} {2}"), Version.MajorVersion, Version.MinorVersion, bIsExposed ? LOCTEXT("NiagaraExposedVersionHint", "(exposed)") : FText());
 }
 
 UNiagaraGraph* FNiagaraFunctionCallNodeDetails::GetNodeGraph()

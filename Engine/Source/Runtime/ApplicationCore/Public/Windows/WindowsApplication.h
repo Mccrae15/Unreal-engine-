@@ -388,8 +388,10 @@ public:
 	virtual void SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const FHapticFeedbackValues& Values) override;
 	virtual void SetLightColor(int32 ControllerId, FColor Color) override { }
 	virtual void ResetLightColor(int32 ControllerId) override { }
+	virtual void SetDeviceProperty(int32 ControllerId, const FInputDeviceProperty* Property) override;
 
 protected:
+	friend LRESULT WindowsApplication_WndProc(HWND hwnd, uint32 msg, WPARAM wParam, LPARAM lParam);
 
 	/** Windows callback for message processing (forwards messages to the FWindowsApplication instance). */
 	static LRESULT CALLBACK AppWndProc(HWND hwnd, uint32 msg, WPARAM wParam, LPARAM lParam);
@@ -405,6 +407,10 @@ protected:
 
 	/** Hidden constructor. */
 	FWindowsApplication( const HINSTANCE HInstance, const HICON IconHandle );
+
+	static LRESULT CALLBACK HandleLowLevelMouseFilterHook(int nCode, WPARAM wParam, LPARAM lParam);
+
+	HHOOK LowLevelMouseFilterHook;
 
 private:
 
@@ -448,6 +454,8 @@ private:
 
 	/** Helper function to update the cached states of all modifier keys */
 	void UpdateAllModifierKeyStates();
+
+	FPlatformRect GetWorkAreaFromOS(const FPlatformRect& CurrentWindow) const;
 
 private:
 

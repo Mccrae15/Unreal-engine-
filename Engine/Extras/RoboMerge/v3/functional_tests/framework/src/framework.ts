@@ -3,7 +3,7 @@ import * as Path from 'path';
 import { BranchState, EdgeState } from './BranchState';
 import * as bent from 'bent'
 import * as System from './system';
-import { Perforce, VERBOSE } from './test-perforce';
+import { Change, Perforce, VERBOSE } from './test-perforce';
 
 const getJson = bent('json')
 
@@ -126,7 +126,6 @@ type RobomergeBranchOptions = {
 	rootPath: string
 	isDefaultBot: boolean
 	emailOnBlockage: boolean // if present, completely overrides BotConfig
-	maxFilesPerIntegration: number // otherwise auto pause
 
 	notify: string[]
 	flowsTo: string[]
@@ -144,6 +143,7 @@ type RobomergeBranchOptions = {
 	forceAll: boolean
 	visibility: string[] | string
 	blockAssetFlow: string[]
+	disallowDeadend: boolean
 
 	streamDepot: string
 	streamName: string
@@ -163,8 +163,6 @@ type RobomergeBranchOptions = {
 	incognitoMode: boolean
 
 	excludeAuthors: string[] // if present, completely overrides BotConfig
-
-	p4MaxRowsOverride: number // use with care and check with p4 admins
 }
 
 export type RobomergeBranchSpec = Partial<RobomergeBranchOptions> & {
@@ -172,6 +170,13 @@ export type RobomergeBranchSpec = Partial<RobomergeBranchOptions> & {
 }
 
 // copied from branchdefs.ts
+type IntegrationWindowPane = {
+	// if day not specified, daily
+	dayOfTheWeek?: 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat'
+	startHourUTC: number
+	durationHours: number
+}
+
 type EdgeOptionFields = {
 	lastGoodCLPath: string
 	additionalSlackChannel: string
@@ -183,11 +188,29 @@ type EdgeOptionFields = {
 	terminal: boolean // changes go along terminal edges but no further
 
 	excludeAuthors: string[]
+
+	// by default, specify when gate catch ups are allowed; can be inverted to disallow
+	integrationWindow: IntegrationWindowPane[]
+	invertIntegrationWindow: boolean
 }
 
 export type EdgeProperties = Partial<EdgeOptionFields> & {
 	from: string
 	to: string
+}
+
+export async function retryWithBackoff<T extends {}>(desc: string, f: (last: boolean) => Promise<T | null>): Promise<T> {
+	let sleepTime = .5
+	for (let safety = 0; safety < 20; ++safety) {
+		const result = await f(safety === 19)
+		if (result) {
+			return result
+		}
+
+		await System.sleep(sleepTime)
+		sleepTime *= 1.2 // roughly 3 second interval after 10 tries, 20s after 20
+	}
+	throw new Error(desc + ' timed out')
 }
 
 export abstract class FunctionalTest {
@@ -205,12 +228,15 @@ export abstract class FunctionalTest {
 		paths: ['\n\tshare ...']
 	}
 
-	abstract async setup(): Promise<void>;
+	abstract setup(): Promise<void>;
 
 	abstract run(): Promise<any>;
 	abstract getBranches(): RobomergeBranchSpec[];
 	getEdges(): EdgeProperties[] { return [] }
+	getMacros(): {[name:string]: string[]} { return {} }
 	abstract verify(): Promise<any>;
+
+	allowSyntaxErrors() { return false }
 
 	workspaceName(user: string, name: string) {
 		return [user, this.testName, name].join('_')
@@ -224,7 +250,7 @@ export abstract class FunctionalTest {
 		return `//${depot}/${name}`
 	}
 
-	protected fullBranchName(branch: string) {
+	fullBranchName(branch: string) {
 		return this.testName + P4Util.escapeBranchName(branch)
 	}
 
@@ -402,7 +428,7 @@ export abstract class FunctionalTest {
 	 * Map of users (testuser1, testuser2, etc.) and their maps <stream: P4Client>
 	 */
 	private clients = new Map<string, Map<string, P4Client>>()
-	private nodes: string[] = []
+	nodes: string[] = []
 	private edges: [string, string][] = []
 
 	getClient(stream: string, username = 'testuser1', depotName?: string) {
@@ -509,6 +535,29 @@ export abstract class FunctionalTest {
 		}
 	}
 
+	async checkDescriptionContainsEdit(stream: string, requiredList?: string[], blacklist?: string[], depotName?: string) {
+		this.info('Checking description of last commit to ' + stream)
+		this.getClient(stream, undefined, depotName).changes(1)
+			.then((changes: Change[]) => {
+				const description = changes[0]!.description.toLowerCase()
+				for (const required of (requiredList || ['edited file'])) { // default to look for description in editFileAndSubmit
+					if (description.indexOf(required.toLowerCase()) < 0) {
+						this.error(description)
+						throw new Error(`Expected '${required}' to appear in description`)
+					}
+				}
+				if (blacklist) {
+					for (const bawal of blacklist) {
+						if (description.indexOf(bawal.toLowerCase()) >= 0) {
+							this.error(description)
+							throw new Error(`Unexpected '${bawal}' in description`)
+						}
+					}
+				}
+			})
+	}
+
+
 	async verifyStompRequest(source: string, target: string, edgeState: EdgeState) {
 		if (!edgeState.isBlocked()) {
 			throw new Error('edge must be blocked to stomp!')
@@ -529,6 +578,8 @@ export abstract class FunctionalTest {
 		try {
 			const post = bent('POST', 'json', 200, 400)
 			verifyResult = await post(url)
+
+			// console.dir(verifyResult)
 		}
 		catch (err) {
 			this.error(err)
@@ -622,10 +673,11 @@ export abstract class FunctionalTest {
 
 		if (!verifyResult.validRequest)
 		{
-			this.warn(
-				verifyResult.validRequest, verifyResult.nonBinaryFilesResolved, verifyResult.remainingAllBinary,
-				Array.isArray(verifyResult.files) ? verifyResult.files[0].targetFileName : `no files (${verifyResult.files})`)
-			throw new Error('Stomp Verify returned unexpected values. Erroring...')
+			this.warn(verifyResult.message)
+			// this.warn("nonBinaryFilesResolved=" + verifyResult.nonBinaryFilesResolved)
+			// this.warn("remainingAllBinary=" + verifyResult.remainingAllBinary)
+			// this.warn("files=" + (Array.isArray(verifyResult.files) ? verifyResult.files[0].targetFileName : `no files (${verifyResult.files})`))
+			throw new Error('Stomp verify returned unexpected values')
 		}
 
 		// attempt stomp
@@ -682,7 +734,12 @@ export abstract class FunctionalTest {
 
 		const latestP4CLs = new Map<string, Promise<number>>()
 		for (const client of this.clients.get('testuser1')!.values()) {
-			latestP4CLs.set(this.fullBranchName(client.name), client.changes(1).then(changes => changes[0].change))
+			latestP4CLs.set(this.fullBranchName(client.name), client.changes(1).then(changes => {
+				if (!changes[0]) {
+					throw new Error('No changes! ' + client.stream)
+				}
+				return changes[0].change
+			}))
 		}
 
 		const unblockedBranchStates = new Map<string, BranchState>()
@@ -762,10 +819,14 @@ export abstract class FunctionalTest {
 				const p4CL = await latestP4CLs.get(source)!
 				const rmCL = edgeState.getLastCL()
 				if (rmCL < p4CL) {
-					const gateCL = edgeState.getLastGoodCL()
-					if (!gateCL || gateCL < 0 || rmCL < gateCL) {
+					const gateClosed = edgeState.getGateClosedMessage()
+					if (gateClosed) {
+						this.verbose(gateClosed)
+					}
+					else {
 						if (dump) {
 							let msg = `RoboMerge is not idle: ${source} -> ${target} last CL ${rmCL} < ${p4CL}`
+							const gateCL = edgeState.getLastGoodCL()
 							if (gateCL) {
 								msg += ` (gate: ${gateCL})`
 							}
@@ -780,18 +841,8 @@ export abstract class FunctionalTest {
 		return true
 	}
 
-	async waitForRobomergeIdle(dump = false, wait_limit = 15) {
-		let sleepTime = .5
-		for (let safety = 0; safety < wait_limit; ++safety) {
-			if (await this.isRobomergeIdle(dump || safety === wait_limit - 1)) {
-				return true
-			}
-			dump = false
-			await System.sleep(sleepTime)
-			sleepTime *= 1.2 // roughly 3 second interval after 10 tries, 20s after 20
-		}
-		this.warn('Time out!')
-		throw new Error('RoboMerge never seemed to settle down')
+	waitForRobomergeIdle(dump = false) {
+		return retryWithBackoff('Waiting for idle', async (last: boolean) => this.isRobomergeIdle(dump || last))
 	}
 }
 

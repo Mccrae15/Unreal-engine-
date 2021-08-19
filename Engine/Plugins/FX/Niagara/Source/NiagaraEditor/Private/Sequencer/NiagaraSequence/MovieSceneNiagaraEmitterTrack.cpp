@@ -177,6 +177,11 @@ void UMovieSceneNiagaraEmitterTrack::AddSection(UMovieSceneSection& Section)
 	bSectionsWereModified = true;
 }
 
+UMovieSceneSection* UMovieSceneNiagaraEmitterTrack::CreateNewSection()
+{
+	return nullptr;
+}
+
 bool UMovieSceneNiagaraEmitterTrack::SupportsType(TSubclassOf<UMovieSceneSection> SectionClass) const
 {
 	return SectionClass == UMovieSceneNiagaraEmitterSection::StaticClass();
@@ -229,7 +234,7 @@ void UMovieSceneNiagaraEmitterTrack::CreateSections(const FFrameRate& InFrameRes
 	SectionInitializationErrors.Empty();
 
 	UNiagaraScript* EmitterUpdateScript = GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter()->GetScript(ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
-	UNiagaraScriptSource* ScriptSource = CastChecked<UNiagaraScriptSource>(EmitterUpdateScript->GetSource());
+	UNiagaraScriptSource* ScriptSource = CastChecked<UNiagaraScriptSource>(EmitterUpdateScript->GetLatestSource());
 	UNiagaraNodeOutput* OutputNode = ScriptSource->NodeGraph->FindOutputNode(ENiagaraScriptUsage::EmitterUpdateScript);
 
 	TArray<FNiagaraStackGraphUtilities::FStackNodeGroup> StackGroups;
@@ -239,7 +244,7 @@ void UMovieSceneNiagaraEmitterTrack::CreateSections(const FFrameRate& InFrameRes
 		UNiagaraNodeFunctionCall* FunctionNode = Cast<UNiagaraNodeFunctionCall>(StackGroup.EndNode);
 		if (FunctionNode != nullptr && FunctionNode->FunctionScript != nullptr)
 		{
-			FString* SectionClassName = FunctionNode->FunctionScript->ScriptMetaData.Find("NiagaraTimelineSectionClass");
+			FString* SectionClassName = FunctionNode->GetScriptData()->ScriptMetaData.Find("NiagaraTimelineSectionClass");
 			if (SectionClassName != nullptr)
 			{
 				UClass* SectionClass = FindObject<UClass>(ANY_PACKAGE, **SectionClassName);

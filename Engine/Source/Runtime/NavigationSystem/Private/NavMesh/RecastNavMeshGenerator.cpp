@@ -659,7 +659,7 @@ void ExportChaosTriMesh(const Chaos::FTriangleMeshImplicitObject* const TriMesh,
 	auto LambdaHelper = [&](const auto& Triangles)
 	{
 		int32 NumTris = Triangles.Num();
-		const TParticles<FReal, 3>& Vertices = TriMesh->Particles();
+		const FParticles& Vertices = TriMesh->Particles();
 	
 		VertexBuffer.Reserve(VertexBuffer.Num() + NumTris * 9);
 		IndexBuffer.Reserve(IndexBuffer.Num() + NumTris * 3);
@@ -2573,12 +2573,13 @@ void FRecastTileGenerator::ValidateAndAppendGeometry(const TSharedRef<FNavigatio
 	const FNavigationRelevantData& DataRef = ElementData.Get();
 	if (DataRef.IsCollisionDataValid())
 	{
-		AppendGeometry(DataRef.CollisionData, InModifier, DataRef.NavDataPerInstanceTransformDelegate);
+		AppendGeometry(DataRef, InModifier, DataRef.NavDataPerInstanceTransformDelegate);
 	}
 }
 
-void FRecastTileGenerator::AppendGeometry(const TNavStatArray<uint8>& RawCollisionCache, const FCompositeNavModifier& InModifier, const FNavDataPerInstanceTransformDelegate& InTransformsDelegate)
+void FRecastTileGenerator::AppendGeometry(const FNavigationRelevantData& DataRef, const FCompositeNavModifier& InModifier, const FNavDataPerInstanceTransformDelegate& InTransformsDelegate)
 {	
+	const TNavStatArray<uint8>& RawCollisionCache = DataRef.CollisionData;
 	if (RawCollisionCache.Num() == 0)
 	{
 		return;
@@ -2606,6 +2607,8 @@ void FRecastTileGenerator::AppendGeometry(const TNavStatArray<uint8>& RawCollisi
 	const int32 NumIndices = CollisionCache.Header.NumFaces * 3;
 	if (NumIndices > 0)
 	{
+		UE_LOG(LogNavigationDataBuild, VeryVerbose, TEXT("%s adding %i vertices from %s."), ANSI_TO_TCHAR(__FUNCTION__), CollisionCache.Header.NumVerts, *GetFullNameSafe(DataRef.GetOwner()));
+
 		GeometryElement.GeomCoords.SetNumUninitialized(NumCoords);
 		GeometryElement.GeomIndices.SetNumUninitialized(NumIndices);
 

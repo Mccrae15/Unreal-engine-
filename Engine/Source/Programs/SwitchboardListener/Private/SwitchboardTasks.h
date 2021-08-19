@@ -19,7 +19,10 @@ enum class ESwitchboardTaskType : uint8
 	GetFlipMode,
 	FixExeFlags,
 	RedeployListener,
+	RefreshMosaics,
+	MinimizeWindows,
 };
+
 
 struct FSwitchboardTask
 {
@@ -63,6 +66,20 @@ struct FSwitchboardGetSyncStatusTask : public FSwitchboardTask
 	//~ End FSwitchboardTask interface
 };
 
+struct FSwitchboardRefreshMosaicsTask : public FSwitchboardTask
+{
+	FSwitchboardRefreshMosaicsTask(const FGuid& InTaskId, const FIPv4Endpoint& InEndpoint)
+		: FSwitchboardTask{ ESwitchboardTaskType::RefreshMosaics, TEXT("refresh mosaics"), InTaskId, InEndpoint }
+	{}
+
+	//~ Begin FSwitchboardTask interface
+	virtual uint32 GetEquivalenceHash() const override
+	{
+		return HashCombine(GetTypeHash(Type), GetTypeHash(Name));
+	}
+	//~ End FSwitchboardTask interface
+};
+
 struct FSwitchboardStartTask : public FSwitchboardTask
 {
 	FSwitchboardStartTask(
@@ -72,9 +89,7 @@ struct FSwitchboardStartTask : public FSwitchboardTask
 		const FString& InArgs, 
 		const FString& InName, 
 		const FString& InCaller, 
-		const FString& InWorkingDir,
-		bool bInUpdateClientsWithStdout,
-		int32 InPriorityModifier
+		const FString& InWorkingDir
 	)
 		: FSwitchboardTask{ ESwitchboardTaskType::Start, TEXT("start"), InTaskId, InEndpoint }
 		, Command(InCommand)
@@ -82,8 +97,6 @@ struct FSwitchboardStartTask : public FSwitchboardTask
 		, Name(InName)
 		, Caller(InCaller)
 		, WorkingDir(InWorkingDir)
-		, bUpdateClientsWithStdout(bInUpdateClientsWithStdout)
-		, PriorityModifier(InPriorityModifier)
 	{
 	}
 
@@ -92,8 +105,8 @@ struct FSwitchboardStartTask : public FSwitchboardTask
 	FString Name;
 	FString Caller;
 	FString WorkingDir;
-	bool bUpdateClientsWithStdout;
-	int32 PriorityModifier;
+	bool bUpdateClientsWithStdout = false;
+	int32 PriorityModifier = 0;
 
 	//~ Begin FSwitchboardTask interface
 	virtual uint32 GetEquivalenceHash() const override
@@ -132,6 +145,7 @@ struct FSwitchboardReceiveFileFromClientTask : public FSwitchboardTask
 
 	FString Destination;
 	FString FileContent;
+	bool bForceOverwrite = false;
 
 	//~ Begin FSwitchboardTask interface
 	virtual uint32 GetEquivalenceHash() const override
@@ -210,3 +224,11 @@ struct FSwitchboardKeepAliveTask : public FSwitchboardTask
 		: FSwitchboardTask{ESwitchboardTaskType::KeepAlive, TEXT("keep alive"), InTaskId, InEndpoint}
 	{}
 };
+
+struct FSwitchboardMinimizeWindowsTask : public FSwitchboardTask
+{
+	FSwitchboardMinimizeWindowsTask(const FGuid& InTaskId, const FIPv4Endpoint& InEndpoint)
+		: FSwitchboardTask{ ESwitchboardTaskType::MinimizeWindows, TEXT("minimize windows"), InTaskId, InEndpoint }
+	{}
+};
+

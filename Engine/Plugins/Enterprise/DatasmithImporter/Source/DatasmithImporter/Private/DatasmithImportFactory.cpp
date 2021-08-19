@@ -128,10 +128,9 @@ namespace DatasmithImportFactoryImpl
 		FString PackageName = FPaths::Combine(InContext.AssetsContext.RootFolderPath, AssetName);
 		PackageName = UPackageTools::SanitizePackageName(PackageName);
 
-
-		FText CreateAssetFailure =  LOCTEXT( "CreateSceneAsset_PackageFailure", "Failed to create the Datasmith Scene asset." );
+		FText CreateAssetFailure = LOCTEXT( "CreateSceneAsset_PackageFailure", "Failed to create the Datasmith Scene asset." );
 		FText OutFailureReason;
-		if ( !FDatasmithImporterUtils::CanCreateAsset< UDatasmithScene >( PackageName+ "." + AssetName, OutFailureReason ) )
+		if ( !FDatasmithImporterUtils::CanCreateAsset< UDatasmithScene >( PackageName + "." + AssetName, OutFailureReason ) )
 		{
 			InContext.LogError( OutFailureReason );
 			InContext.LogError( CreateAssetFailure );
@@ -329,6 +328,9 @@ namespace DatasmithImportFactoryImpl
 			EventAttributes.Emplace( TEXT("ExporterID"), ImportContext.Scene->GetUserID() );
 			EventAttributes.Emplace( TEXT("ExporterOS"), ImportContext.Scene->GetUserOS() );
 			EventAttributes.Emplace( TEXT("ExportDuration"), ImportContext.Scene->GetExportDuration() );
+
+			FString SourceFileExtension = ImportContext.SceneTranslator ? ImportContext.SceneTranslator->GetSource().GetSourceFileExtension() : TEXT("Unknown");
+			EventAttributes.Emplace( TEXT("SourceFileExtension"), SourceFileExtension );
 
 			FString EventText = TEXT("Datasmith.");
 			EventText += ImportContext.bIsAReimport ? TEXT("Reimport") : TEXT("Import");
@@ -657,6 +659,12 @@ EReimportResult::Type UDatasmithImportFactory::ReimportStaticMesh(UStaticMesh* M
 	ImportContext.Options->BaseOptions.AssetOptions = MeshImportData->AssetImportOptions;
 
 	ImportContext.SceneAsset = FDatasmithImporterUtils::FindDatasmithSceneForAsset( Mesh );
+	if (ImportContext.SceneAsset == nullptr)
+	{
+		bOperationCanceled = true;
+		UE_LOG(LogDatasmithImport, Warning, TEXT("Datasmith ReimportStaticMesh error: no UDatasmithScene associated with asset %s. Aborting reimport."), *Mesh->GetName());
+		return EReimportResult::Failed;
+	}
 
 	// Restore additional import options
 	UDatasmithTranslatedSceneImportData* SceneAssetImportData = ExactCast<UDatasmithTranslatedSceneImportData>(ImportContext.SceneAsset->AssetImportData);
@@ -794,7 +802,7 @@ EReimportResult::Type UDatasmithImportFactory::ReimportScene(UDatasmithScene* Sc
 	FString ImportPath = ImportContext.Options->BaseOptions.AssetOptions.PackagePath.ToString();
 
 	TSharedRef< IDatasmithScene > Scene = FDatasmithSceneFactory::CreateScene( *Source.GetSceneName() );
-	bool bIsSilent = false;
+	bool bIsSilent = IsAutomatedImport();
 	if ( !ImportContext.Init( Scene, ImportPath, ImportContext.SceneAsset->GetFlags(), GWarn, ImportSettingsJson, bIsSilent ) )
 	{
 		return EReimportResult::Cancelled;

@@ -228,10 +228,6 @@ public:
 	/** The volume at which the radio filter kicks in */
 	float RadioFilterVolumeThreshold;
 
-	/** The amount of stereo sounds to bleed to the rear speakers */
-	UE_DEPRECATED(4.25, "Stereo Bleed is no longer supported.")
-	float StereoBleed;
-
 	/** The amount of a sound to bleed to the LFE channel */
 	float LFEBleed;
 
@@ -241,8 +237,14 @@ public:
 	/** An offset/seek time to play this wave instance. */
 	float StartTime;
 
-	/** Whether or not to only output this wave instances audio to buses only. Audio mixer only. */
-	uint32 bOutputToBusOnly:1;
+	/** Whether or not to enable sending this audio's output to buses.*/
+	uint32 bEnableBusSends : 1;
+
+	/** Whether or not to render to the main submix */
+	uint32 bEnableBaseSubmix : 1;
+
+	/** Whether or not to enable Submix Sends in addition to the Main Submix*/
+	uint32 bEnableSubmixSends : 1;
 
 	/** Set to true if the sound nodes state that the radio filter should be applied */
 	uint32 bApplyRadioFilter:1;
@@ -380,6 +382,9 @@ public:
 
 	/** Constructor, initializing all member variables. */
 	FWaveInstance(const UPTRINT InWaveInstanceHash, FActiveSound& ActiveSound);
+
+	FWaveInstance(FWaveInstance&&);
+	FWaveInstance& operator=(FWaveInstance&&);
 
 	/** Stops the wave instance without notifying NotifyWaveInstanceFinishedHook. */
 	void StopWithoutNotification();
@@ -635,10 +640,6 @@ public:
 
 	/** Set the bReverbApplied variable. */
 	ENGINE_API bool SetReverbApplied(bool bHardwareAvailable);
-
-	/** Set the StereoBleed variable. */
-	UE_DEPRECATED(4.25, "Stereo Bleed is no longer supported.")
-	ENGINE_API float SetStereoBleed();
 
 	/** Updates and sets the LFEBleed variable. */
 	ENGINE_API float SetLFEBleed();

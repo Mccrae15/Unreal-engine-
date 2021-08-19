@@ -575,8 +575,6 @@ bool FOnlineSubsystemSteam::IsEnabled() const
 	bool bEnableSteam = FOnlineSubsystemImpl::IsEnabled();
 	if (bEnableSteam)
 	{
-		// Steam doesn't support running both the server and client on the same machine
-		bEnableSteam = !FParse::Param(FCommandLine::Get(),TEXT("MultiprocessOSS"));
 #if UE_EDITOR
 		if (bEnableSteam)
 		{
@@ -689,7 +687,6 @@ bool FOnlineSubsystemSteam::InitSteamworksServer()
 	{
 		// Grab the port values so that we save them.
 		GameServerGamePort = SteamAPIServerHandle->GetGamePort();
-		GameServerSteamPort = SteamAPIServerHandle->GetSteamPort();
 		GameServerQueryPort = SteamAPIServerHandle->GetQueryPort();
 
 		// Test all the Steam interfaces
@@ -756,14 +753,14 @@ FSteamUserCloudData* FOnlineSubsystemSteam::GetUserCloudEntry(const FUniqueNetId
 	for (int32 UserIdx = 0; UserIdx < UserCloudData.Num(); UserIdx++)
 	{
 		FSteamUserCloudData* UserMetadata = UserCloudData[UserIdx];
-		if (UserMetadata->UserId == UserId)
+		if (*UserMetadata->UserId == UserId)
 		{
 			return UserMetadata;
 		}
 	}
 
 	// Always create a new one if it doesn't exist
-	FUniqueNetIdSteam SteamUserId(*(uint64*)UserId.GetBytes());
+	const FUniqueNetIdSteam& SteamUserId = FUniqueNetIdSteam::Cast(UserId);
 	FSteamUserCloudData* NewItem = new FSteamUserCloudData(SteamUserId);
 	int32 UserIdx = UserCloudData.Add(NewItem);
 	return UserCloudData[UserIdx];
@@ -834,11 +831,11 @@ bool FOnlineSubsystemSteam::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevic
 	{
 		IOnlineUserCloudPtr UserCloud = GetUserCloudInterface();
 
-		FUniqueNetIdSteam SteamId(SteamUser()->GetSteamID());
+		FUniqueNetIdSteamRef SteamId = FUniqueNetIdSteam::Create(SteamUser()->GetSteamID());
 
 		FOnEnumerateUserFilesCompleteDelegate Delegate = FOnEnumerateUserFilesCompleteDelegate::CreateStatic(&DeleteFromEnumerateUserFilesComplete);
 		GPerCloudDeleteFromEnumerateUserFilesCompleteDelegateHandles.Add(UserCloud.Get(), UserCloud->AddOnEnumerateUserFilesCompleteDelegate_Handle(Delegate));
-		UserCloud->EnumerateUserFiles(SteamId);
+		UserCloud->EnumerateUserFiles(*SteamId);
 		bWasHandled = true;
 	}
 	else if (FParse::Command(&Cmd, TEXT("SYNCLOBBIES")))

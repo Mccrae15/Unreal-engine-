@@ -39,9 +39,9 @@ void FGeometryCollectionConversion::AppendStaticMesh(const UStaticMesh* StaticMe
 	check(GeometryCollection);
 
 	// @todo : Discuss how to handle multiple LOD's
-	if (StaticMesh->RenderData && StaticMesh->RenderData->LODResources.Num() > 0)
+	if (StaticMesh->GetRenderData() && StaticMesh->GetRenderData()->LODResources.Num() > 0)
 	{
-		FStaticMeshVertexBuffers& VertexBuffer = StaticMesh->RenderData->LODResources[0].VertexBuffers;
+		const FStaticMeshVertexBuffers& VertexBuffer = StaticMesh->GetRenderData()->LODResources[0].VertexBuffers;
 
 		// vertex information
 		TManagedArray<FVector>& Vertex = GeometryCollection->Vertex;
@@ -80,7 +80,7 @@ void FGeometryCollectionConversion::AppendStaticMesh(const UStaticMesh* StaticMe
 		TManagedArray<int32>& MaterialID = GeometryCollection->MaterialID;
 		TManagedArray<int32>& MaterialIndex = GeometryCollection->MaterialIndex;
 
-		FRawStaticIndexBuffer& IndexBuffer = StaticMesh->RenderData->LODResources[0].IndexBuffer;
+		const FRawStaticIndexBuffer& IndexBuffer = StaticMesh->GetRenderData()->LODResources[0].IndexBuffer;
 		FIndexArrayView IndexBufferView = IndexBuffer.GetArrayView();
 		const int32 IndicesCount = IndexBuffer.GetNumIndices() / 3;
 		int InitialNumIndices = GeometryCollection->NumElements(FGeometryCollection::FacesGroup);
@@ -208,8 +208,8 @@ void FGeometryCollectionConversion::AppendStaticMesh(const UStaticMesh* StaticMe
 		// necessary since we reindex after all the meshes are added, but it is a good step to have
 		// optimal min/max vertex index right from the static mesh.  All we really need to do is
 		// assign material ids and rely on reindexing, in theory
-		for (const FStaticMeshSection& CurrSection : StaticMesh->RenderData->LODResources[0].Sections)
-		{
+		for (const FStaticMeshSection& CurrSection : StaticMesh->GetRenderData()->LODResources[0].Sections)
+		{			
 			// create new section
 			int32 SectionIndex = GeometryCollection->AddElements(1, FGeometryCollection::MaterialGroup);
 
@@ -244,9 +244,9 @@ void FGeometryCollectionConversion::AppendStaticMesh(const UStaticMesh* StaticMe
 	}
 
 	TArray<UMaterialInterface*> Materials;
-	Materials.Reserve(StaticMesh->StaticMaterials.Num());
+	Materials.Reserve(StaticMesh->GetStaticMaterials().Num());
 
-	for (int32 Index = 0; Index < StaticMesh->StaticMaterials.Num(); ++Index)
+	for (int32 Index = 0; Index < StaticMesh->GetStaticMaterials().Num(); ++Index)
 	{
 		UMaterialInterface* CurrMaterial = StaticMeshComponent ? StaticMeshComponent->GetMaterial(Index) : StaticMesh->GetMaterial(Index);
 		Materials.Add(CurrMaterial);
@@ -266,7 +266,7 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 		if (FGeometryCollection* GeometryCollection = GeometryCollectionPtr.Get())
 		{
 
-			if (USkeleton * Skeleton = SkeletalMesh->Skeleton)
+			if (const USkeleton* Skeleton = SkeletalMesh->GetSkeleton())
 			{
 				if (const FSkeletalMeshRenderData * SkelMeshRenderData = SkeletalMesh->GetResourceForRendering())
 				{
@@ -275,6 +275,22 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 						const FSkeletalMeshLODRenderData & SkeletalMeshLODRenderData = SkelMeshRenderData->LODRenderData[0];
 						const FSkinWeightVertexBuffer & SkinWeightVertexBuffer = *SkeletalMeshLODRenderData.GetSkinWeightVertexBuffer();
 
+						const FStaticMeshVertexBuffers& VertexBuffers = SkeletalMeshLODRenderData.StaticVertexBuffers;
+						const FPositionVertexBuffer& PositionVertexBuffer = VertexBuffers.PositionVertexBuffer;
+						const int32 VertexCount = PositionVertexBuffer.GetNumVertices();
+						
+						// Check that all vertex weightings are rigid.
+						for (int32 VertexIndex = 0; VertexIndex < VertexCount; VertexIndex++)
+						{
+							int32 SkeletalBoneIndex = -1;
+							if (!SkinWeightVertexBuffer.GetRigidWeightBone(VertexIndex, SkeletalBoneIndex))
+							{
+								UE_LOG(UGeometryCollectionConversionLogging, Error, TEXT("Non-rigid weighting found on vertex %d: Cannot convert to GeometryCollection."), VertexIndex);
+								return;
+							}
+						}
+						
+											
 						const FSkelMeshRenderSection & RenderSection = SkeletalMeshLODRenderData.RenderSections[0];
 						const TArray<FBoneIndexType> & SkeletalBoneMap = RenderSection.BoneMap;
 
@@ -344,10 +360,6 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 						TManagedArray<int32>& Parent = GeometryCollection->Parent;
 						TManagedArray<int32>& SimulationType = GeometryCollection->SimulationType;
 
-						const FStaticMeshVertexBuffers & VertexBuffers = SkeletalMeshLODRenderData.StaticVertexBuffers;
-						const FPositionVertexBuffer & PositionVertexBuffer = VertexBuffers.PositionVertexBuffer;
-
-						const int32 VertexCount = PositionVertexBuffer.GetNumVertices();
 						int InitialNumVertices = GeometryCollection->NumElements(FGeometryCollection::VerticesGroup);
 						int VertexBaseIndex = GeometryCollection->AddElements(VertexCount, FGeometryCollection::VerticesGroup);
 						for (int32 VertexIndex = 0; VertexIndex < VertexCount; VertexIndex++)
@@ -355,7 +367,7 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 							int VertexOffset = VertexBaseIndex + VertexIndex;
 							BoneMap[VertexOffset] = -1;
 							int32 SkeletalBoneIndex = -1;
-							check(SkinWeightVertexBuffer.GetRigidWeightBone(VertexIndex, SkeletalBoneIndex));
+							SkinWeightVertexBuffer.GetRigidWeightBone(VertexIndex, SkeletalBoneIndex);
 							if (SkeletalBoneIndex > -1)
 							{
 								BoneMap[VertexOffset] = SkeletalBoneIndex + TransformBaseIndex;
@@ -405,15 +417,17 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 
 						// for each material, add a reference in our GeometryCollectionObject
 						int CurrIdx = 0;
+						
+						const TArray<FSkeletalMaterial>& SkeletalMeshMaterials = SkeletalMesh->GetMaterials();
 
-						UMaterialInterface *CurrMaterial = SkeletalMeshComponent ? SkeletalMeshComponent->GetMaterial(CurrIdx) : SkeletalMesh->Materials[CurrIdx].MaterialInterface;
+						UMaterialInterface *CurrMaterial = SkeletalMeshComponent ? SkeletalMeshComponent->GetMaterial(CurrIdx) : SkeletalMeshMaterials[CurrIdx].MaterialInterface;
 
 
 						int MaterialStart = GeometryCollectionObject->Materials.Num();
 						while (CurrMaterial)
 						{
 							GeometryCollectionObject->Materials.Add(CurrMaterial);
-							CurrMaterial = SkeletalMeshComponent ? SkeletalMeshComponent->GetMaterial(++CurrIdx) : SkeletalMesh->Materials[++CurrIdx].MaterialInterface;
+							CurrMaterial = SkeletalMeshComponent ? SkeletalMeshComponent->GetMaterial(++CurrIdx) : SkeletalMeshMaterials[++CurrIdx].MaterialInterface;
 
 						}
 

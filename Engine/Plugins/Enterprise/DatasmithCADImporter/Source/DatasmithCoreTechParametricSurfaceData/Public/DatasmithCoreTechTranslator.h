@@ -19,12 +19,13 @@ public:
 	// Begin IDatasmithTranslator overrides
 	virtual void GetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options) override;
 	virtual void SetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options) override;
+	virtual bool IsSourceSupported(const FDatasmithSceneSource& Source) override;
 	// End IDatasmithTranslator overrides
 
 protected:
 	const FDatasmithTessellationOptions& GetCommonTessellationOptions()
 	{
-		return GetCommonTessellationOptionsPtr()->Options;
+		return CommonTessellationOptions;
 	}
 
 	/** 
@@ -35,7 +36,6 @@ protected:
 	virtual void InitCommonTessellationOptions(FDatasmithTessellationOptions& TessellationOptions) {}
 
 private:
-	TStrongObjectPtr<UDatasmithCommonTessellationOptions>& GetCommonTessellationOptionsPtr();
-	TStrongObjectPtr<UDatasmithCommonTessellationOptions> CommonTessellationOptionsPtr;
+	FDatasmithTessellationOptions CommonTessellationOptions;
 };
 

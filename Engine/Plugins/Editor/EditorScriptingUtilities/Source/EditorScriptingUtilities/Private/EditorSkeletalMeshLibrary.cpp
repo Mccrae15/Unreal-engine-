@@ -3,6 +3,7 @@
 #include "EditorSkeletalMeshLibrary.h"
 
 #include "Animation/Skeleton.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
@@ -11,7 +12,13 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "FbxMeshUtils.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Interfaces/ITargetPlatformManagerModule.h"
 #include "LODUtilities.h"
+#include "Misc/CoreMisc.h"
+#include "ObjectTools.h"
+#include "PhysicsAssetUtils.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "ScopedTransaction.h"
@@ -25,7 +32,7 @@ bool UEditorSkeletalMeshLibrary::RegenerateLOD(USkeletalMesh* SkeletalMesh, int3
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return false;
 	}
@@ -36,14 +43,14 @@ bool UEditorSkeletalMeshLibrary::RegenerateLOD(USkeletalMesh* SkeletalMesh, int3
 		return false;
 	}
 
-	return FLODUtilities::RegenerateLOD(SkeletalMesh, NewLODCount, bRegenerateEvenIfImported, bGenerateBaseLOD);
+	return FLODUtilities::RegenerateLOD(SkeletalMesh, GetTargetPlatformManagerRef().GetRunningTargetPlatform(), NewLODCount, bRegenerateEvenIfImported, bGenerateBaseLOD);
 }
 
 int32 UEditorSkeletalMeshLibrary::GetNumVerts(USkeletalMesh* SkeletalMesh, int32 LODIndex)
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return 0;
 	}
@@ -66,6 +73,81 @@ int32 UEditorSkeletalMeshLibrary::GetNumVerts(USkeletalMesh* SkeletalMesh, int32
 	return 0;
 }
 
+int32 UEditorSkeletalMeshLibrary::GetNumSections( USkeletalMesh* SkeletalMesh, int32 LODIndex )
+{
+	TGuardValue<bool> UnattendedScriptGuard( GIsRunningUnattendedScript, true );
+
+	if ( !EditorScriptingUtils::IsInEditorAndNotPlaying() )
+	{
+		return INDEX_NONE;
+	}
+
+	if ( SkeletalMesh == nullptr )
+	{
+		UE_LOG( LogEditorScripting, Error, TEXT( "GetNumSections: The SkeletalMesh is null." ) );
+		return INDEX_NONE;
+	}
+
+	if ( SkeletalMesh->GetResourceForRendering() && SkeletalMesh->GetResourceForRendering()->LODRenderData.Num() > 0 )
+	{
+		TIndirectArray<FSkeletalMeshLODRenderData>& LodRenderData = SkeletalMesh->GetResourceForRendering()->LODRenderData;
+		if ( LodRenderData.IsValidIndex( LODIndex ) )
+		{
+			return LodRenderData[ LODIndex ].RenderSections.Num();
+		}
+	}
+
+	return INDEX_NONE;
+}
+
+int32 UEditorSkeletalMeshLibrary::GetLODMaterialSlot( USkeletalMesh* SkeletalMesh, int32 LODIndex, int32 SectionIndex )
+{
+	TGuardValue<bool> UnattendedScriptGuard( GIsRunningUnattendedScript, true );
+
+	if ( !EditorScriptingUtils::IsInEditorAndNotPlaying() )
+	{
+		return INDEX_NONE;
+	}
+
+	if ( SkeletalMesh == nullptr )
+	{
+		UE_LOG( LogEditorScripting, Error, TEXT( "GetLODMaterialSlot: The SkeletalMesh is null." ) );
+		return INDEX_NONE;
+	}
+
+	if ( SkeletalMesh->GetResourceForRendering() && SkeletalMesh->GetResourceForRendering()->LODRenderData.Num() > 0 )
+	{
+		TIndirectArray<FSkeletalMeshLODRenderData>& LodRenderData = SkeletalMesh->GetResourceForRendering()->LODRenderData;
+		if ( LodRenderData.IsValidIndex( LODIndex ) )
+		{
+			const TArray<FSkelMeshRenderSection>& Sections = LodRenderData[ LODIndex ].RenderSections;
+			if ( Sections.IsValidIndex( SectionIndex ) )
+			{
+				int32 MaterialIndex = Sections[ SectionIndex ].MaterialIndex;
+
+				const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo( LODIndex );
+				if ( LODInfo && LODInfo->LODMaterialMap.IsValidIndex( SectionIndex ) )
+				{
+					// If we have an optional LODMaterialMap, we need to reroute the material index through it
+					MaterialIndex = LODInfo->LODMaterialMap[ SectionIndex ];
+				}
+
+				return MaterialIndex;
+			}
+			else
+			{
+				UE_LOG( LogEditorScripting, Error, TEXT( "GetLODMaterialSlot: Invalid SectionIndex." ) );
+			}
+		}
+		else
+		{
+			UE_LOG( LogEditorScripting, Error, TEXT( "GetLODMaterialSlot: Invalid LODIndex." ) );
+		}
+	}
+
+	return INDEX_NONE;
+}
+
 bool UEditorSkeletalMeshLibrary::RenameSocket(USkeletalMesh* SkeletalMesh, FName OldName, FName NewName)
 {
 	if (SkeletalMesh == nullptr)
@@ -74,7 +156,7 @@ bool UEditorSkeletalMeshLibrary::RenameSocket(USkeletalMesh* SkeletalMesh, FName
 		return false;
 	}
 
-	if (SkeletalMesh->Skeleton == nullptr)
+	if (SkeletalMesh->GetSkeleton() == nullptr)
 	{
 		UE_LOG(LogEditorScripting, Error, TEXT("RenameSocket: The SkeletalMesh's Skeleton is null."));
 		return false;
@@ -104,7 +186,7 @@ bool UEditorSkeletalMeshLibrary::RenameSocket(USkeletalMesh* SkeletalMesh, FName
 		return false;
 	}
 
-	USkeletalMeshSocket* SkeletonSocket = SkeletalMesh->Skeleton->FindSocket(OldName);
+	USkeletalMeshSocket* SkeletonSocket = SkeletalMesh->GetSkeleton()->FindSocket(OldName);
 	if (SkeletonSocket == nullptr)
 	{
 		UE_LOG(LogEditorScripting, Error, TEXT("RenameSocket: The socket named '%s' does not exist on the Skeleton."), *OldName.ToString());
@@ -121,9 +203,9 @@ bool UEditorSkeletalMeshLibrary::RenameSocket(USkeletalMesh* SkeletalMesh, FName
 	SkeletonSocket->SocketName = NewName;
 
 	bool bMeshModified = false;
-	for (int AttachedObjectIndex = 0; AttachedObjectIndex < SkeletalMesh->PreviewAttachedAssetContainer.Num(); ++AttachedObjectIndex)
+	for (int AttachedObjectIndex = 0; AttachedObjectIndex < SkeletalMesh->GetPreviewAttachedAssetContainer().Num(); ++AttachedObjectIndex)
 	{
-		FPreviewAttachedObjectPair& Pair = SkeletalMesh->PreviewAttachedAssetContainer[AttachedObjectIndex];
+		FPreviewAttachedObjectPair& Pair = SkeletalMesh->GetPreviewAttachedAssetContainer()[AttachedObjectIndex];
 		if (Pair.AttachedTo == OldName)
 		{
 			// Only modify the mesh if we actually intend to change something. Avoids dirtying
@@ -138,15 +220,15 @@ bool UEditorSkeletalMeshLibrary::RenameSocket(USkeletalMesh* SkeletalMesh, FName
 	}
 
 	bool bSkeletonModified = false;
-	for (int AttachedObjectIndex = 0; AttachedObjectIndex < SkeletalMesh->Skeleton->PreviewAttachedAssetContainer.Num(); ++AttachedObjectIndex)
+	for (int AttachedObjectIndex = 0; AttachedObjectIndex < SkeletalMesh->GetSkeleton()->PreviewAttachedAssetContainer.Num(); ++AttachedObjectIndex)
 	{
-		FPreviewAttachedObjectPair& Pair = SkeletalMesh->Skeleton->PreviewAttachedAssetContainer[AttachedObjectIndex];
+		FPreviewAttachedObjectPair& Pair = SkeletalMesh->GetSkeleton()->PreviewAttachedAssetContainer[AttachedObjectIndex];
 		if (Pair.AttachedTo == OldName)
 		{
 			// Only modify the skeleton if we actually intend to change something.
 			if (!bSkeletonModified)
 			{
-				SkeletalMesh->Skeleton->Modify();
+				SkeletalMesh->GetSkeleton()->Modify();
 				bSkeletonModified = true;
 			}
 			Pair.AttachedTo = NewName;
@@ -171,7 +253,7 @@ int32 UEditorSkeletalMeshLibrary::ImportLOD(USkeletalMesh* BaseMesh, const int32
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		UE_LOG(LogEditorScripting, Error, TEXT("SkeletalMesh ImportLOD: Cannot import or re-import when editor PIE is active."));
 		return INDEX_NONE;
@@ -213,7 +295,7 @@ int32 UEditorSkeletalMeshLibrary::ImportLOD(USkeletalMesh* BaseMesh, const int32
 		&& BaseMesh->IsReductionActive(LODIndex) //We remove reduction settings only if they are active
 		&& BaseMesh->GetLODInfo(LODIndex) //this test is redundant (IsReductionActive test this), but to avoid static analysis
 		&& BaseMesh->GetLODInfo(LODIndex)->ReductionSettings.BaseLOD < LODIndex //We do not remove the reduction if the reduction is base on this LOD imported data
-		&& (!BaseMesh->LODSettings || BaseMesh->LODSettings->GetNumberOfSettings() < LODIndex)) //We do not remove the reduction if the skeletal mesh is using a LODSettings for this LOD
+		&& (!BaseMesh->GetLODSettings() || BaseMesh->GetLODSettings()->GetNumberOfSettings() < LODIndex)) //We do not remove the reduction if the skeletal mesh is using a LODSettings for this LOD
 	{
 		//Remove the reduction settings
 		BaseMesh->GetLODInfo(LODIndex)->ReductionSettings.NumOfTrianglesPercentage = 1.0f;
@@ -240,7 +322,7 @@ bool UEditorSkeletalMeshLibrary::ReimportAllCustomLODs(USkeletalMesh* SkeletalMe
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		UE_LOG(LogEditorScripting, Error, TEXT("SkeletalMesh ReimportAllCustomLODs: Cannot import or re-import when editor PIE is active."));
 		return false;
@@ -280,7 +362,7 @@ void UEditorSkeletalMeshLibrary::GetLodBuildSettings(const USkeletalMesh* Skelet
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -310,7 +392,7 @@ void UEditorSkeletalMeshLibrary::SetLodBuildSettings(USkeletalMesh* SkeletalMesh
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
-	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	if (!EditorScriptingUtils::IsInEditorAndNotPlaying())
 	{
 		return;
 	}
@@ -396,4 +478,60 @@ bool UEditorSkeletalMeshLibrary::StripLODGeometry(USkeletalMesh* SkeletalMesh, c
 {
 	return FLODUtilities::StripLODGeometry(SkeletalMesh, LODIndex, TextureMask, Threshold);
 }
+
+UPhysicsAsset* UEditorSkeletalMeshLibrary::CreatePhysicsAsset(USkeletalMesh* SkeletalMesh)
+{
+	if (!SkeletalMesh)
+	{
+		UE_LOG(LogEditorScripting, Error, TEXT("CreatePhysicsAsset failed: The SkeletalMesh is null."));
+		return nullptr;
+	}
+
+	FString ObjectName = FString::Printf(TEXT("%s_PhysicsAsset"), *SkeletalMesh->GetName());
+	FString PackageName = SkeletalMesh->GetOutermost()->GetName();
+
+	FString ParentPath = FString::Printf(TEXT("%s/%s"), *FPackageName::GetLongPackagePath(*PackageName), *ObjectName);
+	UObject* Package = CreatePackage(*ParentPath);
+
+	// See if an object with this name exists
+	UObject* Object = LoadObject<UObject>(Package, *ObjectName, nullptr, LOAD_NoWarn | LOAD_Quiet, nullptr);
+
+	// If an object with same name but different class exists, fail and warn the user
+	if ((Object != nullptr) && (Object->GetClass() != UPhysicsAsset::StaticClass()))
+	{
+		UE_LOG(LogEditorScripting, Error, TEXT("CreatePhysicsAsset failed: An object that is not a Physics Asset already exists with the name %s."), *ObjectName);
+		return nullptr;
+	}
+
+	if (Object == nullptr)
+	{
+		Object = NewObject<UPhysicsAsset>(Package, *ObjectName, RF_Public | RF_Standalone);
+
+		FAssetRegistryModule::AssetCreated(Object);
+	}
+
+	UPhysicsAsset* NewPhysicsAsset = Cast<UPhysicsAsset>(Object);
+	if (NewPhysicsAsset)
+	{
+		NewPhysicsAsset->MarkPackageDirty();
+
+		FPhysAssetCreateParams NewBodyData;
+		FText CreationErrorMessage;
+
+		bool bSuccess = FPhysicsAssetUtils::CreateFromSkeletalMesh(NewPhysicsAsset, SkeletalMesh, NewBodyData, CreationErrorMessage);
+		if (!bSuccess)
+		{
+			UE_LOG(LogEditorScripting, Error, TEXT("CreatePhysicsAsset failed: Couldn't create PhysicsAsset for the SkeletalMesh."));
+			ObjectTools::DeleteObjects({NewPhysicsAsset}, false);
+			return nullptr;
+		}
+		else
+		{
+			RefreshSkelMeshOnPhysicsAssetChange(SkeletalMesh);
+		}
+	}
+
+	return NewPhysicsAsset;
+}
+
 #undef LOCTEXT_NAMESPACE

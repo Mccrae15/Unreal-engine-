@@ -20,23 +20,35 @@ namespace UE
 namespace MovieScene
 {
 
+template<typename T> struct TComponentLock;
+
+struct FReadErased;
+struct FReadErasedOptional;
+struct FWriteErased;
+struct FWriteErasedOptional;
+template<typename T> struct TRead;
+template<typename T> struct TReadOptional;
+template<typename T> struct TWrite;
+template<typename T> struct TWriteOptional;
+
 enum class ESystemPhase : uint8
 {
 	/** Null phase which indicates that the system never runs, but still exists in the reference graph */
-	None,
+	None = 0,
 
 	/** Expensive: Phase that is run before instantiation any time any boundary is crossed in the sequence. Used to spawn new objects and trigger pre/post-spawn events. */
-	Spawn,
+	Spawn = 1 << 0,
 
 	/** Expensive: Houses any system that needs to instantiate global entities into the linker, or make meaningful changes to entity structures.. */
-	Instantiation,
+	Instantiation = 1 << 1,
 
 	/** Fast, distributed: Houses the majority of evaluation systems that compute animation data. Entity manager is locked down for the duration of this phase. */
-	Evaluation,
+	Evaluation = 1 << 2,
 
 	/** Finalization phase for enything that wants to run after everything else. */
-	Finalization,
+	Finalization = 1 << 3,
 };
+ENUM_CLASS_FLAGS(ESystemPhase);
 
 enum class EComponentTypeFlags : uint8
 {
@@ -48,8 +60,11 @@ enum class EComponentTypeFlags : uint8
 	/** Automatically copy this component to child components when being constructed through the component factory */
 	CopyToChildren = 0x2,
 
+	/** Indicates that this component type represents a cached value that should be copied to blend outputs */
+	CopyToOutput = 0x4,
+
 	/** Indicates that this component type represents a cached value that should be migrated to blend outputs (and removed from blend inputs) */
-	MigrateToOutput = 0x4,
+	MigrateToOutput = 0x8,
 };
 ENUM_CLASS_FLAGS(EComponentTypeFlags);
 
@@ -359,6 +374,32 @@ private:
 	TArray<FComplexMask> ComplexMasks;
 };
 
+
+struct FEntityAllocationWriteContext
+{
+	MOVIESCENE_API FEntityAllocationWriteContext(const FEntityManager& EntityManager);
+
+	static FEntityAllocationWriteContext NewAllocation()
+	{
+		return FEntityAllocationWriteContext();
+	}
+
+	uint64 GetSystemSerial() const
+	{
+		return SystemSerial;
+	}
+
+private:
+
+	FEntityAllocationWriteContext()
+		: SystemSerial(0)
+	{}
+
+	uint64 SystemSerial;
+};
+
+
+
 struct FComponentHeader
 {
 	mutable uint8* Components;
@@ -367,7 +408,7 @@ struct FComponentHeader
 
 private:
 
-	uint64 SerialNumber;
+	mutable uint64 SerialNumber;
 
 public:
 
@@ -403,15 +444,58 @@ public:
 		return Components + Sizeof*Offset;
 	}
 
-	void PostWriteComponents(uint64 InSystemSerial)
+	void PostWriteComponents(FEntityAllocationWriteContext InWriteContext) const
 	{
-		SerialNumber = FMath::Max(SerialNumber, InSystemSerial);
+		SerialNumber = FMath::Max(SerialNumber, InWriteContext.GetSystemSerial());
 	}
 
 	bool HasBeenWrittenToSince(uint64 InSystemSerial) const
 	{
 		return SerialNumber > InSystemSerial;
 	}
+};
+
+
+/**
+ * Moveable scoped read-lock type for component headers
+ */
+struct FScopedHeaderReadLock
+{
+	FScopedHeaderReadLock();
+	FScopedHeaderReadLock(const FComponentHeader* InHeader);
+
+	FScopedHeaderReadLock(const FScopedHeaderReadLock& RHS) = delete;
+	void operator=(const FScopedHeaderReadLock& RHS) = delete;
+
+	FScopedHeaderReadLock(FScopedHeaderReadLock&& RHS);
+	FScopedHeaderReadLock& operator=(FScopedHeaderReadLock&& RHS);
+
+	~FScopedHeaderReadLock();
+
+private:
+	const FComponentHeader* Header;
+};
+
+
+/**
+ * Moveable scoped write-lock type for component headers
+ */
+struct FScopedHeaderWriteLock
+{
+	FScopedHeaderWriteLock();
+	FScopedHeaderWriteLock(const FComponentHeader* InHeader, FEntityAllocationWriteContext InWriteContext);
+
+	FScopedHeaderWriteLock(const FScopedHeaderWriteLock& RHS) = delete;
+	void operator=(const FScopedHeaderWriteLock& RHS) = delete;
+
+	FScopedHeaderWriteLock(FScopedHeaderWriteLock&& RHS);
+	FScopedHeaderWriteLock& operator=(FScopedHeaderWriteLock&& RHS);
+
+	~FScopedHeaderWriteLock();
+
+private:
+	const FComponentHeader* Header;
+	FEntityAllocationWriteContext WriteContext;
 };
 
 
@@ -585,18 +669,18 @@ struct FEntityAllocation
 	/**
 	 * Called when this allocation has been modified. Will invalidate any cached data based of this allocation's serial number
 	 */
-	void PostModifyStructureExcludingHeaders(uint64 InSystemSerial)
+	void PostModifyStructureExcludingHeaders(FEntityAllocationWriteContext InWriteContext)
 	{
-		SerialNumber = FMath::Max(SerialNumber, InSystemSerial);
+		SerialNumber = FMath::Max(SerialNumber, InWriteContext.GetSystemSerial());
 	}
 
 
-	void PostModifyStructure(uint64 InSystemSerial)
+	void PostModifyStructure(FEntityAllocationWriteContext InWriteContext)
 	{
-		SerialNumber = FMath::Max(SerialNumber, InSystemSerial);
+		SerialNumber = FMath::Max(SerialNumber, InWriteContext.GetSystemSerial());
 		for (FComponentHeader& Header : GetComponentHeaders())
 		{
-			Header.PostWriteComponents(InSystemSerial);
+			Header.PostWriteComponents(InWriteContext);
 		}
 	}
 
@@ -642,6 +726,72 @@ struct FEntityAllocation
 	int32 GetSlack() const
 	{
 		return int32(Capacity) - int32(Size);
+	}
+
+	/**
+	 * Read type-erased component data for the specified component type
+	 */
+	UE_NODISCARD MOVIESCENE_API TComponentLock<FReadErased> ReadComponentsErased(FComponentTypeID ComponentType) const;
+
+	/**
+	 * Write type-erased component data for the specified component type
+	 */
+	UE_NODISCARD MOVIESCENE_API TComponentLock<FWriteErased> WriteComponentsErased(FComponentTypeID ComponentType, FEntityAllocationWriteContext InWriteContext) const;
+
+	/**
+	 * Attempt to read type-erased component data for the specified component type
+	 */
+	UE_NODISCARD MOVIESCENE_API TComponentLock<FReadErasedOptional> TryReadComponentsErased(FComponentTypeID ComponentType) const;
+
+	/**
+	 * Attempt to write type-erased component data for the specified component type
+	 */
+	UE_NODISCARD MOVIESCENE_API TComponentLock<FWriteErasedOptional> TryWriteComponentsErased(FComponentTypeID ComponentType, FEntityAllocationWriteContext InWriteContext) const;
+
+	/**
+	 * Read typed component data for the specified component type
+	 */
+	template<typename T>
+	UE_NODISCARD TComponentLock<TRead<T>> ReadComponents(TComponentTypeID<T> ComponentType) const
+	{
+		const FComponentHeader& Header = GetComponentHeaderChecked(ComponentType);
+		return TComponentLock<TRead<T>>(&Header);
+	}
+
+	/**
+	 * Write typed component data for the specified component type
+	 */
+	template<typename T>
+	UE_NODISCARD TComponentLock<TReadOptional<T>> TryReadComponents(TComponentTypeID<T> ComponentType) const
+	{
+		if (const FComponentHeader* Header = FindComponentHeader(ComponentType))
+		{
+			return TComponentLock<TReadOptional<T>>(Header);
+		}
+		return TComponentLock<TReadOptional<T>>();
+	}
+
+	/**
+	 * Write typed component data for the specified component type
+	 */
+	template<typename T>
+	UE_NODISCARD TComponentLock<TWrite<T>> WriteComponents(TComponentTypeID<T> ComponentType, FEntityAllocationWriteContext InWriteContext) const
+	{
+		const FComponentHeader& Header = GetComponentHeaderChecked(ComponentType);
+		return TComponentLock<TWrite<T>>(&Header, InWriteContext);
+	}
+
+	/**
+	 * Attempt to write typed component data for the specified component type
+	 */
+	template<typename T>
+	UE_NODISCARD TComponentLock<TWriteOptional<T>> TryWriteComponents(TComponentTypeID<T> ComponentType, FEntityAllocationWriteContext InWriteContext) const
+	{
+		if (const FComponentHeader* Header = FindComponentHeader(ComponentType))
+		{
+			return TComponentLock<TWriteOptional<T>>(Header, InWriteContext);
+		}
+		return TComponentLock<TWriteOptional<T>>();
 	}
 
 private:
@@ -694,6 +844,81 @@ struct FEntityInfo
 	FEntityDataLocation Data;
 	FMovieSceneEntityID EntityID;
 };
+
+inline FScopedHeaderReadLock::FScopedHeaderReadLock()
+	: Header(nullptr)
+{}
+inline FScopedHeaderReadLock::FScopedHeaderReadLock(const FComponentHeader* InHeader)
+	: Header(InHeader)
+{
+	InHeader->ReadWriteLock.ReadLock();
+}
+inline FScopedHeaderReadLock::FScopedHeaderReadLock(FScopedHeaderReadLock&& RHS)
+	: Header(RHS.Header)
+{
+	RHS.Header = nullptr;
+}
+inline FScopedHeaderReadLock& FScopedHeaderReadLock::operator=(FScopedHeaderReadLock&& RHS)
+{
+	if (Header)
+	{
+		Header->ReadWriteLock.ReadUnlock();
+	}
+
+	Header = RHS.Header;
+	RHS.Header = nullptr;
+	return *this;
+}
+
+inline FScopedHeaderReadLock::~FScopedHeaderReadLock()
+{
+	if (Header)
+	{
+		Header->ReadWriteLock.ReadUnlock();
+	}
+}
+
+inline FScopedHeaderWriteLock::FScopedHeaderWriteLock()
+	: Header(nullptr)
+	, WriteContext(FEntityAllocationWriteContext::NewAllocation())
+{}
+
+inline FScopedHeaderWriteLock::FScopedHeaderWriteLock(const FComponentHeader* InHeader, FEntityAllocationWriteContext InWriteContext)
+	: Header(InHeader)
+	, WriteContext(InWriteContext)
+{
+	InHeader->ReadWriteLock.WriteLock();
+}
+
+inline FScopedHeaderWriteLock::FScopedHeaderWriteLock(FScopedHeaderWriteLock&& RHS)
+	: Header(RHS.Header)
+	, WriteContext(RHS.WriteContext)
+{
+	RHS.Header = nullptr;
+}
+inline FScopedHeaderWriteLock& FScopedHeaderWriteLock::operator=(FScopedHeaderWriteLock&& RHS)
+{
+	if (Header)
+	{
+		Header->PostWriteComponents(WriteContext);
+		Header->ReadWriteLock.WriteUnlock();
+	}
+
+	Header = RHS.Header;
+	WriteContext = RHS.WriteContext;
+
+	RHS.Header = nullptr;
+	return *this;
+}
+inline FScopedHeaderWriteLock::~FScopedHeaderWriteLock()
+{
+	if (Header)
+	{
+		Header->PostWriteComponents(WriteContext);
+		Header->ReadWriteLock.WriteUnlock();
+	}
+}
+
 
 } // namespace MovieScene
 } // namespace UE

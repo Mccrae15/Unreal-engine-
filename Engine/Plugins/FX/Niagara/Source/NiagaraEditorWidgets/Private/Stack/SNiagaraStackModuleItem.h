@@ -6,6 +6,7 @@
 #include "Styling/SlateTypes.h"
 #include "Layout/Visibility.h"
 #include "Types/SlateEnums.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 
 class UNiagaraStackModuleItem;
 class UNiagaraStackViewModel;
@@ -39,9 +40,15 @@ private:
 
 	EVisibility GetRefreshVisibility() const;
 
+	EVisibility GetVersionSelectionMenuVisibility() const;
+	bool GetVersionSelectionMenuEnabled() const;
+	FText GetVersionSelectionMenuTooltip() const;
+
 	FReply ScratchButtonPressed() const;
 	
 	TSharedRef<SWidget> RaiseActionMenuClicked();
+	
+	TSharedRef<SWidget> GetVersionSelectorDropdownMenu();
 
 	bool CanRaiseActionMenu() const;
 
@@ -51,9 +58,9 @@ private:
 
 	FReply OnModuleItemDrop(TSharedPtr<class FDragDropOperation> DragDropOperation);
 
-	bool OnModuleItemAllowDrop(TSharedPtr<class FDragDropOperation> DragDropOperation);
+	FSlateColor GetVersionSelectorColor() const;
 
-	void CollectParameterActions(FGraphActionListBuilderBase& ModuleActions);
+	bool OnModuleItemAllowDrop(TSharedPtr<class FDragDropOperation> DragDropOperation);
 
 	void CollectModuleActions(FGraphActionListBuilderBase& ModuleActions);
 
@@ -63,10 +70,16 @@ private:
 
 	void SetLibraryOnly(bool bInLibraryOnly);
 
+	void SwitchToVersion(FNiagaraAssetVersion Version);
+
 private:
 	UNiagaraStackModuleItem* ModuleItem;
 
 	TSharedPtr<SComboButton> AddButton;
 
+	TSharedPtr<SMultiLineEditableTextBox> ShortDescriptionTextBox;
+	TSharedPtr<SMultiLineEditableTextBox> DescriptionTextBox;
+
 	static bool bLibraryOnly;
+
 };

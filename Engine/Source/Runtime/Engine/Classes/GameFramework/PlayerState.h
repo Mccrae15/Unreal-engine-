@@ -257,7 +257,7 @@ public:
 	 * Associate an online unique id with this player
 	 * @param InUniqueId the unique id associated with this player
 	 */
-	virtual void SetUniqueId(const TSharedPtr<const FUniqueNetId>& InUniqueId);
+	virtual void SetUniqueId(const FUniqueNetIdPtr& InUniqueId);
 
 	/** 
 	 * Register a player with the online subsystem
@@ -364,6 +364,7 @@ public:
 	void SetIsSpectator(const bool bNewSpectator);
 
 	/** Gets the literal value of bOnlySpectator. */
+	UFUNCTION(BlueprintCallable, Category = "PlayerState")
 	bool IsOnlyASpectator() const
 	{
 		return bOnlySpectator;

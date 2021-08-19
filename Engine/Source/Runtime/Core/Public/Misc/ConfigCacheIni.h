@@ -26,6 +26,18 @@ CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogConfig, Log, All);
 // Server builds should be tweakable even in Shipping
 #define ALLOW_INI_OVERRIDE_FROM_COMMANDLINE			(UE_SERVER || !(UE_BUILD_SHIPPING))
 #define CONFIG_REMEMBER_ACCESS_PATTERN (WITH_EDITOR || 0)
+
+namespace UE
+{
+namespace ConfigCacheIni
+{
+namespace Private
+{
+struct FAccessor;
+}
+}
+}
+
 struct FConfigValue
 {
 public:
@@ -197,12 +209,41 @@ private:
 	/** Internal version of ExpandValue that expands SavedValue into ExpandedValue, or produces an empty ExpandedValue if no expansion occurred. */
 	CORE_API void ExpandValueInternal();
 
+	/** Gets the SavedValue without marking it as having been accessed for e.g. writing out to a ConfigFile to disk */
+	friend struct UE::ConfigCacheIni::Private::FAccessor;
+	const FString& GetSavedValueForWriting() const
+	{
+		return SavedValue;
+	};
+
 	FString SavedValue;
 	FString ExpandedValue;
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
 	mutable bool bRead; // has this value been read since the config system started
 #endif
 };
+
+namespace UE
+{
+namespace ConfigCacheIni
+{
+namespace Private
+{
+/** An accessor class to access functions that should be restricted only to FConfigFileCache Internal use */
+struct FAccessor
+{
+private:
+	friend class ::FConfigCacheIni;
+	friend class ::FConfigFile;
+
+	static const FString& GetSavedValueForWriting(const FConfigValue& ConfigValue)
+	{
+		return ConfigValue.GetSavedValueForWriting();
+	}
+};
+}
+}
+}
 
 typedef TMultiMap<FName,FConfigValue> FConfigSectionMap;
 
@@ -382,11 +423,41 @@ public:
 
 	CORE_API bool GetString( const TCHAR* Section, const TCHAR* Key, FString& Value ) const;
 	CORE_API bool GetText( const TCHAR* Section, const TCHAR* Key, FText& Value ) const;
-	CORE_API bool GetInt(const TCHAR* Section, const TCHAR* Key, int& Value) const;
+	CORE_API bool GetInt(const TCHAR* Section, const TCHAR* Key, int32& Value) const;
 	CORE_API bool GetFloat(const TCHAR* Section, const TCHAR* Key, float& Value) const;
 	CORE_API bool GetInt64( const TCHAR* Section, const TCHAR* Key, int64& Value ) const;
 	CORE_API bool GetBool( const TCHAR* Section, const TCHAR* Key, bool& Value ) const;
 	CORE_API int32 GetArray(const TCHAR* Section, const TCHAR* Key, TArray<FString>& Value) const;
+
+	/* Generic versions for use with templates */
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, FString& Value) const
+	{
+		return GetString(Section, Key, Value);
+	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, FText& Value) const
+	{
+		return GetText(Section, Key, Value);
+	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, int32& Value) const
+	{
+		return GetInt(Section, Key, Value);
+	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, float& Value) const
+	{
+		return GetFloat(Section, Key, Value);
+	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, int64& Value) const
+	{
+		return GetInt64(Section, Key, Value);
+	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, bool& Value) const
+	{
+		return GetBool(Section, Key, Value);
+	}
+	int32 GetValue(const TCHAR* Section, const TCHAR* Key, TArray<FString>& Value) const
+	{
+		return GetArray(Section, Key, Value);
+	}
 
 	CORE_API void SetString( const TCHAR* Section, const TCHAR* Key, const TCHAR* Value );
 	CORE_API void SetText( const TCHAR* Section, const TCHAR* Key, const FText& Value );
@@ -445,7 +516,7 @@ public:
 	CORE_API static void OverrideFromCommandline(FConfigFile* File, const FString& Filename);
 
 	/** Checks the command line for any overridden config file settings */
-	CORE_API static void OverrideFileFromCommandline(FString& Filename);
+	CORE_API static bool OverrideFileFromCommandline(FString& Filename);
 
 	/** Appends a new INI file to the SourceIniHierarchy and combines it */
 	CORE_API void AddDynamicLayerToHeirarchy(const FString& Filename);
@@ -580,6 +651,13 @@ public:
 	/** Finds Config file based on the final, generated ini name */
 	FConfigFile* FindConfigFile( const FString& Filename );
 	FConfigFile* Find( const FString& InFilename, bool CreateIfNotFound );
+
+	/**
+	 * Reports whether an FConfigFile* is pointing to a config file inside of this
+	 * Used for downstream functions to check whether a config file they were passed came from this ConfigCacheIni or from 
+	 * a different source such as LoadLocalIniFile
+	 */
+	bool ContainsConfigFile(const FConfigFile* ConfigFile) const;
 
 	/** Finds Config file that matches the base name such as "Engine" */
 	FConfigFile* FindConfigFileWithBaseName(FName BaseName);
@@ -836,9 +914,6 @@ public:
 		const FString&	Filename
 	);
 
-	// Static allocator.
-	static FConfigCacheIni* Factory();
-
 	// Static helper functions
 
 	/**
@@ -876,7 +951,7 @@ public:
 	 * @param GeneratedConfigDir The location where generated config files are made.
 	 * @return true if the final ini was created successfully.
 	 */
-	static bool LoadGlobalIniFile(FString& FinalIniFilename, const TCHAR* BaseIniName, const TCHAR* Platform=NULL, bool bForceReload=false, bool bRequireDefaultIni=false, bool bAllowGeneratedIniWhenCooked=true, const TCHAR* GeneratedConfigDir = *FPaths::GeneratedConfigDir());
+	static bool LoadGlobalIniFile(FString& FinalIniFilename, const TCHAR* BaseIniName, const TCHAR* Platform = NULL, bool bForceReload = false, bool bRequireDefaultIni = false, bool bAllowGeneratedIniWhenCooked = true, bool bAllowRemoteConfig = true, const TCHAR* GeneratedConfigDir = *FPaths::GeneratedConfigDir(), FConfigCacheIni* ConfigSystem=GConfig);
 
 	/**
 	 * Load an ini file directly into an FConfigFile, and nothing is written to GConfig or disk. 
@@ -917,18 +992,46 @@ public:
 	 * Works even if the variable is registered after the ini file was loaded.
 	 */
 	static void LoadConsoleVariablesFromINI();
-	
-	/**
-	 * Less than ideal solution for allowing user settings to be saved on all platforms
-	 */
-	static FString GetGameUserSettingsDir();
 
 	/**
 	 * Save the current config cache state into a file for bootstrapping other processes.
 	 */
 	void SaveCurrentStateForBootstrap(const TCHAR* Filename);
 
-	friend FArchive& operator<<(FArchive& Ar, FConfigCacheIni& ConfigCacheIni);
+	void Serialize(FArchive& Ar);
+
+
+	struct FConfigNamesForAllPlatforms
+	{
+		FString EngineIni;
+		FString GameIni;
+		FString InputIni;
+		FString ScalabilityIni;
+		FString HardwareIni;
+		FString RuntimeOptionsIni;
+		FString InstallBundleIni;
+		FString DeviceProfilesIni;
+		FString GameUserSettingsIni;
+		FString GameplayTagsIni;
+
+		friend FArchive& operator<<(FArchive& Ar, FConfigNamesForAllPlatforms& Names)
+		{
+			return Ar << Names.EngineIni << Names.GameIni << Names.InputIni << Names.ScalabilityIni << Names.HardwareIni <<
+				Names.RuntimeOptionsIni << Names.InstallBundleIni << Names.DeviceProfilesIni << Names.GameUserSettingsIni <<
+				Names.GameplayTagsIni;
+		}
+	};
+
+	/**
+	 * Create a temporary Config system for a target platform, and save it to a file
+	 */
+	void InitializePlatformConfigSystem(const TCHAR* PlatformName, FConfigNamesForAllPlatforms& FinalConfigFilenames);
+
+	/**
+	 * Create GConfig from a saved file
+	 */
+	static bool CreateGConfigFromSaved(const TCHAR* Filename);
+
 private:
 	/** Serialize a bootstrapping state into or from an archive */
 	void SerializeStateForBootstrap_Impl(FArchive& Ar);
@@ -942,8 +1045,6 @@ private:
 	/** The type of the cache (basically, do we call Flush in the destructor) */
 	EConfigCacheType Type;
 };
-
-FArchive& operator<<(FArchive& Ar, FConfigCacheIni& ConfigCacheIni);
 
 UE_DEPRECATED(4.24, "This functionality to generate Scalability@Level section string has been moved to Scalability.cpp. Explictly construct section you need manually.")
 CORE_API void ApplyCVarSettingsGroupFromIni(const TCHAR* InSectionBaseName, int32 InGroupNumber, const TCHAR* InIniFilename, uint32 SetBy);

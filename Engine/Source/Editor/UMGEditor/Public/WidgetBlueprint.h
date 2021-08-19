@@ -149,7 +149,7 @@ struct UMGEDITOR_API FDelegateEditorBinding
 	FGuid MemberGuid;
 
 	UPROPERTY()
-	EBindingKind Kind;
+	EBindingKind Kind = EBindingKind::Property;
 
 	bool operator==( const FDelegateEditorBinding& Other ) const
 	{
@@ -175,7 +175,7 @@ struct FWidgetAnimation_DEPRECATED
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	UMovieScene* MovieScene;
+	UMovieScene* MovieScene = nullptr;
 
 	UPROPERTY()
 	TArray<FWidgetAnimationBinding> AnimationBindings;

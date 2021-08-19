@@ -17,9 +17,9 @@
 	"Modules" :
 	[
 		{
-			"Name" : "LensDistortion",
-			"Type" : "Runtime",
-			"LoadingPhase" : "PostConfigInit"
+			"Name": "LensDistortion",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
 		}
 	]
 }

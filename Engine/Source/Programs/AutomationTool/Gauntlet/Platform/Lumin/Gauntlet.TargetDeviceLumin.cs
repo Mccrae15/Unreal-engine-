@@ -327,7 +327,7 @@ namespace Gauntlet
 			return Platform == UnrealTargetPlatform.Lumin;
 		}
 
-		public ITargetDevice CreateDevice(string InRef, string InParam)
+		public ITargetDevice CreateDevice(string InRef, string InCachePath, string InParam = null)
 		{
 			LuminDeviceData DeviceData = null;
 
@@ -336,7 +336,7 @@ namespace Gauntlet
 				DeviceData = fastJSON.JSON.Instance.ToObject<LuminDeviceData>(InParam);
 			}
 
-			return new TargetDeviceLumin(InRef, DeviceData);
+			return new TargetDeviceLumin(InRef, DeviceData, InCachePath);
 		}
 	}
 
@@ -424,14 +424,15 @@ namespace Gauntlet
         }
         public bool IsConnected { get	{ return IsAvailable; }	}
 
-		protected bool IsExistingDevice = false;		
+		protected bool IsExistingDevice = false;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="InReferenceName"></param>
-		/// <param name="InRemoveOnDestruction"></param>
-		public TargetDeviceLumin(string InDeviceName = "", LuminDeviceData DeviceData = null)
+		/// <param name="InDeviceName"></param>
+		/// <param name="DeviceData"></param>
+		/// <param name="InCachePath"></param>
+		public TargetDeviceLumin(string InDeviceName = "", LuminDeviceData DeviceData = null, string InCachePath = null)
 		{
 			DeviceName = InDeviceName;
 			
@@ -502,7 +503,7 @@ namespace Gauntlet
 			Name = DeviceName.Replace(":", "_");
 
 			// Path we use for artifacts, we'll create it later when we need it
-			LocalCachePath = Path.Combine(Globals.TempDir, "LuminDevice_" + Name);
+			LocalCachePath = InCachePath ?? Path.Combine(Globals.TempDir, "LuminDevice_" + Name);
 
 			ConnectedDevices = GetAllConnectedDevices();
 
@@ -923,6 +924,18 @@ namespace Gauntlet
 				Log.Warning("Platform directory mappings have not been populated for this platform! This should be done within InstallApplication()");
 			}
 			return LocalDirectoryMappings;
+		}
+
+		public bool IsOSOutOfDate()
+		{
+			//TODO: not yet implemented
+			return false;
+		}
+
+		public bool UpdateOS()
+		{
+			//TODO: not yet implemented
+			return true;
 		}
 	}
 }

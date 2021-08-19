@@ -31,11 +31,11 @@ struct FInterpolationParameter
 
 	/** Interpolation Time for input, when it gets input, it will use this time to interpolate to target, used for smoother interpolation. */
 	UPROPERTY(EditAnywhere, Category=Parameter)
-	float InterpolationTime;
+	float InterpolationTime = 0.f;
 
 	/** Type of interpolation used for filtering the input value to decide how to get to target. */
 	UPROPERTY(EditAnywhere, Category=Parameter)
-	TEnumAsByte<EFilterInterpolationType> InterpolationType;
+	TEnumAsByte<EFilterInterpolationType> InterpolationType = EFilterInterpolationType::BSIT_Average;
 };
 
 USTRUCT()
@@ -222,7 +222,7 @@ namespace ENotifyTriggerMode
 /**
  * Allows multiple animations to be blended between based on input parameters
  */
-UCLASS(config=Engine, hidecategories=Object, MinimalAPI, BlueprintType)
+UCLASS(abstract, config=Engine, hidecategories=Object, MinimalAPI, BlueprintType)
 class UBlendSpaceBase : public UAnimationAsset, public IInterpolationIndexProvider
 {
 	GENERATED_UCLASS_BODY()

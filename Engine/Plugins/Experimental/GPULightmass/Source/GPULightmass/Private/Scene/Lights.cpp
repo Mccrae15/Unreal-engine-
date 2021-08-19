@@ -1,6 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Lights.h"
+#include "RenderGraphBuilder.h"
+#include "ReflectionEnvironment.h"
+
+RENDERER_API void PrepareSkyTexture_Internal(
+	FRDGBuilder& GraphBuilder,
+	FReflectionUniformParameters& Parameters,
+	uint32 Size,
+	FLinearColor SkyColor,
+	bool UseMISCompensation,
+
+	// Out
+	FRDGTextureRef& SkylightTexture,
+	FRDGTextureRef& SkylightPdf,
+	float& SkylightInvResolution,
+	int32& SkylightMipCount
+);
 
 namespace GPULightmass
 {
@@ -41,6 +57,7 @@ FDirectionalLightRenderState::FDirectionalLightRenderState(UDirectionalLightComp
 	Color = DirectionalLightComponent->GetColoredLightBrightness();
 	Direction = DirectionalLightComponent->GetDirection();
 	LightSourceAngle = DirectionalLightComponent->LightSourceAngle;
+	LightSourceSoftAngle = DirectionalLightComponent->LightSourceSoftAngle;
 	ShadowMapChannel = DirectionalLightComponent->PreviewShadowMapChannel;
 }
 
@@ -69,9 +86,19 @@ FPointLightRenderState::FPointLightRenderState(UPointLightComponent* PointLightC
 	bStationary = bCastStationaryShadows;
 	Color = PointLightComponent->GetColoredLightBrightness();
 	Position = PointLightComponent->GetLightPosition();
+	Direction = PointLightComponent->GetDirection();
+	{
+		FMatrix LightToWorld = PointLightComponent->GetComponentTransform().ToMatrixNoScale();
+		Tangent = FVector(LightToWorld.M[2][0], LightToWorld.M[2][1], LightToWorld.M[2][2]);
+	}
 	AttenuationRadius = PointLightComponent->AttenuationRadius;
 	SourceRadius = PointLightComponent->SourceRadius;
+	SourceSoftRadius = PointLightComponent->SoftSourceRadius;
+	SourceLength = PointLightComponent->SourceLength;
 	ShadowMapChannel = PointLightComponent->PreviewShadowMapChannel;
+	FalloffExponent = PointLightComponent->LightFalloffExponent;
+	IsInverseSquared = PointLightComponent->bUseInverseSquaredFalloff;
+	IESTexture = PointLightComponent->IESTexture ? PointLightComponent->IESTexture->GetResource() : nullptr;
 }
 
 FSpotLightBuildInfo::FSpotLightBuildInfo(USpotLightComponent* SpotLightComponent)
@@ -141,7 +168,12 @@ FSpotLightRenderState::FSpotLightRenderState(USpotLightComponent* SpotLightCompo
 	}
 	AttenuationRadius = SpotLightComponent->AttenuationRadius;
 	SourceRadius = SpotLightComponent->SourceRadius;
+	SourceSoftRadius = SpotLightComponent->SoftSourceRadius;
+	SourceLength = SpotLightComponent->SourceLength;
 	ShadowMapChannel = SpotLightComponent->PreviewShadowMapChannel;
+	FalloffExponent = SpotLightComponent->LightFalloffExponent;
+	IsInverseSquared = SpotLightComponent->bUseInverseSquaredFalloff;
+	IESTexture = SpotLightComponent->IESTexture ? SpotLightComponent->IESTexture->GetResource() : nullptr;
 }
 
 FRectLightBuildInfo::FRectLightBuildInfo(URectLightComponent* RectLightComponent)
@@ -180,6 +212,7 @@ FRectLightRenderState::FRectLightRenderState(URectLightComponent* RectLightCompo
 	BarnDoorLength = FMath::Max(0.1f, RectLightComponent->BarnDoorLength);
 	AttenuationRadius = RectLightComponent->AttenuationRadius;
 	ShadowMapChannel = RectLightComponent->PreviewShadowMapChannel;
+	IESTexture = RectLightComponent->IESTexture ? RectLightComponent->IESTexture->GetResource() : nullptr;
 }
 
 FLightShaderParameters FDirectionalLightRenderState::GetLightShaderParameters() const
@@ -253,6 +286,45 @@ FLightShaderParameters FRectLightRenderState::GetLightShaderParameters() const
 	LightParameters.RectLightBarnLength = BarnDoorLength;
 
 	return LightParameters;
+}
+
+void FSkyLightRenderState::PrepareSkyTexture(FRHICommandListImmediate& RHICmdList)
+{
+	FRDGBuilder GraphBuilder(RHICmdList);
+
+	FRDGTextureRef SkylightTexture;
+	FRDGTextureRef SkylightPdf;
+
+	FReflectionUniformParameters Parameters;
+	Parameters.SkyLightCubemap = ProcessedTexture;
+	Parameters.SkyLightCubemapSampler = ProcessedTextureSampler;
+	Parameters.SkyLightBlendDestinationCubemap = ProcessedTexture;
+	Parameters.SkyLightBlendDestinationCubemapSampler = ProcessedTextureSampler;
+	Parameters.SkyLightParameters = FVector4(1, 1, 0, 0);
+
+	FLinearColor SkyColor = Color;
+	// since we are resampled into an octahedral layout, we multiply the cubemap resolution by 2 to get roughly the same number of texels
+	uint32 Size = FMath::RoundUpToPowerOfTwo(2 * TextureDimensions.X);
+
+	const bool UseMISCompensation = true;
+
+	PrepareSkyTexture_Internal(
+		GraphBuilder,
+		Parameters,
+		Size,
+		SkyColor,
+		UseMISCompensation,
+		// Out
+		SkylightTexture,
+		SkylightPdf,
+		SkylightInvResolution,
+		SkylightMipCount
+	);
+
+	GraphBuilder.QueueTextureExtraction(SkylightTexture, &PathTracingSkylightTexture);
+	GraphBuilder.QueueTextureExtraction(SkylightPdf, &PathTracingSkylightPdf);
+
+	GraphBuilder.Execute();
 }
 
 }

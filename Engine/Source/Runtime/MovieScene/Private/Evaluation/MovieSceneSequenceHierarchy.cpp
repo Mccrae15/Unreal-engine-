@@ -5,6 +5,7 @@
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
 #include "MovieSceneTimeHelpers.h"
+#include "UObject/ReleaseObjectVersion.h"
 
 FMovieSceneSubSequenceData::FMovieSceneSubSequenceData()
 	: Sequence(nullptr)
@@ -15,6 +16,11 @@ FMovieSceneSubSequenceData::FMovieSceneSubSequenceData()
 FMovieSceneSubSequenceData::FMovieSceneSubSequenceData(const UMovieSceneSubSection& InSubSection)
 	: Sequence(InSubSection.GetSequence())
 	, DeterministicSequenceID(InSubSection.GetSequenceID())
+	, ParentPlayRange(InSubSection.GetTrueRange())
+	, ParentStartFrameOffset(InSubSection.Parameters.StartFrameOffset)
+	, ParentEndFrameOffset(InSubSection.Parameters.EndFrameOffset)
+	, ParentFirstLoopStartFrameOffset(InSubSection.Parameters.FirstLoopStartFrameOffset)
+	, bCanLoop(InSubSection.Parameters.bCanLoop)
 	, HierarchicalBias(InSubSection.Parameters.HierarchicalBias)
 	, bHasHierarchicalEasing(false)
 #if WITH_EDITORONLY_DATA
@@ -94,6 +100,17 @@ bool FMovieSceneSubSequenceData::IsDirty(const UMovieSceneSubSection& InSubSecti
 	return InSubSection.GetSignature() != SubSectionSignature || InSubSection.OuterToInnerTransform() != OuterToInnerTransform;
 }
 
+FMovieSceneSectionParameters FMovieSceneSubSequenceData::ToSubSectionParameters() const
+{
+	FMovieSceneSectionParameters Parameters;
+	Parameters.StartFrameOffset = ParentStartFrameOffset;
+	Parameters.bCanLoop = bCanLoop;
+	Parameters.EndFrameOffset = ParentEndFrameOffset;
+	Parameters.FirstLoopStartFrameOffset = ParentFirstLoopStartFrameOffset;
+	Parameters.TimeScale = OuterToInnerTransform.GetTimeScale();
+	return Parameters;
+}
+
 void FMovieSceneSequenceHierarchy::Add(const FMovieSceneSubSequenceData& Data, FMovieSceneSequenceIDRef ThisSequenceID, FMovieSceneSequenceIDRef ParentID)
 {
 	check(ParentID != MovieSceneSequenceID::Invalid);
@@ -162,3 +179,31 @@ void FMovieSceneSequenceHierarchy::Remove(TArrayView<const FMovieSceneSequenceID
 		IDsToRemove.RemoveAt(0, NumRemaining);
 	}
 }
+
+void FMovieSceneSequenceHierarchy::AddRange(const TRange<FFrameNumber>& RootSpaceRange, FMovieSceneSequenceIDRef InSequenceID, ESectionEvaluationFlags InFlags, FMovieSceneWarpCounter RootToSequenceWarpCounter)
+{
+	Tree.Data.AddUnique(RootSpaceRange, FMovieSceneSubSequenceTreeEntry{ InSequenceID, InFlags, RootToSequenceWarpCounter });
+}
+
+FArchive& operator<<(FArchive& Ar, FMovieSceneSubSequenceTreeEntry& InOutEntry)
+{
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+
+	Ar << InOutEntry.SequenceID << InOutEntry.Flags;
+
+	if (Ar.CustomVer(FReleaseObjectVersion::GUID) >= FReleaseObjectVersion::AddedSubSequenceEntryWarpCounter)
+	{
+		FMovieSceneWarpCounter::StaticStruct()->SerializeTaggedProperties(
+				Ar, (uint8*)&InOutEntry.RootToSequenceWarpCounter, FMovieSceneWarpCounter::StaticStruct(), nullptr);
+	}
+
+	return Ar;
+}
+
+bool operator==(FMovieSceneSubSequenceTreeEntry A, FMovieSceneSubSequenceTreeEntry B)
+{
+	return A.SequenceID == B.SequenceID 
+		&& A.Flags == B.Flags
+		&& A.RootToSequenceWarpCounter == B.RootToSequenceWarpCounter;
+}
+

@@ -201,7 +201,7 @@ namespace WindowsMixedReality
 		virtual void PreRenderViewFamily_RenderThread(
 			FRHICommandListImmediate& RHICmdList,
 			FSceneViewFamily& InViewFamily) override { }
-		virtual bool IsActiveThisFrame(class FViewport* InViewport) const;
+		virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const;
 
 		void CreateHMDDepthTexture(FRHICommandListImmediate& RHICmdList);
 
@@ -363,7 +363,7 @@ namespace WindowsMixedReality
 		HMDTrackingStatus GetControllerTrackingStatus(HMDHand hand);
 		bool SupportsHandTracking();
 		bool SupportsHandedness();
-		bool GetControllerOrientationAndPosition(HMDHand hand, FRotator & OutOrientation, FVector & OutPosition);
+		bool GetControllerOrientationAndPosition(HMDHand hand, FRotator & OutOrientation, FVector & OutPosition, float WorldScale = 1);
 		bool GetHandJointOrientationAndPosition(HMDHand hand, HMDHandJoint joint, FRotator& OutOrientation, FVector& OutPosition, float& OutRadius);
 		bool PollInput();
 		bool PollHandTracking();

@@ -476,6 +476,8 @@ RENDERCORE_API bool MobileSupportsGPUScene(const FStaticShaderPlatform Platform)
 
 RENDERCORE_API bool IsMobileDeferredShadingEnabled(const FStaticShaderPlatform Platform);
 
+RENDERCORE_API bool MobileRequiresSceneDepthAux(const FStaticShaderPlatform Platform);
+
 RENDERCORE_API bool SupportsTextureCubeArray(ERHIFeatureLevel::Type FeatureLevel);
 
 RENDERCORE_API bool GPUSceneUseTexture2D(const FStaticShaderPlatform Platform);
@@ -483,6 +485,40 @@ RENDERCORE_API bool GPUSceneUseTexture2D(const FStaticShaderPlatform Platform);
 RENDERCORE_API bool MaskedInEarlyPass(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool AllowPixelDepthOffset(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool IsMobileDistanceFieldEnabled(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool IsMobileDistanceFieldShadowingEnabled(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool UseMobileAmbientOcclusion(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool SupportsGen4TAA(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool PlatformSupportsVelocityRendering(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool IsUsingDBuffers(const FStaticShaderPlatform Platform);
+
+
+/* Simple cache for RendererSettings ini lookup per shader platform. */
+template<typename Type>
+struct RENDERCORE_API FShaderPlatformCachedIniValue
+{
+	FShaderPlatformCachedIniValue(const TCHAR* InSection, const TCHAR* InKey)
+		: Section(InSection)
+		, Key(InKey)
+		, bTestedIni(false)
+		, CVar(nullptr)
+	{}
+
+	Type Get(EShaderPlatform ShaderPlatform);
+
+private:
+	const TCHAR* Section;
+	const TCHAR* Key;
+	bool bTestedIni;
+	IConsoleVariable* CVar;
+	TMap<EShaderPlatform, Type> CachedValues;
+};
 
 /** Returns if ForwardShading is enabled. Only valid for the current platform (otherwise call ITargetPlatform::UsesForwardShading()). */
 inline bool IsForwardShadingEnabled(const FStaticShaderPlatform Platform)
@@ -502,14 +538,14 @@ inline bool IsAnyForwardShadingEnabled(const FStaticShaderPlatform Platform)
 /** Returns if the GBuffer is used. Only valid for the current platform. */
 inline bool IsUsingGBuffers(const FStaticShaderPlatform Platform)
 {
-	return !IsAnyForwardShadingEnabled(Platform);
-}
-
-/** Returns whether DBuffer decals are enabled for a given shader platform */
-inline bool IsUsingDBuffers(const FStaticShaderPlatform Platform)
-{
-	extern RENDERCORE_API uint64 GDBufferPlatformMask;
-	return !!(GDBufferPlatformMask & (1ull << Platform));
+	if (IsMobilePlatform(Platform))
+	{
+		return IsMobileDeferredShadingEnabled(Platform);
+	}
+	else
+	{
+		return !IsAnyForwardShadingEnabled(Platform);
+	}
 }
 
 /** Returns whether the base pass should output to the velocity buffer is enabled for a given shader platform */
@@ -533,19 +569,6 @@ inline bool IsUsingDistanceFields(const FStaticShaderPlatform Platform)
 	return !!(GDistanceFieldsPlatformMask & (1ull << Platform));
 }
 
-inline bool IsUsingPerPixelDBufferMask(const FStaticShaderPlatform Platform)
-{
-	switch (Platform)
-	{
-	case SP_SWITCH:
-	case SP_SWITCH_FORWARD:
-		// Per-pixel DBufferMask optimization is currently only tested and supported on Switch.
-		return true;
-	default:
-		return false;
-	}
-}
-
 inline bool UseGPUScene(const FStaticShaderPlatform Platform, const FStaticFeatureLevel FeatureLevel)
 {
 	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
@@ -557,7 +580,6 @@ inline bool UseGPUScene(const FStaticShaderPlatform Platform, const FStaticFeatu
 	return FeatureLevel >= ERHIFeatureLevel::SM5 
 		//@todo - support GPU Scene management compute shaders on these platforms to get dynamic instancing speedups on the Rendering Thread and RHI Thread
 		&& !IsOpenGLPlatform(Platform)
-		&& !IsSwitchPlatform(Platform)
 		&& !IsVulkanMobileSM5Platform(Platform)
 		// we only check DDSPI for platforms that have been read in - IsValid() can go away once ALL platforms are converted over to this system
 		&& (!FDataDrivenShaderPlatformInfo::IsValid(Platform) || FDataDrivenShaderPlatformInfo::GetSupportsGPUScene(Platform));
@@ -567,6 +589,12 @@ inline bool ForceSimpleSkyDiffuse(const FStaticShaderPlatform Platform)
 {
 	extern RENDERCORE_API uint64 GSimpleSkyDiffusePlatformMask;
 	return !!(GSimpleSkyDiffusePlatformMask & (1ull << Platform));
+}
+
+inline bool VelocityEncodeDepth(const FStaticShaderPlatform Platform)
+{
+	extern RENDERCORE_API uint64 GVelocityEncodeDepthPlatformMask;
+	return !!(GVelocityEncodeDepthPlatformMask & (1ull << Platform));
 }
 
 /** Unit cube vertex buffer (VertexDeclarationFVector4) */
@@ -586,3 +614,8 @@ RENDERCORE_API void QuantizeSceneBufferSize(const FIntPoint& InBufferSize, FIntP
 *	Checks if virtual texturing enabled and supported
 */
 RENDERCORE_API bool UseVirtualTexturing(const FStaticFeatureLevel InFeatureLevel, const class ITargetPlatform* TargetPlatform = nullptr);
+
+/**
+*	Checks if virtual texturing lightmap enabled and supported
+*/
+RENDERCORE_API bool UseVirtualTextureLightmap(const FStaticFeatureLevel InFeatureLevel, const class ITargetPlatform* TargetPlatform = nullptr);

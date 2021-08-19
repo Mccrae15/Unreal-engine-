@@ -72,6 +72,14 @@ class CHAOS_API TUniformGridBase
 		return MDx * Face.Second + MMinCorner + (TVector<T, d>(1) - TVector<T, d>::AxisVector(Face.First)) * (MDx / 2);
 	}
 
+	void Reset()
+	{
+		MMinCorner = TVector<T, d>(0);
+		MMaxCorner = TVector<T, d>(0);
+		MCells = TVector<int32, d>(0);
+		MDx = TVector<T, d>(0);
+	}
+
 #ifdef PLATFORM_COMPILER_CLANG
 	// Disable optimization (-ffast-math) since its currently causing regressions.
 	//		freciprocal-math:
@@ -209,9 +217,9 @@ FArchive& operator<<(FArchive& Ar, TUniformGridBase<T, d>& Value)
 }
 
 #if PLATFORM_MAC || PLATFORM_LINUX
-extern template class CHAOS_API Chaos::TUniformGridBase<float, 3>;
-extern template class CHAOS_API Chaos::TUniformGrid<float, 3>;
-extern template class CHAOS_API Chaos::TUniformGrid<float, 2>;
+extern template class CHAOS_API Chaos::TUniformGridBase<Chaos::FReal, 3>;
+extern template class CHAOS_API Chaos::TUniformGrid<Chaos::FReal, 3>;
+extern template class CHAOS_API Chaos::TUniformGrid<Chaos::FReal, 2>;
 #endif // __clang__
 
 }

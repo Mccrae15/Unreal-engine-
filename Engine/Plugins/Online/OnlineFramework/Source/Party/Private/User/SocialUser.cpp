@@ -27,7 +27,7 @@
 // FSocialQuery_UserInfo
 //////////////////////////////////////////////////////////////////////////
 
-class FSocialQuery_UserInfo : public TSocialQuery<TSharedRef<const FUniqueNetId>, const TSharedPtr<FOnlineUser>&>
+class FSocialQuery_UserInfo : public TSocialQuery<FUniqueNetIdRef, const TSharedPtr<FOnlineUser>&>
 {
 public:
 	static FName GetQueryId() { return TEXT("UserInfo"); }
@@ -43,7 +43,7 @@ public:
 			const int32 LocalUserNum = Toolkit->GetLocalUserNum();
 			UserInterface->AddOnQueryUserInfoCompleteDelegate_Handle(LocalUserNum, FOnQueryUserInfoCompleteDelegate::CreateSP(this, &FSocialQuery_UserInfo::HandleQueryUserInfoComplete));
 
-			TArray<TSharedRef<const FUniqueNetId>> UserIds;
+			TArray<FUniqueNetIdRef> UserIds;
 			CompletionCallbacksByUserId.GenerateKeyArray(UserIds);
 			UE_LOG(LogParty, Log, TEXT("FSocialQuery_UserInfo executing for [%d] users on subsystem [%s]"), UserIds.Num(), ToString(SubsystemType));
 
@@ -52,7 +52,7 @@ public:
 	}
 
 private:
-	void HandleQueryUserInfoComplete(int32 LocalUserNum, bool bWasSuccessful, const TArray<TSharedRef<const FUniqueNetId>>& UserIds, const FString& ErrorStr)
+	void HandleQueryUserInfoComplete(int32 LocalUserNum, bool bWasSuccessful, const TArray<FUniqueNetIdRef>& UserIds, const FString& ErrorStr)
 	{
 		if (!ensure(Toolkit.IsValid()) || Toolkit->GetLocalUserNum() != LocalUserNum)
 		{
@@ -66,10 +66,10 @@ private:
 		{
 			// Can't just check for array equality - order and exact address of the Ids aren't dependably the same as those given to the query
 			bool bIsOurQuery = true;
-			for (const TPair<TSharedRef<const FUniqueNetId>, FOnQueryComplete>& IdCallbackPair : CompletionCallbacksByUserId)
+			for (const TPair<FUniqueNetIdRef, FOnQueryComplete>& IdCallbackPair : CompletionCallbacksByUserId)
 			{
 				const auto ContainsPred = 
-					[&IdCallbackPair] (TSharedRef<const FUniqueNetId>& QueryUserId)
+					[&IdCallbackPair] (FUniqueNetIdRef& QueryUserId)
 					{
 						return *QueryUserId == *IdCallbackPair.Key;
 					};
@@ -84,7 +84,7 @@ private:
 			if (bIsOurQuery)
 			{
 				// Notify users of the query completion
-				for (const TSharedRef<const FUniqueNetId>& UserId : UserIds)
+				for (const FUniqueNetIdRef& UserId : UserIds)
 				{
 					TSharedPtr<FOnlineUser> UserInfo = UserInterface->GetUserInfo(LocalUserNum, *UserId);
 					for (auto& IdCallbackPair : CompletionCallbacksByUserId)
@@ -120,7 +120,7 @@ const FOnlineUserPresence* USocialUser::FSubsystemUserInfo::GetPresenceInfo() co
 // USocialUser
 //////////////////////////////////////////////////////////////////////////
 
-TMap<TWeakObjectPtr<USocialUser>, FOnNewSocialUserInitialized> USocialUser::InitEventsByUser;
+TMap<TWeakObjectPtr<USocialUser>, TArray<FOnNewSocialUserInitialized>> USocialUser::InitEventsByUser;
 
 USocialUser::USocialUser()
 {}
@@ -176,7 +176,7 @@ void USocialUser::Initialize(const FUniqueNetIdRepl& PrimaryId)
 	}
 }
 
-void USocialUser::RegisterInitCompleteHandler(const FOnNewSocialUserInitialized::FDelegate& OnInitializationComplete)
+void USocialUser::RegisterInitCompleteHandler(const FOnNewSocialUserInitialized& OnInitializationComplete)
 {
 	if (ensure(OnInitializationComplete.IsBound()))
 	{
@@ -345,10 +345,13 @@ void USocialUser::TryBroadcastInitializationComplete()
 
 				bIsInitialized = true;
 
-				FOnNewSocialUserInitialized InitEvent;
-				if (InitEventsByUser.RemoveAndCopyValue(this, InitEvent))
+				TArray<FOnNewSocialUserInitialized> InitEvents;
+				if (InitEventsByUser.RemoveAndCopyValue(this, InitEvents))
 				{
-					InitEvent.Broadcast(*this);
+					for (FOnNewSocialUserInitialized& InitEvent : InitEvents)
+					{
+						InitEvent.ExecuteIfBound(*this);
+					}
 				}
 			}
 			else
@@ -529,21 +532,18 @@ const FOnlineUserPresence* USocialUser::GetFriendPresenceInfo(ESocialSubsystem S
 
 FDateTime USocialUser::GetFriendshipCreationDate() const
 {
-	if (ensure(IsFriend(ESocialSubsystem::Primary)))
+	if (const FSubsystemUserInfo* SubsystemInfo = SubsystemInfoByType.Find(ESocialSubsystem::Primary))
 	{
-		if (const FSubsystemUserInfo* SubsystemInfo = SubsystemInfoByType.Find(ESocialSubsystem::Primary))
+		if (SubsystemInfo->FriendInfo.IsValid())
 		{
-			if (SubsystemInfo->FriendInfo.IsValid())
+			TSharedPtr<FOnlineFriend> OnlineFriend = SubsystemInfo->FriendInfo.Pin();
+			FString FriendshipCreationDateString;
+			if (OnlineFriend->GetUserAttribute(TEXT("created"), FriendshipCreationDateString))
 			{
-				TSharedPtr<FOnlineFriend> OnlineFriend = SubsystemInfo->FriendInfo.Pin();
-				FString FriendshipCreationDateString;
-				if (OnlineFriend->GetUserAttribute(TEXT("created"), FriendshipCreationDateString))
+				FDateTime CreatedDate;
+				if (ensure(FDateTime::ParseIso8601(*FriendshipCreationDateString, CreatedDate)))
 				{
-					FDateTime CreatedDate;
-					if (ensure(FDateTime::ParseIso8601(*FriendshipCreationDateString, CreatedDate)))
-					{
-						return CreatedDate;
-					}
+					return CreatedDate;
 				}
 			}
 		}
@@ -591,53 +591,70 @@ FText USocialUser::GetSocialName() const
 
 FUserPlatform USocialUser::GetCurrentPlatform() const
 {
+	FString PlatformString;
+
 	// Local user is obviously on the local platform
 	if (IsLocalUser())
 	{
-		return IOnlineSubsystem::GetLocalPlatformName();
+		PlatformString = IOnlineSubsystem::GetLocalPlatformName();
 	}
+	else
+	{
+		// "Current" in the function name isn't a misnomer - it is possible for a user to log in and out of multiple accounts while maintaining just 1 (or 0) that is actually playing the same game.
+		const FOnlineUserPresence* PrimaryPresence = GetFriendPresenceInfo(ESocialSubsystem::Primary);
+		const FOnlineUserPresence* PlatformPresence = GetFriendPresenceInfo(ESocialSubsystem::Platform);
 
-	// "Current" in the function name isn't a misnomer - it is possible for a user to log in and out of multiple accounts while maintaining just 1 (or 0) that is actually playing the same game.
-	const FOnlineUserPresence* PrimaryPresence = GetFriendPresenceInfo(ESocialSubsystem::Primary);
-	const FOnlineUserPresence* PlatformPresence = GetFriendPresenceInfo(ESocialSubsystem::Platform);
-
-	if (PlatformPresence && PlatformPresence->bIsOnline && PlatformPresence->bIsPlayingThisGame)
-	{
-		// Platform friends that are playing the same game are on the local platform
-		return IOnlineSubsystem::GetLocalPlatformName();
-	}
-	else if (PrimaryPresence && PrimaryPresence->bIsOnline && PrimaryPresence->bIsPlayingThisGame)
-	{
-		// Respect the current platform reported by the primary presence if the user is playing the same game
-		return FUserPlatform(PrimaryPresence->GetPlatform());
-	}
-	else if (PlatformPresence && PlatformPresence->bIsOnline)
-	{
-		// Not playing the same game on either account, but we have presence on the platform, so let that win regardless of whether the primary is valid
-		return IOnlineSubsystem::GetLocalPlatformName();
-	}
-	else if (PrimaryPresence && PrimaryPresence->bIsOnline)
-	{
-		// We have no platform presence, but we do have primary, so get the platform from that
-		return FUserPlatform(PrimaryPresence->GetPlatform());
-	}
-
-	UE_LOG(LogOnline, VeryVerbose, TEXT("*!* %s - No Presence found for user, searching Party..."), ANSI_TO_TCHAR(__FUNCTION__));
-	if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetPersistentParty())
-	{
-		if (UPartyMember* PartyMember = Party->GetPartyMember(GetUserId(ESocialSubsystem::Primary)))
+		if (PlatformPresence && PlatformPresence->bIsOnline && PlatformPresence->bIsPlayingThisGame)
 		{
-			FUserPlatform Platform = PartyMember->GetRepData().GetPlatform();
-			UE_LOG(LogOnline, VeryVerbose, TEXT("*!* %s - Party Member Found for user! RepDataPlatform: %s"), ANSI_TO_TCHAR(__FUNCTION__), *Platform.ToString());
-			if (Platform.IsValid())
+			// Platform friends that are playing the same game are on the local platform
+			PlatformString = IOnlineSubsystem::GetLocalPlatformName();
+		}
+		else if (PrimaryPresence && PrimaryPresence->bIsOnline && PrimaryPresence->bIsPlayingThisGame)
+		{
+			// Respect the current platform reported by the primary presence if the user is playing the same game
+			PlatformString = PrimaryPresence->GetPlatform();
+		}
+		else if (PlatformPresence && PlatformPresence->bIsOnline)
+		{
+			// Not playing the same game on either account, but we have presence on the platform, so let that win regardless of whether the primary is valid
+			PlatformString = IOnlineSubsystem::GetLocalPlatformName();
+		}
+		else if (PrimaryPresence && PrimaryPresence->bIsOnline)
+		{
+			// We have no platform presence, but we do have primary, so get the platform from that
+			PlatformString = PrimaryPresence->GetPlatform();
+		}
+		else
+		{
+			UE_LOG(LogOnline, VeryVerbose, TEXT("%s - No Presence found for user, searching Party..."), ANSI_TO_TCHAR(__FUNCTION__));
+			if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetPersistentParty())
 			{
-				return Platform;
+				if (UPartyMember* PartyMember = Party->GetPartyMember(GetUserId(ESocialSubsystem::Primary)))
+				{
+					const FUserPlatform& PartyMemberPlatform = PartyMember->GetRepData().GetPlatform();
+					UE_LOG(LogOnline, VeryVerbose, TEXT("%s - Party Member Found for user! RepDataPlatform: %s"), ANSI_TO_TCHAR(__FUNCTION__), *PartyMemberPlatform.ToString());
+					if (PartyMemberPlatform.IsValid())
+					{
+						PlatformString = PartyMemberPlatform;
+					}
+				}
+			}
+
+			if (PlatformString.IsEmpty())
+			{
+				// We don't have any presence for this user (or we do and they're offline) and they aren't the local player, so we really don't have any idea what their current platform is
+				// Intentionally empty (besides comments)
 			}
 		}
 	}
 
-	// We don't have any presence for this user (or we do and they're offline) and they aren't the local player, so we really don't have any idea what their current platform is
-	return FUserPlatform();
+	FUserPlatform UserPlatform;
+	if (!PlatformString.IsEmpty())
+	{
+		UserPlatform = MoveTemp(PlatformString);
+	}
+
+	return UserPlatform;
 }
 
 FString USocialUser::GetPlatformIconMarkupTag(EPlatformIconDisplayRule DisplayRule) const
@@ -652,21 +669,23 @@ FString USocialUser::GetPlatformIconMarkupTag(EPlatformIconDisplayRule DisplayRu
 	const FUserPlatform LocalPlatform = FUserPlatform(IOnlineSubsystem::GetLocalPlatformName());
 
 	OutLegacyString = UserPlatform;
+	FString MarkupTag = GetMarkupTagForPlatform(UserPlatform);
+
 	switch (DisplayRule)
 	{
 	case EPlatformIconDisplayRule::Always:
-		UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning TypeName %s due to ALWAYS"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName(), *UserPlatform.GetTypeName());
-		return UserPlatform.GetTypeName();
+		UE_LOG(LogOnline, VeryVerbose, TEXT("    %s - User: %s - Returning Platform Tag %s due to ALWAYS"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName(), *MarkupTag);
+		return MarkupTag;
 	case EPlatformIconDisplayRule::AlwaysIfDifferent:
-		UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - CrossplayLocalPlatform? %d Returning %s due to ALWAYSIFDIFFERENT"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName(), UserPlatform.IsCrossplayWithLocalPlatform(), UserPlatform.IsCrossplayWithLocalPlatform() ? *UserPlatform.GetTypeName() : TEXT(""));
+		UE_LOG(LogOnline, VeryVerbose, TEXT("    %s - User: %s - CrossplayLocalPlatform? %d Returning %s due to ALWAYSIFDIFFERENT"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName(), UserPlatform.IsCrossplayWithLocalPlatform(), UserPlatform.IsCrossplayWithLocalPlatform() ? *MarkupTag : TEXT(""));
 		if (!UserPlatform.IsCrossplayWithLocalPlatform())
 		{
 			OutLegacyString = TEXT("");
 			return TEXT("");
 		}
-		return UserPlatform.GetTypeName();
+		return MarkupTag;
 	case EPlatformIconDisplayRule::Never:
-		UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning nothing due to NEVER"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName());
+		UE_LOG(LogOnline, VeryVerbose, TEXT("    %s - User: %s - Returning nothing due to NEVER"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName());
 		OutLegacyString = TEXT("");
 		return TEXT("");
 	}
@@ -678,7 +697,7 @@ FString USocialUser::GetPlatformIconMarkupTag(EPlatformIconDisplayRule DisplayRu
 		{
 			if (!Party->IsCurrentlyCrossplaying())
 			{
-				UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning nothing due to Not Being In Crossplay with WHENINCROSSPLAYPARTY specified"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName());
+				UE_LOG(LogOnline, VeryVerbose, TEXT("    %s - User: %s - Returning nothing due to Not Being In Crossplay with WHENINCROSSPLAYPARTY specified"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName());
 				OutLegacyString = TEXT("");
 				return TEXT("");
 			}
@@ -689,12 +708,11 @@ FString USocialUser::GetPlatformIconMarkupTag(EPlatformIconDisplayRule DisplayRu
 	if (DisplayRule == EPlatformIconDisplayRule::AlwaysWhenInCrossplayParty ||
 		(DisplayRule == EPlatformIconDisplayRule::AlwaysIfDifferentWhenInCrossplayParty && bIsCrossplayWithMe))
 	{
-		FString TypeName = UserPlatform.GetTypeName();
-		UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning TypeName %s, DisplayRule: %d, bIsCrossplayWithMe: %d"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName(), *TypeName, (int32)DisplayRule, bIsCrossplayWithMe);
-		return TypeName;
+		UE_LOG(LogOnline, VeryVerbose, TEXT("    %s - User: %s - Returning Platform Tag %s, DisplayRule: %d, bIsCrossplayWithMe: %d"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName(), *MarkupTag, (int32)DisplayRule, bIsCrossplayWithMe);
+		return MarkupTag;
 	}
 
-	UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning nothing, likely due to AlwaysIfDifferentWhenInCrossplayParty and not being different, being in a Crossplay Party, and not being Different"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName());
+	UE_LOG(LogOnline, VeryVerbose, TEXT("    %s - User: %s - Returning nothing, likely due to AlwaysIfDifferentWhenInCrossplayParty and not being different, being in a Crossplay Party, and not being Different"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName());
 	OutLegacyString = TEXT("");
 	return TEXT("");
 }
@@ -849,10 +867,12 @@ bool USocialUser::CanSendFriendInvite(ESocialSubsystem SubsystemType) const
 	{
 		//@todo DanH: Really need OssCaps or something to be able to just ask an OSS if it supports a given feature. For now, we just magically know that we only support sending XB, PSN, and WeGame invites
 		const FName PlatformOssName = USocialManager::GetSocialOssName(ESocialSubsystem::Platform);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (PlatformOssName != LIVE_SUBSYSTEM && PlatformOssName != PS4_SUBSYSTEM && PlatformOssName != TENCENT_SUBSYSTEM)
 		{
 			return false;
 		}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	return HasSubsystemInfo(SubsystemType) && !IsLocalUser() && !IsFriend(SubsystemType) && !IsBlocked(SubsystemType) && !IsFriendshipPending(SubsystemType);
@@ -919,7 +939,7 @@ bool USocialUser::BlockUser(ESocialSubsystem Subsystem) const
 		IOnlineFriendsPtr FriendsInterface = Oss->GetFriendsInterface();
 		if (FriendsInterface.IsValid())
 		{
-			TSharedPtr<const FUniqueNetId> UniqueNetId = GetUserId(Subsystem).GetUniqueNetId();
+			FUniqueNetIdPtr UniqueNetId = GetUserId(Subsystem).GetUniqueNetId();
 			if (UniqueNetId.IsValid())
 			{
 				return FriendsInterface->BlockPlayer(GetOwningToolkit().GetLocalUserNum(), *UniqueNetId.Get());
@@ -937,7 +957,7 @@ bool USocialUser::UnblockUser(ESocialSubsystem Subsystem) const
 		IOnlineFriendsPtr FriendsInterface = Oss->GetFriendsInterface();
 		if (FriendsInterface.IsValid())
 		{
-			TSharedPtr<const FUniqueNetId> UniqueNetId = GetUserId(Subsystem).GetUniqueNetId();
+			FUniqueNetIdPtr UniqueNetId = GetUserId(Subsystem).GetUniqueNetId();
 			if (UniqueNetId.IsValid())
 			{
 				return FriendsInterface->UnblockPlayer(GetOwningToolkit().GetLocalUserNum(), *UniqueNetId.Get());
@@ -1021,59 +1041,55 @@ bool USocialUser::ShowPlatformProfile()
 	return false;
 }
 
+void USocialUser::HandlePartyInviteReceived(const IOnlinePartyJoinInfo& Invite)
+{
+	ReceivedPartyInvites.Emplace(Invite.AsShared());
+	GetOwningToolkit().OnPartyInviteReceived().Broadcast(*this);
+}
+
+void USocialUser::HandlePartyInviteRemoved(const IOnlinePartyJoinInfo& Invite, EPartyInvitationRemovedReason Reason)
+{
+	ReceivedPartyInvites.Remove(Invite.AsShared());
+	// TODO? GetOwningToolkit().OnPartyInviteRemoved().Broadcast(*this);
+}
+
 TSharedPtr<const IOnlinePartyJoinInfo> USocialUser::GetPartyJoinInfo(const FOnlinePartyTypeId& PartyTypeId) const
 {
-	IOnlinePartyPtr PartyInterface = Online::GetPartyInterface(GetWorld());
-	if (PartyInterface.IsValid())
+	TSharedPtr<const IOnlinePartyJoinInfo> JoinInfo = nullptr;
+
+	if (IOnlinePartyPtr PartyInterface = Online::GetPartyInterface(GetWorld()))
 	{
 		const FUniqueNetIdRepl LocalUserId = GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary);
 		const FUniqueNetIdRepl UserId = GetUserId(ESocialSubsystem::Primary);
 		if (ensure(LocalUserId.IsValid()) && ensure(UserId.IsValid()))
 		{
-			TSharedPtr<const IOnlinePartyJoinInfo> JoinInfo = PartyInterface->GetAdvertisedParty(*LocalUserId, *UserId, PartyTypeId);
-			if (!JoinInfo.IsValid())
-			{
-				// No advertised party info, check to see if this user has sent an invite
-				TArray<IOnlinePartyJoinInfoConstRef> AllPendingInvites;
-				if (PartyInterface->GetPendingInvites(*LocalUserId, AllPendingInvites))
-				{
-					for (const IOnlinePartyJoinInfoConstRef& InvitationJoinInfo : AllPendingInvites)
-					{
-						if (*InvitationJoinInfo->GetSourceUserId() == *UserId)
-						{
-							JoinInfo = InvitationJoinInfo;
-							break;
-						}
-					}
-				}
-			}
-
-			return JoinInfo;
+			JoinInfo = PartyInterface->GetAdvertisedParty(*LocalUserId, *UserId, PartyTypeId);
 		}
 	}
-	return nullptr;
+
+	// If no advertised party info, check to see if this user has sent an invite
+	if (!JoinInfo.IsValid())
+	{
+		for (const IOnlinePartyJoinInfoConstRef& Invite : ReceivedPartyInvites)
+		{
+			if (Invite->GetPartyTypeId() == PartyTypeId)
+			{
+				JoinInfo = Invite;
+				break;
+			}
+		}
+	}
+
+	return JoinInfo;
 }
 
 bool USocialUser::HasSentPartyInvite(const FOnlinePartyTypeId& PartyTypeId) const
 {
-	IOnlinePartyPtr PartyInterface = Online::GetPartyInterface(GetWorld());
-	if (PartyInterface.IsValid())
+	for (const IOnlinePartyJoinInfoConstRef& Invite : ReceivedPartyInvites)
 	{
-		const FUniqueNetIdRepl LocalUserId = GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary);
-		const FUniqueNetIdRepl UserId = GetUserId(ESocialSubsystem::Primary);
-		if (ensure(LocalUserId.IsValid()) && UserId.IsValid())
+		if (Invite->GetPartyTypeId() == PartyTypeId)
 		{
-			TArray<IOnlinePartyJoinInfoConstRef> AllPendingInvites;
-			if (PartyInterface->GetPendingInvites(*LocalUserId, AllPendingInvites))
-			{
-				for (const IOnlinePartyJoinInfoConstRef& InvitationJoinInfo : AllPendingInvites)
-				{
-					if (*InvitationJoinInfo->GetSourceUserId() == *UserId && InvitationJoinInfo->GetPartyTypeId() == PartyTypeId)
-					{
-						return true;
-					}
-				}
-			}
+			return true;
 		}
 	}
 	return false;
@@ -1284,19 +1300,29 @@ void USocialUser::SetUserInfo(ESocialSubsystem SubsystemType, const TSharedRef<F
 			{
 				if (IOnlineSubsystem* MissingOSS = GetOwningToolkit().GetSocialOss(Subsystem))
 				{
-					const FString SubsystemIdKey = FString::Printf(TEXT("%s:id"), *MissingOSS->GetIdentityInterface()->GetAuthType());
-					FString SubsystemIdStr;
-					if (UserInfo->GetUserAttribute(SubsystemIdKey, SubsystemIdStr) && !SubsystemIdStr.IsEmpty())
+					auto FindPlatformDescriptionByOssName = [MissingOSS](const FSocialPlatformDescription& TestPlatformDescription)
 					{
-						const FString IdPrefix = USocialSettings::GetUniqueIdEnvironmentPrefix(Subsystem);
-						if (!IdPrefix.IsEmpty())
+						return TestPlatformDescription.OnlineSubsystem == MissingOSS->GetSubsystemName();
+					};
+					if (const FSocialPlatformDescription* PlatformDescription = USocialSettings::GetSocialPlatformDescriptions().FindByPredicate(FindPlatformDescriptionByOssName))
+					{
+						if (!PlatformDescription->ExternalAccountType.IsEmpty())
 						{
-							// Wipe the environment prefix from the stored ID string before converting it to a proper UniqueId
-							SubsystemIdStr.RemoveFromStart(IdPrefix);
-						}
+							const FString SubsystemIdKey = FString::Printf(TEXT("%s:id"), *PlatformDescription->ExternalAccountType);
+							FString SubsystemIdStr;
+							if (UserInfo->GetUserAttribute(SubsystemIdKey, SubsystemIdStr) && !SubsystemIdStr.IsEmpty())
+							{
+								const FString IdPrefix = USocialSettings::GetUniqueIdEnvironmentPrefix(Subsystem);
+								if (!IdPrefix.IsEmpty())
+								{
+									// Wipe the environment prefix from the stored ID string before converting it to a proper UniqueId
+									SubsystemIdStr.RemoveFromStart(IdPrefix);
+								}
 
-						FUniqueNetIdRepl SubsystemId = MissingOSS->GetIdentityInterface()->CreateUniquePlayerId(SubsystemIdStr);
-						SetSubsystemId(Subsystem, SubsystemId);
+								FUniqueNetIdRepl SubsystemId = MissingOSS->GetIdentityInterface()->CreateUniquePlayerId(SubsystemIdStr);
+								SetSubsystemId(Subsystem, SubsystemId);
+							}
+						}
 					}
 				}
 			}

@@ -120,7 +120,7 @@ void FFractureEditorMode::Render(const FSceneView* View, FViewport* Viewport, FP
 
 	FFractureEditorModeToolkit* FractureToolkit = (FFractureEditorModeToolkit*)Toolkit.Get();
  
-	if (UFractureTool* FractureTool = FractureToolkit->GetActiveTool())
+	if (UFractureModalTool* FractureTool = FractureToolkit->GetActiveTool())
 	{
 		auto Settings = FractureTool->GetSettingsObjects();
 		FractureTool->Render(View, Viewport, PDI);
@@ -402,12 +402,12 @@ void FFractureEditorMode::HandlePackageReloaded(const EPackageReloadPhase InPack
 	if (InPackageReloadPhase == EPackageReloadPhase::PostPackageFixup)
 	{
 		// assemble referenced RestCollections
-		TSet<const UGeometryCollection*> ReferencedRestCollections;
+		TMap<const UGeometryCollection*, UGeometryCollectionComponent*> ReferencedRestCollections;
 		for (UGeometryCollectionComponent* ExistingSelection : SelectedGeometryComponents)
 		{
-			ReferencedRestCollections.Add(ExistingSelection->GetRestCollection());
+			ReferencedRestCollections.Add(TPair<const UGeometryCollection*, UGeometryCollectionComponent*>(ExistingSelection->GetRestCollection(), ExistingSelection));
 		}
-		
+
 		// refresh outliner if reloaded package contains a referenced RestCollection
 		for (const auto& RepointedObjectPair : InPackageReloadedEvent->GetRepointedObjects())
 		{
@@ -418,6 +418,7 @@ void FFractureEditorMode::HandlePackageReloaded(const EPackageReloadPhase InPack
 					if (Toolkit.IsValid())
 					{
 						FFractureEditorModeToolkit* FractureToolkit = (FFractureEditorModeToolkit*)Toolkit.Get();
+						FFractureSelectionTools::ClearSelectedBones(ReferencedRestCollections[NewObject]);
 						FractureToolkit->SetOutlinerComponents(SelectedGeometryComponents);
 					}
 				}

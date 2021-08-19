@@ -3,6 +3,9 @@
 #pragma once
 
 #include "Library/DMXObjectBase.h"
+
+#include "IO/DMXInputPortReference.h"
+#include "IO/DMXOutputPortReference.h"
 #include "Library/DMXEntity.h"
 
 #include "Templates/SubclassOf.h"
@@ -11,17 +14,41 @@
 #include "DMXLibrary.generated.h"
 
 
-class UDMXEntityFader;
+/** Custom struct of in put and output port references for custom details customization with an enabled state */
+USTRUCT(BlueprintType)
+struct DMXRUNTIME_API FDMXLibraryPortReferences
+{
+	GENERATED_BODY()
+
+public:
+	/** Map of input port references of a Library */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, NonTransactional, Category = "DMX", Meta = (DisplayName = "Input Ports"))
+	TArray<FDMXInputPortReference> InputPortReferences;
+
+	/** Output ports of the Library of a Library */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, NonTransactional, Category = "DMX", Meta = (DisplayName = "Output Ports"))
+	TArray<FDMXOutputPortReference> OutputPortReferences;
+};
 
 /** Called when the list of entities is changed by either adding or removing entities */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnEntitiesUpdated, class UDMXLibrary*);
 
-
-UCLASS(BlueprintType, Blueprintable)
+UCLASS(BlueprintType, Blueprintable, AutoExpandCategories = DMX)
 class DMXRUNTIME_API UDMXLibrary
 	: public UDMXObjectBase
 {
 	GENERATED_BODY()
+
+protected:
+	// ~Begin UObject Interface
+	virtual void PostInitProperties() override;
+	virtual void PostLoad() override;
+	virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif // WITH_EDITOR
+	// ~End UObject Interface
 
 public:
 	/** Creates a new Entity or return an existing one with the passed in name */
@@ -138,12 +165,53 @@ public:
 	/** Called when the list of entities is changed by either adding or removing entities */
 	FOnEntitiesUpdated& GetOnEntitiesUpdated();
 
-	virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
+public:
+	/** Returns all local Universe IDs in Ports */
+	TSet<int32> GetAllLocalUniversesIDsInPorts() const;
 
+	/** Returns the input ports */
+	const TSet<FDMXInputPortSharedRef>& GetInputPorts() const { return InputPorts; }
+
+	/** Returns the output ports */
+	const TSet<FDMXOutputPortSharedRef>& GetOutputPorts() const { return OutputPorts; }
+
+	/** Returns all ports as a set, slower than GetInputPorts and GetOutputPorts. */
+	TSet<FDMXPortSharedRef> GenerateAllPortsSet() const;
+
+	/** Updates the ports from what's set in the Input and Output Port References arrays */
+	void UpdatePorts();
+
+#if WITH_EDITOR
+	/** Returns the name of the Ports property. */
+	static FName GetPortReferencesPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXLibrary, PortReferences); }
+
+	/** Returns the name of the Entities property. */
+	static FName GetEntitiesPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXLibrary, Entities); }
+#endif // WITH_EDITOR
+
+protected:
+#if WITH_EDITOR
+	/** 
+	 * Upgrades libraries that use controllers (before 4.27) to use ports instead (from 4.27 on). 
+	 * Creates corresponding ports if they do not exist yet. 
+	 */
+	void UpgradeFromControllersToPorts();
+#endif // WITH_EDITOR
+
+	/** Input ports of the Library */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, NonTransactional, Category = "DMX", Meta = (ShowOnlyInnerProperties))
+	FDMXLibraryPortReferences PortReferences;
 
 private:
+	/** All Fixture Types and Fixture Patches in the library */
 	UPROPERTY()
 	TArray<UDMXEntity*> Entities;
+
+	/** The input ports available to the library, according to the InputPortReferences array */
+	TSet<FDMXInputPortSharedRef> InputPorts;
+
+	/** The output ports available to the library, according to the OutputPortReferences array */
+	TSet<FDMXOutputPortSharedRef> OutputPorts;
 
 	/** Called when the list of entities is changed by either adding or removing entities */
 	FOnEntitiesUpdated OnEntitiesUpdated;

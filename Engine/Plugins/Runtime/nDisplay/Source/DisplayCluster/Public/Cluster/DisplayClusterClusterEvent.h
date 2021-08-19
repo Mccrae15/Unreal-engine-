@@ -6,31 +6,7 @@
 
 #include "DisplayClusterClusterEvent.generated.h"
 
-
-
-
-//////////////////////////////////////////////////////////////////////////////////////////////
-// Cluster event (deprecated)
-//////////////////////////////////////////////////////////////////////////////////////////////
-USTRUCT(BlueprintType, meta = (DeprecatedNode, DeprecationMessage = "This class is now deprecated, please use FDisplayClusterClusterEventJson."))
-struct FDisplayClusterClusterEvent
-{
-	GENERATED_BODY()
-
-public:
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
-	FString Name;
-	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
-	FString Type;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
-	FString Category;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
-	TMap<FString, FString> Parameters;
-};
-
+constexpr const auto DisplayClusterResetSyncType = TEXT("nDCReset");
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -49,11 +25,11 @@ public:
 
 public:
 	// Is nDisplay internal event (should never be true for end users)
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "Is Sytem Event. 'True' is reserved for nDisplay internals."), Category = "nDisplay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "Is Sytem Event. 'True' is reserved for nDisplay internals."), Category = "NDisplay")
 	bool bIsSystemEvent;
 
 	// Should older events with the same Name/Type/Category (for JSON) or ID (for binary) be discarded if a new one received
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay")
 	bool bShouldDiscardOnRepeat;
 };
 
@@ -69,20 +45,20 @@ struct FDisplayClusterClusterEventJson
 
 public:
 	// Event name (used for discarding outdated events)
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay")
 	FString Name;
 
 	// Event type (used for discarding outdated events)
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay")
 	FString Type;
 
 	// Event category (used for discarding outdated events)
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay")
 	FString Category;
 
 public:
 	// Event parameters
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay")
 	TMap<FString, FString> Parameters;
 
 public:
@@ -106,11 +82,11 @@ struct FDisplayClusterClusterEventBinary
 
 public:
 	// Event ID (used for discarding outdated events)
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay")
 	int32 EventId;
 
 	// Binary event data
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "nDisplay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay")
 	TArray<uint8> EventData;
 
 public:

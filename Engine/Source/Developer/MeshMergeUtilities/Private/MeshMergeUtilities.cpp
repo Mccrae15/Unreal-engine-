@@ -1388,7 +1388,7 @@ void FMeshMergeUtilities::CreateProxyMesh(const TArray<UStaticMeshComponent*>& I
 						TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
 
 						// If we already have lightmap uvs generated and they are valid, we can reuse those instead of having to generate new ones
-						const int32 LightMapCoordinateIndex = StaticMeshComponent->GetStaticMesh()->LightMapCoordinateIndex;
+						const int32 LightMapCoordinateIndex = StaticMeshComponent->GetStaticMesh()->GetLightMapCoordinateIndex();
 						if (InMeshProxySettings.bReuseMeshLightmapUVs &&
 							LightMapCoordinateIndex > 0 &&
 							VertexInstanceUVs.GetNumElements() > 0 &&
@@ -1439,7 +1439,7 @@ void FMeshMergeUtilities::CreateProxyMesh(const TArray<UStaticMeshComponent*>& I
 							if (MeshMapBuildData)
 							{
 								MeshSettings.LightMap = MeshMapBuildData->LightMap;
-								MeshSettings.LightMapIndex = StaticMeshComponent->GetStaticMesh()->LightMapCoordinateIndex;
+								MeshSettings.LightMapIndex = StaticMeshComponent->GetStaticMesh()->GetLightMapCoordinateIndex();
 							}
 						}
 
@@ -1646,47 +1646,57 @@ void FMeshMergeUtilities::CreateProxyMesh(const TArray<UStaticMeshComponent*>& I
 		}
 	}
 
-	// Populate landscape clipping geometry
-	for (FMeshDescription* RawMesh : CullingRawMeshes)
+	if (MergeDataEntries.Num() != 0)
 	{
-		FMeshMergeData ClipData;
-		ClipData.bIsClippingMesh = true;
-		ClipData.RawMesh = RawMesh;
-		MergeDataEntries.Add(ClipData);
-	}
-
-	SlowTask.EnterProgressFrame(50.0f, LOCTEXT("CreateProxyMesh_GenerateProxy", "Generating Proxy Mesh"));
-
-	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(ProxyGeneration)
-
-		// Choose Simplygon Swarm (if available) or local proxy lod method
-		if (ReductionModule.GetDistributedMeshMergingInterface() != nullptr && GetDefault<UEditorPerProjectUserSettings>()->bUseSimplygonSwarm && bAllowAsync)
+		// Populate landscape clipping geometry
+		for (FMeshDescription* RawMesh : CullingRawMeshes)
 		{
-			MaterialFlattenLambda(FlattenedMaterials);
-
-			ReductionModule.GetDistributedMeshMergingInterface()->ProxyLOD(MergeDataEntries, Data->InProxySettings, FlattenedMaterials, InGuid);
+			FMeshMergeData ClipData;
+			ClipData.bIsClippingMesh = true;
+			ClipData.RawMesh = RawMesh;
+			MergeDataEntries.Add(ClipData);
 		}
-		else
+
+		SlowTask.EnterProgressFrame(50.0f, LOCTEXT("CreateProxyMesh_GenerateProxy", "Generating Proxy Mesh"));
+
 		{
-			IMeshMerging* MeshMerging = ReductionModule.GetMeshMergingInterface();
+			TRACE_CPUPROFILER_EVENT_SCOPE(ProxyGeneration)
 
-			// Register the Material Flattening code if parallel execution is supported, otherwise directly run it.
-
-			if (MeshMerging->bSupportsParallelMaterialBake())
+			// Choose Simplygon Swarm (if available) or local proxy lod method
+			if (ReductionModule.GetDistributedMeshMergingInterface() != nullptr && GetDefault<UEditorPerProjectUserSettings>()->bUseSimplygonSwarm && bAllowAsync)
 			{
-				MeshMerging->BakeMaterialsDelegate.BindLambda(MaterialFlattenLambda);
+				MaterialFlattenLambda(FlattenedMaterials);
+
+				ReductionModule.GetDistributedMeshMergingInterface()->ProxyLOD(MergeDataEntries, Data->InProxySettings, FlattenedMaterials, InGuid);
 			}
 			else
 			{
-				MaterialFlattenLambda(FlattenedMaterials);
+				IMeshMerging* MeshMerging = ReductionModule.GetMeshMergingInterface();
+
+				// Register the Material Flattening code if parallel execution is supported, otherwise directly run it.
+
+				if (MeshMerging->bSupportsParallelMaterialBake())
+				{
+					MeshMerging->BakeMaterialsDelegate.BindLambda(MaterialFlattenLambda);
+				}
+				else
+				{
+					MaterialFlattenLambda(FlattenedMaterials);
+				}
+
+				MeshMerging->ProxyLOD(MergeDataEntries, Data->InProxySettings, FlattenedMaterials, InGuid);
+
+
+				Processor->Tick(0); // make sure caller gets merging results
 			}
-
-			MeshMerging->ProxyLOD(MergeDataEntries, Data->InProxySettings, FlattenedMaterials, InGuid);
-
-
-			Processor->Tick(0); // make sure caller gets merging results
 		}
+	}
+	else
+	{
+		FMeshDescription MeshDescription;
+		FStaticMeshAttributes(MeshDescription).Register();
+		FFlattenMaterial FlattenMaterial;
+		Processor->ProxyGenerationComplete(MeshDescription, FlattenMaterial, InGuid);
 	}
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(Cleanup)
@@ -1857,7 +1867,7 @@ bool RetrieveRawMeshData(FMeshMergeDataTracker& DataTracker
 	else if (Component->GetStaticMesh() != nullptr)
 	{
 		// If the mesh is valid at this point, record the lightmap UV so we have a record for use later
-		DataTracker.AddLightmapChannelRecord(ComponentIndex, LODIndex, Component->GetStaticMesh()->LightMapCoordinateIndex);
+		DataTracker.AddLightmapChannelRecord(ComponentIndex, LODIndex, Component->GetStaticMesh()->GetLightMapCoordinateIndex());
 	}
 	return bValidMesh;
 }
@@ -2151,7 +2161,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 					if (bRequiresUniqueUVs || MeshData.RawMeshDescription->VertexInstances().Num() > 0)
 					{
 						// Check if there are lightmap uvs available?
-						const int32 LightMapUVIndex = StaticMeshComponentsToMerge[Key.GetMeshIndex()]->GetStaticMesh()->LightMapCoordinateIndex;
+						const int32 LightMapUVIndex = StaticMeshComponentsToMerge[Key.GetMeshIndex()]->GetStaticMesh()->GetLightMapCoordinateIndex();
 
 						TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = MeshData.RawMeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
 						if (InSettings.bReuseMeshLightmapUVs && VertexInstanceUVs.GetNumElements() > 0 && VertexInstanceUVs.GetNumIndices() > LightMapUVIndex)
@@ -2599,20 +2609,16 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 		if (InSettings.bGenerateLightMapUV)
 		{
 			const int32 TempChannel = DataTracker.GetAvailableLightMapUVChannel();
-			if (TempChannel != INDEX_NONE)
-			{
-				return TempChannel;
-			}
-			else
+			if (TempChannel == INDEX_NONE)
 			{
 				// Output warning message
-				UE_LOG(LogMeshMerging, Log, TEXT("Failed to find available lightmap uv channel"));
-				
+				UE_LOG(LogMeshMerging, Warning, TEXT("Failed to find an available channel for Lightmap UVs. Lightmap UVs will not be generated."));
 			}
+			return TempChannel;
 		}
 
-		return 0;
-	}();		
+		return (int32)INDEX_NONE;
+	}();
 
 	//
 	//Create merged mesh asset
@@ -2674,11 +2680,11 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 		FString OutputPath = StaticMesh->GetPathName();
 
 		// make sure it has a new lighting guid
-		StaticMesh->LightingGuid = FGuid::NewGuid();
-		if (InSettings.bGenerateLightMapUV)
+		StaticMesh->SetLightingGuid();
+		if (LightMapUVChannel != INDEX_NONE)
 		{
-			StaticMesh->LightMapResolution = InSettings.TargetLightMapResolution;
-			StaticMesh->LightMapCoordinateIndex = LightMapUVChannel;
+			StaticMesh->SetLightMapResolution(InSettings.TargetLightMapResolution);
+			StaticMesh->SetLightMapCoordinateIndex(LightMapUVChannel);
 		}
 
 		const bool bContainsImposters = ImposterComponents.Num() > 0;
@@ -2697,10 +2703,10 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 				SrcModel.BuildSettings.bRemoveDegenerates = false;
 				SrcModel.BuildSettings.bUseHighPrecisionTangentBasis = false;
 				SrcModel.BuildSettings.bUseFullPrecisionUVs = false;
-				SrcModel.BuildSettings.bGenerateLightmapUVs = InSettings.bGenerateLightMapUV;
+				SrcModel.BuildSettings.bGenerateLightmapUVs = LightMapUVChannel != INDEX_NONE;
 				SrcModel.BuildSettings.MinLightmapResolution = InSettings.bComputedLightMapResolution ? DataTracker.GetLightMapDimension() : InSettings.TargetLightMapResolution;
 				SrcModel.BuildSettings.SrcLightmapIndex = 0;
-				SrcModel.BuildSettings.DstLightmapIndex = LightMapUVChannel;
+				SrcModel.BuildSettings.DstLightmapIndex = LightMapUVChannel != INDEX_NONE ? LightMapUVChannel : 0;
 				if(!InSettings.bAllowDistanceField)
 				{
 					SrcModel.BuildSettings.DistanceFieldResolutionScale = 0.0f;
@@ -2728,7 +2734,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 		
 		auto IsMaterialImportedNameUnique = [&StaticMesh](FName ImportedMaterialSlotName)
 		{
-			for (const FStaticMaterial& StaticMaterial : StaticMesh->StaticMaterials)
+			for (const FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials())
 			{
 #if WITH_EDITOR
 				if (StaticMaterial.ImportedMaterialSlotName == ImportedMaterialSlotName)
@@ -2757,7 +2763,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 				MaterialSlotName = *(DataTracker.GetMaterialSlotName(Material).ToString() + TEXT("_") + FString::FromInt(Counter++));
 			}
 
-			StaticMesh->StaticMaterials.Add(FStaticMaterial(Material, MaterialSlotName));
+			StaticMesh->GetStaticMaterials().Add(FStaticMaterial(Material, MaterialSlotName));
 		}
 
 		for(UMaterialInterface* ImposterMaterial : ImposterMaterials)
@@ -2769,7 +2775,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 			{
 				MaterialSlotName = *(ImposterMaterial->GetName() + TEXT("_") + FString::FromInt(Counter++));
 			}
-			StaticMesh->StaticMaterials.Add(FStaticMaterial(ImposterMaterial, MaterialSlotName));
+			StaticMesh->GetStaticMaterials().Add(FStaticMaterial(ImposterMaterial, MaterialSlotName));
 		}
 
 		if (InSettings.bMergePhysicsData)
@@ -2777,18 +2783,18 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 			StaticMesh->CreateBodySetup();
 			if (BodySetupSource)
 			{
-				StaticMesh->BodySetup->CopyBodyPropertiesFrom(BodySetupSource);
+				StaticMesh->GetBodySetup()->CopyBodyPropertiesFrom(BodySetupSource);
 			}
 
-			StaticMesh->BodySetup->AggGeom = FKAggregateGeom();
+			StaticMesh->GetBodySetup()->AggGeom = FKAggregateGeom();
 			// Copy collision from the source meshes
 			for (const FKAggregateGeom& Geom : PhysicsGeometry)
 			{
-				StaticMesh->BodySetup->AddCollisionFrom(Geom);
+				StaticMesh->GetBodySetup()->AddCollisionFrom(Geom);
 			}
 
 			// Bake rotation into verts of convex hulls, so they scale correctly after rotation
-			for (FKConvexElem& ConvexElem : StaticMesh->BodySetup->AggGeom.ConvexElems)
+			for (FKConvexElem& ConvexElem : StaticMesh->GetBodySetup()->AggGeom.ConvexElems)
 			{
 				ConvexElem.BakeTransformToVerts();
 			}
@@ -2799,7 +2805,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 
 		//Set the Imported version before calling the build
 		StaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;
-		StaticMesh->LightMapResolution = InSettings.bComputedLightMapResolution ? DataTracker.GetLightMapDimension() : InSettings.TargetLightMapResolution;
+		StaticMesh->SetLightMapResolution(InSettings.bComputedLightMapResolution ? DataTracker.GetLightMapDimension() : InSettings.TargetLightMapResolution);
 
 #if WITH_EDITOR
 		//If we are running the automation test
@@ -2814,8 +2820,8 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 		{
 			const FBox StaticMeshBox = StaticMesh->GetBoundingBox();
 			const FBox CombinedBox = StaticMeshBox + ImposterBounds;
-			StaticMesh->PositiveBoundsExtension = (CombinedBox.Max - StaticMeshBox.Max);
-			StaticMesh->NegativeBoundsExtension = (StaticMeshBox.Min - CombinedBox.Min);
+			StaticMesh->SetPositiveBoundsExtension((CombinedBox.Max - StaticMeshBox.Max));
+			StaticMesh->SetNegativeBoundsExtension((StaticMeshBox.Min - CombinedBox.Min));
 			StaticMesh->CalculateExtendedBounds();
 		}		
 
@@ -2830,7 +2836,7 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 			{
 				MaterialSlotName = *(MergedMaterial->GetName() + TEXT("_") + FString::FromInt(Counter++));
 			}
-			StaticMesh->StaticMaterials.Add(FStaticMaterial(MergedMaterial, MaterialSlotName));
+			StaticMesh->GetStaticMaterials().Add(FStaticMaterial(MergedMaterial, MaterialSlotName));
 			StaticMesh->UpdateUVChannelData(false);
 		}
 
@@ -3380,7 +3386,7 @@ void FMeshMergeUtilities::ExtractPhysicsDataFromComponents(const TArray<UPrimiti
 			UStaticMesh* SrcMesh = StaticMeshComp->GetStaticMesh();
 			if (SrcMesh)
 			{
-				BodySetup = SrcMesh->BodySetup;
+				BodySetup = SrcMesh->GetBodySetup();
 			}
 			ComponentToWorld = StaticMeshComp->GetComponentToWorld();
 		}

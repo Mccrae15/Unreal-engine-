@@ -185,7 +185,8 @@ private:
 	bool bIsInitializingSandbox = false; // stop recursion into callbacks when we are initializing sandbox
 	bool bIsSavingPackage = false; // used to stop recursive mark package dirty functions
 	bool bSaveAsyncAllowed = false; // True if and only if command line options and all other restrictions allow the use of SAVE_Async
-
+	/** Set to true during CookOnTheFly if a plugin is calling RequestPackage and we should therefore not make assumptions about when platforms are done cooking */
+	bool bCookOnTheFlyExternalRequests = false;
 
 	TMap<FName, int32> MaxAsyncCacheForType; // max number of objects of a specific type which are allowed to async cache at once
 	mutable TMap<FName, int32> CurrentAsyncCacheForType; // max number of objects of a specific type which are allowed to async cache at once
@@ -653,7 +654,7 @@ private:
 	/**
 	 * Saves Global shader library. Global shaderlib isn't split into chunks nor associated with the assets, so it a special case
 	 */
-	void SaveGlobalShaderLibrary();
+	void SaveAndCloseGlobalShaderLibrary();
 
 	/**
 	 * Invokes the necessary FShaderCodeLibrary functions to open a named code library.
@@ -663,7 +664,7 @@ private:
 	/**
 	 * Invokes the necessary FShaderCodeLibrary functions to save and close a named code library.
 	 */
-	void SaveShaderLibrary(const ITargetPlatform* TargetPlatform, FString const& Name, const TArray<TSet<FName>>* ChunkAssignments = nullptr);
+	void SaveShaderLibrary(const ITargetPlatform* TargetPlatform, FString const& Name);
 
 	/**
 	* Calls the ShaderPipelineCacheToolsCommandlet to build a upipelinecache file from the .stablepc.csv file, if any
@@ -761,10 +762,10 @@ private:
 	 * Attempts to update the metadata for a package in an asset registry generator
 	 *
 	 * @param Generator The asset registry generator to update
-	 * @param PackageName The name of the package to update info on
+	 * @param Package The package to update info on
 	 * @param SavePackageResult The metadata to associate with the given package name
 	 */
-	void UpdateAssetRegistryPackageData(FAssetRegistryGenerator* Generator, const FName& PackageName, FSavePackageResultStruct& SavePackageResult);
+	void UpdateAssetRegistryPackageData(FAssetRegistryGenerator* Generator, const UPackage& Package, FSavePackageResultStruct& SavePackageResult);
 
 	/** Perform any special processing for freshly loaded packages 
 	 */

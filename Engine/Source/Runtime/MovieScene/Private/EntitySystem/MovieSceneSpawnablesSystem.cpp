@@ -35,14 +35,20 @@ struct FSpawnTrackPreAnimatedTokenProducer : IMovieScenePreAnimatedTokenProducer
 			FMovieSceneEvaluationOperand OperandToDestroy;
 			FToken(FMovieSceneEvaluationOperand InOperand) : OperandToDestroy(InOperand) {}
 
-			virtual void RestoreState(UObject& InObject, IMovieScenePlayer& Player) override
+			virtual void RestoreState(UObject& Object, const UE::MovieScene::FRestoreStateParams& Params) override
 			{
-				if (!Player.GetSpawnRegister().DestroySpawnedObject(OperandToDestroy.ObjectBindingID, OperandToDestroy.SequenceID, Player))
+				IMovieScenePlayer* Player = Params.GetTerminalPlayer();
+				if (!ensure(Player))
+				{
+					return;
+				}
+
+				if (!Player->GetSpawnRegister().DestroySpawnedObject(OperandToDestroy.ObjectBindingID, OperandToDestroy.SequenceID, *Player))
 				{
 					// This branch should only be taken for Externally owned spawnables that have been 'forgotten',
 					// but still had RestoreState tokens generated for them (ie, in FSequencer, or if bRestoreState is enabled)
 					// on a UMovieSceneSequencePlayer
-					Player.GetSpawnRegister().DestroyObjectDirectly(InObject);
+					Player->GetSpawnRegister().DestroyObjectDirectly(Object);
 				}
 			}
 		};
@@ -114,7 +120,7 @@ void UMovieSceneSpawnablesSystem::OnRun(FSystemTaskPrerequisites& InPrerequisite
 	// Step 1 - iterate all pending spawnables and spawn their objects if necessary
 	auto SpawnNewObjects = [InstanceRegistry](FInstanceHandle InstanceHandle, const FGuid& SpawnableBindingID)
 	{
-		SCOPE_CYCLE_COUNTER(MovieSceneEval_DestroySpawnables)
+		SCOPE_CYCLE_COUNTER(MovieSceneEval_SpawnSpawnables)
 
 		const FSequenceInstance& SequenceInstance = InstanceRegistry->GetInstance(InstanceHandle);
 
@@ -175,7 +181,7 @@ void UMovieSceneSpawnablesSystem::OnRun(FSystemTaskPrerequisites& InPrerequisite
 	// Step 2 - destroy any spawnable objects that are no longer relevant
 	auto DestroyOldSpawnables = [InstanceRegistry](FInstanceHandle InstanceHandle, const FGuid& SpawnableObjectID)
 	{
-		SCOPE_CYCLE_COUNTER(MovieSceneEval_SpawnSpawnables)
+		SCOPE_CYCLE_COUNTER(MovieSceneEval_DestroySpawnables)
 
 		if (ensure(InstanceRegistry->IsHandleValid(InstanceHandle)))
 		{

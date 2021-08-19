@@ -8,7 +8,7 @@
 //////////////////////////////////////////////////////////////////////////
 
 #define PLATFORM_NAME_MOBILE	TEXT("MOBILE")
-#define PLATFORM_NAME_DESKTOP	TEXT("DESKTOP")
+#define PLATFORM_NAME_DESKTOP	TEXT("PC")
 #define PLATFORM_NAME_CONSOLE	TEXT("CONSOLE")
 
 FUserPlatform::FUserPlatform()
@@ -21,69 +21,49 @@ FUserPlatform::FUserPlatform(const FString& InPlatform)
 	const TArray<FSocialPlatformDescription>& SocialPlatformDescriptions = USocialSettings::GetSocialPlatformDescriptions();
 	for (const FSocialPlatformDescription& Entry : SocialPlatformDescriptions)
 	{
-		if (Entry.SocialPlatformName == InPlatform)
+		if (Entry.Name == InPlatform)
 		{
 			PlatformDescription = Entry;
 			break;
 		}
 	}
 
-	if (!ensure(IsValid()))
-	{
-		UE_LOG(LogParty, Warning, TEXT("[FUserPlatform] PlatformStr [%s] is not valid."), *InPlatform);
-	}
+	ensureMsgf(IsValid(), TEXT("[FUserPlatform] PlatformStr [%s] is not valid."), *InPlatform);
 }
 
 bool FUserPlatform::operator==(const FString& OtherStr) const
 {
-	return PlatformDescription.SocialPlatformName == OtherStr;
+	return PlatformDescription.Name == OtherStr;
 }
 
 bool FUserPlatform::operator==(const FUserPlatform& Other) const
 {
-	return PlatformDescription.SocialPlatformName == Other.PlatformDescription.SocialPlatformName;
-}
-
-const FString FUserPlatform::GetTypeName() const
-{
-	return PlatformDescription.SocialPlatformTypeName;
-
-	/*FUserPlatform LocalPlatform = FUserPlatform(IOnlineSubsystem::GetLocalPlatformName());
-	if (IsConsole() && LocalPlatform.IsConsole() && PlatformStr != LocalPlatform)
-	{
-		return PLATFORM_NAME_CONSOLE;
-	}*/
+	return PlatformDescription.Name == Other.PlatformDescription.Name;
 }
 
 bool FUserPlatform::IsValid() const
 {
-	return !PlatformDescription.SocialPlatformName.IsEmpty();
+	return !PlatformDescription.Name.IsEmpty();
 }
 
 bool FUserPlatform::IsDesktop() const
 {
-	return PlatformDescription.SocialPlatformTypeName == PLATFORM_NAME_DESKTOP;
+	return PlatformDescription.PlatformType == PLATFORM_NAME_DESKTOP;
 }
 
 bool FUserPlatform::IsMobile() const
 {
-	return PlatformDescription.SocialPlatformTypeName == PLATFORM_NAME_MOBILE;
+	return PlatformDescription.PlatformType == PLATFORM_NAME_MOBILE;
 }
 
 bool FUserPlatform::IsConsole() const
 {
-	return PlatformDescription.SocialPlatformTypeName == PLATFORM_NAME_CONSOLE;
+	return PlatformDescription.PlatformType == PLATFORM_NAME_CONSOLE;
 }
 
 bool FUserPlatform::IsCrossplayWith(const FUserPlatform& OtherPlatform) const
 {
-	if (*this != OtherPlatform)
-	{
-		// Any difference in platform qualifies as crossplay for a console platform
-		// Desktops and mobile aren't considered crossplay within themselves (i.e. Android+iOS or Mac+PC don't count)
-		return IsConsole() || IsDesktop() != OtherPlatform.IsDesktop() || IsMobile() != OtherPlatform.IsMobile();
-	}
-	return false;
+	return PlatformDescription.CrossplayPool != OtherPlatform.PlatformDescription.CrossplayPool;
 }
 
 bool FUserPlatform::IsCrossplayWith(const FString& OtherPlatformStr) const

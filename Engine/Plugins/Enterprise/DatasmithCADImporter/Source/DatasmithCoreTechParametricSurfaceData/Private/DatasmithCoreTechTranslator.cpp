@@ -12,7 +12,11 @@ void FDatasmithCoreTechTranslator::GetSceneImportOptions(TArray<TStrongObjectPtr
 		return;
 	}
 
-	Options.Add(GetCommonTessellationOptionsPtr());
+	TStrongObjectPtr<UDatasmithCommonTessellationOptions> CommonTessellationOptionsPtr = Datasmith::MakeOptions<UDatasmithCommonTessellationOptions>();
+	check(CommonTessellationOptionsPtr.IsValid());
+	InitCommonTessellationOptions(CommonTessellationOptionsPtr->Options);
+
+	Options.Add(CommonTessellationOptionsPtr);
 }
 
 void FDatasmithCoreTechTranslator::SetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options)
@@ -21,23 +25,20 @@ void FDatasmithCoreTechTranslator::SetSceneImportOptions(TArray<TStrongObjectPtr
 	{
 		if (UDatasmithCommonTessellationOptions* TessellationOptionsObject = Cast<UDatasmithCommonTessellationOptions>(OptionPtr.Get()))
 		{
-			CommonTessellationOptionsPtr.Reset(TessellationOptionsObject);
+			CommonTessellationOptions = TessellationOptionsObject->Options;
 		}
 	}
 }
 
-TStrongObjectPtr<UDatasmithCommonTessellationOptions>& FDatasmithCoreTechTranslator::GetCommonTessellationOptionsPtr()
+bool FDatasmithCoreTechTranslator::IsSourceSupported(const FDatasmithSceneSource& Source)
 {
-	if (!CommonTessellationOptionsPtr.IsValid())
+	if (Source.GetSourceFileExtension() != TEXT("xml"))
 	{
-		CommonTessellationOptionsPtr = Datasmith::MakeOptions<UDatasmithCommonTessellationOptions>();
-		check(CommonTessellationOptionsPtr.IsValid());
-		InitCommonTessellationOptions(CommonTessellationOptionsPtr->Options);
+		return true;
 	}
 
-	return CommonTessellationOptionsPtr;
+	return Datasmith::CheckXMLFileSchema(Source.GetSourceFile(), TEXT("XPDMXML"), TEXT("ns3:Uos"));
 }
-
 
 
 

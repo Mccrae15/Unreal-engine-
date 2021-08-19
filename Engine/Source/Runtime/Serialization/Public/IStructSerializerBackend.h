@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Misc/EnumClassFlags.h"
 #include "UObject/Field.h"
+#include "UObject/UnrealType.h"
 
 /**
  * Flags controlling the behavior of struct serializer backends.
@@ -68,6 +69,16 @@ ENUM_CLASS_FLAGS(EStructSerializerStateFlags);
  */
 struct FStructSerializerState
 {
+	FStructSerializerState() = default;
+
+	FStructSerializerState(void* InValuePtr, FProperty* InProperty, EStructSerializerStateFlags InFlags)
+		: ValueData(InValuePtr)
+		, ValueProperty(InProperty)
+		, FieldType(InProperty->GetClass())
+		, StateFlags(InFlags)
+	{
+	}
+
 	/** Holds a flag indicating whether the property has been processed. */
 	bool HasBeenProcessed = false;
 
@@ -168,6 +179,20 @@ public:
 	 * @see BeginArray, BeginStructure, EndArray, EndStructure, WriteComment
 	 */
 	virtual void WriteProperty(const FStructSerializerState& State, int32 ArrayIndex = 0) = 0;
+
+	/**
+	 * Writes a POD Array property to the output stream.
+	 * @note implementations will support only a Int8 or Byte array at the moment
+	 * 
+	 * State.ValueProperty points to the property that holds the value to write. needs to be an ArrayProperty with a properly supported InnerProperty.
+	 * State.ValueData points to the actual data to write. The array itself in this case
+	 * State.TypeInfo contains the data's type information
+	 *
+	 * @param State The serializer's current state.
+	 * @return true if the array was properly written entirely as a pod array, false is we need to fallback to per element serialization
+	 * @see BeginArray, BeginStructure, EndArray, EndStructure, WriteComment
+	 */
+	virtual bool WritePODArray(const FStructSerializerState& State) { return false; };
 
 public:
 

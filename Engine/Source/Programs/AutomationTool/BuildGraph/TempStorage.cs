@@ -1059,9 +1059,33 @@ namespace AutomationTool
 				Parallel.ForEach(ZipFiles,
 					(ZipFile) =>
 					{
-						using (var ZipArchive = Ionic.Zip.ZipFile.Read(ZipFile.FullName))
+						int Retries = 3;
+						while (true)
 						{
-							ZipArchive.ExtractAll(RootDir.FullName, Ionic.Zip.ExtractExistingFileAction.OverwriteSilently);
+							try
+							{
+								using (var ZipArchive = Ionic.Zip.ZipFile.Read(ZipFile.FullName))
+								{
+									// Overwrite silently is failing in some cases, so try to clear out any existing files in advance of extracting.
+									foreach (string EntryFileName in ZipArchive.EntryFileNames)
+									{
+										string ExtractedFilePath = Path.Combine(RootDir.FullName, EntryFileName);
+										if (File.Exists(ExtractedFilePath))
+										{
+											File.Delete(ExtractedFilePath);
+										}
+									}
+									ZipArchive.ExtractAll(RootDir.FullName, Ionic.Zip.ExtractExistingFileAction.OverwriteSilently);
+								}
+								break;
+							}
+							catch (Exception Ex)
+							{
+								if (Retries-- == 0)
+								{
+									throw new AutomationException(Ex, "Failed to unzip '{0}' to '{1}'.", ZipFile.FullName, RootDir.FullName);
+								}
+							}
 						}
 					});
 			}
@@ -1093,7 +1117,25 @@ namespace AutomationTool
 									{
 										Directory.CreateDirectory(Path.GetDirectoryName(ExtractedFilename));
 									}
-									Entry.ExtractToFile(ExtractedFilename, true);
+
+									int UnzipAttempts = 3;
+									while (UnzipAttempts-- > 0)
+									{
+										try
+										{
+											Entry.ExtractToFile(ExtractedFilename, true);
+											break;
+										}
+										catch (IOException IOEx)
+										{
+											if (UnzipAttempts == 0)
+											{
+												throw;
+											}
+
+											Log.TraceWarning("Failed to unzip '{0}' from '{1}' to '{2}', retrying.. (Error: {3})", Entry.FullName, ZipFile.FullName, ExtractedFilename, IOEx.Message);
+										}
+									}
 								}
 							}
 						}
@@ -1183,6 +1225,10 @@ namespace AutomationTool
 				return true;
 			}
 			if (FileName.StartsWith("lib", StringComparison.OrdinalIgnoreCase) && FileName.EndsWith(".dylib", StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+			if (FileName.Equals("plugInfo.json", StringComparison.OrdinalIgnoreCase))
 			{
 				return true;
 			}

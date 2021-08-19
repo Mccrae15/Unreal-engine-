@@ -66,6 +66,9 @@ class USimpleConstructionScript : public UObject
 	{
 		return GetSceneRootComponentTemplate(false, OutSCSNode);
 	}
+
+	/** Saves the current state of SimpleConstructionScript and its nodes to the transaction buffer. */
+	ENGINE_API void SaveToTransactionBuffer();
 #endif
 
 	/** Return the Blueprint associated with this SCS instance */
@@ -82,7 +85,11 @@ class USimpleConstructionScript : public UObject
 #endif	
 
 	/** Return immutable references to nodes in tree as a flat list */
-	ENGINE_API TArray<const USCS_Node*> GetAllNodesConst() const;
+	UE_DEPRECATED(4.27, "GetAllNodesConst is being removed as it provides no unique functionality that GetAllNodes cannot be used for.")
+	ENGINE_API TArray<const USCS_Node*> GetAllNodesConst() const
+	{
+		return TArray<const USCS_Node*>(GetAllNodes());
+	}
 
 	/** Provides read-only access to the root node set */
 	const ENGINE_API TArray<USCS_Node*>& GetRootNodes() const { return RootNodes; }

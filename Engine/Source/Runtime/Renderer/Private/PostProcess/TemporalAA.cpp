@@ -186,6 +186,7 @@ class FTAAStandaloneCS : public FGlobalShader
 		SHADER_PARAMETER(FVector4, ScreenPosToHistoryBufferUV)
 
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+		SHADER_PARAMETER_SRV(Buffer<float4>, EyeAdaptationBuffer)
 
 		// Inputs
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, InputSceneColor)
@@ -205,7 +206,7 @@ class FTAAStandaloneCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, StencilTexture)
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
-		
+
 		// Temporal upsample specific parameters.
 		SHADER_PARAMETER(FVector4, InputViewSize)
 		SHADER_PARAMETER(FVector2D, InputViewMin)
@@ -279,7 +280,7 @@ class FTAAStandaloneCS : public FGlobalShader
 		{
 			return false;
 		}
-		
+
 		// Non filtering option is only for upsampling.
 		if (!PermutationVector.Get<FTAAUpsampleFilteredDim>() &&
 			PermutationVector.Get<FTAAPassConfigDim>() != ETAAPassConfig::MainUpsampling)
@@ -293,14 +294,20 @@ class FTAAStandaloneCS : public FGlobalShader
 		{
 			return false;
 		}
-
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+		
+		//Only Main and MainUpsampling config without DownSample permutations are supported on mobile platform.
+		return SupportsGen4TAA(Parameters.Platform) && (!IsMobilePlatform(Parameters.Platform) || ((PermutationVector.Get<FTAAPassConfigDim>() == ETAAPassConfig::Main || PermutationVector.Get<FTAAPassConfigDim>() == ETAAPassConfig::MainUpsampling) && !PermutationVector.Get<FTAADownsampleDim>()));
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZEX"), GTemporalAATileSizeX);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZEY"), GTemporalAATileSizeY);
+
+		bool bIsMobileTiledGPU = RHIHasTiledGPU(Parameters.Platform) || IsSimulatedPlatform(Parameters.Platform);
+
+		// There are some mobile specific shader optimizations need to be set in the shader, such as disable shared memory usage, disable stencil texture sampling.
+		OutEnvironment.SetDefine(TEXT("AA_MOBILE_CONFIG"), bIsMobileTiledGPU ? 1 : 0);
 	}
 }; // class FTAAStandaloneCS
 
@@ -636,7 +643,7 @@ FTAAOutputs AddTemporalAAPass(
 
 	// Whether this is main TAA pass;
 	const bool bIsMainPass = IsMainTAAConfig(Inputs.Pass);
-	
+
 	// Whether to use camera cut shader permutation or not.
 	const bool bCameraCut = !InputHistory.IsValid() || View.bCameraCut;
 
@@ -883,7 +890,14 @@ FTAAOutputs AddTemporalAAPass(
 				ResDivisorInv * InputViewRect.Min.Y * InvSizeY);
 		}
 
-		PassParameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+		if (View.GetFeatureLevel() <= ERHIFeatureLevel::ES3_1)
+		{
+			PassParameters->EyeAdaptationBuffer = GetEyeAdaptationBuffer(View);
+		}
+		else
+		{
+			PassParameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+		}
 
 		// Temporal upsample specific shader parameters.
 		{
@@ -943,7 +957,7 @@ FTAAOutputs AddTemporalAAPass(
 			PassParameters,
 			FComputeShaderUtils::GetGroupCount(PracticableDestRect.Size(), GTemporalAATileSizeX));
 	}
-	
+
 	if (!View.bStatePrevViewInfoIsReadOnly)
 	{
 		OutputHistory->SafeRelease();
@@ -1173,7 +1187,7 @@ static void AddGen5MainTemporalAAPasses(
 				LowFrequencyExtent,
 				PF_FloatR11G11B10,
 				FClearValueBinding::None,
-				/* InTargetableFlags = */ TexCreate_ShaderResource | TexCreate_UAV);
+				/* InFlags = */ TexCreate_ShaderResource | TexCreate_UAV);
 
 			PredictionSceneColorTexture = GraphBuilder.CreateTexture(Desc, TEXT("TAA.Decimated.SceneColor"));
 
@@ -1507,7 +1521,7 @@ static void AddGen4MainTemporalAAPasses(
 const ITemporalUpscaler* GTemporalUpscaler = nullptr;
 
 class FDefaultTemporalUpscaler : public ITemporalUpscaler
-{ 
+{
 public:
 
 	virtual const TCHAR* GetDebugName() const

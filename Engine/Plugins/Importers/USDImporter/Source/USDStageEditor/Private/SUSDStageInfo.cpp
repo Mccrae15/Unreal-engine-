@@ -28,7 +28,7 @@ void SUsdStageInfo::Construct( const FArguments& InArgs, AUsdStageActor* InUsdSt
 
 	if ( InUsdStageActor )
 	{
-		InUsdStageActor->GetUsdListener().GetOnStageInfoChanged().AddSP(this, &SUsdStageInfo::OnStageInfoChanged );
+		InUsdStageActor->GetUsdListener().GetOnObjectsChanged().AddSP(this, &SUsdStageInfo::OnObjectsChanged );
 	}
 
 	ChildSlot
@@ -68,9 +68,9 @@ void SUsdStageInfo::Construct( const FArguments& InArgs, AUsdStageActor* InUsdSt
 				.Text( this, &SUsdStageInfo::GetMetersPerUnit )
 				.IsReadOnly_Lambda([this]()
 				{
-					if ( AUsdStageActor* StageActor = UsdStageActor.Get() )
+					if ( const AUsdStageActor* StageActor = UsdStageActor.Get() )
 					{
-						return !( bool ) UsdStageActor->GetUsdStage();
+						return !( bool ) StageActor->GetUsdStage();
 					}
 					return true;
 				})
@@ -86,7 +86,7 @@ void SUsdStageInfo::RefreshStageInfos( AUsdStageActor* InUsdStageActor )
 
 	if ( InUsdStageActor )
 	{
-		if ( const UE::FUsdStage& UsdStage = UsdStageActor->GetUsdStage() )
+		if ( const UE::FUsdStage& UsdStage = static_cast< const AUsdStageActor* >( UsdStageActor.Get() )->GetUsdStage() )
 		{
 			StageInfos.RootLayerDisplayName = FText::FromString( UsdStage.GetRootLayer().GetDisplayName() );
 			StageInfos.MetersPerUnit = UsdUtils::GetUsdStageMetersPerUnit( UsdStage );
@@ -102,7 +102,7 @@ SUsdStageInfo::~SUsdStageInfo()
 {
 	if ( AUsdStageActor* StageActor = UsdStageActor.Get() )
 	{
-		StageActor->GetUsdListener().GetOnStageInfoChanged().RemoveAll( this );
+		StageActor->GetUsdListener().GetOnObjectsChanged().RemoveAll( this );
 	}
 }
 
@@ -118,9 +118,31 @@ FText SUsdStageInfo::GetMetersPerUnit() const
 	}
 }
 
-void SUsdStageInfo::OnStageInfoChanged( const TArray<FString>& ChangedFields )
+void SUsdStageInfo::OnObjectsChanged( const UsdUtils::FObjectChangesByPath& InfoChanges, const UsdUtils::FObjectChangesByPath& ResyncChanges )
 {
-	if ( AUsdStageActor* StageActor = UsdStageActor.Get() )
+	bool bHasStageChanges = false;
+	for ( const TPair<FString, TArray<UsdUtils::FObjectChangeNotice>>& Change : InfoChanges )
+	{
+		if ( Change.Key == TEXT( "/" ) )
+		{
+			bHasStageChanges = true;
+			break;
+		}
+	}
+	if ( !bHasStageChanges )
+	{
+		for ( const TPair<FString, TArray<UsdUtils::FObjectChangeNotice>>& Change : ResyncChanges )
+		{
+			if ( Change.Key == TEXT( "/" ) )
+			{
+				bHasStageChanges = true;
+				break;
+			}
+		}
+	}
+
+	AUsdStageActor* StageActor = UsdStageActor.Get();
+	if ( bHasStageChanges && StageActor )
 	{
 		RefreshStageInfos( StageActor );
 	}
@@ -146,7 +168,7 @@ void SUsdStageInfo::OnMetersPerUnitCommitted( const FText& InUnitsPerMeterText, 
 		MetersPerUnit
 	) );
 
-	UsdUtils::SetUsdStageMetersPerUnit( UsdStageActor->GetUsdStage(), MetersPerUnit );
+	UsdUtils::SetUsdStageMetersPerUnit( static_cast< const AUsdStageActor* >( UsdStageActor.Get() )->GetUsdStage(), MetersPerUnit );
 	RefreshStageInfos( UsdStageActor.Get() );
 }
 

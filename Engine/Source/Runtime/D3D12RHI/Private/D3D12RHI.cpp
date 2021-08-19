@@ -167,6 +167,9 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	GPixelFormats[PF_R16G16B16A16_UNORM].PlatformFormat = DXGI_FORMAT_R16G16B16A16_UNORM;
 	GPixelFormats[PF_R16G16B16A16_SNORM].PlatformFormat = DXGI_FORMAT_R16G16B16A16_SNORM;
 
+	GPixelFormats[PF_NV12].PlatformFormat = DXGI_FORMAT_NV12;
+	GPixelFormats[PF_NV12].Supported = true;
+
 	// MS - Not doing any feature level checks. D3D12 currently supports these limits.
 	// However this may need to be revisited if new feature levels are introduced with different HW requirement
 	GSupportsSeparateRenderTargetBlendState = true;
@@ -201,11 +204,12 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	}
 
 	// Enable async compute by default
-	// #FIXME: disabling D3D12 async compute to unblock Dev-RenderPlat-Staging copy-up. #JIRA UE-97888
 	GEnableAsyncCompute = true;
 
 	// Manually enable Async BVH build for D3D12 RHI
 	GRHISupportsRayTracingAsyncBuildAccelerationStructure = true;
+
+	GRHISupportsPipelineFileCache = PLATFORM_WINDOWS;
 }
 
 FD3D12DynamicRHI::~FD3D12DynamicRHI()
@@ -353,6 +357,16 @@ void FD3D12DynamicRHI::RHIReleaseThreadOwnership()
 void* FD3D12DynamicRHI::RHIGetNativeDevice()
 {
 	return (void*)GetAdapter().GetD3DDevice();
+}
+
+void* FD3D12DynamicRHI::RHIGetNativeGraphicsQueue()
+{
+	return (void*)RHIGetD3DCommandQueue();
+}
+
+void* FD3D12DynamicRHI::RHIGetNativeComputeQueue()
+{
+	return (void*)RHIGetD3DCommandQueue();
 }
 
 void* FD3D12DynamicRHI::RHIGetNativeInstance()
@@ -553,7 +567,7 @@ uint64 FD3D12SubmissionGapRecorder::SubmitSubmissionTimestampsForFrame(uint32 Fr
 	{
 		static TConsoleVariableData<int32>* VSyncIntervalCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("rhi.syncinterval"));
 
-		if (VSyncIntervalCVar && VSyncIntervalCVar->GetValueOnRenderThread() > 0)
+		if (VSyncIntervalCVar && VSyncIntervalCVar->GetValueOnRenderThread() > 0 && !PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING)
 		{
 			int32 offset = PrevFrameBeginSubmissionTimestamps.Num() - (EndFrameSlotIdx - (PresentSlotIdx + 2));
 			if (PrevFrameBeginSubmissionTimestamps.IsValidIndex(offset))

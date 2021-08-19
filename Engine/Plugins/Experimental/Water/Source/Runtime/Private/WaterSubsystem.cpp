@@ -20,6 +20,7 @@
 #include "Interfaces/Interface_PostProcessVolume.h"
 #include "SceneView.h"
 #include "Math/NumericLimits.h"
+#include "BuoyancyManager.h"
 #include "WaterRuntimeSettings.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/StaticMesh.h"
@@ -129,12 +130,21 @@ struct FUnderwaterPostProcessDebugInfo
 
 // ----------------------------------------------------------------------------------
 
+#if WITH_EDITOR
+
+bool UWaterSubsystem::bAllowWaterSubsystemOnPreviewWorld = false;
+
+#endif // WITH_EDITOR
+
+// ----------------------------------------------------------------------------------
+
 UWaterSubsystem::UWaterSubsystem()
 {
 	SmoothedWorldTimeSeconds = 0.f;
 	NonSmoothedWorldTimeSeconds = 0.f;
 	PrevWorldTimeSeconds = 0.f;
 	bUnderWaterForAudio = false;
+	bPauseWaveTime = false;
 
 	struct FConstructorStatics
 	{
@@ -153,7 +163,7 @@ UWaterSubsystem::UWaterSubsystem()
 	DefaultRiverMesh = ConstructorStatics.RiverMesh.Get();
 }
 
-UWaterSubsystem* UWaterSubsystem::GetWaterSubsystem(UWorld* InWorld)
+UWaterSubsystem* UWaterSubsystem::GetWaterSubsystem(const UWorld* InWorld)
 {
 	if (InWorld)
 	{
@@ -175,8 +185,10 @@ FWaterBodyManager* UWaterSubsystem::GetWaterBodyManager(UWorld* InWorld)
 
 void UWaterSubsystem::Tick(float DeltaTime)
 {
-	UWorld* World = GetWorld();
-	if (FreezeWaves == 0)
+	Super::Tick(DeltaTime);
+
+	check(GetWorld() != nullptr);
+	if (FreezeWaves == 0 && bPauseWaveTime == false)
 	{
 		NonSmoothedWorldTimeSeconds += DeltaTime;
 	}
@@ -209,9 +221,27 @@ TStatId UWaterSubsystem::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(UWaterSubsystem, STATGROUP_Tickables);
 }
 
+bool UWaterSubsystem::DoesSupportWorldType(EWorldType::Type WorldType) const
+{
+#if WITH_EDITOR
+	// In editor, don't let preview worlds instantiate a water subsystem (except if explicitly allowed by a tool that requested it by setting bAllowWaterSubsystemOnPreviewWorld)
+	if (WorldType == EWorldType::EditorPreview)
+	{
+		return bAllowWaterSubsystemOnPreviewWorld;
+	}
+#endif // WITH_EDITOR
+
+	return WorldType == EWorldType::Game || WorldType == EWorldType::Editor || WorldType == EWorldType::PIE;
+}
+
 void UWaterSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
-	WaterBodyManager.Initialize();
+	Super::Initialize(Collection);
+
+	UWorld* World = GetWorld();
+	check(World != nullptr);
+
+	WaterBodyManager.Initialize(World);
 
 	bUsingSmoothedTime = false;
 	FConsoleVariableDelegate NotifyWaterScalabilityChanged = FConsoleVariableDelegate::CreateUObject(this, &UWaterSubsystem::NotifyWaterScalabilityChangedInternal);
@@ -226,15 +256,30 @@ void UWaterSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 #endif //WITH_EDITOR
 	ApplyRuntimeSettings(GetDefault<UWaterRuntimeSettings>(), EPropertyChangeType::ValueSet);
 
-	GetWorld()->OnBeginPostProcessSettings.AddUObject(this, &UWaterSubsystem::ComputeUnderwaterPostProcess);
-	GetWorld()->InsertPostProcessVolume(&UnderwaterPostProcessVolume);
+	World->OnBeginPostProcessSettings.AddUObject(this, &UWaterSubsystem::ComputeUnderwaterPostProcess);
+	World->InsertPostProcessVolume(&UnderwaterPostProcessVolume);
+	{
+		FActorSpawnParameters SpawnInfo;
+		SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		SpawnInfo.ObjectFlags = RF_Transient;
 
+#if WITH_EDITOR
+		// The buoyancy manager should be a subsytem really, but for now, just hide it from the outliner : 
+		SpawnInfo.bHideFromSceneOutliner = true;
+#endif //WITH_EDITOR
+
+		// Store the buoyancy manager we create for future use.
+		BuoyancyManager = World->SpawnActor<ABuoyancyManager>(SpawnInfo);
+	}
 	UCollisionProfile::Get()->OnLoadProfileConfig.AddUObject(this, &UWaterSubsystem::OnLoadProfileConfig);
 	AddWaterCollisionProfile();
 }
 
 void UWaterSubsystem::Deinitialize()
 {
+	UWorld* World = GetWorld();
+	check(World != nullptr);
+
 	UCollisionProfile::Get()->OnLoadProfileConfig.RemoveAll(this);
 
 	FConsoleVariableDelegate NullCallback;
@@ -242,33 +287,37 @@ void UWaterSubsystem::Deinitialize()
 	CVarShallowWaterSim->SetOnChangedCallback(NullCallback);
 	CVarWaterEnabled->SetOnChangedCallback(NullCallback);
 
-	GetWorld()->OnBeginPostProcessSettings.RemoveAll(this);
-	GetWorld()->RemovePostProcessVolume(&UnderwaterPostProcessVolume);
+	World->OnBeginPostProcessSettings.RemoveAll(this);
+	World->RemovePostProcessVolume(&UnderwaterPostProcessVolume);
 
 	WaterBodyManager.Deinitialize();
 
 #if WITH_EDITOR
 	GetDefault<UWaterRuntimeSettings>()->OnSettingsChange.RemoveAll(this);
 #endif //WITH_EDITOR
+
+	Super::Deinitialize();
 }
 
 void UWaterSubsystem::ApplyRuntimeSettings(const UWaterRuntimeSettings* Settings, EPropertyChangeType::Type ChangeType)
 {
+	UWorld* World = GetWorld();
+	check(World != nullptr);
 	UnderwaterTraceChannel = Settings->CollisionChannelForWaterTraces;
 	MaterialParameterCollection = Settings->MaterialParameterCollection.LoadSynchronous();
 
 #if WITH_EDITOR
-	for (TActorIterator<AWaterBody> ActorItr(GetWorld()); ActorItr; ++ActorItr)
+	for (TActorIterator<AWaterBody> ActorItr(World); ActorItr; ++ActorItr)
 	{
 		(*ActorItr)->UpdateActorIcon();
 	}
 
-	for (TActorIterator<AWaterBodyIsland> ActorItr(GetWorld()); ActorItr; ++ActorItr)
+	for (TActorIterator<AWaterBodyIsland> ActorItr(World); ActorItr; ++ActorItr)
 	{
 		(*ActorItr)->UpdateActorIcon();
 	}
 
-	for (TActorIterator<AWaterBodyExclusionVolume> ActorItr(GetWorld()); ActorItr; ++ActorItr)
+	for (TActorIterator<AWaterBodyExclusionVolume> ActorItr(World); ActorItr; ++ActorItr)
 	{
 		(*ActorItr)->UpdateActorIcon();
 	}
@@ -392,8 +441,15 @@ void UWaterSubsystem::SetShouldOverrideSmoothedWorldTimeSeconds(bool bOverride)
 	bUsingOverrideWorldTimeSeconds = bOverride;
 }
 
+void UWaterSubsystem::SetShouldPauseWaveTime(bool bInPauseWaveTime)
+{
+	bPauseWaveTime = bInPauseWaveTime;
+}
+
 void UWaterSubsystem::SetOceanFloodHeight(float InFloodHeight)
 {
+	if (UWorld* World = GetWorld())
+	{
 	const float ClampedFloodHeight = FMath::Max(0.0f, InFloodHeight);
 
 	if (FloodHeight != ClampedFloodHeight)
@@ -408,21 +464,27 @@ void UWaterSubsystem::SetOceanFloodHeight(float InFloodHeight)
 		}
 
 		// All water body actors need to update their underwater post process MID as it depends on the ocean global height : 
-		for (TActorIterator<AWaterBody> ActorItr(GetWorld()); ActorItr; ++ActorItr)
+			for (TActorIterator<AWaterBody> ActorItr(World); ActorItr; ++ActorItr)
 		{
 			AWaterBody* WaterBody = *ActorItr;
 			WaterBody->UpdateMaterialInstances();
 		}
 	}
 }
+}
 
-AWaterMeshActor* UWaterSubsystem::GetWaterMeshActor()
+AWaterMeshActor* UWaterSubsystem::GetWaterMeshActor() const
 {
+	if (UWorld* World = GetWorld())
+	{
 	// @todo water: this assumes only one water mesh actor right now.  In the future we may need to associate a water mesh actor with a water body more directly
-	TActorIterator<AWaterMeshActor> It(GetWorld());
+		TActorIterator<AWaterMeshActor> It(World);
 	WaterMeshActor = It ? *It : nullptr;
 
 	return WaterMeshActor;
+}
+
+	return nullptr;
 }
 
 float UWaterSubsystem::GetOceanBaseHeight() const
@@ -437,10 +499,13 @@ float UWaterSubsystem::GetOceanBaseHeight() const
 
 void UWaterSubsystem::MarkAllWaterMeshesForRebuild()
 {
-	for (AWaterMeshActor* WaterMesh : TActorRange<AWaterMeshActor>(GetWorld()))
+	if (UWorld* World = GetWorld())
+	{
+		for (AWaterMeshActor* WaterMesh : TActorRange<AWaterMeshActor>(World))
 	{
 		WaterMesh->MarkWaterMeshComponentForRebuild();
 	}
+}
 }
 
 void UWaterSubsystem::NotifyWaterScalabilityChangedInternal(IConsoleVariable* CVar)
@@ -450,11 +515,14 @@ void UWaterSubsystem::NotifyWaterScalabilityChangedInternal(IConsoleVariable* CV
 
 void UWaterSubsystem::NotifyWaterEnabledChangedInternal(IConsoleVariable* CVar)
 {
+	if (UWorld* World = GetWorld())
+	{
 	// Water body visibility depends on CVarWaterEnabled
-	for (AWaterBody* WaterBody : TActorRange<AWaterBody>(GetWorld()))
+		for (AWaterBody* WaterBody : TActorRange<AWaterBody>(World))
 	{
 		WaterBody->UpdateWaterComponentVisibility();
 	}
+}
 }
 
 struct FWaterBodyPostProcessQuery
@@ -493,7 +561,8 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 {
 	SCOPE_CYCLE_COUNTER(STAT_WaterIsUnderwater);
 
-	if (SceneView->Family->EngineShowFlags.PostProcessing == 0)
+	UWorld* World = GetWorld();
+	if ((World == nullptr) || (SceneView->Family->EngineShowFlags.PostProcessing == 0))
 	{
 		return;
 	}
@@ -516,7 +585,7 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 	TArray<FHitResult> Hits;
 	TArray<FWaterBodyPostProcessQuery, TInlineAllocator<4>> WaterBodyQueriesToProcess;
 	const AWaterMeshActor* LocalWaterMeshActor = GetWaterMeshActor();
-	if ((LocalWaterMeshActor != nullptr) && GetWorld()->SweepMultiByChannel(Hits, ViewLocation, ViewLocation + FVector(0, 0, TraceDistance), FQuat::Identity, UnderwaterTraceChannel, FCollisionShape::MakeSphere(TraceDistance), TraceSimple))
+	if ((LocalWaterMeshActor != nullptr) && World->SweepMultiByChannel(Hits, ViewLocation, ViewLocation + FVector(0, 0, TraceDistance), FQuat::Identity, UnderwaterTraceChannel, FCollisionShape::MakeSphere(TraceDistance), TraceSimple))
 	{
 		if (Hits.Num() > 1)
 		{
@@ -599,7 +668,7 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 	}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	ShowOnScreenDebugInfo(UnderwaterPostProcessDebugInfo);
+	ShowOnScreenDebugInfo(ViewLocation, UnderwaterPostProcessDebugInfo);
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)						
 }
 
@@ -609,7 +678,7 @@ void UWaterSubsystem::SetMPCTime(float Time, float PrevTime)
 	{
 		if (MaterialParameterCollection)
 		{
-			UMaterialParameterCollectionInstance* MaterialParameterCollectionInstance = GetWorld()->GetParameterCollectionInstance(MaterialParameterCollection);
+			UMaterialParameterCollectionInstance* MaterialParameterCollectionInstance = World->GetParameterCollectionInstance(MaterialParameterCollection);
 			const static FName TimeParam(TEXT("Time"));
 			const static FName PrevTimeParam(TEXT("PrevTime"));
 			MaterialParameterCollectionInstance->SetScalarParameterValue(TimeParam, Time);
@@ -631,7 +700,7 @@ void UWaterSubsystem::AdjustUnderwaterWaterInfoQueryFlags(EWaterBodyQueryFlags& 
 }
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-void UWaterSubsystem::ShowOnScreenDebugInfo(const FUnderwaterPostProcessDebugInfo& InDebugInfo)
+void UWaterSubsystem::ShowOnScreenDebugInfo(const FVector& InViewLocation, const FUnderwaterPostProcessDebugInfo& InDebugInfo)
 {
 	// Visualize the active post process if any
 	if (VisualizeActiveUnderwaterPostProcess == 0)
@@ -640,6 +709,9 @@ void UWaterSubsystem::ShowOnScreenDebugInfo(const FUnderwaterPostProcessDebugInf
 	}
 
 	TArray<FText, TInlineAllocator<8>> OutputStrings;
+
+	OutputStrings.Add(FText::Format(LOCTEXT("VisualizeActiveUnderwaterPostProcess_ViewLocationDetails", "Underwater post process debug : view location : {0}"), FText::FromString(InViewLocation.ToCompactString())));
+
 	if (InDebugInfo.ActiveWaterBody.IsValid())
 	{
 		UMaterialInstanceDynamic* MID = InDebugInfo.ActiveWaterBody->GetUnderwaterPostProcessMaterialInstance();
@@ -705,6 +777,23 @@ void UWaterSubsystem::ShowOnScreenDebugInfo(const FUnderwaterPostProcessDebugInf
 	}
 }
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+// ----------------------------------------------------------------------------------
+
+#if WITH_EDITOR
+
+UWaterSubsystem::FScopedAllowWaterSubsystemOnPreviewWorld::FScopedAllowWaterSubsystemOnPreviewWorld(bool bNewValue)
+{
+	bPreviousValue = UWaterSubsystem::GetAllowWaterSubsystemOnPreviewWorld();
+	UWaterSubsystem::SetAllowWaterSubsystemOnPreviewWorld(bNewValue);
+}
+
+UWaterSubsystem::FScopedAllowWaterSubsystemOnPreviewWorld::~FScopedAllowWaterSubsystemOnPreviewWorld()
+{
+	UWaterSubsystem::SetAllowWaterSubsystemOnPreviewWorld(bPreviousValue);
+}
+
+#endif // WITH_EDITOR
 
 // ----------------------------------------------------------------------------------
 

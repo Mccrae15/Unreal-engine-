@@ -42,7 +42,7 @@ class FByteBufferShader : public FGlobalShader
 				&& FDataDrivenShaderPlatformInfo::GetInfo(Parameters.Platform).bSupportsByteBufferComputeShaders;
 				*/
 			// TODO: Workaround for FDataDrivenShaderPlatformInfo::GetInfo not being properly filled out yet.
-			return FDataDrivenShaderPlatformInfo::GetSupportsByteBufferComputeShaders(Parameters.Platform) || Parameters.Platform == SP_PS4 || Parameters.Platform == SP_PCD3D_SM5 || Parameters.Platform == SP_XBOXONE_D3D12;
+			return FDataDrivenShaderPlatformInfo::GetSupportsByteBufferComputeShaders(Parameters.Platform) || Parameters.Platform == SP_PCD3D_SM5;
 		}
 	}
 
@@ -327,7 +327,7 @@ RENDERCORE_API bool ResizeResourceIfNeeded<FTextureRWBuffer2D>(FRHICommandList& 
 	{
 		FTextureRWBuffer2D NewTexture;
 		NewTexture.Initialize(BytesPerElement, Float4sPerLine, NumLines, PF_A32B32G32R32F, TexCreate_RenderTargetable | TexCreate_UAV);
-		MemcpyResource(RHICmdList, NewTexture, Texture, 0, 0, NumBytes);
+		MemcpyResource(RHICmdList, NewTexture, Texture, NumBytes, 0, 0);
 		Texture = NewTexture;
 		return true;
 	}

@@ -322,7 +322,13 @@ void FPImplRecastNavMesh::Serialize( FArchive& Ar, int32 NavMeshVersion )
 	{
 		TilesToSave.Reserve(DetourNavMesh->getMaxTiles());
 		
-		if (NavMeshOwner->SupportsStreaming() && !IsRunningCommandlet())
+		const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<const UNavigationSystemV1>(NavMeshOwner->GetWorld());
+
+		// Need to keep the check !IsRunningCommandlet() for the case where maps are cooked and saved from UCookCommandlet.
+		// In that flow the nav bounds are not set (no bounds means no tiles to save and the navmesh would be saved without tiles).
+		// This flow would benefit to be revisited since navmesh serialization should not be different whether it was run or not by a commandlet.
+		// Fixes missing navmesh regression (UE-103604).
+		if (NavMeshOwner->SupportsStreaming() && NavSys && !IsRunningCommandlet())
 		{
 			// We save only tiles that belongs to this level
 			GetNavMeshTilesIn(NavMeshOwner->GetNavigableBoundsInLevel(NavMeshOwner->GetLevel()), TilesToSave);
@@ -342,6 +348,7 @@ void FPImplRecastNavMesh::Serialize( FArchive& Ar, int32 NavMeshVersion )
 		}
 		
 		NumTiles = TilesToSave.Num();
+		UE_LOG(LogNavigation, VeryVerbose, TEXT("%s Ar.IsSaving() %i tiles in %s."), ANSI_TO_TCHAR(__FUNCTION__), NumTiles, *NavMeshOwner->GetFullName());
 	}
 
 	Ar << NumTiles;
@@ -893,6 +900,16 @@ ENavigationQueryResult::Type FPImplRecastNavMesh::FindPath(const FVector& StartL
 	dtQueryResult PathResult;
 	const dtStatus FindPathStatus = NavQuery.findPath(StartPolyID, EndPolyID, &RecastStartPos.X, &RecastEndPos.X, CostLimit, QueryFilter, PathResult, 0);
 
+	return PostProcessPathInternal(FindPathStatus, Path, NavQuery, QueryFilter, StartPolyID, EndPolyID, RecastStartPos, RecastEndPos, PathResult);
+}
+
+
+ENavigationQueryResult::Type FPImplRecastNavMesh::PostProcessPathInternal(dtStatus FindPathStatus, FNavMeshPath& Path, 
+	const dtNavMeshQuery& NavQuery, const dtQueryFilter* QueryFilter, 
+	NavNodeRef StartPolyID, NavNodeRef EndPolyID, 
+	const FVector& RecastStartPos, const FVector& RecastEndPos, 
+	dtQueryResult& PathResult) const
+{
 	// check for special case, where path has not been found, and starting polygon
 	// was the one closest to the target
 	if (PathResult.size() == 1 && dtStatusDetail(FindPathStatus, DT_PARTIAL_RESULT))
@@ -1463,9 +1480,7 @@ bool FPImplRecastNavMesh::FindMoveAlongSurface(const FNavLocation& StartLocation
 	}
 
 	FRecastSpeciaLinkFilter LinkFilter(FNavigationSystem::GetCurrent<UNavigationSystemV1>(NavMeshOwner->GetWorld()), Owner);
-	// using 0 as NumNodes since findNearestPoly2D, being the only dtNavMeshQuery
-	// function we're using, is not utilizing m_nodePool
-	INITIALIZE_NAVQUERY(NavQuery, /*NumNodes=*/0, LinkFilter);
+	INITIALIZE_NAVQUERY(NavQuery, Filter.GetMaxSearchNodes(), LinkFilter);
 
 	const dtQueryFilter* QueryFilter = ((const FRecastQueryFilter*)(Filter.GetImplementation()))->GetAsDetourQueryFilter();
 	ensure(QueryFilter);
@@ -1638,6 +1653,56 @@ NavNodeRef FPImplRecastNavMesh::FindNearestPoly(FVector const& Loc, FVector cons
 	return INVALID_NAVNODEREF;
 }
 
+bool FPImplRecastNavMesh::FindPolysAroundCircle(const FVector& CenterPos, const NavNodeRef CenterNodeRef, const float Radius, const FNavigationQueryFilter& Filter, const UObject* Owner, TArray<NavNodeRef>* OutPolys, TArray<NavNodeRef>* OutPolysParent, TArray<float>* OutPolysCost, int* OutPolysCount) const
+{
+	// sanity check
+	if (DetourNavMesh == NULL || NavMeshOwner == NULL || CenterNodeRef == INVALID_NAVNODEREF)
+	{
+		return false;
+	}
+
+	// limit max number of polys found by that function
+	// if you need more, please scan manually using ARecastNavMesh::GetPolyNeighbors for A*/Dijkstra loop
+	const int32 MaxSearchLimit = 4096;
+	const int32 MaxSearchNodes = Filter.GetMaxSearchNodes();
+	ensureMsgf(MaxSearchNodes > 0 && MaxSearchNodes <= MaxSearchLimit, TEXT("MaxSearchNodes:%d is not within range: 0..%d"), MaxSearchNodes, MaxSearchLimit);
+
+	FRecastSpeciaLinkFilter LinkFilter(FNavigationSystem::GetCurrent<UNavigationSystemV1>(NavMeshOwner->GetWorld()), Owner);
+	INITIALIZE_NAVQUERY(NavQuery, Filter.GetMaxSearchNodes(), LinkFilter);
+
+	const dtQueryFilter* QueryFilter = ((const FRecastQueryFilter*)(Filter.GetImplementation()))->GetAsDetourQueryFilter();
+	if (ensure(QueryFilter))
+	{
+		if (OutPolys)
+		{
+			OutPolys->Reset();
+			OutPolys->AddUninitialized(MaxSearchNodes);
+		}
+
+		if (OutPolysParent)
+		{
+			OutPolysParent->Reset();
+			OutPolysParent->AddUninitialized(MaxSearchNodes);
+		}
+
+		if (OutPolysCost)
+		{
+			OutPolysCost->Reset();
+			OutPolysCost->AddUninitialized(MaxSearchNodes);
+		}
+
+		float RecastLoc[3];
+		Unr2RecastVector(CenterPos, RecastLoc);
+		const dtStatus Status = NavQuery.findPolysAroundCircle(CenterNodeRef, RecastLoc, Radius, QueryFilter, OutPolys ? OutPolys->GetData() : nullptr, OutPolysParent ? OutPolysParent->GetData() : nullptr, OutPolysCost ? OutPolysCost->GetData() : nullptr, OutPolysCount, MaxSearchNodes);
+		if (dtStatusSucceed(Status))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool FPImplRecastNavMesh::GetPolysWithinPathingDistance(FVector const& StartLoc, const float PathingDistance, 
 	const FNavigationQueryFilter& Filter, const UObject* Owner,
 	TArray<NavNodeRef>& FoundPolys, FRecastDebugPathfindingData* OutDebugData) const
@@ -1645,8 +1710,7 @@ bool FPImplRecastNavMesh::GetPolysWithinPathingDistance(FVector const& StartLoc,
 	ensure(PathingDistance > 0.0f && "PathingDistance <= 0 doesn't make sense");
 	
 	// limit max number of polys found by that function
-	// if you need some, please scan manually using ARecastNavMesh::GetPolyNeighbors for A*/Dijkstra loop
-	// 
+	// if you need more, please scan manually using ARecastNavMesh::GetPolyNeighbors for A*/Dijkstra loop
 	const int32 MaxSearchLimit = 4096;
 	const int32 MaxSearchNodes = Filter.GetMaxSearchNodes();
 	ensureMsgf(MaxSearchNodes > 0 && MaxSearchNodes <= MaxSearchLimit, TEXT("MaxSearchNodes:%d is not within range: 0..%d"), MaxSearchNodes, MaxSearchLimit);

@@ -8,16 +8,20 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 
 class FDisplayClusterConfiguratorOutputMappingWindowSlot;
-class FDisplayClusterConfiguratorToolkit;
+class FDisplayClusterConfiguratorBlueprintEditor;
 class IDisplayClusterConfiguratorTreeItem;
 class UDisplayClusterConfigurationClusterNode;
 class UDisplayClusterConfiguratorWindowNode;
+class SDisplayClusterConfiguratorExternalImage;
 
 class SDisplayClusterConfiguratorWindowNode
 	: public SDisplayClusterConfiguratorBaseNode
 {
 public:
+	friend class SCornerImage;
 	friend class SNodeInfo;
+
+	~SDisplayClusterConfiguratorWindowNode();
 
 	SLATE_BEGIN_ARGS(SDisplayClusterConfiguratorWindowNode)
 	{}
@@ -25,31 +29,51 @@ public:
 
 	void Construct(const FArguments& InArgs,
 		UDisplayClusterConfiguratorWindowNode* InWindowNode,
-		const TSharedRef<FDisplayClusterConfiguratorOutputMappingWindowSlot>& InWindowSlot,
-		const TSharedRef<FDisplayClusterConfiguratorToolkit>& InToolkit);
+		const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit);
 
 	//~ Begin SGraphNode interface
 	virtual void UpdateGraphNode() override;
+	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty = true) override;
+	virtual bool CanBeSelected(const FVector2D& MousePositionInNode) const override;
+	virtual FVector2D ComputeDesiredSize(float) const override;
+	virtual FVector2D GetPosition() const override;
 	//~ End SGraphNode interface
 
 	//~ Begin SDisplayClusterConfiguratorBaseNode interface
-	virtual UObject* GetEditingObject() const override;
-	virtual void SetNodePositionOffset(const FVector2D InLocalOffset) override;
-	virtual void SetNodeSize(const FVector2D InLocalSize) override;
-	virtual void OnSelectedItemSet(const TSharedRef<IDisplayClusterConfiguratorTreeItem>& InTreeItem) override;
+	virtual bool CanNodeBeSnapAligned() const override { return true; }
+	virtual bool CanNodeBeResized() const { return !IsClusterNodeLocked(); }
+	virtual bool IsAspectRatioFixed() const override;
+
+protected:
+	virtual int32 GetNodeLogicalLayer() const override;
 	//~ End SDisplayClusterConfiguratorBaseNode interface
 
-	TSharedRef<SWidget> GetCornerImageWidget();
-	TSharedRef<SWidget> CreateInfoWidget();
-
 private:
+	TSharedRef<SWidget> CreateBackground(const TAttribute<FSlateColor>& ColorAndOpacity);
+
 	const FSlateBrush* GetBorderBrush() const;
-	FMargin GetAreaResizeHandlePosition() const;
+	int32 GetBorderLayerOffset() const;
+	const FSlateBrush* GetNodeShadowBrush() const;
+	FMargin GetBackgroundPosition() const;
+	FSlateColor GetCornerColor() const;
+	FVector2D GetPreviewImageSize() const;
+	EVisibility GetPreviewImageVisibility() const;
+	int32 GetNodeTitleLayerOffset() const;
+	EVisibility GetNodeInfoVisibility() const;
+	EVisibility GetCornerImageVisibility() const;
+
+	bool CanShowInfoWidget() const;
+	bool CanShowCornerImageWidget() const;
+	bool IsClusterNodeLocked() const;
+
+	void OnPreviewImageChanged();
 
 private:
-	TWeakObjectPtr<UDisplayClusterConfiguratorWindowNode> WindowNodePtr;
+	TSharedPtr<SDisplayClusterConfiguratorExternalImage> PreviewImageWidget;
 
-	TWeakPtr<FDisplayClusterConfiguratorOutputMappingWindowSlot> WindowSlotPtr;
+	FVector2D WindowScaleFactor;
 
-	TWeakObjectPtr<UDisplayClusterConfigurationClusterNode> CfgClusterNodePtr;
+	FDelegateHandle ImageChangedHandle;
+
+	bool bLayerAboveViewports = false;
 };

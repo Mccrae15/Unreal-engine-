@@ -11,20 +11,29 @@
 #include "USDMemory.h"
 #include "USDTypesConversion.h"
 
+#include "UsdWrappers/UsdStage.h"
+
 #include "Animation/AnimCurveTypes.h"
 #include "AnimationRuntime.h"
 #include "AnimEncoding.h"
-#include "Factories/FbxSkeletalMeshImportData.h"
-#include "MeshUtilities.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Misc/CoreMisc.h"
 #include "Modules/ModuleManager.h"
-#include "ObjectTools.h"
 #include "Rendering/SkeletalMeshLODImporterData.h"
 #include "Rendering/SkeletalMeshLODModel.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 
-#if USE_USD_SDK
+#if WITH_EDITOR
+#include "Animation/DebugSkelMeshComponent.h"
+#include "Factories/FbxSkeletalMeshImportData.h"
+#include "ImportUtils/SkeletalMeshImportUtils.h"
+#include "MeshUtilities.h"
+#endif // WITH_EDITOR
+
+#if USE_USD_SDK && WITH_EDITOR
 #include "USDIncludesStart.h"
 	#include "pxr/usd/sdf/types.h"
 	#include "pxr/usd/usd/editContext.h"
@@ -34,6 +43,7 @@
 	#include "pxr/usd/usdGeom/subset.h"
 	#include "pxr/usd/usdGeom/tokens.h"
 	#include "pxr/usd/usdShade/tokens.h"
+	#include "pxr/usd/usdSkel/animation.h"
 	#include "pxr/usd/usdSkel/binding.h"
 	#include "pxr/usd/usdSkel/bindingAPI.h"
 	#include "pxr/usd/usdSkel/blendShape.h"
@@ -48,6 +58,20 @@
 
 namespace SkelDataConversionImpl
 {
+	// Adapted from ObjectTools as it is within an Editor-only module
+	FString SanitizeObjectName( const FString& InObjectName )
+	{
+		FString SanitizedText = InObjectName;
+		const TCHAR* InvalidChar = INVALID_OBJECTNAME_CHARACTERS;
+		while ( *InvalidChar )
+		{
+			SanitizedText.ReplaceCharInline( *InvalidChar, TCHAR( '_' ), ESearchCase::CaseSensitive );
+			++InvalidChar;
+		}
+
+		return SanitizedText;
+	}
+
 	// Adapted from LODUtilities.cpp
 	struct FMeshDataBundle
 	{
@@ -627,7 +651,7 @@ namespace UsdToUnrealImpl
 			BlendShape.Vertices.Empty();
 
 			MorphTarget->BaseSkelMesh = SkeletalMesh;
-			SkeletalMesh->MorphTargets.Add( MorphTarget );
+			SkeletalMesh->GetMorphTargets().Add( MorphTarget );
 		}
 
 		if ( bHasValidMorphTarget )
@@ -640,12 +664,18 @@ namespace UsdToUnrealImpl
 
 namespace UnrealToUsdImpl
 {
-	void ConvertSkeletalMeshLOD( const FSkeletalMeshLODModel& LODModel, pxr::UsdGeomMesh& UsdLODPrimGeomMesh, bool bHasVertexColors, pxr::VtArray< std::string >& MaterialAssignments, const TArray<int32>& LODMaterialMap, const pxr::UsdTimeCode TimeCode )
+	void ConvertSkeletalMeshLOD( const USkeletalMesh* SkeletalMesh, const FSkeletalMeshLODModel& LODModel, pxr::UsdGeomMesh& UsdLODPrimGeomMesh, bool bHasVertexColors, pxr::VtArray< std::string >& MaterialAssignments, const TArray<int32>& LODMaterialMap, const pxr::UsdTimeCode TimeCode, pxr::UsdPrim MaterialPrim )
 	{
 		FScopedUsdAllocs UsdAllocs;
 
 		pxr::UsdPrim MeshPrim = UsdLODPrimGeomMesh.GetPrim();
 		pxr::UsdStageRefPtr Stage = MeshPrim.GetStage();
+
+		// In 21.05 we now must apply the skel binding API to this mesh prim, or else the joints/etc. attributes may be ignored
+		if ( !pxr::UsdSkelBindingAPI::Apply( MeshPrim ) )
+		{
+			return;
+		}
 
 		if ( !Stage )
 		{
@@ -776,7 +806,9 @@ namespace UnrealToUsdImpl
 						{
 							for ( int32 InfluenceIndex = 0; InfluenceIndex < NumInfluencesPerVertex; ++InfluenceIndex )
 							{
-								JointIndices.push_back( Section.BoneMap[ Vertex.InfluenceBones [InfluenceIndex ] ] );
+								int32 BoneIndex = Section.BoneMap[ Vertex.InfluenceBones[ InfluenceIndex ] ];
+
+								JointIndices.push_back( BoneIndex );
 								JointWeights.push_back( Vertex.InfluenceWeights[ InfluenceIndex ] / 255.0f );
 							}
 						}
@@ -866,7 +898,7 @@ namespace UnrealToUsdImpl
 			// This LOD has a single material assignment, just add an unrealMaterials attribute to the mesh prim
 			if ( bHasUEMaterialAssignements && UnrealMaterialsForLOD.size() == 1 )
 			{
-				if ( pxr::UsdAttribute UEMaterialsAttribute = MeshPrim.CreateAttribute( UnrealIdentifiers::MaterialAssignment, pxr::SdfValueTypeNames->String ) )
+				if ( pxr::UsdAttribute UEMaterialsAttribute = MaterialPrim.CreateAttribute( UnrealIdentifiers::MaterialAssignment, pxr::SdfValueTypeNames->String ) )
 				{
 					UEMaterialsAttribute.Set( UnrealMaterialsForLOD[0] );
 				}
@@ -886,6 +918,14 @@ namespace UnrealToUsdImpl
 						UsdLODPrimGeomMesh.GetPath().AppendPath( pxr::SdfPath( "Section" + std::to_string( SectionIndex ) ) ),
 						UnrealToUsd::ConvertToken( TEXT( "GeomSubset" ) ).Get()
 					);
+
+					pxr::UsdPrim MaterialGeomSubsetPrim = GeomSubsetPrim;
+					if ( MaterialPrim.GetStage() != MeshPrim.GetStage() )
+					{
+						MaterialGeomSubsetPrim = MaterialPrim.GetStage()->OverridePrim(
+							MaterialPrim.GetPath().AppendPath( pxr::SdfPath( "Section" + std::to_string( SectionIndex ) ) )
+						);
+					}
 
 					pxr::UsdGeomSubset GeomSubsetSchema{ GeomSubsetPrim };
 
@@ -915,7 +955,7 @@ namespace UnrealToUsdImpl
 					pxr::UsdGeomSubset::SetFamilyType( UsdLODPrimGeomMesh, pxr::UsdShadeTokens->materialBind, pxr::UsdGeomTokens->partition );
 
 					// unrealMaterials attribute
-					if ( pxr::UsdAttribute UEMaterialsAttribute = GeomSubsetPrim.CreateAttribute( UnrealIdentifiers::MaterialAssignment, pxr::SdfValueTypeNames->String ) )
+					if ( pxr::UsdAttribute UEMaterialsAttribute = MaterialGeomSubsetPrim.CreateAttribute( UnrealIdentifiers::MaterialAssignment, pxr::SdfValueTypeNames->String ) )
 					{
 						UEMaterialsAttribute.Set( UnrealMaterialsForLOD[ SectionIndex ] );
 					}
@@ -973,16 +1013,31 @@ namespace UnrealToUsdImpl
 
 		// The first bone is the root, and has ParentIndex == -1, so do it separately here to void checking the indices for all bones
 		// Sanitize because ExportName can have spaces, which USD doesn't like
-		OutFullPaths[0] = ObjectTools::SanitizeObjectName(BoneNamesInOrder[0].ExportName);
+		OutFullPaths[0] = SkelDataConversionImpl::SanitizeObjectName(BoneNamesInOrder[0].ExportName);
 
 		// Bones are always stored in an increasing order, so we can do all paths in a single pass
 		for ( int32 BoneIndex = 1; BoneIndex < NumBones; ++BoneIndex )
 		{
 			const FMeshBoneInfo& BoneInfo = BoneNamesInOrder[ BoneIndex ];
-			FString SanitizedBoneName = ObjectTools::SanitizeObjectName(BoneInfo.ExportName);
+			FString SanitizedBoneName = SkelDataConversionImpl::SanitizeObjectName(BoneInfo.ExportName);
 
 			OutFullPaths[BoneIndex] = FString::Printf(TEXT("%s/%s"), *OutFullPaths[ BoneInfo.ParentIndex ], *SanitizedBoneName );
 		}
+	}
+
+	// Sets the JointsAttr value based on the bone paths of ReferenceSkeleton
+	void SetJoinsAttr( const FReferenceSkeleton& ReferenceSkeleton, pxr::UsdAttribute JointsAttr )
+	{
+		TArray<FString> FullBonePaths;
+		UnrealToUsdImpl::CreateFullBonePaths( ReferenceSkeleton.GetRefBoneInfo(), FullBonePaths );
+
+		pxr::VtArray<pxr::TfToken> Joints;
+		Joints.reserve( FullBonePaths.Num() );
+		for ( const FString& BonePath : FullBonePaths )
+		{
+			Joints.push_back( UnrealToUsd::ConvertToken( *BonePath ).Get() );
+		}
+		JointsAttr.Set( Joints );
 	}
 }
 
@@ -1193,11 +1248,6 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 			uint32 NumColors = UsdColors.size();
 			pxr::TfToken USDInterpType = ColorPrimvar.GetInterpolation();
 
-			auto ConvertToColor = []( const pxr::GfVec3f& UsdColor ) -> FColor
-			{
-				return FLinearColor( FLinearColor( UsdToUnreal::ConvertColor( UsdColor ) ).ToFColor( false ) ).ToFColor(true);
-			};
-
 			if ( USDInterpType == pxr::UsdGeomTokens->uniform )
 			{
 				NumExpectedColors = NumFaces;
@@ -1224,7 +1274,8 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 				Colors.Reserve( NumColors );
 				for ( uint32 Index = 0; Index < NumColors; ++Index )
 				{
-					Colors.Add( ConvertToColor( UsdColors[ Index ] ) );
+					const bool bSRGB = true;
+					Colors.Add( UsdToUnreal::ConvertColor( UsdColors[ Index ] ).ToFColor( bSRGB ) );
 				}
 
 				SkelMeshImportData.bHasVertexColors = true;
@@ -1918,7 +1969,7 @@ bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape
 	// because although the path is usually unique, USD has case sensitive paths and the FNames of the
 	// UMorphTargets are case insensitive
 	FString PrimaryName = SkelDataConversionImpl::GetUniqueName(
-		ObjectTools::SanitizeObjectName( UsdToUnreal::ConvertString( UsdBlendShape.GetPrim().GetName() ) ),
+		SkelDataConversionImpl::SanitizeObjectName( UsdToUnreal::ConvertString( UsdBlendShape.GetPrim().GetName() ) ),
 		UsedMorphTargetNames );
 	FString PrimaryPath = UsdToUnreal::ConvertPath( UsdBlendShape.GetPrim().GetPath() );
 	if ( UsdUtils::FUsdBlendShape* ExistingBlendShape = OutBlendShapes.Find( PrimaryPath ) )
@@ -1951,7 +2002,7 @@ bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape
 		FString OrigInbetweenName = UsdToUnreal::ConvertString( Inbetween.GetAttr().GetName() );
 		FString InbetweenPath = FString::Printf(TEXT("%s_%s"), *PrimaryPath, *OrigInbetweenName );
 		FString InbetweenName = SkelDataConversionImpl::GetUniqueName(
-			ObjectTools::SanitizeObjectName( FPaths::GetCleanFilename( InbetweenPath ) ),
+			SkelDataConversionImpl::SanitizeObjectName( FPaths::GetCleanFilename( InbetweenPath ) ),
 			UsedMorphTargetNames );
 
 		if ( Weight > 1.0f || Weight < 0.0f || FMath::IsNearlyZero(Weight) || FMath::IsNearlyEqual(Weight, 1.0f) )
@@ -2020,11 +2071,11 @@ USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
 	int32 SkeletalDepth = 0;
 	FSkeletalMeshImportData DummyData;
 	DummyData.RefBonesBinary = InSkeletonBones;
-	if ( !SkeletalMeshHelper::ProcessImportMeshSkeleton( SkeletalMesh->Skeleton, SkeletalMesh->RefSkeleton, SkeletalDepth, DummyData ) )
+	if ( !SkeletalMeshImportUtils::ProcessImportMeshSkeleton( SkeletalMesh->GetSkeleton(), SkeletalMesh->GetRefSkeleton(), SkeletalDepth, DummyData ) )
 	{
 		return nullptr;
 	}
-	if ( SkeletalMesh->RefSkeleton.GetRawBoneNum() == 0 )
+	if ( SkeletalMesh->GetRefSkeleton().GetRawBoneNum() == 0 )
 	{
 		SkeletalMesh->MarkPendingKill();
 		return nullptr;
@@ -2050,7 +2101,9 @@ USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
 		return nullptr;
 	}
 
+#if WITH_EDITOR
 	IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>( "MeshUtilities" );
+#endif // WITH_EDITOR
 
 	FSkeletalMeshModel* ImportedResource = SkeletalMesh->GetImportedModel();
 	ImportedResource->LODModels.Empty();
@@ -2063,7 +2116,7 @@ USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
 		FSkeletalMeshLODModel& LODModel = ImportedResource->LODModels.Last();
 
 		// Process bones influence (normalization and optimization) (optional)
-		SkeletalMeshHelper::ProcessImportMeshInfluences(LODImportData, SkeletalMesh->GetPathName());
+		SkeletalMeshImportUtils::ProcessImportMeshInfluences(LODImportData, SkeletalMesh->GetPathName());
 
 		FSkeletalMeshLODInfo& NewLODInfo = SkeletalMesh->AddLODInfo();
 		NewLODInfo.ReductionSettings.NumOfTrianglesPercentage = 1.0f;
@@ -2089,7 +2142,9 @@ USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
 		TArray<int32> LODPointToRawMap;
 		LODImportData.CopyLODImportData( LODPoints, LODWedges, LODFaces, LODInfluences, LODPointToRawMap );
 
+#if WITH_EDITOR
 		IMeshUtilities::MeshBuildOptions BuildOptions;
+		BuildOptions.TargetPlatform = GetTargetPlatformManagerRef().GetRunningTargetPlatform();
 		// #ueent_todo: Normals and tangents shouldn't need to be recomputed when they are retrieved from USD
 		//BuildOptions.bComputeNormals = !SkelMeshImportData.bHasNormals;
 		//BuildOptions.bComputeTangents = !SkelMeshImportData.bHasTangents;
@@ -2097,7 +2152,7 @@ USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
 		TArray<FText> WarningMessages;
 		TArray<FName> WarningNames;
 
-		bool bBuildSuccess = MeshUtilities.BuildSkeletalMesh(LODModel, SkeletalMesh->GetPathName(), SkeletalMesh->RefSkeleton, LODInfluences, LODWedges, LODFaces, LODPoints, LODPointToRawMap, BuildOptions, &WarningMessages, &WarningNames );
+		bool bBuildSuccess = MeshUtilities.BuildSkeletalMesh(LODModel, SkeletalMesh->GetPathName(), SkeletalMesh->GetRefSkeleton(), LODInfluences, LODWedges, LODFaces, LODPoints, LODPointToRawMap, BuildOptions, &WarningMessages, &WarningNames );
 		if ( !bBuildSuccess )
 		{
 			SkeletalMesh->MarkPendingKill();
@@ -2107,25 +2162,26 @@ USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
 		// This is important because it will fill in the LODModel's RawSkeletalMeshBulkDataID,
 		// which is the part of the skeletal mesh's DDC key that is affected by the actual mesh data
 		SkeletalMesh->SaveLODImportedData( LODIndex, LODImportData );
+#endif // WITH_EDITOR
 	}
 
 	SkeletalMesh->SetImportedBounds( FBoxSphereBounds( BoundingBox ) );
-	SkeletalMesh->bHasVertexColors = bHasVertexColors;
-	SkeletalMesh->VertexColorGuid = SkeletalMesh->bHasVertexColors ? FGuid::NewGuid() : FGuid();
+	SkeletalMesh->SetHasVertexColors(bHasVertexColors);
+	SkeletalMesh->SetVertexColorGuid(SkeletalMesh->GetHasVertexColors() ? FGuid::NewGuid() : FGuid());
 	SkeletalMesh->CalculateInvRefMatrices();
 
 	// Generate a Skeleton and associate it to the SkeletalMesh
 	USkeleton* Skeleton = NewObject<USkeleton>(GetTransientPackage(), NAME_None, ObjectFlags | EObjectFlags::RF_Public );
 	Skeleton->MergeAllBonesToBoneTree(SkeletalMesh);
 	Skeleton->SetPreviewMesh(SkeletalMesh);
-	SkeletalMesh->Skeleton = Skeleton;
+	SkeletalMesh->SetSkeleton(Skeleton);
 
 	UsdToUnrealImpl::CreateMorphTargets(InBlendShapesByPath, LODIndexToSkeletalMeshImportData, SkeletalMesh);
 
 	return SkeletalMesh;
 }
 
-#endif // #if USE_USD_SDK
+#endif // #if USE_USD_SDK && WITH_EDITOR
 
 void UsdUtils::ResolveWeightsForBlendShape( const UsdUtils::FUsdBlendShape& InBlendShape, float InWeight, float& OutMainWeight, TArray<float>& OutInbetweenWeights )
 {
@@ -2196,7 +2252,7 @@ void UsdUtils::ResolveWeightsForBlendShape( const UsdUtils::FUsdBlendShape& InBl
 	}
 }
 
-#if USE_USD_SDK
+#if USE_USD_SDK && WITH_EDITOR
 
 // Adapted from UsdSkel_CacheImpl::ReadScope::_FindOrCreateSkinningQuery because we need to manually create these on UsdGeomMeshes we already have
 pxr::UsdSkelSkinningQuery UsdUtils::CreateSkinningQuery( const pxr::UsdGeomMesh& SkinnedMesh, const pxr::UsdSkelSkeletonQuery& SkeletonQuery )
@@ -2224,13 +2280,8 @@ pxr::UsdSkelSkinningQuery UsdUtils::CreateSkinningQuery( const pxr::UsdGeomMesh&
 	);
 }
 
-bool UnrealToUsd::ConvertSkeleton( const USkeleton* Skeleton, pxr::UsdSkelSkeleton& UsdSkeleton )
+bool UnrealToUsd::ConvertSkeleton( const FReferenceSkeleton& ReferenceSkeleton, pxr::UsdSkelSkeleton& UsdSkeleton )
 {
-	if ( !Skeleton )
-	{
-		return false;
-	}
-
 	FScopedUsdAllocs Allocs;
 
 	pxr::UsdStageRefPtr Stage = UsdSkeleton.GetPrim().GetStage();
@@ -2241,21 +2292,9 @@ bool UnrealToUsd::ConvertSkeleton( const USkeleton* Skeleton, pxr::UsdSkelSkelet
 
 	FUsdStageInfo StageInfo{ Stage };
 
-	const FReferenceSkeleton& ReferenceSkeleton = Skeleton->GetReferenceSkeleton();
-
 	// Joints
 	{
-		TArray<FString> FullBonePaths;
-		UnrealToUsdImpl::CreateFullBonePaths(ReferenceSkeleton.GetRefBoneInfo(), FullBonePaths);
-
-		pxr::VtArray<pxr::TfToken> Joints;
-		Joints.reserve( FullBonePaths.Num() );
-		for ( const FString& BonePath : FullBonePaths )
-		{
-			Joints.push_back( UnrealToUsd::ConvertToken( *BonePath ).Get() );
-		}
-		pxr::UsdAttribute JointsAttr = UsdSkeleton.CreateJointsAttr();
-		JointsAttr.Set(Joints);
+		UnrealToUsdImpl::SetJoinsAttr( ReferenceSkeleton, UsdSkeleton.CreateJointsAttr() );
 	}
 
 	pxr::VtArray<pxr::GfMatrix4d> LocalSpaceJointTransforms;
@@ -2294,10 +2333,20 @@ bool UnrealToUsd::ConvertSkeleton( const USkeleton* Skeleton, pxr::UsdSkelSkelet
 	return true;
 }
 
-bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::UsdPrim& SkelRootPrim, const pxr::UsdTimeCode TimeCode )
+bool UnrealToUsd::ConvertSkeleton( const USkeleton* Skeleton, pxr::UsdSkelSkeleton& UsdSkeleton )
+{
+	if ( !Skeleton )
+	{
+		return false;
+	}
+
+	return UnrealToUsd::ConvertSkeleton( Skeleton->GetReferenceSkeleton(), UsdSkeleton );
+}
+
+bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::UsdPrim& SkelRootPrim, const pxr::UsdTimeCode TimeCode, UE::FUsdStage* StageForMaterialAssignments )
 {
 	pxr::UsdSkelRoot SkelRoot{ SkelRootPrim };
-	if ( !SkeletalMesh || !SkeletalMesh->Skeleton || !SkelRoot )
+	if ( !SkeletalMesh || !SkeletalMesh->GetSkeleton() || !SkelRoot )
 	{
 		return false;
 	}
@@ -2333,7 +2382,7 @@ bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::U
 	// Collect all material assignments, referenced by the sections' material indices
 	bool bHasMaterialAssignments = false;
 	pxr::VtArray< std::string > MaterialAssignments;
-	for ( const FSkeletalMaterial& SkeletalMaterial : SkeletalMesh->Materials )
+	for ( const FSkeletalMaterial& SkeletalMaterial : SkeletalMesh->GetMaterials() )
 	{
 		FString AssignedMaterialPathName;
 		if ( UMaterialInterface* Material = SkeletalMaterial.MaterialInterface )
@@ -2365,7 +2414,7 @@ bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::U
 		pxr::UsdRelationship SkelRel = SkelBindingAPI.CreateSkeletonRel();
 		SkelRel.SetTargets({SkeletonPrim.GetPath()});
 
-		UnrealToUsd::ConvertSkeleton( SkeletalMesh->Skeleton, SkelSkeleton );
+		UnrealToUsd::ConvertSkeleton( SkeletalMesh->GetRefSkeleton(), SkelSkeleton );
 	}
 
 	// Actual meshes
@@ -2386,7 +2435,7 @@ bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::U
 		}
 
 		// Enable the variant edit context, if we are creating variant LODs
-		TUniquePtr< pxr::UsdEditContext > EditContext;
+		TOptional< pxr::UsdEditContext > EditContext;
 		if ( bExportMultipleLODs )
 		{
 			pxr::UsdVariantSet VariantSet = VariantSets.GetVariantSet( UnrealIdentifiers::LOD );
@@ -2397,12 +2446,19 @@ bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::U
 			}
 
 			VariantSet.SetVariantSelection( VariantName );
-			EditContext = MakeUnique< pxr::UsdEditContext>( VariantSet.GetVariantEditContext() );
+			EditContext.Emplace( VariantSet.GetVariantEditContext() );
 		}
 
-		pxr::SdfPath MeshPrimPath = ParentPrimPath.AppendPath( pxr::SdfPath( bExportMultipleLODs ? VariantName : UnrealToUsd::ConvertString( *SkeletalMesh->GetName() ).Get() ) );
+		pxr::SdfPath MeshPrimPath = ParentPrimPath.AppendPath( pxr::SdfPath( bExportMultipleLODs ? VariantName : UnrealToUsd::ConvertString( *UsdUtils::SanitizeUsdIdentifier( *SkeletalMesh->GetName() ) ).Get() ) );
 		pxr::UsdPrim UsdLODPrim = Stage->DefinePrim( MeshPrimPath, UnrealToUsd::ConvertToken( TEXT( "Mesh" ) ).Get() );
 		pxr::UsdGeomMesh UsdLODPrimGeomMesh{ UsdLODPrim };
+
+		pxr::UsdPrim MaterialPrim = UsdLODPrim;
+		if ( StageForMaterialAssignments )
+		{
+			pxr::UsdStageRefPtr MaterialStage{ *StageForMaterialAssignments };
+			MaterialPrim = MaterialStage->OverridePrim( MeshPrimPath );
+		}
 
 		TArray<int32> LODMaterialMap;
 		if ( const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo( LODIndex ) )
@@ -2410,17 +2466,18 @@ bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::U
 			LODMaterialMap = LODInfo->LODMaterialMap;
 		}
 
-		UnrealToUsdImpl::ConvertSkeletalMeshLOD( LODModel, UsdLODPrimGeomMesh, SkeletalMesh->bHasVertexColors, MaterialAssignments, LODMaterialMap, TimeCode );
+		UnrealToUsdImpl::ConvertSkeletalMeshLOD( SkeletalMesh, LODModel, UsdLODPrimGeomMesh, SkeletalMesh->GetHasVertexColors(), MaterialAssignments, LODMaterialMap, TimeCode, MaterialPrim );
 
 		// Relationships can't target prims inside variants, so if we have BlendShapes to export we have to disable the edit target
 		// so that the blend shapes end up outside the variants and the Meshes can have their blendShapeTargets relationships pointing at them
-		if ( bExportMultipleLODs && SkeletalMesh->MorphTargets.Num() > 0)
+		if ( bExportMultipleLODs && SkeletalMesh->GetMorphTargets().Num() > 0)
 		{
 			EditContext.Reset();
 		}
 
+		pxr::VtArray< pxr::TfToken > AddedBlendShapes;
 		pxr::SdfPathVector AddedBlendShapeTargets;
-		for ( UMorphTarget* MorphTarget : SkeletalMesh->MorphTargets )
+		for ( UMorphTarget* MorphTarget : SkeletalMesh->GetMorphTargets() )
 		{
 			if ( !MorphTarget || !MorphTarget->HasDataForLOD( LODIndex ) )
 			{
@@ -2436,7 +2493,7 @@ bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::U
 
 			pxr::SdfPath ParentPath = bExportMultipleLODs ? SkelRootPrim.GetPath() : UsdLODPrim.GetPath();
 
-			pxr::SdfPath BlendShapePath = ParentPath.AppendPath( UnrealToUsd::ConvertPath( *MorphTarget->GetName() ).Get() );
+			pxr::SdfPath BlendShapePath = ParentPath.AppendPath( UnrealToUsd::ConvertPath( *UsdUtils::SanitizeUsdIdentifier( *MorphTarget->GetName() ) ).Get() );
 			pxr::UsdPrim BlendShapePrim = UsdLODPrim.GetStage()->DefinePrim( BlendShapePath, UnrealToUsd::ConvertToken( TEXT( "BlendShape" ) ).Get() );
 			pxr::UsdSkelBlendShape BlendShape{ BlendShapePrim };
 
@@ -2446,19 +2503,21 @@ bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::U
 				continue;
 			}
 
+			AddedBlendShapes.push_back( UnrealToUsd::ConvertToken( *UsdUtils::SanitizeUsdIdentifier( *MorphTarget->GetName() ) ).Get() );
 			AddedBlendShapeTargets.push_back( BlendShapePath );
 		}
 
-		if( AddedBlendShapeTargets.size() > 0 )
+		if ( AddedBlendShapeTargets.size() > 0 )
 		{
 			// Restore the edit target to the current LOD variant so that the relationship itself ends up inside the mesh, inside the variant
 			if ( bExportMultipleLODs )
 			{
-				EditContext = MakeUnique< pxr::UsdEditContext>( VariantSets.GetVariantSet( UnrealIdentifiers::LOD ).GetVariantEditContext() );
+				EditContext.Emplace( VariantSets.GetVariantSet( UnrealIdentifiers::LOD ).GetVariantEditContext() );
 			}
 
 			pxr::UsdSkelBindingAPI LODMeshBindingAPI{ UsdLODPrimGeomMesh };
-			LODMeshBindingAPI.CreateBlendShapeTargetsRel().SetTargets(AddedBlendShapeTargets);
+			LODMeshBindingAPI.CreateBlendShapeTargetsRel().SetTargets( AddedBlendShapeTargets );
+			LODMeshBindingAPI.CreateBlendShapesAttr().Set( AddedBlendShapes );
 		}
 	}
 
@@ -2470,6 +2529,209 @@ bool UnrealToUsd::ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::U
 	return true;
 }
 
+bool UnrealToUsd::ConvertAnimSequence( UAnimSequence* AnimSequence, pxr::UsdPrim& SkelAnimPrim )
+{
+	if ( !SkelAnimPrim || !AnimSequence || !AnimSequence->GetSkeleton() )
+	{
+		return false;
+	}
+
+	pxr::UsdSkelAnimation UsdSkelAnim( SkelAnimPrim );
+
+	if ( !UsdSkelAnim )
+	{
+		return false;
+	}
+
+	USkeleton* AnimSkeleton = AnimSequence->GetSkeleton();
+	USkeletalMesh* SkeletalMesh = AnimSkeleton->GetAssetPreviewMesh( AnimSequence );
+
+	if ( !SkeletalMesh )
+	{
+		SkeletalMesh = AnimSkeleton->FindCompatibleMesh();
+	}
+
+	if ( !SkeletalMesh )
+	{
+		return false;
+	}
+
+	const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
+	const int32 NumBones = RefSkeleton.GetRefBoneInfo().Num();
+	const double TimeCodesPerSecond = SkelAnimPrim.GetStage()->GetTimeCodesPerSecond();
+	const int32 NumTimeCodes = AnimSequence->SequenceLength * TimeCodesPerSecond;
+
+	if ( NumBones <= 0 )
+	{
+		return false;
+	}
+
+	FScopedUsdAllocs UsdAllocs;
+	pxr::SdfChangeBlock ChangeBlock;
+
+	FUsdStageInfo StageInfo( SkelAnimPrim.GetStage() );
+
+	// Blend shapes
+	{
+		pxr::VtArray< pxr::TfToken > BlendShapeNames;
+		pxr::VtArray< float > BlendShapeWeights;
+
+		const FSmartNameMapping* AnimCurveMapping = AnimSkeleton->GetSmartNameContainer( USkeleton::AnimCurveMappingName );
+
+		if ( AnimCurveMapping )
+		{
+			TArray< FName > AnimCurveNames;
+			AnimCurveMapping->FillNameArray( AnimCurveNames );
+
+			TArray< SmartName::UID_Type > AnimCurveUIDs;
+			{
+				TArray< FName > UID_ToNameArray;
+				AnimCurveMapping->FillUIDToNameArray( UID_ToNameArray );
+				AnimCurveUIDs.Reserve( UID_ToNameArray.Num() );
+				for ( int32 NameIndex = 0; NameIndex < UID_ToNameArray.Num(); ++NameIndex )
+				{
+					AnimCurveUIDs.Add( NameIndex );
+				}
+			}
+
+			// Blend shape names
+			for ( const FName& AnimCurveName : AnimCurveNames )
+			{
+				const FCurveMetaData* CurveMetaData = AnimCurveMapping->GetCurveMetaData( AnimCurveName );
+
+				if ( CurveMetaData && CurveMetaData->Type.bMorphtarget )
+				{
+					BlendShapeNames.push_back( UnrealToUsd::ConvertToken( *AnimCurveName.ToString() ).Get() );
+				}
+			}
+
+			// Blend shape weights
+			for ( int32 TimeCode = 0; TimeCode < NumTimeCodes; ++TimeCode )
+			{
+				BlendShapeWeights.clear();
+				BlendShapeWeights.reserve( AnimCurveNames.Num() );
+
+				const float AnimTime = TimeCode / TimeCodesPerSecond;
+
+				FBlendedCurve BlendedCurve;
+				BlendedCurve.InitFrom( &AnimCurveUIDs );
+				const bool bForceUseRawData = true;
+				AnimSequence->EvaluateCurveData( BlendedCurve, AnimTime, bForceUseRawData );
+
+				if ( BlendedCurve.IsValid() )
+				{
+					for ( const FName& AnimCurveName : AnimCurveNames )
+					{
+						const FCurveMetaData* CurveMetaData = AnimCurveMapping->GetCurveMetaData( AnimCurveName );
+
+						if ( CurveMetaData && CurveMetaData->Type.bMorphtarget )
+						{
+							SmartName::UID_Type NameUID = AnimSkeleton->GetUIDByName( USkeleton::AnimCurveMappingName, AnimCurveName );
+							if ( NameUID != SmartName::MaxUID )
+							{
+								BlendShapeWeights.push_back( BlendedCurve.Get( NameUID ) );
+							}
+						}
+					}
+				};
+
+				UsdSkelAnim.CreateBlendShapeWeightsAttr().Set( BlendShapeWeights, pxr::UsdTimeCode( TimeCode ) );
+			}
+		}
+
+		if ( !BlendShapeNames.empty() )
+		{
+			UsdSkelAnim.CreateBlendShapesAttr().Set( BlendShapeNames );
+		}
+		else
+		{
+			if ( pxr::UsdAttribute BlendShapesAttr = UsdSkelAnim.GetBlendShapesAttr() )
+			{
+				BlendShapesAttr.Clear();
+			}
+
+			if ( pxr::UsdAttribute BlendShapeWeightsAttr = UsdSkelAnim.GetBlendShapeWeightsAttr() )
+			{
+				BlendShapeWeightsAttr.Clear();
+			}
+		}
+	}
+
+	// Joints
+	{
+		UnrealToUsdImpl::SetJoinsAttr( RefSkeleton, UsdSkelAnim.CreateJointsAttr() );
+	}
+
+	// Translations, Rotations & Scales
+	{
+		pxr::UsdAttribute TranslationsAttr = UsdSkelAnim.CreateTranslationsAttr();
+		pxr::UsdAttribute RotationsAttr = UsdSkelAnim.CreateRotationsAttr();
+		pxr::UsdAttribute ScalesAttr = UsdSkelAnim.CreateScalesAttr();
+
+		UDebugSkelMeshComponent* DebugSkelMeshComponent = NewObject< UDebugSkelMeshComponent >();
+		DebugSkelMeshComponent->RegisterComponentWithWorld( GWorld );
+		DebugSkelMeshComponent->EmptyOverrideMaterials();
+		DebugSkelMeshComponent->SetSkeletalMesh( SkeletalMesh );
+
+		const bool bEnable = true;
+		DebugSkelMeshComponent->EnablePreview( bEnable, AnimSequence );
+
+		for ( int32 TimeCode = 0; TimeCode < NumTimeCodes; ++TimeCode )
+		{
+			const float AnimTime = TimeCode / TimeCodesPerSecond;
+
+			const bool bFireNotifies = false;
+			DebugSkelMeshComponent->SetPosition( AnimTime, bFireNotifies );
+			DebugSkelMeshComponent->RefreshBoneTransforms();
+
+			pxr::VtVec3fArray Translations;
+			Translations.reserve( NumBones );
+
+			pxr::VtQuatfArray Rotations;
+			Rotations.reserve( NumBones );
+
+			pxr::VtVec3hArray Scales;
+			Scales.reserve( NumBones );
+
+			TArray< FTransform > LocalBoneTransforms = DebugSkelMeshComponent->GetBoneSpaceTransforms();
+
+			for ( int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex )
+			{
+				FTransform BoneTransform = LocalBoneTransforms[ BoneIndex ];
+				BoneTransform = UsdUtils::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, BoneTransform );
+
+				Translations.push_back( UnrealToUsd::ConvertVector( BoneTransform.GetTranslation() ) );
+				Rotations.push_back( UnrealToUsd::ConvertQuat( BoneTransform.GetRotation() ).GetNormalized() );
+				Scales.push_back( pxr::GfVec3h( UnrealToUsd::ConvertVector( BoneTransform.GetScale3D() ) ) );
+			}
+
+			TranslationsAttr.Set( Translations, pxr::UsdTimeCode( TimeCode ) );
+			RotationsAttr.Set( Rotations, pxr::UsdTimeCode( TimeCode ) );
+			ScalesAttr.Set( Scales, pxr::UsdTimeCode( TimeCode ) );
+		}
+
+		// Actively delete it or else it will remain visible on the viewport
+		DebugSkelMeshComponent->DestroyComponent();
+	}
+
+	const int32 StageEndTimeCode = SkelAnimPrim.GetStage()->GetEndTimeCode();
+
+	if ( NumTimeCodes > StageEndTimeCode )
+	{
+		SkelAnimPrim.GetStage()->SetEndTimeCode( NumTimeCodes - 1 );
+	}
+
+	return true;
+}
+
+void UsdUtils::BindAnimationSource( pxr::UsdPrim& Prim, const pxr::UsdPrim& AnimationSource )
+{
+	FScopedUsdAllocs UsdAllocs;
+
+	pxr::UsdSkelBindingAPI SkelBindingAPI = pxr::UsdSkelBindingAPI::Apply( Prim );
+	SkelBindingAPI.CreateAnimationSourceRel().SetTargets( pxr::SdfPathVector( { AnimationSource.GetPath() }) );
+}
+
 #undef LOCTEXT_NAMESPACE
 
-#endif // #if USE_USD_SDK
+#endif // #if USE_USD_SDK && WITH_EDITOR

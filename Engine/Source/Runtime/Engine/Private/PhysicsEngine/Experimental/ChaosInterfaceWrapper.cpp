@@ -4,11 +4,12 @@
 #include "Physics/Experimental/PhysScene_Chaos.h"
 #include "Chaos/ParticleHandle.h"
 #include "PhysxUserData.h"
+#include "PBDRigidsSolver.h"
 
 
 namespace ChaosInterface
 {
-	FBodyInstance* GetUserData(const Chaos::TGeometryParticle<float,3>& Actor)
+	FBodyInstance* GetUserData(const Chaos::FGeometryParticle& Actor)
 	{
 		void* UserData = Actor.UserData();
 		return UserData ? FChaosUserData::Get<FBodyInstance>(Actor.UserData()) : nullptr;
@@ -22,14 +23,20 @@ namespace ChaosInterface
 
 #if WITH_CHAOS
 	FScopedSceneReadLock::FScopedSceneReadLock(FPhysScene_Chaos& SceneIn)
-		: Scene(SceneIn)
+		: Solver(SceneIn.GetSolver())
 	{
-		Scene.ExternalDataLock.ReadLock();
+		if(Solver)
+		{
+			Solver->GetExternalDataLock_External().ReadLock();
+		}
 	}
 
 	FScopedSceneReadLock::~FScopedSceneReadLock()
 	{
-		Scene.ExternalDataLock.ReadUnlock();
+		if(Solver)
+		{
+			Solver->GetExternalDataLock_External().ReadUnlock();
+		}
 	}
 #endif
 }

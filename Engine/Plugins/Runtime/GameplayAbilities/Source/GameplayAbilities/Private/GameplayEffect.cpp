@@ -945,10 +945,13 @@ void FGameplayEffectSpec::CaptureAttributeDataFromTarget(UAbilitySystemComponent
 	bCompletedTargetAttributeCapture = true;
 }
 
-void FGameplayEffectSpec::CaptureDataFromSource()
+void FGameplayEffectSpec::CaptureDataFromSource(bool bSkipRecaptureSourceActorTags /*= false*/)
 {
 	// Capture source actor tags
-	RecaptureSourceActorTags();
+	if (!bSkipRecaptureSourceActorTags)
+	{
+		RecaptureSourceActorTags();
+	}
 
 	// Capture source Attributes
 	// Is this the right place to do it? Do we ever need to create spec and capture attributes at a later time? If so, this will need to move.
@@ -1173,13 +1176,13 @@ FGameplayEffectModifiedAttribute* FGameplayEffectSpec::AddModifiedAttribute(cons
 	return &ModifiedAttributes[ModifiedAttributes.Add(NewAttribute)];
 }
 
-void FGameplayEffectSpec::SetContext(FGameplayEffectContextHandle NewEffectContext)
+void FGameplayEffectSpec::SetContext(FGameplayEffectContextHandle NewEffectContext, bool bSkipRecaptureSourceActorTags /*= false*/)
 {
 	bool bWasAlreadyInit = EffectContext.IsValid();
 	EffectContext = NewEffectContext;	
 	if (bWasAlreadyInit)
 	{
-		CaptureDataFromSource();
+		CaptureDataFromSource(bSkipRecaptureSourceActorTags);
 	}
 }
 
@@ -2338,7 +2341,7 @@ FActiveGameplayEffect* FActiveGameplayEffectsContainer::FindStackableActiveGamep
 	const UGameplayEffect* GEDef = Spec.Def;
 	EGameplayEffectStackingType StackingType = GEDef->StackingType;
 
-	if (StackingType != EGameplayEffectStackingType::None && Spec.GetDuration() != UGameplayEffect::INSTANT_APPLICATION)
+	if ((StackingType != EGameplayEffectStackingType::None) && (GEDef->DurationPolicy != EGameplayEffectDurationType::Instant))
 	{
 		// Iterate through GameplayEffects to see if we find a match. Note that we could cache off a handle in a map but we would still
 		// do a linear search through GameplayEffects to find the actual FActiveGameplayEffect (due to unstable nature of the GameplayEffects array).
@@ -2487,10 +2490,14 @@ void FActiveGameplayEffectsContainer::SetActiveGameplayEffectLevel(FActiveGamepl
 	{
 		if (Effect.Handle == ActiveHandle)
 		{
-			Effect.Spec.SetLevel(NewLevel);
-			MarkItemDirty(Effect);
-			Effect.Spec.CalculateModifierMagnitudes();
-			UpdateAllAggregatorModMagnitudes(Effect);
+			if (Effect.Spec.GetLevel() != NewLevel)
+			{
+				Effect.Spec.SetLevel(NewLevel);
+				MarkItemDirty(Effect);
+			
+				Effect.Spec.CalculateModifierMagnitudes();
+				UpdateAllAggregatorModMagnitudes(Effect);
+			}
 			break;
 		}
 	}
@@ -3793,7 +3800,8 @@ bool FActiveGameplayEffectsContainer::HasApplicationImmunityToSpec(const FGamepl
 
 bool FActiveGameplayEffectsContainer::NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParms)
 {
-	if (Owner)
+	// these tests are only necessary when sending
+	if (DeltaParms.Writer != nullptr && Owner != nullptr)
 	{
 		EGameplayEffectReplicationMode ReplicationMode = Owner->ReplicationMode;
 		if (ReplicationMode == EGameplayEffectReplicationMode::Minimal)
@@ -3812,12 +3820,13 @@ bool FActiveGameplayEffectsContainer::NetDeltaSerialize(FNetDeltaSerializeInfo& 
 					// In mixed mode, we only want to replicate to the owner of this channel, minimal replication
 					// data will go to everyone else.
 					const AActor* ParentOwner = Owner->GetOwner();
-					if (!ParentOwner->IsOwnedBy(Connection->OwningActor))
+					const UNetConnection* ParentOwnerNetConnection = ParentOwner->GetNetConnection();
+					if (!ParentOwner->IsOwnedBy(Connection->OwningActor) && (ParentOwnerNetConnection != Connection))
 					{
 						bool bIsChildConnection = false;
 						for (UChildConnection* ChildConnection : Connection->Children)
 						{
-							if (ParentOwner->IsOwnedBy(ChildConnection->OwningActor))
+							if (ParentOwner->IsOwnedBy(ChildConnection->OwningActor) || (ChildConnection == ParentOwnerNetConnection))
 							{
 								bIsChildConnection = true;
 								break;

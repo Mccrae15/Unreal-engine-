@@ -7,7 +7,11 @@
 #include "UObject/Object.h"
 #include "NiagaraCommon.h"
 #include "NiagaraCompileHash.h"
+#include "Misc/Guid.h"
 #include "NiagaraScriptSourceBase.generated.h"
+
+class INiagaraParameterDefinitionsSubscriber;
+class UNiagaraParameterDefinitionsBase;
 
 struct EditorExposedVectorConstant
 {
@@ -38,6 +42,9 @@ public:
 class FNiagaraCompileOptions
 {
 public:
+	NIAGARA_API static const FString CpuScriptDefine;
+	NIAGARA_API static const FString GpuScriptDefine;
+
 	FNiagaraCompileOptions() : TargetUsage(ENiagaraScriptUsage::Function), TargetUsageBitmask(0)
 	{
 	}
@@ -52,6 +59,12 @@ public:
 	const FString& GetPathName() const { return PathName; }
 	int32 GetTargetUsageBitmask() const { return TargetUsageBitmask; }
 
+	void SetCpuScript() { AdditionalDefines.AddUnique(CpuScriptDefine); }
+	void SetGpuScript() { AdditionalDefines.AddUnique(GpuScriptDefine); }
+
+	bool IsCpuScript() const { return AdditionalDefines.Contains(CpuScriptDefine); }
+	bool IsGpuScript() const { return AdditionalDefines.Contains(GpuScriptDefine); }
+
 	ENiagaraScriptUsage TargetUsage;
 	FGuid TargetUsageId;
 	FString PathName;
@@ -59,6 +72,7 @@ public:
 	FString Name;
 	int32 TargetUsageBitmask;
 	TArray<FString> AdditionalDefines;
+	TArray<FNiagaraVariableBase> AdditionalVariables;
 };
 
 struct FNiagaraParameterStore;
@@ -76,13 +90,10 @@ class UNiagaraScriptSourceBase : public UObject
 	TArray<TSharedPtr<EditorExposedVectorConstant> > ExposedVectorConstants;
 	TArray<TSharedPtr<EditorExposedVectorCurveConstant> > ExposedVectorCurveConstants;
 
+	virtual bool IsEditorOnly()const override{ return true; }
+
 	/** Determines if the input change id is equal to the current source graph's change id.*/
 	virtual bool IsSynchronized(const FGuid& InChangeId) { return true; }
-
-	virtual UNiagaraScriptSourceBase* MakeRecursiveDeepCopy(UObject* DestOuter, TMap<const UObject*, UObject*>& ExistingConversions) const { return nullptr; }
-
-	/** Determine if there are any external dependencies wrt to scripts and ensure that those dependencies are sucked into the existing package.*/
-	virtual void SubsumeExternalDependencies(TMap<const UObject*, UObject*>& ExistingConversions) {}
 
 	/** Enforce that the source graph is now out of sync with the script.*/
 	virtual void MarkNotSynchronized(FString Reason) {}
@@ -117,6 +128,27 @@ class UNiagaraScriptSourceBase : public UObject
 	virtual void RefreshFromExternalChanges() {}
 
 	virtual void CollectDataInterfaces(TArray<const UNiagaraDataInterfaceBase*>& DataInterfaces) const {};
+
+	/** Synchronize all source script variables that have been changed or removed from the parameter definitions to all eligible destination script variables owned by the graph.
+	 *
+	 *  @param TargetDefinitions			The set of parameter definitions that will be synchronized with the graph parameters.
+	 *	@param AllDefinitions				All parameter definitions in the project. Used to add new subscriptions to definitions if specified in Args.
+	 *  @param AllDefinitionsParameterIds	All unique Ids of all parameter definitions.
+	 *	@param Subscriber					The INiagaraParameterDefinitionsSubscriber that owns the graph. Used to add new subscriptions to definitions if specified in Args.
+	 *	@param Args							Additional arguments that specify how to perform the synchronization.
+	 */
+	virtual void SynchronizeGraphParametersWithParameterDefinitions(
+		const TArray<UNiagaraParameterDefinitionsBase*> TargetDefinitions,
+		const TArray<UNiagaraParameterDefinitionsBase*> AllDefinitions,
+		const TSet<FGuid>& AllDefinitionsParameterIds,
+		INiagaraParameterDefinitionsSubscriber* Subscriber,
+		FSynchronizeWithParameterDefinitionsArgs Args
+	) {};
+
+	/** Rename all graph assignment and map set node pins.
+	 *  Used when synchronizing definitions with source scripts of systems and emitters.
+	 */
+	virtual void RenameGraphAssignmentAndSetNodePins(const FName OldName, const FName NewName) {};
 
 protected:
 	FOnChanged OnChangedDelegate;

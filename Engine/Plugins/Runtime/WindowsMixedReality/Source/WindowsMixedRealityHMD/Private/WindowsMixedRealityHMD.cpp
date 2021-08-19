@@ -898,9 +898,17 @@ namespace WindowsMixedReality
 
 		//sword-grasping transform
 		HMDHand WMRHand = (Hand == EControllerHand::Left ? HMDHand::Left : HMDHand::Right);
-		FRotator GripRotation;
-		MotionControllerData.bValid = GetControllerOrientationAndPosition(WMRHand, GripRotation, MotionControllerData.GripPosition);
-		MotionControllerData.GripRotation = GripRotation.Quaternion();
+		FRotator GripTrackingRotation;
+		FVector GripTrackingPosition;
+		MotionControllerData.bValid = GetControllerOrientationAndPosition(WMRHand, GripTrackingRotation, GripTrackingPosition, GetWorldToMetersScale());
+		if (MotionControllerData.bValid)
+		{
+			FTransform GripTrackingTransform(GripTrackingRotation.Quaternion(), GripTrackingPosition);
+			FTransform GripWorldTransform = (GripTrackingTransform * CachedTrackingToWorld);
+
+			MotionControllerData.GripRotation = GripWorldTransform.GetRotation();
+			MotionControllerData.GripPosition = GripWorldTransform.GetLocation();
+		}
 
 		//far pointing from elbow transform
 		FPointerPoseInfo PointerPoseInfo = UWindowsMixedRealityFunctionLibrary::GetPointerPoseInfo(Hand);
@@ -2017,9 +2025,9 @@ namespace WindowsMixedReality
 #endif
 	}
 
-	bool FWindowsMixedRealityHMD::IsActiveThisFrame(class FViewport* InViewport) const
+	bool FWindowsMixedRealityHMD::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const
 	{
-		return GEngine && GEngine->IsStereoscopic3D(InViewport);
+		return GEngine && GEngine->IsStereoscopic3D(Context.Viewport);
 	}
 
 #if WITH_WINDOWS_MIXED_REALITY
@@ -2339,8 +2347,8 @@ namespace WindowsMixedReality
 		}
 	}
 
-	// GetControllerOrientationAndPosition() is pre-scaled to UE4 world scale
-	bool FWindowsMixedRealityHMD::GetControllerOrientationAndPosition(HMDHand hand, FRotator & OutOrientation, FVector & OutPosition)
+	// GetControllerOrientationAndPosition() is pre-scaled to UE4 world scale by default
+	bool FWindowsMixedRealityHMD::GetControllerOrientationAndPosition(HMDHand hand, FRotator & OutOrientation, FVector & OutPosition, float WorldScale)
 	{
 		if (!bIsStereoEnabled)
 		{
@@ -2351,7 +2359,7 @@ namespace WindowsMixedReality
 		DirectX::XMFLOAT3 pos;
 		if (HMD->GetControllerOrientationAndPosition(hand, rot, pos))
 		{
-			FTransform TrackingSpaceTransform(WMRUtility::FromMixedRealityQuaternion(rot), WMRUtility::FromMixedRealityVector(pos));
+			FTransform TrackingSpaceTransform(WMRUtility::FromMixedRealityQuaternion(rot), WMRUtility::FromMixedRealityVector(pos) * WorldScale);
 
 			OutOrientation = FRotator(TrackingSpaceTransform.GetRotation());
 			OutPosition = TrackingSpaceTransform.GetLocation();

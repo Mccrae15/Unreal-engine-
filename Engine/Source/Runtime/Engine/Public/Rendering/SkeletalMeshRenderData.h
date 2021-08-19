@@ -33,9 +33,21 @@ public:
 	/** [GameThread/RenderThread] Future value of CurrentFirstLODIdx. */
 	uint8 PendingFirstLODIdx;
 
+	/** Runtime LOD bias modifier for this skeletal mesh */
+	uint8 LODBiasModifier;
+
+	/** Whether ray tracing acceleration structures should be created for this mesh. Derived from owner USkeletalMesh. */
+	bool bSupportRayTracing;
+
 #if WITH_EDITORONLY_DATA
 	/** UV data used for streaming accuracy debug view modes. In sync for rendering thread */
 	TArray<FMeshUVChannelInfo> UVChannelDataPerMaterial;
+
+	/** The derived data key associated with this render data. */
+	FString DerivedDataKey;
+
+	/** The next cached derived data in the list. */
+	TUniquePtr<class FSkeletalMeshRenderData> NextCachedRenderData;
 #endif
 
 	FSkeletalMeshRenderData();
@@ -100,6 +112,11 @@ public:
 	{
 		const int32 PendingFirstIdx = GetPendingFirstLODIdx(MinLODIdx);
 		return PendingFirstIdx == INDEX_NONE ? nullptr : &LODRenderData[PendingFirstIdx];
+	}
+
+	bool IsInitialized() const
+	{
+		return bInitialized;
 	}
 
 private:

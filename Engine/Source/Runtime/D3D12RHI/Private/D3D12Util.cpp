@@ -32,6 +32,13 @@ D3D12Util.h: D3D RHI utility implementation.
 #endif//D3DERR_WASSTILLDRAWING
 #endif
 
+// GPU crashes are nonfatal on windows/nonshipping so as not to interfere with GPU crash dump processing
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS || !UE_BUILD_SHIPPING
+  #define D3D12RHI_GPU_CRASH_LOG_VERBOSITY Error
+#else
+  #define D3D12RHI_GPU_CRASH_LOG_VERBOSITY Fatal
+#endif
+
 extern bool D3D12RHI_ShouldCreateWithD3DDebug();
 
 static FString GetUniqueName()
@@ -426,7 +433,7 @@ static bool LogDREDData(ID3D12Device* Device)
 
 			uint32 TracedCommandLists = 0;
 			auto Node = Dred.BreadcrumbHead;
-			while (Node)
+			while (Node && Node->pLastBreadcrumbValue)
 			{
 				int32 LastCompletedOp = *Node->pLastBreadcrumbValue;
 
@@ -461,7 +468,7 @@ static bool LogDREDData(ID3D12Device* Device)
 						}
 
 						const TCHAR* OpName = (BreadcrumbOp < UE_ARRAY_COUNT(OpNames)) ? OpNames[BreadcrumbOp] : TEXT("Unknown Op");
-						UE_LOG(LogD3D12RHI, Error, TEXT("\tOp: %d, %s%s%s"), Op, OpName, *ContextStr, (Op + 1 == LastCompletedOp) ? TEXT(" - Last completed") : TEXT(""));
+						UE_LOG(LogD3D12RHI, Error, TEXT("\tOp: %d, %s%s%s"), Op, OpName, *ContextStr, (Op + 1 == LastCompletedOp) ? TEXT(" - LAST COMPLETED") : TEXT(""));
 					}
 				}
 
@@ -526,6 +533,7 @@ extern CORE_API bool GIsGPUCrashed;
 
 static void TerminateOnOutOfMemory(HRESULT D3DResult, bool bCreatingTextures)
 {
+#if PLATFORM_WINDOWS
 	if (bCreatingTextures)
 	{
 		FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *LOCTEXT("OutOfVideoMemoryTextures", "Out of video memory trying to allocate a texture! Make sure your video card has the minimum required memory, try lowering the resolution and/or closing other applications that are running. Exiting...").ToString(), TEXT("Error"));
@@ -538,6 +546,9 @@ static void TerminateOnOutOfMemory(HRESULT D3DResult, bool bCreatingTextures)
 	GetRendererModule().DebugLogOnCrash();
 #endif
 	FPlatformMisc::RequestExit(true);
+#else // PLATFORM_WINDOWS
+	UE_LOG(LogInit, Fatal, TEXT("Out of video memory trying to allocate a rendering resource"));
+#endif // !PLATFORM_WINDOWS
 }
 
 #ifndef MAKE_D3DHRESULT
@@ -617,7 +628,7 @@ namespace D3D12RHI
 		else
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		{
-			UE_LOG(LogD3D12RHI, Error, TEXT("%s"), *ErrorMessage.ToText().ToString());
+			UE_LOG(LogD3D12RHI, D3D12RHI_GPU_CRASH_LOG_VERBOSITY, TEXT("%s"), *ErrorMessage.ToText().ToString());
 		}
 
 #if PLATFORM_WINDOWS
@@ -637,6 +648,9 @@ namespace D3D12RHI
 
 			// Report the GPU crash which will raise the exception (only interesting if we have a GPU dump)
 			ReportGPUCrash(TEXT("Aftermath GPU Crash dump Triggered"), 0);
+
+			// Force shutdown, we can't do anything useful anymore.
+			FPlatformMisc::RequestExit(true);
 		}
 #endif // PLATFORM_WINDOWS
 
@@ -653,15 +667,14 @@ namespace D3D12RHI
 
 		const FString& ErrorString = GetD3D12ErrorString(D3DResult, Device);
 		UE_LOG(LogD3D12RHI, Error, TEXT("%s failed \n at %s:%u \n with error %s\n%s"), ANSI_TO_TCHAR(Code), ANSI_TO_TCHAR(Filename), Line, *ErrorString, *Message);
-
-		// Terminate with device removed or hung then try and get the current GPU state and dump to log
-		if (D3DResult == DXGI_ERROR_DEVICE_REMOVED || D3DResult == DXGI_ERROR_DEVICE_HUNG)
-		{	 
-			TerminateOnGPUCrash(Device, nullptr, 0);
-		}
-		else if (D3DResult == E_OUTOFMEMORY)
+		
+		if (D3DResult == E_OUTOFMEMORY)
 		{
 			TerminateOnOutOfMemory(D3DResult, false);
+		}
+		else
+		{
+			TerminateOnGPUCrash(Device, nullptr, 0);
 		}
 
 		// Make sure the log is flushed!
@@ -930,7 +943,7 @@ void LogExecuteCommandLists(uint32 NumCommandLists, ID3D12CommandList* const* pp
 	for (uint32 i = 0; i < NumCommandLists; i++)
 	{
 		ID3D12CommandList* const pCurrentCommandList = ppCommandLists[i];
-		UE_LOG(LogD3D12RHI, Log, TEXT("*** EXECUTE (CmdList: %016llX) %u/%u ***"), pCurrentCommandList, i + 1, NumCommandLists);
+		UE_LOG(LogD3D12RHI, Log, TEXT("*** [tid:%08x] EXECUTE (CmdList: %016llX) %u/%u ***"), FPlatformTLS::GetCurrentThreadId(), pCurrentCommandList, i + 1, NumCommandLists);
 	}
 }
 

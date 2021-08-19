@@ -139,6 +139,11 @@ void FSocialUserList::HandleOwnerToolkitReset()
 	{
 		OnUpdateComplete().Broadcast();
 	}
+
+	if (OwnerToolkit.IsValid())
+	{
+		OwnerToolkit->GetSocialManager().OnPartyJoined().RemoveAll(this);
+	}
 }
 
 void FSocialUserList::HandlePartyInviteReceived(USocialUser& InvitingUser)
@@ -610,8 +615,10 @@ void FSocialUserList::HandlePartyJoined(USocialParty& Party)
 
 	for (UPartyMember* PartyMember : Party.GetPartyMembers())
 	{
-		PartyMember->OnLeftParty().AddSP(this, &FSocialUserList::HandlePartyMemberLeft, PartyMember);
-		MarkUserAsDirty(PartyMember->GetSocialUser());
+		if (PartyMember)
+		{
+			MarkPartyMemberAsDirty(*PartyMember);
+		}
 	}
 
 	UpdateNow();
@@ -620,12 +627,41 @@ void FSocialUserList::HandlePartyJoined(USocialParty& Party)
 void FSocialUserList::HandlePartyMemberCreated(UPartyMember& Member)
 {
 	Member.OnLeftParty().AddSP(this, &FSocialUserList::HandlePartyMemberLeft, &Member);
-	MarkUserAsDirty(Member.GetSocialUser());
+	MarkPartyMemberAsDirty(Member);
 	UpdateNow();
 }
 
 void FSocialUserList::HandlePartyMemberLeft(EMemberExitedReason Reason, UPartyMember* Member)
 {
-	MarkUserAsDirty(Member->GetSocialUser());
+	if (ensure(Member))
+	{
+		MarkPartyMemberAsDirty(*Member);
+	}
 	UpdateNow();
+}
+
+USocialUser* FSocialUserList::FindOwnersRelationshipTo(UPartyMember& TargetPartyMember) const
+{
+	if (OwnerToolkit.IsValid())
+	{
+		const FUniqueNetIdRepl& PartyMemberNetId = TargetPartyMember.GetPrimaryNetId();
+		return OwnerToolkit->FindUser(PartyMemberNetId);
+	}
+
+	return nullptr;
+}
+
+void FSocialUserList::MarkPartyMemberAsDirty(UPartyMember& PartyMember)
+{
+	// Find the USocialUser representing the PartyMember in the owning toolkit's set of USocialUsers.
+	// Must be looked up specifically for this owner player rather than the party because each player
+	// will have their own set of relationships (e.g. muted, blocked) to each of the other players.
+	if (OwnerToolkit.IsValid())
+	{
+		USocialUser* const PartyMemberSocialUser = FindOwnersRelationshipTo(PartyMember);
+		if (ensure(PartyMemberSocialUser))
+		{
+			MarkUserAsDirty(*PartyMemberSocialUser);
+		}
+	}
 }

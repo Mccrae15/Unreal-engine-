@@ -1,20 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DMXGraphPanelPinFactory.h"
-#include "K2Node.h"
-#include "EdGraphSchema_K2.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "SGraphPin.h"
-#include "SGraphPinNameList.h"
+
+#include "DMXAttribute.h"
 #include "Library/DMXLibrary.h"
 #include "Library/DMXEntityReference.h"
 #include "Library/DMXEntity.h"
 #include "Library/DMXEntityFixtureType.h"
-#include "DMXProtocolTypes.h"
-#include "DMXAttribute.h"
-#include "Widgets/SDynamicNameListGraphPin.h"
 #include "Widgets/SDMXEntityReferenceGraphPin.h"
+#include "Widgets/SDynamicNameListGraphPin.h"
 #include "Widgets/SNullGraphPin.h"
+
+#include "EdGraphSchema_K2.h"
+#include "EdGraph/EdGraphPin.h"
+#include "UObject/Class.h"
+
 
 TSharedPtr<class SGraphPin> FDMXGraphPanelPinFactory::CreatePin(class UEdGraphPin* InPin) const
 {

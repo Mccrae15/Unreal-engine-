@@ -7,7 +7,10 @@
 
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
+#include "Misc/ConfigCacheIni.h"
 #include "IPlatformFileSandboxWrapper.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Interfaces/IPluginManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogLocalizationChunkDataGenerator, Log, All);
 
@@ -16,9 +19,41 @@ FLocalizationChunkDataGenerator::FLocalizationChunkDataGenerator(const int32 InC
 	, LocalizationTargetsToChunk(MoveTemp(InLocalizationTargetsToChunk))
 	, AllCulturesToCook(MoveTemp(InAllCulturesToCook))
 {
+	AllPotentialContentRoots.Add(TEXT("/Engine/"));
+	AllPotentialContentRoots.Add(TEXT("/Game/"));
+
+	// Cache information about potential plugin content roots, including plugins that aren't currently loaded that we may have gathered localization data from
+	{
+		TArray<TSharedRef<IPlugin>> AllPlugins = IPluginManager::Get().GetDiscoveredPlugins();
+		for (TSharedRef<IPlugin> Plugin : AllPlugins)
+		{
+			if (!Plugin->CanContainContent())
+			{
+				continue;
+			}
+
+			AllPotentialContentRoots.Add(FString::Printf(TEXT("/%s/"), *Plugin->GetName()));
+
+			// Some plugins may re-map their content onto /Game during cook, so we need to take this into account when chunking the localization data
+			const FString PluginConfigFilename = Plugin->GetBaseDir() / TEXT("Config") / FString::Printf(TEXT("Default%s.ini"), *Plugin->GetName());
+
+			// Note: We don't use GConfig directly here, as not all of these plugins may currently be loaded
+			// This means we need to load their config file directly to access this setting...
+			FConfigFile PluginConfig;
+			PluginConfig.Read(PluginConfigFilename);
+
+			bool bShouldRemap = false;
+			PluginConfig.GetBool(TEXT("PluginSettings"), TEXT("RemapPluginContentToGame"), bShouldRemap);
+			
+			if (bShouldRemap)
+			{
+				PluginContentRootsMappedToGameRoot.Add(FString::Printf(TEXT("/%s/"), *Plugin->GetName()));
+			}
+		}
+	}
 }
 
-void FLocalizationChunkDataGenerator::GenerateChunkDataFiles(const int32 InChunkId, const TSet<FName>& InPackagesInChunk, const FString& InPlatformName, FSandboxPlatformFile* InSandboxFile, TArray<FString>& OutChunkFilenames)
+void FLocalizationChunkDataGenerator::GenerateChunkDataFiles(const int32 InChunkId, const TSet<FName>& InPackagesInChunk, const ITargetPlatform* TargetPlatform, FSandboxPlatformFile* InSandboxFile, TArray<FString>& OutChunkFilenames)
 {
 	// The primary chunk doesn't gain a suffix to make it unique, as it is replacing the offline localization data that is usually staged verbatim
 	const bool bIsPrimaryChunk = InChunkId == 0;
@@ -40,6 +75,7 @@ void FLocalizationChunkDataGenerator::GenerateChunkDataFiles(const int32 InChunk
 		return;
 	}
 
+	const FString InPlatformName = TargetPlatform->PlatformName();
 	const FString LocalizationContentRoot = (InSandboxFile->GetSandboxDirectory() / InSandboxFile->GetGameSandboxDirectoryName() / TEXT("Content") / TEXT("Localization")).Replace(TEXT("[Platform]"), *InPlatformName);
 	const FString LocalizationMetadataRoot = (InSandboxFile->GetSandboxDirectory() / InSandboxFile->GetGameSandboxDirectoryName() / TEXT("Metadata") / TEXT("Localization")).Replace(TEXT("[Platform]"), *InPlatformName);
 
@@ -61,16 +97,33 @@ void FLocalizationChunkDataGenerator::GenerateChunkDataFiles(const int32 InChunk
 		bool bChunkHasText = false;
 		FLocTextHelper ChunkLocTextHelper(ChunkTargetMetadataRoot, FString::Printf(TEXT("%s.manifest"), *ChunkTargetName), FString::Printf(TEXT("%s.archive"), *ChunkTargetName), SourceLocTextHelper->GetNativeCulture(), SourceLocTextHelper->GetForeignCultures(), nullptr);
 		ChunkLocTextHelper.LoadAll(ELocTextHelperLoadFlags::Create); // Create the in-memory manifest and archives
-		SourceLocTextHelper->EnumerateSourceTexts([bIsCatchAllChunk, SourceLocTextHelper, &bChunkHasText, &ChunkLocTextHelper, &InPackagesInChunk, &AvailableCulturesToCook](TSharedRef<FManifestEntry> InManifestEntry)
+		SourceLocTextHelper->EnumerateSourceTexts([this, bIsCatchAllChunk, SourceLocTextHelper, &bChunkHasText, &ChunkLocTextHelper, &InPackagesInChunk, &AvailableCulturesToCook](TSharedRef<FManifestEntry> InManifestEntry)
 		{
 			for (const FManifestContext& ManifestContext : InManifestEntry->Contexts)
 			{
 				bool bIncludeInChunk = bIsCatchAllChunk;
 				{
-					const FString SourcePackageName = FPackageName::ObjectPathToPackageName(ManifestContext.SourceLocation);
-					if (FPackageName::IsValidLongPackageName(SourcePackageName))
+					// Note: We can't use FPackageName::IsValidLongPackageName in the tests below, as not all plugins we gathered localization from may be loaded during cook meaning the unmapped path wouldn't be recognized as a valid package root
+					FString SourcePackageName = FPackageName::ObjectPathToPackageName(ManifestContext.SourceLocation);
+
+					// Some plugins may re-map their content onto /Game during cook, so we need to take this into account when chunking the localization data
+					for (const FString& PluginContentRootMappedToGameRoot : PluginContentRootsMappedToGameRoot)
 					{
-						bIncludeInChunk = InPackagesInChunk.Contains(*SourcePackageName);
+						if (SourcePackageName.RemoveFromStart(PluginContentRootMappedToGameRoot))
+						{
+							SourcePackageName.InsertAt(0, TEXT("/Game/"));
+							break;
+						}
+					}
+
+					// Is this from a potential content root? If so, treat it as an asset and test whether it was cooked into this chunk
+					for (const FString& PotentialContentRoot : AllPotentialContentRoots)
+					{
+						if (SourcePackageName.StartsWith(PotentialContentRoot))
+						{
+							bIncludeInChunk = InPackagesInChunk.Contains(*SourcePackageName);
+							break;
+						}
 					}
 				}
 
@@ -95,6 +148,21 @@ void FLocalizationChunkDataGenerator::GenerateChunkDataFiles(const int32 InChunk
 		// We can skip empty non-primary chunks
 		if (!bIsPrimaryChunk && !bChunkHasText)
 		{
+			// We still need to write a dummy LocMeta file, so that FTextLocalizationManager::OnPakFileMounted validates that this chunked target has no data
+			// Without the dummy file it would early out and prevent any other chunked targets (that might have data for this chunk) from being loaded too!
+			{
+				const FString ChunkLocMetaFilename = ChunkTargetContentRoot / FString::Printf(TEXT("%s.locmeta"), *ChunkTargetName);
+
+				FTextLocalizationMetaDataResource ChunkDummyLocMeta;
+				if (ChunkDummyLocMeta.SaveToFile(ChunkLocMetaFilename))
+				{
+					OutChunkFilenames.Add(ChunkLocMetaFilename);
+				}
+				else
+				{
+					UE_LOG(LogLocalizationChunkDataGenerator, Error, TEXT("Failed to generate dummy meta-data for localization target '%s' when chunking localization data."), *ChunkTargetName);
+				}
+			}
 			continue;
 		}
 

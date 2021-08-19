@@ -1,20 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Recorder/TakeRecorder.h"
-#include "Recorder/TakeRecorderBlueprintLibrary.h"
-#include "TakePreset.h"
-#include "TakeMetaData.h"
-#include "TakeRecorderSources.h"
-#include "TakeRecorderOverlayWidget.h"
-#include "LevelSequence.h"
-#include "Tickable.h"
+
+#include "Algo/Accumulate.h"
 #include "AssetRegistryModule.h"
+#include "CoreGlobals.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineTypes.h"
 #include "IAssetRegistry.h"
-#include "Stats/Stats.h"
 #include "ISequencer.h"
-#include "SequencerSettings.h"
+#include "LevelSequence.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "MovieSceneTimeHelpers.h"
+#include "Recorder/TakeRecorderBlueprintLibrary.h"
+#include "TakeMetaData.h"
+#include "TakePreset.h"
+#include "TakeRecorderOverlayWidget.h"
+#include "TakeRecorderSources.h"
 #include "TakesUtils.h"
+#include "Tickable.h"
+#include "Stats/Stats.h"
+#include "SequencerSettings.h"
 
 // LevelSequenceEditor includes
 #include "ILevelSequenceEditorToolkit.h"
@@ -353,6 +360,16 @@ static TStrongObjectPtr<UTakeRecorder>& GetCurrentRecorder()
 }
 FOnTakeRecordingInitialized UTakeRecorder::OnRecordingInitializedEvent;
 
+void FTakeRecorderParameterOverride::RegisterHandler(FName OverrideName, FTakeRecorderParameterDelegate Delegate)
+{
+	Delegates.FindOrAdd(MoveTemp(OverrideName), MoveTemp(Delegate));
+}
+
+void  FTakeRecorderParameterOverride::UnregisterHandler(FName OverrideName)
+{
+	Delegates.Remove(MoveTemp(OverrideName));
+}
+
 // Static functions for UTakeRecorder
 UTakeRecorder* UTakeRecorder::GetActiveRecorder()
 {
@@ -362,6 +379,12 @@ UTakeRecorder* UTakeRecorder::GetActiveRecorder()
 FOnTakeRecordingInitialized& UTakeRecorder::OnRecordingInitialized()
 {
 	return OnRecordingInitializedEvent;
+}
+
+FTakeRecorderParameterOverride& UTakeRecorder::TakeInitializeParameterOverride()
+{
+	static FTakeRecorderParameterOverride Overrides;
+	return Overrides;
 }
 
 bool UTakeRecorder::SetActiveRecorder(UTakeRecorder* NewActiveRecorder)
@@ -387,7 +410,25 @@ UTakeRecorder::UTakeRecorder(const FObjectInitializer& ObjInit)
 	OverlayWidget = nullptr;
 }
 
-bool UTakeRecorder::Initialize(ULevelSequence* LevelSequenceBase, UTakeRecorderSources* Sources, UTakeMetaData* MetaData, const FTakeRecorderParameters& InParameters, FText* OutError)
+void UTakeRecorder::SetDisableSaveTick(bool InValue)
+{
+	Parameters.bDisableRecordingAndSave = InValue;
+}
+
+namespace TakeInitHelper
+{
+FTakeRecorderParameters AccumulateParamsOverride(const FTakeRecorderParameters& InParam)
+{
+	TMap<FName, FTakeRecorderParameterDelegate>& TheDelegates = UTakeRecorder::TakeInitializeParameterOverride().Delegates;
+	auto Op = [](FTakeRecorderParameters InParameters, const TPair<FName,FTakeRecorderParameterDelegate>& Pair)
+	{
+		return Pair.Value.Execute(MoveTemp(InParameters));
+	};
+	return Algo::Accumulate(TheDelegates, InParam, MoveTemp(Op));
+}
+}
+
+bool UTakeRecorder::Initialize ( ULevelSequence* LevelSequenceBase, UTakeRecorderSources* Sources, UTakeMetaData* MetaData, const FTakeRecorderParameters& InParameters, FText* OutError )
 {
 	FGCObjectScopeGuard GCGuard(this);
 
@@ -413,14 +454,20 @@ bool UTakeRecorder::Initialize(ULevelSequence* LevelSequenceBase, UTakeRecorderS
 
 	UTakeRecorderBlueprintLibrary::OnTakeRecorderPreInitialize();
 
-	if (!CreateDestinationAsset(*InParameters.Project.GetTakeAssetPath(), LevelSequenceBase, Sources, MetaData, OutError))
+	FTakeRecorderParameters FinalParameters = TakeInitHelper::AccumulateParamsOverride(InParameters);
+	if (FinalParameters.TakeRecorderMode == ETakeRecorderMode::RecordNewSequence)
 	{
-		return false;
+		if (!CreateDestinationAsset(*FinalParameters.Project.GetTakeAssetPath(), LevelSequenceBase, Sources, MetaData, OutError))
+		{
+			return false;
+		}
 	}
-
-	if (!InitializeSequencer(OutError))
+	else
 	{
-		return false;
+		if (!SetupDestinationAsset(FinalParameters, LevelSequenceBase, Sources, MetaData, OutError))
+		{
+			return false;
+		}
 	}
 
 	// -----------------------------------------------------------
@@ -429,8 +476,17 @@ bool UTakeRecorder::Initialize(ULevelSequence* LevelSequenceBase, UTakeRecorderS
 
 	AddToRoot();
 
-	Parameters = InParameters;
+	Parameters = FinalParameters;
 	State      = ETakeRecorderState::CountingDown;
+
+	// Override parameters for recording into a current sequence
+	if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordIntoSequence)
+	{
+		Parameters.Project.bStartAtCurrentTimecode = false;
+		Parameters.User.bStopAtPlaybackEnd = true;
+		Parameters.User.bSaveRecordedAssets = false;
+		Parameters.User.bAutoLock = false;
+	}
 
 	// Figure out which world we're recording from
 	DiscoverSourceWorld();
@@ -439,7 +495,8 @@ bool UTakeRecorder::Initialize(ULevelSequence* LevelSequenceBase, UTakeRecorderS
 	InitializeFromParameters();
 
 	// Open a recording notification
-	// @todo: is this too intrusive? does it potentially overlap the takerecorder slate UI?
+
+	if (ShouldShowNotifications())
 	{
 		TSharedRef<STakeRecorderNotification> Content = SNew(STakeRecorderNotification, this);
 
@@ -456,16 +513,19 @@ bool UTakeRecorder::Initialize(ULevelSequence* LevelSequenceBase, UTakeRecorderS
 	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 	if (Sequencer.IsValid())
 	{
-		USequencerSettings* SequencerSettings = USequencerSettingsContainer::GetOrCreate<USequencerSettings>(TEXT("TakeRecorderSequenceEditor"));
-
-		CachedAllowEditsMode = SequencerSettings->GetAllowEditsMode();
-		CachedAutoChangeMode = SequencerSettings->GetAutoChangeMode();
+		if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordNewSequence)
+		{
+			USequencerSettings* SequencerSettings = USequencerSettingsContainer::GetOrCreate<USequencerSettings>(TEXT("TakeRecorderSequenceEditor"));
 		
-		//When we start recording we don't want to track anymore.  It will be restored when stopping recording.
-		SequencerSettings->SetAllowEditsMode(EAllowEditsMode::AllEdits);
-		SequencerSettings->SetAutoChangeMode(EAutoChangeMode::None);
+			CachedAllowEditsMode = SequencerSettings->GetAllowEditsMode();
+			CachedAutoChangeMode = SequencerSettings->GetAutoChangeMode();
+		
+			//When we start recording we don't want to track anymore.  It will be restored when stopping recording.
+			SequencerSettings->SetAllowEditsMode(EAllowEditsMode::AllEdits);
+			SequencerSettings->SetAutoChangeMode(EAutoChangeMode::None);
 
-		Sequencer->SetSequencerSettings(SequencerSettings);
+			Sequencer->SetSequencerSettings(SequencerSettings);
+		}
 
 		// Center the view range around the current time about to be captured
 		FAnimatedRange Range = Sequencer->GetViewRange();
@@ -485,9 +545,10 @@ bool UTakeRecorder::Initialize(ULevelSequence* LevelSequenceBase, UTakeRecorderS
 void UTakeRecorder::DiscoverSourceWorld()
 {
 	UWorld* WorldToRecordIn = nullptr;
+
 	for (const FWorldContext& WorldContext : GEngine->GetWorldContexts())
 	{
-		if (WorldContext.WorldType == EWorldType::PIE)
+		if (WorldContext.WorldType == EWorldType::PIE || WorldContext.WorldType == EWorldType::Game )
 		{
 			WorldToRecordIn = WorldContext.World();
 			break;
@@ -510,18 +571,17 @@ void UTakeRecorder::DiscoverSourceWorld()
 		OverlayWidget->AddToViewport();
 	}
 
-	
+	bool bPlayInGame = WorldToRecordIn->WorldType == EWorldType::PIE || WorldToRecordIn->WorldType == EWorldType::Game;
 	// If recording via PIE, be sure to stop recording cleanly when PIE ends
-	if (WorldToRecordIn->WorldType == EWorldType::PIE)
+	if ( bPlayInGame )
 	{
 		FEditorDelegates::EndPIE.AddUObject(this, &UTakeRecorder::HandlePIE);
 	}
 	// If not recording via PIE, be sure to stop recording if PIE Starts
-	if (WorldToRecordIn->WorldType != EWorldType::PIE)
+	if ( !bPlayInGame )
 	{
 		FEditorDelegates::BeginPIE.AddUObject(this, &UTakeRecorder::HandlePIE);//reuse same function
 	}
-
 }
 
 bool UTakeRecorder::CreateDestinationAsset(const TCHAR* AssetPathFormat, ULevelSequence* LevelSequenceBase, UTakeRecorderSources* Sources, UTakeMetaData* MetaData, FText* OutError)
@@ -529,7 +589,7 @@ bool UTakeRecorder::CreateDestinationAsset(const TCHAR* AssetPathFormat, ULevelS
 	check(LevelSequenceBase && Sources && MetaData);
 
 	FString   PackageName = MetaData->GenerateAssetPath(AssetPathFormat);
-	 
+
 	// Initialize a new package, ensuring that it has a unique name
 	if (!TakesUtils::CreateNewAssetPackage<ULevelSequence>(PackageName, SequenceAsset, OutError, LevelSequenceBase))
 	{
@@ -560,28 +620,72 @@ bool UTakeRecorder::CreateDestinationAsset(const TCHAR* AssetPathFormat, ULevelS
 	SequenceAsset->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(SequenceAsset);
 
-	return true;
-}
-
-bool UTakeRecorder::InitializeSequencer(FText* OutError)
-{
-	// Open the sequence and set the sequencer ptr
-	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(SequenceAsset);
-
-	IAssetEditorInstance*        AssetEditor         = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(SequenceAsset, false);
-	ILevelSequenceEditorToolkit* LevelSequenceEditor = static_cast<ILevelSequenceEditorToolkit*>(AssetEditor);
-
-	WeakSequencer = LevelSequenceEditor ? LevelSequenceEditor->GetSequencer() : nullptr;
-
-	if (!WeakSequencer.Pin().IsValid())
+	if (!InitializeSequencer(SequenceAsset, OutError))
 	{
-		if (OutError)
-		{
-			*OutError = FText::Format(LOCTEXT("FailedToOpenSequencerError", "Failed to open Sequencer for asset '{0}."), FText::FromString(SequenceAsset->GetPathName()));
-		}
 		return false;
 	}
 
+	return true;
+}
+
+bool UTakeRecorder::SetupDestinationAsset(const FTakeRecorderParameters& InParameters, ULevelSequence* LevelSequenceBase, UTakeRecorderSources* Sources, UTakeMetaData* MetaData, FText* OutError)
+{
+	check(LevelSequenceBase && Sources && MetaData);
+
+	if (!InitializeSequencer(LevelSequenceBase, OutError))
+	{
+		return false;
+	}
+
+	// The SequenceAsset is either LevelSequenceBase or the currently focused sequence
+	SequenceAsset = Cast<ULevelSequence>(WeakSequencer.Pin()->GetFocusedMovieSceneSequence());
+
+	// Copy the sources into the level sequence for future reference (and potentially mutation throughout recording)
+	SequenceAsset->CopyMetaData(Sources);
+
+	UMovieScene*   MovieScene    = SequenceAsset->GetMovieScene();
+	UTakeMetaData* AssetMetaData = SequenceAsset->CopyMetaData(MetaData);
+
+	// Ensure the asset meta-data is unlocked for the recording (it is later Locked when the recording finishes)
+	AssetMetaData->Unlock();
+	AssetMetaData->ClearFlags(RF_Transient);
+
+	FDateTime UtcNow = FDateTime::UtcNow();
+	AssetMetaData->SetTimestamp(UtcNow);
+
+	// When recording into an existing level sequence, set the asset metadata to the sequence's display rate
+	if (InParameters.TakeRecorderMode == ETakeRecorderMode::RecordIntoSequence)
+	{
+		AssetMetaData->SetFrameRate(MovieScene->GetDisplayRate());
+	}
+
+	SequenceAsset->MarkPackageDirty();
+	
+	return true;
+}
+
+bool UTakeRecorder::InitializeSequencer(ULevelSequence* LevelSequence, FText* OutError)
+{
+	if ( GEditor != nullptr )
+	{
+		// Open the sequence and set the sequencer ptr
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(LevelSequence);
+
+		IAssetEditorInstance*        AssetEditor         = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(LevelSequence, false);
+		ILevelSequenceEditorToolkit* LevelSequenceEditor = static_cast<ILevelSequenceEditorToolkit*>(AssetEditor);
+
+		WeakSequencer = LevelSequenceEditor ? LevelSequenceEditor->GetSequencer() : nullptr;
+
+		if (!WeakSequencer.Pin().IsValid())
+		{
+			if (OutError)
+			{
+				*OutError = FText::Format(LOCTEXT("FailedToOpenSequencerError", "Failed to open Sequencer for asset '{0}."), FText::FromString(LevelSequence->GetPathName()));
+			}
+			return false;
+		}
+	}
+		
 	return true;
 }
 
@@ -589,6 +693,9 @@ void UTakeRecorder::InitializeFromParameters()
 {
 	// Initialize the countdown delay
 	CountdownSeconds = Parameters.User.CountdownSeconds;
+
+	// Set the end recording frame if enabled
+	StopRecordingFrame = Parameters.User.bStopAtPlaybackEnd ? SequenceAsset->GetMovieScene()->GetPlaybackRange().GetUpperBoundValue() : TOptional<FFrameNumber>();
 
 	// Apply immersive mode if the parameters demand it
 	if (Parameters.User.bMaximizeViewport)
@@ -635,6 +742,17 @@ void UTakeRecorder::InitializeFromParameters()
 	}
 }
 
+bool UTakeRecorder::ShouldShowNotifications()
+{
+	// -TAKERECORDERISHEADLESS in the command line can force headless behavior and disable the notifications.
+	static const bool bCmdLineTakeRecorderIsHeadless = FParse::Param(FCommandLine::Get(), TEXT("TAKERECORDERISHEADLESS"));
+
+	return Parameters.Project.bShowNotifications
+		&& !bCmdLineTakeRecorderIsHeadless
+		&& !FApp::IsUnattended()
+		&& !GIsRunningUnattendedScript;
+}
+
 UWorld* UTakeRecorder::GetWorld() const
 {
 	return WeakWorld.Get();
@@ -642,8 +760,6 @@ UWorld* UTakeRecorder::GetWorld() const
 
 void UTakeRecorder::Tick(float DeltaTime)
 {
-	FTimecode TimecodeSource = FApp::GetTimecode();
-
 	if (State == ETakeRecorderState::CountingDown)
 	{
 		NumberOfTicksAfterPre = 0;
@@ -664,20 +780,66 @@ void UTakeRecorder::Tick(float DeltaTime)
 	else if (State == ETakeRecorderState::TickingAfterPre)
 	{
 		NumberOfTicksAfterPre = 0;
-		Start(TimecodeSource);
-		InternalTick(TimecodeSource, 0.0f);
+		Start();
+		InternalTick(0.0f);
 	}
 	else if (State == ETakeRecorderState::Started)
 	{
-		InternalTick(TimecodeSource, DeltaTime);
+		InternalTick(DeltaTime);
 	}
 }
 
-void UTakeRecorder::InternalTick(const FTimecode& InTimecodeSource, float DeltaTime)
+FQualifiedFrameTime UTakeRecorder::GetRecordTime() const
 {
-	UTakeRecorderSources* Sources = SequenceAsset->FindOrAddMetaData<UTakeRecorderSources>();
-	CurrentFrameTime = Sources->TickRecording(SequenceAsset, InTimecodeSource, DeltaTime);
+	FQualifiedFrameTime RecordTime;
+
 	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
+	if (Sequencer.IsValid())
+	{
+		RecordTime = Sequencer->GetGlobalTime();
+	}
+	else if (SequenceAsset)
+	{
+		UMovieScene* MovieScene = SequenceAsset->GetMovieScene();
+		if (MovieScene)
+		{
+			FFrameRate FrameRate = MovieScene->GetDisplayRate();
+			FFrameRate TickResolution = MovieScene->GetTickResolution();
+
+			FTimecode CurrentTimecode = FApp::GetTimecode();
+		
+			FFrameNumber CurrentFrame = FFrameRate::TransformTime(FFrameTime(CurrentTimecode.ToFrameNumber(FrameRate)), FrameRate, TickResolution).FloorToFrame();
+			FFrameNumber FrameAtStart = FFrameRate::TransformTime(FFrameTime(TimecodeAtStart.ToFrameNumber(FrameRate)), FrameRate, TickResolution).FloorToFrame();
+
+			if (Parameters.Project.bStartAtCurrentTimecode)
+			{
+				RecordTime = FQualifiedFrameTime(CurrentFrame, TickResolution);
+			}
+			else
+			{
+				RecordTime = FQualifiedFrameTime(CurrentFrame - FrameAtStart, TickResolution);
+			}
+		}
+	}
+
+	return RecordTime;
+}
+
+void UTakeRecorder::InternalTick(float DeltaTime)
+{
+	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
+	FQualifiedFrameTime RecordTime = GetRecordTime();
+		
+	UTakeRecorderSources* Sources = SequenceAsset->FindOrAddMetaData<UTakeRecorderSources>();
+	if (!Parameters.bDisableRecordingAndSave)
+	{
+		CurrentFrameTime = Sources->TickRecording(SequenceAsset, RecordTime, DeltaTime);
+	}
+	else
+	{
+		CurrentFrameTime = Sources->AdvanceTime(RecordTime, DeltaTime);
+	}
+
 	if (Sequencer.IsValid())
 	{
 		FAnimatedRange Range = Sequencer->GetViewRange();
@@ -691,6 +853,11 @@ void UTakeRecorder::InternalTick(const FTimecode& InTimecodeSource, float DeltaT
 			Sequencer->SetViewRange(NewRange, EViewRangeInterpolation::Immediate);
 			Sequencer->SetClampRange(Sequencer->GetViewRange());
 		}
+	}
+
+	if (StopRecordingFrame.IsSet() && CurrentFrameTime.FrameNumber >= StopRecordingFrame.GetValue())
+	{
+		Stop();
 	}
 }
 
@@ -729,36 +896,66 @@ void UTakeRecorder::PreRecord()
 		}
 	}
 
-	Sources->SetStartAtCurrentTimecode(Parameters.Project.bStartAtCurrentTimecode);
-	Sources->SetRecordToSubSequence(Parameters.Project.bRecordSourcesIntoSubSequences);
+	FTakeRecorderSourcesSettings TakeRecorderSourcesSettings;
+	TakeRecorderSourcesSettings.bStartAtCurrentTimecode = Parameters.Project.bStartAtCurrentTimecode;
+	TakeRecorderSourcesSettings.bRecordSourcesIntoSubSequences = Parameters.Project.bRecordSourcesIntoSubSequences;
+	TakeRecorderSourcesSettings.bRecordToPossessable = Parameters.Project.bRecordToPossessable;
+	TakeRecorderSourcesSettings.bSaveRecordedAssets = (!Parameters.bDisableRecordingAndSave && Parameters.User.bSaveRecordedAssets) || GEditor == nullptr;
+	TakeRecorderSourcesSettings.bRemoveRedundantTracks = Parameters.User.bRemoveRedundantTracks;
+	TakeRecorderSourcesSettings.bAutoLock = Parameters.User.bAutoLock;
 
-	Sources->PreRecording(SequenceAsset, Parameters.User.bAutoSerialize ? &ManifestSerializer : nullptr);
+	Sources->SetSettings(TakeRecorderSourcesSettings);
+
+	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
+	if (!Parameters.bDisableRecordingAndSave)
+	{
+		UMovieScene* MovieScene = SequenceAsset->GetMovieScene();
+		FQualifiedFrameTime SequencerTime;
+		if (MovieScene)
+		{
+			FTimecode Timecode = FApp::GetTimecode();
+			FFrameRate FrameRate = MovieScene->GetDisplayRate();
+			FFrameRate TickResolution = MovieScene->GetTickResolution();
+			FFrameNumber PlaybackStartFrame = Parameters.Project.bStartAtCurrentTimecode ? FFrameRate::TransformTime(FFrameTime(Timecode.ToFrameNumber(FrameRate)), FrameRate, TickResolution).FloorToFrame() : MovieScene->GetPlaybackRange().GetLowerBoundValue();
+			SequencerTime = FQualifiedFrameTime(PlaybackStartFrame, TickResolution);
+		}
+
+		Sources->PreRecording(SequenceAsset, SequencerTime, Parameters.User.bAutoSerialize ? &ManifestSerializer : nullptr);
+	}
+	else
+	{
+		Sources->SetCachedAssets(SequenceAsset, Parameters.User.bAutoSerialize ? &ManifestSerializer : nullptr);
+	}
 
 	// Refresh sequencer in case the movie scene data has mutated (ie. existing object bindings removed because they will be recorded again)
-	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 	if (Sequencer.IsValid())
 	{
 		Sequencer->RefreshTree();
 	}
 }
 
-void UTakeRecorder::Start(const FTimecode& InTimecodeSource)
+void UTakeRecorder::Start()
 {
+	FTimecode Timecode = FApp::GetTimecode();
+
 	State = ETakeRecorderState::Started;
 
 	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 
 	CurrentFrameTime = FFrameTime(0);
-		
+	TimecodeAtStart = Timecode;
+
 	// Discard any entity tokens we have so that restore state does not take effect when we delete any sections that recording will be replacing.
 	if (Sequencer.IsValid())
 	{
-		Sequencer->DiscardEntityTokens();
+		Sequencer->PreAnimatedState.DiscardEntityTokens();
 	}
-		
+
 	UMovieScene* MovieScene = SequenceAsset->GetMovieScene();
 	if (MovieScene)
 	{
+		CachedPlaybackRange = MovieScene->GetPlaybackRange();
+		CachedClockSource = MovieScene->GetClockSource();
 		MovieScene->SetClockSource(EUpdateClockSource::RelativeTimecode);
 		if (Sequencer.IsValid())
 		{
@@ -767,7 +964,7 @@ void UTakeRecorder::Start(const FTimecode& InTimecodeSource)
 
 		FFrameRate FrameRate = MovieScene->GetDisplayRate();
 		FFrameRate TickResolution = MovieScene->GetTickResolution();
-		FFrameNumber PlaybackStartFrame = Parameters.Project.bStartAtCurrentTimecode ? FFrameRate::TransformTime(FFrameTime(InTimecodeSource.ToFrameNumber(FrameRate)), FrameRate, TickResolution).FloorToFrame() : MovieScene->GetPlaybackRange().GetLowerBoundValue();
+		FFrameNumber PlaybackStartFrame = Parameters.Project.bStartAtCurrentTimecode ? FFrameRate::TransformTime(FFrameTime(Timecode.ToFrameNumber(FrameRate)), FrameRate, TickResolution).FloorToFrame() : MovieScene->GetPlaybackRange().GetLowerBoundValue();
 
 		// Transform all the sections to start the playback start frame
 		FFrameNumber DeltaFrame = PlaybackStartFrame - MovieScene->GetPlaybackRange().GetLowerBoundValue();
@@ -777,6 +974,11 @@ void UTakeRecorder::Start(const FTimecode& InTimecodeSource)
 			{
 				Section->MoveSection(DeltaFrame);
 			}
+		}
+
+		if (StopRecordingFrame.IsSet())
+		{
+			StopRecordingFrame = StopRecordingFrame.GetValue() + DeltaFrame;
 		}
 
 		// Set infinite playback range when starting recording. Playback range will be clamped to the bounds of the sections at the completion of the recording
@@ -793,9 +995,23 @@ void UTakeRecorder::Start(const FTimecode& InTimecodeSource)
 	UTakeMetaData* AssetMetaData = SequenceAsset->FindMetaData<UTakeMetaData>();
 	FDateTime UtcNow = FDateTime::UtcNow();
 	AssetMetaData->SetTimestamp(UtcNow);
-	AssetMetaData->SetTimecodeIn(InTimecodeSource);
+	AssetMetaData->SetTimecodeIn(Timecode);
 
-	Sources->StartRecording(SequenceAsset, InTimecodeSource, Parameters.User.bAutoSerialize ? &ManifestSerializer : nullptr);
+	if (!Parameters.bDisableRecordingAndSave)
+	{
+		FQualifiedFrameTime RecordTime = GetRecordTime();
+
+		Sources->StartRecording(SequenceAsset, RecordTime, Parameters.User.bAutoSerialize ? &ManifestSerializer : nullptr);
+
+		// Record immediately so that there's a key on the first frame of recording
+		Sources->TickRecording(SequenceAsset, RecordTime, 0.1f);
+	}
+
+	if (!ShouldShowNotifications())
+	{
+		// Log in lieu of the notification widget
+		UE_LOG(LogTakesCore, Log, TEXT("Started recording"));
+	}
 
 	OnRecordingStartedEvent.Broadcast(this);
 
@@ -815,11 +1031,13 @@ void UTakeRecorder::Stop()
 
 	TGuardValue<bool> ReentrantGuard(bStoppedRecording, true);
 
-	FTimecode TimecodeOut = FApp::GetTimecode();
-	USequencerSettings* SequencerSettings = USequencerSettingsContainer::GetOrCreate<USequencerSettings>(TEXT("TakeRecorderSequenceEditor"));
+	if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordNewSequence)
+	{
+		USequencerSettings* SequencerSettings = USequencerSettingsContainer::GetOrCreate<USequencerSettings>(TEXT("TakeRecorderSequenceEditor"));
 
-	SequencerSettings->SetAllowEditsMode(CachedAllowEditsMode);
-	SequencerSettings->SetAutoChangeMode(CachedAutoChangeMode);
+		SequencerSettings->SetAllowEditsMode(CachedAllowEditsMode);
+		SequencerSettings->SetAutoChangeMode(CachedAutoChangeMode);
+	}
 
 	ManifestSerializer.Close();
 
@@ -835,11 +1053,11 @@ void UTakeRecorder::Stop()
 	{
 		Sequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Stopped);
 	}
-		
+
 	UMovieScene* MovieScene = SequenceAsset->GetMovieScene();
 	if (MovieScene)
 	{
-		MovieScene->SetClockSource(EUpdateClockSource::Tick);
+		MovieScene->SetClockSource(CachedClockSource);
 
 		if (Sequencer.IsValid())
 		{
@@ -849,21 +1067,26 @@ void UTakeRecorder::Stop()
 
 	if (bDidEverStartRecording)
 	{
-		UTakeRecorderBlueprintLibrary::OnTakeRecorderStopped();
+		if (!ShouldShowNotifications())
+		{
+			// Log in lieu of the notification widget
+			UE_LOG(LogTakesCore, Log, TEXT("Stopped recording"));
+		}
 
-		FTakeRecorderSourcesSettings TakeRecorderSourcesSettings;
-		TakeRecorderSourcesSettings.bSaveRecordedAssets = Parameters.User.bSaveRecordedAssets || GEditor == nullptr;
-		TakeRecorderSourcesSettings.bRemoveRedundantTracks = Parameters.User.bRemoveRedundantTracks;
+		UTakeRecorderBlueprintLibrary::OnTakeRecorderStopped();
 
 		if (MovieScene)
 		{
 			TRange<FFrameNumber> Range = MovieScene->GetPlaybackRange();
 
 			//Set Range to what we recorded instead of that large number, this let's us reliably set camera cut times.
-			FFrameRate FrameRate = MovieScene->GetDisplayRate();
-			FFrameRate TickResolution = MovieScene->GetTickResolution();
-			FFrameNumber PlaybackEndFrame = Parameters.Project.bStartAtCurrentTimecode ? FFrameRate::TransformTime(FFrameTime(TimecodeOut.ToFrameNumber(FrameRate)), FrameRate, TickResolution).CeilToFrame() : CurrentFrameTime.FrameNumber;
+			FFrameNumber PlaybackEndFrame = CurrentFrameTime.FrameNumber;
 
+			if (StopRecordingFrame.IsSet())
+			{
+				PlaybackEndFrame = StopRecordingFrame.GetValue();
+			}
+			
 			MovieScene->SetPlaybackRange(TRange<FFrameNumber>(Range.GetLowerBoundValue(), PlaybackEndFrame));
 
 			if (Sequencer)
@@ -872,20 +1095,44 @@ void UTakeRecorder::Stop()
 			}
 		}
 
-		UTakeRecorderSources* Sources = SequenceAsset->FindMetaData<UTakeRecorderSources>();
-		check(Sources);
-		Sources->StopRecording(SequenceAsset, TakeRecorderSourcesSettings);
+		if (!Parameters.bDisableRecordingAndSave)
+		{
+			UTakeRecorderSources* Sources = SequenceAsset->FindMetaData<UTakeRecorderSources>();
+			check(Sources);
+			Sources->StopRecording(SequenceAsset);
+		}
 
-		const bool bUpperBoundOnly = true; // Only expand the upper bound because the lower bound should have been set at the start of recording and should not change if there's existing data before the start
-		TakesUtils::ClampPlaybackRangeToEncompassAllSections(SequenceAsset->GetMovieScene(), bUpperBoundOnly);
+		// Restore the playback range to what it was before recording.
+		if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordIntoSequence)
+		{
+			if (MovieScene)
+			{
+				MovieScene->SetPlaybackRange(CachedPlaybackRange);
+			}
+		}
+		else
+		{
+			const bool bUpperBoundOnly = true; // Only expand the upper bound because the lower bound should have been set at the start of recording and should not change if there's existing data before the start
+			TakesUtils::ClampPlaybackRangeToEncompassAllSections(SequenceAsset->GetMovieScene(), bUpperBoundOnly);
+		}
 
 		// Lock the sequence so that it can't be changed without implicitly unlocking it now
-		SequenceAsset->GetMovieScene()->SetReadOnly(true);
+		if (Parameters.User.bAutoLock)
+		{
+			SequenceAsset->GetMovieScene()->SetReadOnly(true);
+		}
 
 		UTakeMetaData* AssetMetaData = SequenceAsset->FindMetaData<UTakeMetaData>();
 		check(AssetMetaData);
 
-		AssetMetaData->SetTimecodeOut(TimecodeOut);
+		if (MovieScene)
+		{
+			FFrameRate DisplayRate = MovieScene->GetDisplayRate();
+			FFrameRate TickResolution = MovieScene->GetTickResolution();
+			FTimecode Timecode = FTimecode::FromFrameNumber(FFrameRate::TransformTime(CurrentFrameTime, TickResolution, DisplayRate).FloorToFrame(), DisplayRate);
+
+			AssetMetaData->SetTimecodeOut(Timecode);
+		}
 
 		if (GEditor && GEditor->GetEditorWorldContext().World())
 		{
@@ -895,14 +1142,20 @@ void UTakeRecorder::Stop()
 		// Lock the meta data so it can't be changed without implicitly unlocking it now
 		AssetMetaData->Lock();
 
-		if (TakeRecorderSourcesSettings.bSaveRecordedAssets)
+		if (Parameters.User.bSaveRecordedAssets)
 		{
 			TakesUtils::SaveAsset(SequenceAsset);
 		}
+		
+		// Rebuild sequencer because subsequences could have been added or bindings removed
+		if (Sequencer)
+		{
+			Sequencer->RefreshTree();
+		}
 	}
-	else
+	else if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordNewSequence)
 	{
-		// Recording was cancelled before it started, so delete the asset
+		// Recording was canceled before it started, so delete the asset
 		FAssetRegistryModule::AssetDeleted(SequenceAsset);
 
 		// Move the asset to the transient package so that new takes with the same number can be created in its place
@@ -976,13 +1229,16 @@ void UTakeRecorder::HandlePIE(bool bIsSimulating)
 {
 	ULevelSequence* FinishedAsset = GetSequence();
 
-	TSharedRef<STakeRecorderNotification> Content = SNew(STakeRecorderNotification, this, FinishedAsset);
+	if (ShouldShowNotifications())
+	{
+		TSharedRef<STakeRecorderNotification> Content = SNew(STakeRecorderNotification, this, FinishedAsset);
 
-	FNotificationInfo Info(Content);
-	Info.ExpireDuration = 5.f;
+		FNotificationInfo Info(Content);
+		Info.ExpireDuration = 5.f;
 
-	TSharedPtr<SNotificationItem> PendingNotification = FSlateNotificationManager::Get().AddNotification(Info);
-	PendingNotification->SetCompletionState(SNotificationItem::CS_Success);
+		TSharedPtr<SNotificationItem> PendingNotification = FSlateNotificationManager::Get().AddNotification(Info);
+		PendingNotification->SetCompletionState(SNotificationItem::CS_Success);
+	}
 	
 	Stop();
 

@@ -3,6 +3,7 @@
 #include "USDGeomXformableTranslator.h"
 
 #include "UnrealUSDWrapper.h"
+#include "USDAssetCache.h"
 #include "USDConversionUtils.h"
 #include "USDErrorUtils.h"
 #include "USDGeomMeshConversion.h"
@@ -15,11 +16,10 @@
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/RendererSettings.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Modules/ModuleManager.h"
 #include "StaticMeshAttributes.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -168,6 +168,8 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponents()
 
 USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSubclassOf< USceneComponent > > ComponentType, TOptional< bool > bNeedsActor )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdGeomXformableTranslator::CreateComponentsEx );
+
 	if ( !Context->IsValid() )
 	{
 		return nullptr;
@@ -255,15 +257,30 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 	{
 		// Spawn actor
 		FActorSpawnParameters SpawnParameters;
-		SpawnParameters.ObjectFlags = Context->ObjectFlags;
+		SpawnParameters.ObjectFlags = Context->ObjectFlags & ~RF_Standalone;
 		SpawnParameters.OverrideLevel =  Context->Level;
+		SpawnParameters.Name = Prim.GetName();
+		SpawnParameters.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested; // Will generate a unique name in case of a conflict
 
 		UClass* ActorClass = UsdUtils::GetActorTypeForPrim( Prim );
 		AActor* SpawnedActor = Context->Level->GetWorld()->SpawnActor( ActorClass, nullptr, SpawnParameters );
 
 		if ( SpawnedActor )
 		{
-			SpawnedActor->SetActorLabel( Prim.GetName().ToString() );
+#if WITH_EDITOR
+			const bool bMarkDirty = false;
+			SpawnedActor->SetActorLabel( Prim.GetName().ToString(), bMarkDirty );
+
+			// If our AUsdStageActor is in a hidden level/layer and we spawn actors, they should also be hidden
+			if ( Context->ParentComponent )
+			{
+				if ( AActor* ParentActor = Context->ParentComponent->GetOwner() )
+				{
+					SpawnedActor->bHiddenEdLevel = ParentActor->bHiddenEdLevel;
+					SpawnedActor->bHiddenEdLayer = ParentActor->bHiddenEdLayer;
+				}
+			}
+#endif // WITH_EDITOR
 
 			// Hack to show transient actors in world outliner
 			if (SpawnedActor->HasAnyFlags(EObjectFlags::RF_Transient))
@@ -301,7 +318,7 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 
 				if ( CollapsesChildren( ECollapsingType::Assets ) )
 				{
-					if ( UStaticMesh* PrimStaticMesh = Cast< UStaticMesh >( Context->PrimPathsToAssets.FindRef( PrimPath.GetString() ) ) )
+					if ( UStaticMesh* PrimStaticMesh = Cast< UStaticMesh >( Context->AssetCache->GetAssetForPrim( PrimPath.GetString() ) ) )
 					{
 						// At this time, we only support collapsing static meshes together
 						ComponentType = UStaticMeshComponent::StaticClass();
@@ -313,7 +330,7 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 		if ( ComponentType.IsSet() && ComponentType.GetValue() != nullptr )
 		{
 			const FName ComponentName = MakeUniqueObjectName( ComponentOuter, ComponentType.GetValue(), FName( Prim.GetName() ) );
-			SceneComponent = NewObject< USceneComponent >( ComponentOuter, ComponentType.GetValue(), ComponentName, Context->ObjectFlags );
+			SceneComponent = NewObject< USceneComponent >( ComponentOuter, ComponentType.GetValue(), ComponentName, Context->ObjectFlags & ~RF_Standalone);
 
 			if ( AActor* Owner = SceneComponent->GetOwner() )
 			{
@@ -329,8 +346,14 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 			SceneComponent->GetOwner()->SetRootComponent( SceneComponent );
 		}
 
+		// If we're spawning into a level that is being streamed in, our construction scripts will be rerun, and may want to set the scene component
+		// location again. Since our spawned actors are already initialized, that may trigger a warning about the component not being movable,
+		// so we must force them movable here
+		const bool bIsAssociating = Context->Level && Context->Level->bIsAssociatingLevel;
+		const bool bParentIsMovable = Context->ParentComponent && Context->ParentComponent->Mobility == EComponentMobility::Movable;
+
 		// Don't call SetMobility as it would trigger a reregister, queuing unnecessary rhi commands since this is a brand new component
-		if ( Context->ParentComponent && Context->ParentComponent->Mobility == EComponentMobility::Movable )
+		if ( bIsAssociating || bParentIsMovable )
 		{
 			SceneComponent->Mobility = EComponentMobility::Movable;
 		}
@@ -355,15 +378,19 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 
 void FUsdGeomXformableTranslator::UpdateComponents( USceneComponent* SceneComponent )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdGeomXformableTranslator::UpdateComponents );
+
 	if ( SceneComponent )
 	{
+		SceneComponent->Modify();
+
 		UsdToUnreal::ConvertXformable( Context->Stage, pxr::UsdGeomXformable( GetPrim() ), *SceneComponent, Context->Time );
 
 		// If the user modified a mesh parameter (e.g. vertex color), the hash will be different and it will become a separate asset
 		// so we must check for this and assign the new StaticMesh
 		if ( UStaticMeshComponent* StaticMeshComponent = Cast< UStaticMeshComponent >( SceneComponent ) )
 		{
-			UStaticMesh* PrimStaticMesh = Cast< UStaticMesh >( Context->PrimPathsToAssets.FindRef( PrimPath.GetString() ) );
+			UStaticMesh* PrimStaticMesh = Cast< UStaticMesh >( Context->AssetCache->GetAssetForPrim( PrimPath.GetString() ) );
 
 			if ( PrimStaticMesh != StaticMeshComponent->GetStaticMesh() )
 			{
@@ -441,13 +468,11 @@ bool FUsdGeomXformableTranslator::CollapsesChildren( ECollapsingType CollapsingT
 		}
 		else
 		{
+			const bool bUsesRaytracing = GetDefault<URendererSettings>()->bEnableRayTracing;
+
 			const int32 MaxVertices = 500000;
-			int32 NumVertices = 0;
-
 			int32 NumMaxExpectedMaterialSlots = 0;
-			ITargetPlatform* Platform = GetTargetPlatformManagerRef().GetRunningTargetPlatform();
-			const bool bUsesRaytracing = Platform && Platform->UsesRayTracing();
-
+			int32 NumVertices = 0;
 			for ( const TUsdStore< pxr::UsdPrim >& ChildPrim : ChildGeomMeshes )
 			{
 				pxr::UsdGeomMesh ChildGeomMesh( ChildPrim.Get() );
@@ -490,7 +515,6 @@ bool FUsdGeomXformableTranslator::CollapsesChildren( ECollapsingType CollapsingT
 						break;
 					}
 				}
-
 			}
 		}
 	}

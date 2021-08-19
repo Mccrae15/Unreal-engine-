@@ -505,10 +505,10 @@ struct ENGINE_API FEventGraphFastCallPair
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	UFunction* FunctionToPatch;
+	UFunction* FunctionToPatch = nullptr;
 
 	UPROPERTY()
-	int32 EventGraphCallOffset;
+	int32 EventGraphCallOffset = 0;
 };
 
 /** A single changed Blueprint component property. */
@@ -738,6 +738,7 @@ public:
 	virtual void PostLoad() override;
 	virtual void PostInitProperties() override;
 	virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
+	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	virtual FPrimaryAssetId GetPrimaryAssetId() const override;
 	virtual bool NeedsLoadForServer() const override;
 	virtual bool NeedsLoadForClient() const override;
@@ -746,6 +747,8 @@ public:
 #if WITH_EDITOR
 	virtual UClass* RegenerateClass(UClass* ClassToRegenerate, UObject* PreviousCDO) override;
 #endif	//WITH_EDITOR
+	virtual bool IsAsset() const override;
+
 	// End UObject interface
 
 	// UClass interface

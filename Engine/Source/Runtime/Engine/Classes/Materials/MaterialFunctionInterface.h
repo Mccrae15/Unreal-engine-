@@ -30,13 +30,16 @@ enum class EMaterialFunctionUsage : uint8
 /**
  * A Material Function is a collection of material expressions that can be reused in different materials
  */
-UCLASS(hidecategories=object, MinimalAPI)
+UCLASS(abstract, hidecategories=object, MinimalAPI)
 class UMaterialFunctionInterface : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
 	//~ Begin UObject Interface.
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 	//~ End UObject Interface.
 
 	/** Used by materials using this function to know when to recompile. */
@@ -52,11 +55,13 @@ public:
 	virtual EMaterialFunctionUsage GetMaterialFunctionUsage()
 		PURE_VIRTUAL(UMaterialFunctionInterface::GetMaterialFunctionUsage,return EMaterialFunctionUsage::Default;);
 
+#if WITH_EDITOR
 	virtual void UpdateFromFunctionResource()
 		PURE_VIRTUAL(UMaterialFunctionInterface::UpdateFromFunctionResource,);
 
 	virtual void GetInputsAndOutputs(TArray<struct FFunctionExpressionInput>& OutInputs, TArray<struct FFunctionExpressionOutput>& OutOutputs) const
 		PURE_VIRTUAL(UMaterialFunctionInterface::GetInputsAndOutputs,);
+#endif
 
 	virtual bool ValidateFunctionUsage(class FMaterialCompiler* Compiler, const FFunctionExpressionOutput& Output)
 		PURE_VIRTUAL(UMaterialFunctionInterface::ValidateFunctionUsage,return false;);
@@ -72,11 +77,11 @@ public:
 		PURE_VIRTUAL(UMaterialFunctionInterface::UnlinkFromCaller,);
 #endif
 
+#if WITH_EDITORONLY_DATA
 	/** @return true if this function is dependent on the passed in function, directly or indirectly. */
 	ENGINE_API virtual bool IsDependent(UMaterialFunctionInterface* OtherFunction)
 		PURE_VIRTUAL(UMaterialFunctionInterface::IsDependent,return false;);
 
-#if WITH_EDITORONLY_DATA
 	/**
 	 * Iterates all functions that this function is dependent on, directly or indrectly.
 	 *
@@ -90,7 +95,7 @@ public:
 	/** Returns an array of the functions that this function is dependent on, directly or indirectly. */
 	ENGINE_API virtual void GetDependentFunctions(TArray<UMaterialFunctionInterface*>& DependentFunctions) const
 		PURE_VIRTUAL(UMaterialFunctionInterface::GetDependentFunctions,);
-#endif
+#endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
 	ENGINE_API virtual UMaterialInterface* GetPreviewMaterial()
@@ -130,11 +135,13 @@ public:
 	virtual const FString* GetDescription() const
 		PURE_VIRTUAL(UMaterialFunctionInterface::GetDescription,return nullptr;);
 
+#if WITH_EDITOR
 	virtual bool GetReentrantFlag() const
 		PURE_VIRTUAL(UMaterialFunctionInterface::GetReentrantFlag,return false;);
 
 	virtual void SetReentrantFlag(const bool bIsReentrant)
 		PURE_VIRTUAL(UMaterialFunctionInterface::SetReentrantFlag,);
+#endif // WITH_EDITOR
 
 public:
 #if WITH_EDITORONLY_DATA

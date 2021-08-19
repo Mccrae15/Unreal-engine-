@@ -305,7 +305,7 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 			TSharedPtr<SWidget> ValueWidget;
 
 			NameWidget = Row.NameWidget.Widget;
-			if(Row.IsEnabledAttr.IsBound())
+			if (Row.IsEnabledAttr.IsBound() || Row.IsEnabledAttr.IsSet())
 			{
 				NameWidgetEnabled = Row.IsEnabledAttr;
 				NameWidget->SetEnabled(Row.IsEnabledAttr);
@@ -321,7 +321,7 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 
 			TSharedRef<SWidget> ExtensionWidget = CreateExtensionWidget(ValueWidget.ToSharedRef(), *Customization, InOwnerTreeNode);
 
-			if(Row.IsEnabledAttr.IsBound())
+			if (Row.IsEnabledAttr.IsBound() || Row.IsEnabledAttr.IsSet())
 			{
 				ValueWidget->SetEnabled(Row.IsEnabledAttr);
 				ExtensionWidget->SetEnabled(Row.IsEnabledAttr);
@@ -690,11 +690,11 @@ void SDetailSingleItemRow::OnPasteProperty()
 		}
 		if (PropertyNode.IsValid())
 		{
+			FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "PasteProperty", "Paste Property"));
+
 			TSharedPtr<IPropertyHandle> Handle = PropertyEditorHelpers::GetPropertyHandle(PropertyNode.ToSharedRef(), OwnerTreeNode.Pin()->GetDetailsView()->GetNotifyHook(), OwnerTreeNode.Pin()->GetDetailsView()->GetPropertyUtilities());
 
-			Handle->SetValueFromFormattedString(ClipboardContent);
-
-			FPropertyValueImpl::RebuildInstancedProperties(Handle, PropertyNode.Get());
+			Handle->SetValueFromFormattedString(ClipboardContent, EPropertyValueSetFlags::InstanceObjects);
 
 			// Need to refresh the details panel in case a property was pasted over another.
 			OwnerTreeNode.Pin()->GetDetailsView()->ForceRefresh();

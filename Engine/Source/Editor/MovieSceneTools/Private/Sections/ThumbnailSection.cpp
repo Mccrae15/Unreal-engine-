@@ -62,7 +62,6 @@ FThumbnailSection::~FThumbnailSection()
 	GetMutableDefault<UMovieSceneUserThumbnailSettings>()->OnForceRedraw().Remove(RedrawThumbnailDelegateHandle);
 }
 
-
 void FThumbnailSection::RedrawThumbnails()
 {
 	ThumbnailCache.ForceRedraw();

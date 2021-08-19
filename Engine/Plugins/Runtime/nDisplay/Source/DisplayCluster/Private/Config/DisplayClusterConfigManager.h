@@ -25,21 +25,21 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	virtual bool Init(EDisplayClusterOperationMode OperationMode) override;
 	virtual void Release() override;
-	virtual bool StartSession(const UDisplayClusterConfigurationData* InConfigData, const FString& NodeId) override;
+	virtual bool StartSession(UDisplayClusterConfigurationData* InConfigData, const FString& NodeId) override;
 	virtual void EndSession() override;
 
 public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IDisplayClusterConfigManager
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual const UDisplayClusterConfigurationData* GetConfig() const override
+	virtual UDisplayClusterConfigurationData* GetConfig() const override
 	{
 		return ConfigData.Get();
 	}
 
 	virtual FString GetConfigPath() const override
 	{
-		return ConfigData.IsValid() ? ConfigData.Get()->Meta.FilePath : FString();
+		return ConfigData.IsValid() ? ConfigData.Get()->Meta.ImportFilePath : FString();
 	}
 
 	virtual FString GetLocalNodeId() const override
@@ -59,5 +59,5 @@ public:
 private:
 	FString ClusterNodeId;
 
-	TStrongObjectPtr<const UDisplayClusterConfigurationData> ConfigData;
+	TStrongObjectPtr<UDisplayClusterConfigurationData> ConfigData;
 };

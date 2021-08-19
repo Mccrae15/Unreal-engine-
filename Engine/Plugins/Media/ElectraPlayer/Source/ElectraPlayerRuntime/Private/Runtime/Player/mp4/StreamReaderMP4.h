@@ -31,6 +31,7 @@ public:
 	virtual void SetPlaybackSequenceID(uint32 InPlaybackSequenceID) override;
 	virtual uint32 GetPlaybackSequenceID() const override;
 
+	virtual void SetExecutionDelay(const FTimeValue& ExecutionDelay) override;
 	virtual EStreamType GetType() const override;
 
 	virtual void GetDependentStreams(TArray<FDependentStreams>& OutDependentStreams) const override;
@@ -86,9 +87,8 @@ public:
 	virtual UEMediaError Create(IPlayerSessionServices* PlayerSessionService, const CreateParam &createParam) override;
 	virtual void Close() override;
 	virtual EAddResult AddRequest(uint32 CurrentPlaybackSequenceID, TSharedPtrTS<IStreamSegment> Request) override;
+	virtual void CancelRequest(EStreamType StreamType, bool bSilent) override;
 	virtual void CancelRequests() override;
-	virtual void PauseDownload() override;
-	virtual void ResumeDownload() override;
 
 private:
 	void WorkerThread();
@@ -96,6 +96,7 @@ private:
 	int32 HTTPProgressCallback(const IElectraHttpManager::FRequest* InRequest);
 	void HTTPCompletionCallback(const IElectraHttpManager::FRequest* InRequest);
 	void HTTPUpdateStats(const FTimeValue& CurrentTime, const IElectraHttpManager::FRequest* Request);
+	void HandleRequest();
 
 	bool HasBeenAborted() const;
 	bool HasErrored() const;
@@ -149,14 +150,14 @@ private:
 			DurationSuccessfullyRead.SetToZero();
 			DurationSuccessfullyDelivered.SetToZero();
 		}
-		TSharedPtrTS<FAccessUnit::CodecData>					CSD;
-		TSharedPtr<FStreamSourceInfo, ESPMode::ThreadSafe>		StreamSourceInfo;
-		EStreamType												StreamType;
-		bool													bGotKeyframe;
-		bool													bIsSelectedTrack;
-		bool													bIsFirstInSequence;
-		FTimeValue												DurationSuccessfullyRead;
-		FTimeValue												DurationSuccessfullyDelivered;
+		TSharedPtrTS<FAccessUnit::CodecData>	CSD;
+		TSharedPtrTS<FBufferSourceInfo>			BufferSourceInfo;
+		EStreamType								StreamType;
+		bool									bGotKeyframe;
+		bool									bIsSelectedTrack;
+		bool									bIsFirstInSequence;
+		FTimeValue								DurationSuccessfullyRead;
+		FTimeValue								DurationSuccessfullyDelivered;
 	};
 
 	CreateParam									Parameters;

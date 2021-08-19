@@ -14,6 +14,7 @@
 #include "SceneRendering.h"
 #include "ScenePrivate.h"
 #include "DecalRenderingShared.h"
+#include "SceneTextureParameters.h"
 
 extern FRHIRasterizerState* GetDecalRasterizerState(EDecalRasterizerState DecalRasterizerState);
 extern void RenderMeshDecalsMobile(FRHICommandList& RHICmdList, const FViewInfo& View);
@@ -33,9 +34,11 @@ FRHIBlendState* MobileForward_GetDecalBlendState(EDecalBlendMode DecalBlendMode)
 		// Modulate
 		return TStaticBlendState<CW_RGB, BO_Add, BF_DestColor, BF_InverseSourceAlpha>::GetRHI();
 	case DBM_Emissive:
+	case DBM_DBuffer_Emissive:
 		// Additive
 		return TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_One>::GetRHI();
 	case DBM_AlphaComposite:
+	case DBM_DBuffer_AlphaComposite:
 		// Premultiplied alpha
 		return TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
 	default:
@@ -182,6 +185,27 @@ FRHIBlendState* MobileDeferred_GetDecalBlendState(EDecalBlendMode DecalBlendMode
 	return TStaticBlendState<>::GetRHI(); 
 }
 
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileDecalPassUniformParameters, )
+	SHADER_PARAMETER_STRUCT(FMobileSceneTextureUniformParameters, SceneTextures)
+	SHADER_PARAMETER_SRV(Buffer<float4>, EyeAdaptationBuffer)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FMobileDecalPassUniformParameters, "MobileDecalPass", SceneTextures);
+
+BEGIN_SHADER_PARAMETER_STRUCT(FMobileDecalPassParameters, )
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FMobileDecalPassUniformParameters, Pass)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
+
+TUniformBufferRef<FMobileDecalPassUniformParameters> CreateMobileDecalPassUniformBuffer(FRHICommandList& RHICmdList, const FViewInfo& View)
+{
+	FMobileDecalPassUniformParameters Parameters;
+	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+	SetupMobileSceneTextureUniformParameters(SceneContext, EMobileSceneTextureSetupMode::All, Parameters.SceneTextures);
+	Parameters.EyeAdaptationBuffer = GetEyeAdaptationBuffer(View);
+	return TUniformBufferRef<FMobileDecalPassUniformParameters>::CreateUniformBufferImmediate(Parameters, UniformBuffer_SingleFrame);
+}
+
 void FMobileSceneRenderer::RenderDecals(FRHICommandListImmediate& RHICmdList)
 {
 	if (!IsMobileHDR())
@@ -197,6 +221,11 @@ void FMobileSceneRenderer::RenderDecals(FRHICommandListImmediate& RHICmdList)
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
 			const FViewInfo& View = Views[ViewIndex];
+
+			FUniformBufferRHIRef PassUniformBuffer = CreateMobileDecalPassUniformBuffer(RHICmdList, View);
+			FUniformBufferStaticBindings GlobalUniformBuffers(PassUniformBuffer);
+			SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdList, GlobalUniformBuffers);
+
 			RenderDeferredDecalsMobile(RHICmdList, *Scene, View);
 		}
 	}
@@ -207,6 +236,10 @@ void FMobileSceneRenderer::RenderDecals(FRHICommandListImmediate& RHICmdList)
 		const FViewInfo& View = Views[ViewIndex];
 		if (View.MeshDecalBatches.Num() > 0)
 		{
+			FUniformBufferRHIRef PassUniformBuffer = CreateMobileDecalPassUniformBuffer(RHICmdList, View);
+			FUniformBufferStaticBindings GlobalUniformBuffers(PassUniformBuffer);
+			SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdList, GlobalUniformBuffers);
+
 			RenderMeshDecalsMobile(RHICmdList, View);
 		}
 	}
@@ -218,10 +251,6 @@ void RenderDeferredDecalsMobile(FRHICommandList& RHICmdList, const FScene& Scene
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-
-	FUniformBufferRHIRef PassUniformBuffer = CreateMobileSceneTextureUniformBuffer(RHICmdList);
-	FUniformBufferStaticBindings GlobalUniformBuffers(PassUniformBuffer);
-	SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdList, GlobalUniformBuffers);
 
 	// Build a list of decals that need to be rendered for this view
 	FTransientDecalRenderDataList SortedDecals;

@@ -58,11 +58,6 @@ public:
 	static void GenerateArrayIndexMapToObjectNode( TMap<FString,int32>& OutArrayIndexMap, FPropertyNode* PropertyNode );
 
 	/**
-	 * Recurse through a property node hierarchy to update all instanced properties that should use deep copy
-	 */
-	static void RebuildInstancedProperties( const TSharedPtr<IPropertyHandle>& Handle, FPropertyNode* PropertyNode );
-	
-	/**
 	 * Gets the value as a string formatted for multiple values in an array                 
 	 */
 	FString GetPropertyValueArray() const;
@@ -427,6 +422,7 @@ public:
 	virtual TSharedRef<SWidget> CreatePropertyNameWidget( const FText& NameOverride = FText::GetEmpty(), const FText& ToolTipOverride = FText::GetEmpty(), bool bDisplayResetToDefault = false, bool bDisplayText = true, bool bDisplayThumbnail = true ) const override;
 	virtual TSharedRef<SWidget> CreatePropertyValueWidget( bool bDisplayDefaultPropertyButtons = true ) const override;
 	virtual TSharedRef<SWidget> CreateDefaultPropertyButtonWidgets() const override;
+	virtual void CreateDefaultPropertyCopyPasteActions(FUIAction& OutCopyAction, FUIAction& OutPasteAction) const override;
 	virtual bool IsEditConst() const override;
 	virtual bool IsEditable() const override;
 	virtual void SetOnPropertyValueChanged( const FSimpleDelegate& InOnPropertyValueChanged ) override;
@@ -502,6 +498,11 @@ public:
 
 	TSharedPtr<FPropertyNode> GetPropertyNode() const;
 	void OnCustomResetToDefault(const FResetToDefaultOverride& OnCustomResetToDefault);
+
+private:
+	static void CopyValueToClipboard(TWeakPtr<FPropertyValueImpl> ImplementationWeak);
+	static void PasteValueFromClipboard(TWeakPtr<FPropertyValueImpl> ImplementationWeak);
+
 protected:
 	TSharedPtr<FPropertyValueImpl> Implementation;
 };

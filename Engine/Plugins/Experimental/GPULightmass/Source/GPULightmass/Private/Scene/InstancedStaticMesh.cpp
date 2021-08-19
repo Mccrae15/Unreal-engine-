@@ -26,9 +26,9 @@ const FMeshMapBuildData* FInstanceGroup::GetMeshMapBuildDataForLODIndex(int32 LO
 
 void FInstanceGroup::AllocateLightmaps(TEntityArray<FLightmap>& LightmapContainer)
 {
-	for (int32 LODIndex = 0; LODIndex < ComponentUObject->GetStaticMesh()->RenderData->LODResources.Num(); LODIndex++)
+	for (int32 LODIndex = 0; LODIndex < ComponentUObject->GetStaticMesh()->GetRenderData()->LODResources.Num(); LODIndex++)
 	{
-		FStaticMeshLODResources& LODModel = ComponentUObject->GetStaticMesh()->RenderData->LODResources[LODIndex];
+		FStaticMeshLODResources& LODModel = ComponentUObject->GetStaticMesh()->GetRenderData()->LODResources[LODIndex];
 
 		int32 LightMapWidth = 0;
 		int32 LightMapHeight = 0;
@@ -96,8 +96,8 @@ void FInstanceGroup::AllocateLightmaps(TEntityArray<FLightmap>& LightmapContaine
 		if (bFit 
 			&& LightMapWidth > 0
 			&& LightMapHeight > 0
-			&& ComponentUObject->GetStaticMesh()->LightMapCoordinateIndex >= 0
-			&& (uint32)ComponentUObject->GetStaticMesh()->LightMapCoordinateIndex < LODModel.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords())
+			&& ComponentUObject->GetStaticMesh()->GetLightMapCoordinateIndex() >= 0
+			&& (uint32)ComponentUObject->GetStaticMesh()->GetLightMapCoordinateIndex() < LODModel.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords())
 		{
 			bValidTextureMap = true;
 		}

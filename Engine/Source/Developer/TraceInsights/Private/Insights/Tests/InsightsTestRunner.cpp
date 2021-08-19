@@ -4,6 +4,7 @@
 
 #if !UE_BUILD_SHIPPING && !WITH_EDITOR
 
+#include "Misc/App.h"
 #include "Misc/AutomationTest.h"
 #include "IAutomationControllerModule.h"
 #include "IAutomationWindowModule.h"
@@ -16,6 +17,8 @@
 #include "Insights/InsightsManager.h"
 #include "Insights/Tests/UITests.h"
 #include "Insights/InsightsStyle.h"
+
+#include "Widgets/Docking/SDockTab.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -66,7 +69,7 @@ void FInsightsTestRunner::Initialize(IUnrealInsightsModule& InsightsModule)
 	}
 
 	SessionAnalysisCompletedHandle = FInsightsManager::Get()->GetSessionAnalysisCompletedEvent().AddSP(this, &FInsightsTestRunner::OnSessionAnalysisCompleted);
-	
+
 	// Register tick functions.
 	OnTick = FTickerDelegate::CreateSP(this, &FInsightsTestRunner::Tick);
 	OnTickHandle = FTicker::GetCoreTicker().AddTicker(OnTick, 1.0f);
@@ -225,6 +228,7 @@ bool FInsightsTestRunner::Tick(float DeltaTime)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #undef LOCTEXT_NAMESPACE
 
 #endif //UE_BUILD_SHIPPING && !WITH_EDITOR

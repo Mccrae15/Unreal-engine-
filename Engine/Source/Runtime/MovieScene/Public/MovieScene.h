@@ -88,6 +88,7 @@ struct FMovieSceneMarkedFrame
 #if WITH_EDITORONLY_DATA
 		, Color(0.f, 1.f, 1.f, 0.4f)
 #endif
+		, bIsDeterminismFence(false)
 	{}
 
 	FMovieSceneMarkedFrame(FFrameNumber InFrameNumber)
@@ -96,6 +97,7 @@ struct FMovieSceneMarkedFrame
 #if WITH_EDITORONLY_DATA
 		, Color(0.f, 1.f, 1.f, 0.4f)
 #endif
+		, bIsDeterminismFence(false)
 	{}
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Marked Frame")
@@ -108,6 +110,9 @@ struct FMovieSceneMarkedFrame
 	UPROPERTY(EditAnywhere, Category = "Marked Frame")
 	FLinearColor Color;
 #endif
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Marked Frame", DisplayName="Is Determinism Fence?", meta=(Tooltip="When checked, treat this mark as a fence for evaluation purposes. Fences cannot be crossed in a single evaluation, and force the evaluation to be split into 2 separate parts."))
+	bool bIsDeterminismFence;
 };
 
 /**
@@ -382,9 +387,12 @@ public:
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
 
+#if WITH_EDITOR
+	virtual void PostEditUndo() override;
+#endif
+
 public:
 
-#if WITH_EDITOR
 	/**
 	 * Add a spawnable to this movie scene's list of owned blueprints.
 	 *
@@ -411,8 +419,6 @@ public:
 	 * @return true if anything was removed.
 	 */
 	bool RemoveSpawnable(const FGuid& Guid);
-
-#endif //WITH_EDITOR
 
 	/**
 	 * Attempt to find a spawnable using some custom predicate
@@ -1101,12 +1107,12 @@ public:
 	/*
 	 * Tag the specified binding ID with the specified name
 	 */
-	void TagBinding(const FName& NewTag, FMovieSceneObjectBindingID BindingToTag);
+	void TagBinding(const FName& NewTag, const UE::MovieScene::FFixedObjectBindingID& BindingToTag);
 
 	/*
 	 * Remove a tag from the specified object binding
 	 */
-	void UntagBinding(const FName& Tag, FMovieSceneObjectBindingID Binding);
+	void UntagBinding(const FName& Tag, const UE::MovieScene::FFixedObjectBindingID& Binding);
 
 	/*
 	 * Remove the specified tag from any binding and forget about it completely

@@ -42,8 +42,6 @@ public:
 
 	void GetChildInputs(TArray<UNiagaraStackFunctionInput*>& OutResult) const;
 
-	void ApplyModuleChanges();
-
 	static FText UncategorizedName;
 
 protected:
@@ -56,9 +54,11 @@ private:
 
 	void OnFunctionInputsChanged();
 
-	UNiagaraStackEntry::FStackIssueFix GetNodeRemovalFix(UEdGraphPin* PinToRemove, FText FixDescription);
+	FStackIssueFix GetNodeRemovalFix(UEdGraphPin* PinToRemove, FText FixDescription);
 
-	UNiagaraStackEntry::FStackIssueFix GetResetPinFix(UEdGraphPin* PinToReset, FText FixDescription);
+	FStackIssueFix GetResetPinFix(UEdGraphPin* PinToReset, FText FixDescription);
+
+	FStackIssueFix GetUpgradeVersionFix(FText FixDescription);
 
 	void AddInvalidChildStackIssue(FName PinName, TArray<FStackIssue>& OutIssues);
 
@@ -69,7 +69,7 @@ private:
 		int32 SortKey;
 		FText Category;
 		bool bIsStatic;
-		bool bIsVisible;
+		bool bIsHidden;
 
 		TArray<FInputData*> Children;
 		bool bIsChild = false;

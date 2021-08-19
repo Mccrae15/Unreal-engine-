@@ -915,8 +915,8 @@ void UGeometryCollectionComponent::UpdateRepData()
 
 		for(int32 Index = 0; Index < NumTransforms; ++Index)
 		{
-			TManagedArray<TUniquePtr<Chaos::TGeometryParticle<Chaos::FReal, 3>>>& GTParticles = PhysicsProxy->GetExternalParticles();
-			Chaos::TGeometryParticle<Chaos::FReal, 3>* Particle = GTParticles[Index].Get();
+			TManagedArray<TUniquePtr<Chaos::FGeometryParticle>>& GTParticles = PhysicsProxy->GetExternalParticles();
+			Chaos::FGeometryParticle* Particle = GTParticles[Index].Get();
 			if(!DynamicCollection->Active[Index] || DynamicCollection->DynamicState[Index] != static_cast<uint8>(Chaos::EObjectStateType::Dynamic))
 			{
 				continue;
@@ -1009,8 +1009,8 @@ void UGeometryCollectionComponent::NetAbandonCluster_Implementation(int32 Transf
 
 			Solver->RegisterSimOneShotCallback([Prox = PhysicsProxy, Strain, TransformIndex, Solver]()
 			{
-				Chaos::TPBDRigidClustering<Chaos::FPBDRigidsEvolution, Chaos::FPBDCollisionConstraints, Chaos::FReal, 3>& Clustering = Solver->GetEvolution()->GetRigidClustering();
-				Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3>* Parent = Prox->GetParticles()[TransformIndex];
+				Chaos::TPBDRigidClustering<Chaos::FPBDRigidsEvolution, Chaos::FPBDCollisionConstraints>& Clustering = Solver->GetEvolution()->GetRigidClustering();
+				Chaos::FPBDRigidClusteredParticleHandle* Parent = Prox->GetParticles()[TransformIndex];
 
 				if(!Parent->Disabled())
 				{
@@ -1430,8 +1430,8 @@ void UGeometryCollectionComponent::InitDynamicData(FGeometryCollectionDynamicDat
 								for (int32 Idx = 0; Idx < RecordedFrame->Collisions.Num(); ++Idx)
 								{
 									// Check if the particle is still kinematic
-									int32 NewIdx = CollisionDataToWriteTo->AllCollisionsArray.Add(Chaos::TCollisionData<float, 3>());
-									Chaos::TCollisionData<float, 3>& AllCollisionsDataArrayItem = CollisionDataToWriteTo->AllCollisionsArray[NewIdx];
+									int32 NewIdx = CollisionDataToWriteTo->AllCollisionsArray.Add(Chaos::FCollidingData());
+									Chaos::FCollidingData& AllCollisionsDataArrayItem = CollisionDataToWriteTo->AllCollisionsArray[NewIdx];
 
 									AllCollisionsDataArrayItem.Location = RecordedFrame->Collisions[Idx].Location;
 									AllCollisionsDataArrayItem.AccumulatedImpulse = RecordedFrame->Collisions[Idx].AccumulatedImpulse;
@@ -1457,8 +1457,8 @@ void UGeometryCollectionComponent::InitDynamicData(FGeometryCollectionDynamicDat
 								for (int32 Idx = 0; Idx < RecordedFrame->Breakings.Num(); ++Idx)
 								{
 									// Check if the particle is still kinematic							
-									int32 NewIdx = BreakingDataToWriteTo->AllBreakingsArray.Add(Chaos::TBreakingData<float, 3>());
-									Chaos::TBreakingData<float, 3>& AllBreakingsDataArrayItem = BreakingDataToWriteTo->AllBreakingsArray[NewIdx];
+									int32 NewIdx = BreakingDataToWriteTo->AllBreakingsArray.Add(Chaos::FBreakingData());
+									Chaos::FBreakingData& AllBreakingsDataArrayItem = BreakingDataToWriteTo->AllBreakingsArray[NewIdx];
 
 									AllBreakingsDataArrayItem.Location = RecordedFrame->Breakings[Idx].Location;
 									AllBreakingsDataArrayItem.Velocity = RecordedFrame->Breakings[Idx].Velocity;
@@ -1477,8 +1477,8 @@ void UGeometryCollectionComponent::InitDynamicData(FGeometryCollectionDynamicDat
 								for (FSolverTrailingData Trailing : RecordedFrame->Trailings)
 								{
 									// Check if the particle is still kinematic
-									int32 NewIdx = TrailingDataToWriteTo->AllTrailingsArray.Add(Chaos::TTrailingData<float, 3>());
-									Chaos::TTrailingData<float, 3>& AllTrailingsDataArrayItem = TrailingDataToWriteTo->AllTrailingsArray[NewIdx];
+									int32 NewIdx = TrailingDataToWriteTo->AllTrailingsArray.Add(Chaos::FTrailingData());
+									Chaos::FTrailingData& AllTrailingsDataArrayItem = TrailingDataToWriteTo->AllTrailingsArray[NewIdx];
 
 									AllTrailingsDataArrayItem.Location = Trailing.Location;
 									AllTrailingsDataArrayItem.Velocity = Trailing.Velocity;
@@ -1553,7 +1553,8 @@ void UGeometryCollectionComponent::TickComponent(float DeltaTime, enum ELevelTic
 	//if (bRenderStateDirty && DynamicCollection)	//todo: always send for now
 	if(RestCollection)
 	{
-		if(CHAOS_ENSURE(DynamicCollection)) //, TEXT("No dynamic collection available for component %s during tick."), *GetName()))
+		// In editor mode we have no DynamicCollection so this test is necessary
+		if(DynamicCollection) //, TEXT("No dynamic collection available for component %s during tick."), *GetName()))
 		{
 			if(RestCollection->HasVisibleGeometry() || DynamicCollection->IsDirty())
 			{
@@ -1692,7 +1693,7 @@ void UGeometryCollectionComponent::OnCreatePhysicsState()
 				SimulationParameters.ClusterGroupIndex = EnableClustering ? ClusterGroupIndex : 0;
 				SimulationParameters.MaxClusterLevel = MaxClusterLevel;
 				SimulationParameters.DamageThreshold = DamageThreshold;
-				SimulationParameters.ClusterConnectionMethod = (Chaos::FClusterCreationParameters<float>::EConnectionMethod)ClusterConnectionType;
+				SimulationParameters.ClusterConnectionMethod = (Chaos::FClusterCreationParameters::EConnectionMethod)ClusterConnectionType;
 				SimulationParameters.CollisionGroup = CollisionGroup;
 				SimulationParameters.CollisionSampleFraction = CollisionSampleFraction;
 				SimulationParameters.InitialVelocityType = InitialVelocityType;
@@ -1878,18 +1879,28 @@ void UGeometryCollectionComponent::OnCreatePhysicsState()
 #endif
 			};
 
-			// @todo(temporary) : This is Temporary code for the collection to match the ObjectType
-			//                    attribute on initialization. Once proper per-object manipulation is 
-			//                    in place this code will need to be removed.
-			//
-			TManagedArray<int32> & DynamicState = DynamicCollection->DynamicState;
+			// If the Component is set to Dynamic, we look to the RestCollection for initial dynamic state override per transform.
+			TManagedArray<int32>& DynamicState = DynamicCollection->DynamicState;
+
 			if (ObjectType != EObjectStateTypeEnum::Chaos_Object_UserDefined)
 			{
-				for (int i = 0; i < DynamicState.Num(); i++)
+				if (RestCollection && (ObjectType == EObjectStateTypeEnum::Chaos_Object_Dynamic))
 				{
-					DynamicState[i] = (int32)ObjectType;
+					TManagedArray<int32>& InitialDynamicState = RestCollection->GetGeometryCollection()->InitialDynamicState;
+					for (int i = 0; i < DynamicState.Num(); i++)
+					{
+						DynamicState[i] = (InitialDynamicState[i] == static_cast<int32>(Chaos::EObjectStateType::Uninitialized)) ? static_cast<int32>(ObjectType) : InitialDynamicState[i];
+					}
+				}
+				else
+				{
+					for (int i = 0; i < DynamicState.Num(); i++)
+					{
+						DynamicState[i] = static_cast<int32>(ObjectType);
+					}
 				}
 			}
+
 			TManagedArray<bool> & Active = DynamicCollection->Active;
 			{
 				for (int i = 0; i < Active.Num(); i++)
@@ -2211,7 +2222,7 @@ void FScopedColorEdit::SelectBones(GeometryCollection::ESelectionMode SelectionM
 			for (int32 RootElement : Roots)
 			{
 				TArray<int32> LeafBones;
-				FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollectionPtr.Get(), RootElement, LeafBones);
+				FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollectionPtr.Get(), RootElement, true, LeafBones);
 				AppendSelectedBones(LeafBones);
 			}
 		}
@@ -2225,7 +2236,7 @@ void FScopedColorEdit::SelectBones(GeometryCollection::ESelectionMode SelectionM
 			for (int32 RootElement : Roots)
 			{
 				TArray<int32> LeafBones;
-				FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollectionPtr.Get(), RootElement, LeafBones);
+				FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollectionPtr.Get(), RootElement, true, LeafBones);
 
 				for (int32 Element : LeafBones)
 				{
@@ -2307,7 +2318,7 @@ void FScopedColorEdit::SelectBones(GeometryCollection::ESelectionMode SelectionM
 			{
 				int32 ParentBone = Parents[Bone];
 				TArray<int32> LeafBones;
-				FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollectionPtr.Get(), ParentBone, LeafBones);
+				FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollectionPtr.Get(), ParentBone, true, LeafBones);
 
 				for (int32 Element : LeafBones)
 				{
@@ -2447,46 +2458,31 @@ void FScopedColorEdit::UpdateBoneColors()
 void UGeometryCollectionComponent::ApplyKinematicField(float Radius, FVector Position)
 {
 	FName TargetName = GetGeometryCollectionPhysicsTypeName(EGeometryCollectionPhysicsTypeEnum::Chaos_DynamicState);
-	DispatchCommand({ TargetName,new FRadialIntMask(Radius, Position, (int32)EObjectStateTypeEnum::Chaos_Object_Dynamic,
-		(int32)EObjectStateTypeEnum::Chaos_Object_Kinematic, ESetMaskConditionType::Field_Set_IFF_NOT_Interior) });
+	DispatchFieldCommand({ TargetName,new FRadialIntMask(Radius, Position, (int32)Chaos::EObjectStateType::Dynamic,
+		(int32)Chaos::EObjectStateType::Kinematic, ESetMaskConditionType::Field_Set_IFF_NOT_Interior) });
 }
 
 void UGeometryCollectionComponent::ApplyPhysicsField(bool Enabled, EGeometryCollectionPhysicsTypeEnum Target, UFieldSystemMetaData* MetaData, UFieldNodeBase* Field)
 {
 	if (Enabled && Field)
 	{
-		TArray<const UFieldNodeBase*> Nodes;
-		FFieldSystemCommand Command = { GetGeometryCollectionPhysicsTypeName(Target), Field->NewEvaluationGraph(Nodes) };
-		if (ensureMsgf(Command.RootNode,
-			TEXT("Failed to generate physics field command for target attribute.")))
-		{
-			if (MetaData)
-			{
-				switch (MetaData->Type())
-				{
-				case FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution:
-					UFieldSystemMetaDataProcessingResolution * ResolutionMeta = static_cast<UFieldSystemMetaDataProcessingResolution*>(MetaData);
-					Command.MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution).Reset(new FFieldSystemMetaDataProcessingResolution(ResolutionMeta->ResolutionType));
-					break;
-				}
-			}
-			ensure(!Command.TargetAttribute.IsEqual("None"));
-			DispatchCommand(Command);
-		}
+		FFieldSystemCommand Command = FFieldObjectCommands::CreateFieldCommand(GetGeometryCollectionPhysicsTypeName(Target), Field, MetaData);
+		DispatchFieldCommand(Command);
 	}
 }
 
-void UGeometryCollectionComponent::DispatchCommand(const FFieldSystemCommand& InCommand)
+void UGeometryCollectionComponent::DispatchFieldCommand(const FFieldSystemCommand& InCommand)
 {
 	if (PhysicsProxy)
 	{
 		FChaosSolversModule* ChaosModule = FChaosSolversModule::GetModule();
 		checkSlow(ChaosModule);
 
-		PhysicsProxy->GetSolver<Chaos::FPBDRigidsSolver>()->EnqueueCommandImmediate([PhysicsProxy = this->PhysicsProxy, NewCommand = InCommand]()
+		auto Solver = PhysicsProxy->GetSolver<Chaos::FPBDRigidsSolver>();
+		Solver->EnqueueCommandImmediate([Solver, PhysicsProxy = this->PhysicsProxy, NewCommand = InCommand]()
 		{
 			// Pass through nullptr here as geom component commands can never affect other solvers
-			PhysicsProxy->BufferCommand(nullptr, NewCommand);
+			PhysicsProxy->BufferCommand(Solver, NewCommand);
 		});
 	}
 }
@@ -2494,20 +2490,32 @@ void UGeometryCollectionComponent::DispatchCommand(const FFieldSystemCommand& In
 void UGeometryCollectionComponent::GetInitializationCommands(TArray<FFieldSystemCommand>& CombinedCommmands)
 {
 	CombinedCommmands.Reset();
-	for (const AFieldSystemActor * FieldSystemActor : InitializationFields)
+	for (const AFieldSystemActor* FieldSystemActor : InitializationFields)
 	{
 		if (FieldSystemActor != nullptr)
 		{
-			if (FieldSystemActor->GetFieldSystemComponent() && FieldSystemActor->GetFieldSystemComponent()->GetFieldSystem())
+			if (FieldSystemActor->GetFieldSystemComponent())
 			{
-				for (const FFieldSystemCommand& Command : FieldSystemActor->GetFieldSystemComponent()->GetFieldSystem()->Commands)
+				const int32 NumCommands = FieldSystemActor->GetFieldSystemComponent()->ConstructionCommands.GetNumCommands();
+				if (NumCommands > 0)
 				{
-					FFieldSystemCommand NewCommand = { Command.TargetAttribute, Command.RootNode->NewCopy() };
-					for (auto & Elem : Command.MetaData)
+					for (int32 CommandIndex = 0; CommandIndex < NumCommands; ++CommandIndex)
 					{
-						NewCommand.MetaData.Add(Elem.Key, TUniquePtr<FFieldSystemMetaData>(Elem.Value->NewCopy()));
+						CombinedCommmands.Add(FieldSystemActor->GetFieldSystemComponent()->ConstructionCommands.BuildFieldCommand(CommandIndex));
 					}
-					CombinedCommmands.Add(NewCommand);
+				}
+				// Legacy path : only there for old levels. New ones will have the commands directly saved onto the component
+				else if (FieldSystemActor->GetFieldSystemComponent()->GetFieldSystem())
+				{
+					for (const FFieldSystemCommand& Command : FieldSystemActor->GetFieldSystemComponent()->GetFieldSystem()->Commands)
+					{
+						FFieldSystemCommand NewCommand = { Command.TargetAttribute, Command.RootNode->NewCopy() };
+						for (auto& Elem : Command.MetaData)
+						{
+							NewCommand.MetaData.Add(Elem.Key, TUniquePtr<FFieldSystemMetaData>(Elem.Value->NewCopy()));
+						}
+						CombinedCommmands.Add(NewCommand);
+					}
 				}
 			}
 		}

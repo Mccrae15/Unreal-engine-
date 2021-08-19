@@ -24,6 +24,7 @@
 #include "ScopedTransaction.h"
 #include "PhysicsAssetEditorActions.h"
 #include "PhysicsAssetEditorSkeletalMeshComponent.h"
+#include "Templates/TypeHash.h"
 
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
@@ -94,6 +95,31 @@ namespace PhysicsAssetEditor
 {
 	const float	DefaultPrimSize = 15.0f;
 	const float	DuplicateXOffset = 10.0f;
+
+	/** contain everything to identify a shape uniquely - used for synchronizing selection mostly */
+	struct FShapeData
+	{
+		int32 Index;
+		int32 PrimitiveIndex;
+
+		FShapeData(int32 Index, int32 PrimitiveIndex)
+			: Index(Index)
+			, PrimitiveIndex(PrimitiveIndex)
+		{
+		}
+
+		bool operator==(const FShapeData& rhs) const
+		{
+			return Index == rhs.Index && PrimitiveIndex == rhs.PrimitiveIndex;
+		}
+
+		friend uint32 GetTypeHash(const FShapeData& ShapeData)
+		{
+			return HashCombine(::GetTypeHash(ShapeData.Index), ::GetTypeHash(ShapeData.PrimitiveIndex));
+		}
+	};
+
+	
 }
 
 void FPhysicsAssetEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -225,9 +251,13 @@ void FPhysicsAssetEditor::HandleViewportSelectionChanged(const TArray<FPhysicsAs
 		}
 		else
 		{
-			TArray<UObject*> Objects;
+
+			// let's store all the selection in sets so that when we go through the list of items in the list 
+			// ( which can be long ) we only do O(1) lookup for each of them 
+			TSet<UObject*> Objects;
 			TSet<USkeletalBodySetup*> Bodies;
 			TSet<UPhysicsConstraintTemplate*> Constraints;
+			TSet<PhysicsAssetEditor::FShapeData> Shapes;
 			Algo::Transform(InSelectedBodies, Objects, [this](const FPhysicsAssetEditorSharedData::FSelection& InItem) 
 			{ 
 				return SharedData->PhysicsAsset->SkeletalBodySetups[InItem.Index];
@@ -244,53 +274,48 @@ void FPhysicsAssetEditor::HandleViewportSelectionChanged(const TArray<FPhysicsAs
 			{ 
 				return SharedData->PhysicsAsset->ConstraintSetup[InItem.Index];
 			});
+			Algo::Transform(InSelectedConstraints, Shapes, [this](const FPhysicsAssetEditorSharedData::FSelection& InItem)
+			{
+				return PhysicsAssetEditor::FShapeData(InItem.Index, InItem.PrimitiveIndex);
+			});
 
 			if (PhysAssetProperties.IsValid())
 			{
-				PhysAssetProperties->SetObjects(Objects);
+				PhysAssetProperties->SetObjects(Objects.Array());
 			}
 
 			if (SkeletonTree.IsValid())
 			{
-				SkeletonTree->SelectItemsBy([this, &InSelectedBodies, &Constraints](const TSharedRef<ISkeletonTreeItem>& InItem, bool& bInOutExpand)
+				SkeletonTree->SelectItemsBy([this, &Objects, &Constraints, &Bodies, &Shapes](const TSharedRef<ISkeletonTreeItem>& InItem, bool& bInOutExpand)
 				{
-					if(InItem->IsOfType<FSkeletonTreePhysicsBodyItem>() || InItem->IsOfType<FSkeletonTreePhysicsShapeItem>())
+					if (InItem->IsOfType<FSkeletonTreePhysicsBodyItem>())
 					{
-						for (const FPhysicsAssetEditorSharedData::FSelection& SelectedBody : InSelectedBodies)
+						const USkeletalBodySetup* BodySetup = Cast<USkeletalBodySetup>(InItem->GetObject());
+						if (Bodies.Contains(BodySetup))
 						{
-							USkeletalBodySetup* BodySetup = SharedData->PhysicsAsset->SkeletalBodySetups[SelectedBody.Index];
-							int32 GeomCount = BodySetup->AggGeom.GetElementCount();
-							if (BodySetup == InItem->GetObject())
-							{
-								if(InItem->IsOfType<FSkeletonTreePhysicsShapeItem>())
-								{
-									TSharedRef<FSkeletonTreePhysicsShapeItem> SkeletonTreePhysicsShapeItem = StaticCastSharedRef<FSkeletonTreePhysicsShapeItem>(InItem);
-									if(SkeletonTreePhysicsShapeItem->GetShapeIndex() == SelectedBody.PrimitiveIndex && SkeletonTreePhysicsShapeItem->GetShapeType() == SelectedBody.PrimitiveType && GeomCount > 1)
-									{
-										bInOutExpand = true;
-										return true;
-									}
-								}
-								else if(GeomCount <= 1)
-								{
-									bInOutExpand = true;
-									return true;
-								}
-							}
+							bInOutExpand = true;
+							return true;
 						}
 					}
-					else if(InItem->IsOfType<FSkeletonTreePhysicsConstraintItem>())
+					else if (InItem->IsOfType<FSkeletonTreePhysicsShapeItem>())
 					{
-						for (UPhysicsConstraintTemplate* Constraint : Constraints)
+						TSharedRef<FSkeletonTreePhysicsShapeItem> ShapeItem = StaticCastSharedRef<FSkeletonTreePhysicsShapeItem>(InItem);
+						PhysicsAssetEditor::FShapeData ShapeData(ShapeItem->GetBodySetupIndex(), ShapeItem->GetShapeIndex());
+						if (Shapes.Contains(ShapeData))
 						{
-							if (Constraint == InItem->GetObject())
-							{
-								bInOutExpand = true;
-								return true;
-							}
+							bInOutExpand = true;
+							return true;
 						}
 					}
-
+					else if (InItem->IsOfType<FSkeletonTreePhysicsConstraintItem>())
+					{
+						const UPhysicsConstraintTemplate* Constraint = Cast<UPhysicsConstraintTemplate>(InItem->GetObject());
+						if (Constraints.Contains(Constraint))
+						{
+							bInOutExpand = true;
+							return true;
+						}
+					}
 					return false;
 				});
 			}
@@ -607,6 +632,7 @@ void FPhysicsAssetEditor::ExtendMenu()
 			MenuBarBuilder.AddMenuEntry(Commands.ShowSelected);
 			MenuBarBuilder.AddMenuEntry(Commands.HideSelected);
 			MenuBarBuilder.AddMenuEntry(Commands.ToggleShowOnlySelected);
+			MenuBarBuilder.AddMenuEntry(Commands.ToggleShowOnlyColliding);
 			MenuBarBuilder.AddMenuEntry(Commands.ShowAll);
 			MenuBarBuilder.AddMenuEntry(Commands.HideAll);
 			MenuBarBuilder.AddMenuEntry(Commands.DeselectAll);
@@ -910,6 +936,11 @@ void FPhysicsAssetEditor::BindCommands()
 		Commands.HideSelected,
 		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnHideSelected),
 		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::IsNotSimulation));
+
+	ToolkitCommands->MapAction(
+		Commands.ToggleShowOnlyColliding,
+		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnToggleShowOnlyColliding),
+		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::HasOneSelectedBodyAndIsNotSimulation));
 
 	ToolkitCommands->MapAction(
 		Commands.ToggleShowOnlySelected,
@@ -1360,6 +1391,7 @@ void FPhysicsAssetEditor::BuildMenuWidgetSelection(FMenuBuilder& InMenuBuilder)
 		InMenuBuilder.AddMenuEntry( Commands.ShowSelected );
 		InMenuBuilder.AddMenuEntry( Commands.HideSelected );
 		InMenuBuilder.AddMenuEntry( Commands.ToggleShowOnlySelected );
+		InMenuBuilder.AddMenuEntry( Commands.ToggleShowOnlyColliding );
 		InMenuBuilder.AddMenuEntry( Commands.ShowAll );
 		InMenuBuilder.AddMenuEntry( Commands.HideAll );
 		InMenuBuilder.EndSection();
@@ -1462,7 +1494,7 @@ bool FPhysicsAssetEditor::ShouldFilterAssetBasedOnSkeleton( const FAssetData& As
 		USkeletalMesh* EditorSkelMesh = SharedData->PhysicsAsset->GetPreviewMesh();
 		if(EditorSkelMesh != nullptr)
 		{
-			USkeleton* Skeleton = EditorSkelMesh->Skeleton;
+			USkeleton* Skeleton = EditorSkelMesh->GetSkeleton();
 
 			if ( Skeleton && (*SkeletonName) == FString::Printf(TEXT("%s'%s'"), *Skeleton->GetClass()->GetName(), *Skeleton->GetPathName()) )
 			{
@@ -1755,6 +1787,11 @@ bool FPhysicsAssetEditor::HasSelectedBodyAndIsNotSimulation() const
 	return IsNotSimulation() && (SharedData->GetSelectedBody());
 }
 
+bool FPhysicsAssetEditor::HasOneSelectedBodyAndIsNotSimulation() const
+{
+	return IsNotSimulation() && (SharedData->SelectedBodies.Num() == 1);
+}
+
 bool FPhysicsAssetEditor::CanEditConstraintProperties() const
 {
 	if(IsNotSimulation() && SharedData->PhysicsAsset && SharedData->GetSelectedConstraint())
@@ -1837,7 +1874,7 @@ void FPhysicsAssetEditor::ResetBoneCollision()
 			SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ResetCollsionStepInfo", "Generating collision for {0}"), FText::FromName(BodySetup->BoneName)));
 			BodySetup->Modify();
 
-			int32 BoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(BodySetup->BoneName);
+			int32 BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(BodySetup->BoneName);
 			check(BoneIndex != INDEX_NONE);
 
 			const FBoneVertInfo& UseVertInfo = NewBodyData.VertWeight == EVW_DominantWeight ? SharedData->DominantWeightBoneInfos[BoneIndex] : SharedData->AnyWeightBoneInfos[BoneIndex];
@@ -2580,7 +2617,7 @@ void FPhysicsAssetEditor::OnAssetSelectedFromStaticMeshAssetPicker( const FAsset
 	{
 		UStaticMesh* SM = Cast<UStaticMesh>(AssetData.GetAsset());
 
-		if (SM && SM->BodySetup && SM->BodySetup->AggGeom.GetElementCount() > 0)
+		if (SM && SM->GetBodySetup() && SM->GetBodySetup()->AggGeom.GetElementCount() > 0)
 		{
 			SharedData->PhysicsAsset->Modify();
 
@@ -2588,7 +2625,7 @@ void FPhysicsAssetEditor::OnAssetSelectedFromStaticMeshAssetPicker( const FAsset
 			{
 				UBodySetup* BaseSetup = SharedData->PhysicsAsset->SkeletalBodySetups[SharedData->SelectedBodies[SelectedBodyIndex].Index];
 				BaseSetup->Modify();
-				BaseSetup->AddCollisionFrom(SM->BodySetup);
+				BaseSetup->AddCollisionFrom(SM->GetBodySetup());
 				BaseSetup->InvalidatePhysicsData();
 				BaseSetup->CreatePhysicsMeshes();
 			}
@@ -2856,6 +2893,11 @@ void FPhysicsAssetEditor::OnHideSelected()
 	SharedData->HideSelected();
 }
 
+void FPhysicsAssetEditor::OnToggleShowOnlyColliding()
+{
+	SharedData->ToggleShowOnlyColliding();
+}
+
 void FPhysicsAssetEditor::OnToggleShowOnlySelected()
 {
 	SharedData->ToggleShowOnlySelected();
@@ -3094,6 +3136,7 @@ void FPhysicsAssetEditor::HandlePreviewSceneCreated(const TSharedRef<IPersonaPre
 	InPersonaPreviewScene->SetPreviewMeshComponent(SharedData->EditorSkelComp);
 	InPersonaPreviewScene->AddComponent(SharedData->EditorSkelComp, FTransform::Identity);
 	InPersonaPreviewScene->SetAdditionalMeshesSelectable(false);
+	InPersonaPreviewScene->SetUsePhysicsBodiesForBoneSelection(false);
 	// set root component, so we can attach to it. 
 	Actor->SetRootComponent(SharedData->EditorSkelComp);
 
@@ -3176,31 +3219,31 @@ void FPhysicsAssetEditor::HandleExtendFilterMenu(FMenuBuilder& InMenuBuilder)
 void FPhysicsAssetEditor::HandleToggleShowBodies()
 {
 	SkeletonTreeBuilder->bShowBodies = !SkeletonTreeBuilder->bShowBodies;
-	SkeletonTree->RefreshFilter();
+	RefreshFilter();
 }
 
 void FPhysicsAssetEditor::HandleToggleShowSimulatedBodies()
 {
 	SkeletonTreeBuilder->bShowSimulatedBodies = !SkeletonTreeBuilder->bShowSimulatedBodies;
-	SkeletonTree->RefreshFilter();
+	RefreshFilter();
 }
 
 void FPhysicsAssetEditor::HandleToggleShowKinematicBodies()
 {
 	SkeletonTreeBuilder->bShowKinematicBodies = !SkeletonTreeBuilder->bShowKinematicBodies;
-	SkeletonTree->RefreshFilter();
+	RefreshFilter();
 }
 
 void FPhysicsAssetEditor::HandleToggleShowConstraints()
 {
 	SkeletonTreeBuilder->bShowConstraints = !SkeletonTreeBuilder->bShowConstraints;
-	SkeletonTree->RefreshFilter();
+	RefreshFilter();
 }
 
 void FPhysicsAssetEditor::HandleToggleShowPrimitives()
 {
 	SkeletonTreeBuilder->bShowPrimitives = !SkeletonTreeBuilder->bShowPrimitives;
-	SkeletonTree->RefreshFilter();
+	RefreshFilter();
 }
 
 ECheckBoxState FPhysicsAssetEditor::GetShowBodiesChecked() const
@@ -3244,6 +3287,13 @@ void FPhysicsAssetEditor::HandleGetFilterLabel(TArray<FText>& InOutItems) const
 	{
 		InOutItems.Add(LOCTEXT("PrimitivesFilterLabel", "Primitives"));
 	}
+}
+
+void FPhysicsAssetEditor::RefreshFilter()
+{
+	SkeletonTree->RefreshFilter();
+	// make sure we resynchronize the list 
+	HandleViewportSelectionChanged(SharedData->SelectedBodies, SharedData->SelectedConstraints);
 }
 
 void FPhysicsAssetEditor::HandleCreateNewConstraint(int32 BodyIndex0, int32 BodyIndex1)

@@ -28,6 +28,7 @@ MapBuildData.cpp
 #include "Factories/TextureFactory.h"
 #endif
 #include "Engine/TextureCube.h"
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
 
 DECLARE_MEMORY_STAT(TEXT("Stationary Light Static Shadowmap"),STAT_StationaryLightBuildData,STATGROUP_MapBuildData);
 DECLARE_MEMORY_STAT(TEXT("Reflection Captures"),STAT_ReflectionCaptureBuildData,STATGROUP_MapBuildData);
@@ -76,15 +77,11 @@ void UWorld::PropagateLightingScenarioChange()
 		}
 	}
 
-	for (FActorIterator It(this); It; ++It)
+	for (USceneComponent* Component : TObjectRange<USceneComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::PendingKill))
 	{
-		TInlineComponentArray<USceneComponent*> Components;
-		(*It)->GetComponents(Components);
-
-		for (int32 ComponentIndex = 0; ComponentIndex < Components.Num(); ComponentIndex++)
+		if (Component->GetWorld() == this)
 		{
-			USceneComponent* CurrentComponent = Components[ComponentIndex];
-			CurrentComponent->PropagateLightingScenarioChange();
+			Component->PropagateLightingScenarioChange();
 		}
 	}
 
@@ -298,7 +295,7 @@ FArchive& operator<<(FArchive& Ar, FReflectionCaptureMapBuildData& ReflectionCap
 
 	TArray<FName> Formats;
 
-	if (Ar.IsSaving() && Ar.IsCooking())
+	if (Ar.IsCooking())
 	{
 		// Get all the reflection capture formats that the target platform wants
 		Ar.CookingTarget()->GetReflectionCaptureFormats(Formats);
@@ -316,15 +313,7 @@ FArchive& operator<<(FArchive& Ar, FReflectionCaptureMapBuildData& ReflectionCap
 
 	if (Ar.CustomVer(FMobileObjectVersion::GUID) >= FMobileObjectVersion::StoreReflectionCaptureCompressedMobile)
 	{
-		if (Ar.IsCooking() && !Formats.Contains(EncodedHDR))
-		{
-			UTextureCube* StrippedData = NULL;
-			Ar << StrippedData;
-		}
-		else
-		{
-			Ar << ReflectionCaptureMapBuildData.EncodedCaptureData;
-		}
+		Ar << ReflectionCaptureMapBuildData.EncodedCaptureData;
 	}
 	else
 	{
@@ -763,6 +752,21 @@ void UMapBuildDataRegistry::InvalidateSurfaceLightmaps(UWorld* World, bool bRecr
 			}
 		}
 
+		// Invalidate the LightmapResourceClusters
+		{
+			// LightmapResourceClusters needs to be cleared at RT to avoid a flush in GT because the RenderResource in a ResourceCluster needs to be released before the destructor of FLightmapResourceCluster
+			ENQUEUE_RENDER_COMMAND(FReleaseLightmapResourceClustersCmd)(
+				[LocalLightmapResourceClusters = MoveTemp(LightmapResourceClusters)](FRHICommandListImmediate& RHICmdList) mutable
+			{
+				for (auto& ResourceCluster : LocalLightmapResourceClusters)
+				{
+					ResourceCluster.ReleaseResource();
+				}
+			});
+
+			LightmapResourceClusters.Empty();
+		}
+
 		MarkPackageDirty();
 	}
 }
@@ -794,8 +798,10 @@ bool UMapBuildDataRegistry::IsLegacyBuildData() const
 	return GetOutermost()->ContainsMap();
 }
 
-bool UMapBuildDataRegistry::IsVTLightingValid() const
+bool UMapBuildDataRegistry::IsLightingValid(ERHIFeatureLevel::Type InFeatureLevel) const
 {
+	const bool bUsingVTLightmaps = UseVirtualTextureLightmap(InFeatureLevel);
+
 	// this code checks if AT LEAST 1 virtual textures is valid. 
 	for (auto MeshBuildDataPair : MeshBuildData)
 	{
@@ -805,7 +811,7 @@ bool UMapBuildDataRegistry::IsVTLightingValid() const
 			const FLightMap2D* Lightmap2D = Data.LightMap->GetLightMap2D();
 			if (Lightmap2D)
 			{
-				if (Lightmap2D->GetVirtualTexture() != nullptr)
+				if ((bUsingVTLightmaps && Lightmap2D->IsVirtualTextureValid()) || (!bUsingVTLightmaps && (Lightmap2D->IsValid(0) || Lightmap2D->IsValid(1))))
 				{
 					return true;
 				}
@@ -827,7 +833,8 @@ FLightmapClusterResourceInput GetClusterInput(const FMeshMapBuildData& MeshBuild
 		ClusterInput.LightMapTextures[1] = LightMap2D->GetTexture(1);
 		ClusterInput.SkyOcclusionTexture = LightMap2D->GetSkyOcclusionTexture();
 		ClusterInput.AOMaterialMaskTexture = LightMap2D->GetAOMaterialMaskTexture();
-		ClusterInput.LightMapVirtualTexture = LightMap2D->GetVirtualTexture();
+		ClusterInput.LightMapVirtualTextures[0] = LightMap2D->GetVirtualTexture(0);
+		ClusterInput.LightMapVirtualTextures[1] = LightMap2D->GetVirtualTexture(1);
 	}
 
 	FShadowMap2D* ShadowMap2D = MeshBuildData.ShadowMap ? MeshBuildData.ShadowMap->GetShadowMap2D() : nullptr;
@@ -905,6 +912,8 @@ void UMapBuildDataRegistry::InitializeClusterRenderingResources(ERHIFeatureLevel
 
 void UMapBuildDataRegistry::ReleaseResources(const TSet<FGuid>* ResourcesToKeep)
 {
+	CleanupTransientOverrideMapBuildData();
+
 	for (TMap<FGuid, FPrecomputedVolumetricLightmapData*>::TIterator It(LevelPrecomputedVolumetricLightmapBuildData); It; ++It)
 	{
 		if (!ResourcesToKeep || !ResourcesToKeep->Contains(It.Key()))
@@ -953,6 +962,17 @@ void UMapBuildDataRegistry::EmptyLevelData(const TSet<FGuid>* ResourcesToKeep)
 	}
 
 	LightmapResourceClusters.Empty();
+}
+
+void UMapBuildDataRegistry::CleanupTransientOverrideMapBuildData()
+{
+	for (UHierarchicalInstancedStaticMeshComponent* Component : TObjectRange<UHierarchicalInstancedStaticMeshComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::PendingKill))
+	{
+		for (auto& LOD : Component->LODData)
+		{
+			LOD.OverrideMapBuildData.Reset();
+		}
+	}
 }
 
 FUObjectAnnotationSparse<FMeshMapBuildLegacyData, true> GComponentsWithLegacyLightmaps;

@@ -48,7 +48,7 @@ protected:
 	/** The parent object (e.g. mesh, point set) this attribute belongs to */
 	ParentType* Parent;
 
-	/** List of per-triangle attribute values */
+	/** List of per-vertex attribute values */
 	TDynamicVector<AttribValueType> AttribValues;
 
 public:
@@ -93,6 +93,7 @@ public:
 	/** Set this overlay to contain the same arrays as the copy overlay */
 	void Copy(const TDynamicVertexAttribute<AttribValueType, AttribDimension, ParentType>& Copy)
 	{
+		TDynamicAttributeBase<ParentType>::CopyParentClassData(Copy);
 		AttribValues = Copy.AttribValues;
 	}
 
@@ -121,7 +122,9 @@ public:
 
 	void CompactCopy(const FCompactMaps& CompactMaps, const TDynamicVertexAttribute<AttribValueType, AttribDimension, ParentType>& ToCopy)
 	{
-		check(CompactMaps.MapV.Num() <= AttribValues.Num() / AttribDimension);
+		TDynamicAttributeBase<ParentType>::CopyParentClassData(ToCopy);
+		check(CompactMaps.MapV.Num() >= 0 && static_cast<size_t>(CompactMaps.MapV.Num()) <= AttribValues.Num() / AttribDimension);
+
 		AttribValueType Data[AttribDimension];
 		for (int VID = 0; VID < CompactMaps.MapV.Num(); VID++)
 		{
@@ -156,7 +159,50 @@ public:
 
 	//
 	// Accessors/Queries
-	//  
+	//
+
+	virtual bool CopyThroughMapping(const TDynamicAttributeBase<ParentType>* Source, const FMeshIndexMappings& Mapping) override
+	{
+		AttribValueType BufferData[AttribDimension];
+		int BufferSize = sizeof(BufferData);
+		for (const TPair<int32, int32>& MapVID : Mapping.GetVertexMap().GetForwardMap())
+		{
+			if (!ensure(Source->CopyOut(MapVID.Key, BufferData, BufferSize)))
+			{
+				return false;
+			}
+			SetValue(MapVID.Value, BufferData);
+		}
+		return true;
+	}
+	virtual bool CopyOut(int RawID, void* Buffer, int BufferSize) const override
+	{
+		if (sizeof(AttribValueType)*AttribDimension != BufferSize)
+		{
+			return false;
+		}
+		AttribValueType* BufferData = static_cast<AttribValueType*>(Buffer);
+		int k = RawID * AttribDimension;
+		for (int i = 0; i < AttribDimension; ++i)
+		{
+			BufferData[i] = AttribValues[k + i];
+		}
+		return true;
+	}
+	virtual bool CopyIn(int RawID, void* Buffer, int BufferSize) override
+	{
+		if (sizeof(AttribValueType) * AttribDimension != BufferSize)
+		{
+			return false;
+		}
+		AttribValueType* BufferData = static_cast<AttribValueType*>(Buffer);
+		int k = RawID * AttribDimension;
+		for (int i = 0; i < AttribDimension; ++i)
+		{
+			AttribValues[k + i] = BufferData[i];
+		}
+		return true;
+	}
 
 	/** Get the element at a given index */
 	inline void GetValue(int VertexID, AttribValueType* Data) const
@@ -247,7 +293,7 @@ public:
 		{
 			return;
 		}
-		size_t NeededSize = size_t((VertexID+1) * AttribDimension);
+		size_t NeededSize = (size_t(VertexID)+1) * AttribDimension;
 		if (NeededSize > AttribValues.Num())
 		{
 			AttribValues.Resize(NeededSize, GetDefaultAttributeValue());
@@ -271,8 +317,14 @@ public:
 	void OnMergeEdges(const FDynamicMesh3::FMergeEdgesInfo& MergeInfo) override
 	{
 		// just blend the attributes?
-		SetAttributeFromLerp(MergeInfo.KeptVerts.A, MergeInfo.KeptVerts.A, MergeInfo.RemovedVerts.A, .5);
-		SetAttributeFromLerp(MergeInfo.KeptVerts.B, MergeInfo.KeptVerts.B, MergeInfo.RemovedVerts.B, .5);
+		if (MergeInfo.RemovedVerts.A != FDynamicMesh3::InvalidID)
+		{
+			SetAttributeFromLerp(MergeInfo.KeptVerts.A, MergeInfo.KeptVerts.A, MergeInfo.RemovedVerts.A, .5);
+		}
+		if (MergeInfo.RemovedVerts.B != FDynamicMesh3::InvalidID)
+		{
+			SetAttributeFromLerp(MergeInfo.KeptVerts.B, MergeInfo.KeptVerts.B, MergeInfo.RemovedVerts.B, .5);
+		}
 	}
 
 	/** Update the overlay to reflect a vertex split in the parent */
@@ -295,7 +347,7 @@ public:
 	virtual bool CheckValidity(bool bAllowNonmanifold, EValidityCheckFailMode FailMode) const override
 	{
 		// just check that the values buffer is big enough
-		if (Parent->MaxVertexID()*AttribDimension > AttribValues.Num())
+		if (Parent->MaxVertexID() < 0 || static_cast<size_t>(Parent->MaxVertexID()*AttribDimension) > AttribValues.Num())
 		{
 			switch (FailMode)
 			{

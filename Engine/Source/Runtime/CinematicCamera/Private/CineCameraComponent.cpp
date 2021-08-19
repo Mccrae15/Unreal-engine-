@@ -518,7 +518,7 @@ void UCineCameraComponent::UpdateCameraLens(float DeltaTime, FMinimalViewInfo& D
 	else
 	{
 		// Update focus/DoF
-		DesiredView.PostProcessBlendWeight = 1.f;
+		DesiredView.PostProcessBlendWeight = PostProcessBlendWeight;
 
 		DesiredView.PostProcessSettings.bOverride_DepthOfFieldFstop = true;
 		DesiredView.PostProcessSettings.DepthOfFieldFstop = CurrentAperture;
@@ -568,7 +568,7 @@ void UCineCameraComponent::CreateDebugFocusPlane()
 	{
 		if (DebugFocusPlaneComponent == nullptr)
 		{
-			DebugFocusPlaneComponent = NewObject<UStaticMeshComponent>(MyOwner, NAME_None, RF_Transactional | RF_TextExportTransient);
+			DebugFocusPlaneComponent = NewObject<UStaticMeshComponent>(MyOwner, NAME_None, RF_Transient | RF_Transactional | RF_TextExportTransient);
 			DebugFocusPlaneComponent->SetupAttachment(this);
 			DebugFocusPlaneComponent->SetIsVisualizationComponent(true);
 			DebugFocusPlaneComponent->SetStaticMesh(FocusPlaneVisualizationMesh);

@@ -56,9 +56,6 @@ FAutomationControllerManager::FAutomationControllerManager()
 		GameInstanceLostTimerSeconds = Settings->GameInstanceLostTimerSeconds;
 	}
 	
-	CheckpointFile = nullptr;
-
-
 	FString DeveloperPath;
 	FParse::Value(FCommandLine::Get(), TEXT("ReportOutputPath="), ReportExportPath, false);
 	FParse::Value(FCommandLine::Get(), TEXT("DisplayReportOutputPath="), ReportURLPath, false);
@@ -141,6 +138,8 @@ void FAutomationControllerManager::RequestTests()
 		{
 			FMessageAddress MessageAddress = DeviceClusterManager.GetDeviceMessageAddress(ClusterIndex, 0);
 
+			UE_LOG(LogAutomationController, Log, TEXT("Requesting test list from %s"), *MessageAddress.ToString());
+
 			//issue tests on appropriate platforms
 			MessageEndpoint->Send(new FAutomationWorkerRequestTests(bDeveloperDirectoryIncluded, RequestedTestFlags), MessageAddress);
 		}
@@ -172,6 +171,19 @@ void FAutomationControllerManager::RunTests(const bool bInIsLocalSession)
 	//reset all tests
 	ReportManager.ResetForExecution(NumTestPasses);
 
+	// Register All tests that we'll need to be exported as json report
+	if (!ReportExportPath.IsEmpty())
+	{
+		JsonTestPassResults.IsRequired = true;
+		TArray<IAutomationReportPtr> TestsToRun = ReportManager.GetEnabledTestReports();
+		for (IAutomationReportPtr& TestReport : TestsToRun)
+		{
+			JsonTestPassResults.AddTestResult(TestReport);
+		}
+		// Get the html index written down as soon as possible so once results are updated, they can be reviewed.
+		GenerateTestPassHtmlIndex();
+	}
+
 	for ( int32 ClusterIndex = 0; ClusterIndex < DeviceClusterManager.GetNumClusters(); ++ClusterIndex )
 	{
 		//enable each device cluster
@@ -185,6 +197,8 @@ void FAutomationControllerManager::RunTests(const bool bInIsLocalSession)
 
 			// Send command to reset tests (delete local files, etc)
 			FMessageAddress MessageAddress = DeviceClusterManager.GetDeviceMessageAddress(ClusterIndex, DeviceIndex);
+			UE_LOG(LogAutomationController, Log, TEXT("Sending Reset Tests to %s"), *MessageAddress.ToString());
+
 			MessageEndpoint->Send(new FAutomationWorkerResetTests(), MessageAddress);
 		}
 	}
@@ -222,6 +236,8 @@ void FAutomationControllerManager::StopTests()
 
 				// Send command to reset tests (delete local files, etc)
 				FMessageAddress MessageAddress = DeviceClusterManager.GetDeviceMessageAddress(ClusterIndex, DeviceIndex);
+
+				UE_LOG(LogAutomationController, Log, TEXT("Sending StopTests to %s"), *MessageAddress.ToString());
 				MessageEndpoint->Send(new FAutomationWorkerStopTests(), MessageAddress);
 			}
 		}
@@ -282,6 +298,11 @@ void FAutomationControllerManager::ProcessComparisonQueue()
 					Result.ErrorMessage.ToString()
 				);
 
+				UE_LOG(LogAutomationController, Log, TEXT("Sending ImageComparisonResult to %s (IsNew=%d, AreSimilar=%d)"), 
+					*Entry->Sender.ToString()
+					, Result.IsNew()
+					, Result.AreSimilar()
+					);
 				MessageEndpoint->Send(Message, Entry->Sender);
 			}
 
@@ -313,7 +334,7 @@ void FAutomationControllerManager::ProcessComparisonQueue()
 					LocalFiles.Add(TEXT("difference"), FPaths::Combine(ProjectDir, Result.ComparisonFilePath));
 				}
 
-				Report->AddArtifact(ClusterIndex, CurrentTestPass, FAutomationArtifact(UniqueId, Entry->TestName, EAutomationArtifactType::Comparison, LocalFiles));
+				Report->AddArtifact(ClusterIndex, CurrentTestPass, FAutomationArtifact(UniqueId, Entry->ScreenshotPath, EAutomationArtifactType::Comparison, LocalFiles));
 			}
 			else
 			{
@@ -365,54 +386,59 @@ void FAutomationControllerManager::ProcessAvailableTasks()
 void FAutomationControllerManager::ReportTestResults()
 {
 	UE_LOG(LogAutomationController, Log, TEXT("Test Pass Results:"));
-	for ( int32 i = 0; i < OurPassResults.Tests.Num(); i++ )
+	for ( int32 i = 0; i < JsonTestPassResults.Tests.Num(); i++ )
 	{
-		UE_LOG(LogAutomationController, Log, TEXT("%s: %s"), *OurPassResults.Tests[i].TestDisplayName, ToString(OurPassResults.Tests[i].State));
+		UE_LOG(LogAutomationController, Log, TEXT("%s: %s"), *JsonTestPassResults.Tests[i].TestDisplayName, ToString(JsonTestPassResults.Tests[i].State));
 	}
 }
 
 void FAutomationControllerManager::CollectTestResults(TSharedPtr<IAutomationReport> Report, const FAutomationTestResults& Results)
 {
-	// TODO This is slow, change to a map.
-	for ( int32 i = 0; i < OurPassResults.Tests.Num(); i++ )
+	if (JsonTestPassResults.IsRequired)
 	{
-		FAutomatedTestResult& ReportResult = OurPassResults.Tests[i];
-		if ( ReportResult.FullTestPath == Report->GetFullTestPath() )
+		JsonTestPassResults.UpdateTestResultStatus(Report, Results.State, Results.GetWarningTotal() > 0);
+		FAutomatedTestResult& TestResult = JsonTestPassResults.GetTestResult(Report);
+		TestResult.SetEvents(Results.GetEntries(), Results.GetWarningTotal(), Results.GetErrorTotal());
+		TestResult.SetArtifacts(Results.Artifacts);
+
+		JsonTestPassResults.TotalDuration += Results.Duration;
+
+		// Copy new artifacts to Report export path
+		FCriticalSection CS;
+		for (FAutomationArtifact& Artifact : TestResult.GetArtifacts())
 		{
-			ReportResult.State = Results.State;
-			ReportResult.SetEvents(Results.GetEntries(), Results.GetWarningTotal(), Results.GetErrorTotal());
-			ReportResult.SetArtifacts(Results.Artifacts);
+			TArray<FString> Keys;
+			Artifact.LocalFiles.GetKeys(Keys);
 
-			switch ( Results.State )
-			{
-			case EAutomationState::Success:
-				if ( Results.GetWarningTotal() > 0 )
+			ParallelFor(Keys.Num(), [&](int32 Index)
 				{
-					OurPassResults.SucceededWithWarnings++;
-				}
-				else
-				{
-					OurPassResults.Succeeded++;
-				}
-				break;
-			case EAutomationState::Fail:
-				OurPassResults.Failed++;
-				break;
-			default:
-				OurPassResults.NotRun++;
-				break;
-			}
+					const FString& Key = Keys[Index];
+					FString Path = CopyArtifact(ReportExportPath, Artifact.LocalFiles[Key]);
+					{
+						FScopeLock Lock(&CS);
+						Artifact.Files.Add(Key, MoveTemp(Path));
+					}
+					if (Key == TEXT("unapproved"))
+					{
+						// Copy screenshot report
+						FScreenshotExportResult ExportResult = ScreenshotManager->ExportScreenshotComparisonResult(Artifact.Name, ReportExportPath);
 
-			OurPassResults.TotalDuration += Results.Duration;
-
-			return;
+						FScopeLock Lock(&CS);
+						if (!JsonTestPassResults.ComparisonExported && ExportResult.Success)
+						{
+							JsonTestPassResults.ComparisonExported = ExportResult.Success;
+							JsonTestPassResults.ComparisonExportDirectory = ExportResult.ExportPath;
+						}
+					}
+				});
 		}
 	}
 }
 
-bool FAutomationControllerManager::GenerateJsonTestPassSummary(const FAutomatedTestPassResults& SerializedPassResults, FDateTime Timestamp)
+bool FAutomationControllerManager::GenerateJsonTestPassSummary(FAutomatedTestPassResults& SerializedPassResults)
 {
 	UE_LOG(LogAutomationController, Display, TEXT("Converting results to json object..."));
+	SerializedPassResults.ReportCreatedOn = FDateTime::Now();
 
 	FString Json;
 	if (FJsonObjectConverter::UStructToJsonObjectString(SerializedPassResults, Json))
@@ -442,7 +468,7 @@ bool FAutomationControllerManager::GenerateJsonTestPassSummary(const FAutomatedT
 	return false;
 }
 
-bool FAutomationControllerManager::GenerateHtmlTestPassSummary(const FAutomatedTestPassResults& SerializedPassResults, FDateTime Timestamp)
+bool FAutomationControllerManager::GenerateTestPassHtmlIndex()
 {
 	UE_LOG(LogAutomationController, Display, TEXT("Loading results html template..."));
 
@@ -536,14 +562,6 @@ void FAutomationControllerManager::ExecuteNextTask( int32 ClusterIndex, OUT bool
 					DeviceClusterManager.SetTest(ClusterIndex, DeviceIndex, NextTest);
 					TestsRunThisPass.Add(NextTest);
 
-					// Register this as a test we'll need to report on.
-					FAutomatedTestResult tempresult;
-					tempresult.Test = NextTest;
-					tempresult.TestDisplayName = NextTest->GetDisplayName();
-					tempresult.FullTestPath = NextTest->GetFullTestPath();
-
-					OurPassResults.Tests.Add(tempresult);
-
 					// If we now have enough devices reserved for the test, run it!
 					TArray<FMessageAddress> DeviceAddresses = DeviceClusterManager.GetDevicesReservedForTest(ClusterIndex, NextTest);
 					if ( DeviceAddresses.Num() == NextTest->GetNumParticipantsRequired() )
@@ -556,9 +574,11 @@ void FAutomationControllerManager::ExecuteNextTask( int32 ClusterIndex, OUT bool
 							UE_LOG(LogAutomationController, Display, AutomationTestStarting, *TestsRunThisPass[AddressIndex]->GetDisplayName(), *TestsRunThisPass[AddressIndex]->GetCommand());
 							TestResults.State = EAutomationState::InProcess;
 
-							if (CheckpointFile)
+							if (JsonTestPassResults.IsRequired)
 							{
-								WriteLineToCheckpointFile(NextTest->GetFullTestPath());
+								JsonTestPassResults.UpdateTestResultStatus(NextTest, EAutomationState::InProcess);
+								// Save the whole pass report so that if the next test triggers a critical failure we are not left with no pass report.
+								GenerateJsonTestPassSummary(JsonTestPassResults);
 							}
 
 							TestResults.GameInstance = DeviceClusterManager.GetClusterDeviceName(ClusterIndex, DeviceIndex);
@@ -569,6 +589,8 @@ void FAutomationControllerManager::ExecuteNextTask( int32 ClusterIndex, OUT bool
 							FMessageAddress DeviceAddress = DeviceAddresses[AddressIndex];
 
 							// Send the test to the device for execution!
+							UE_LOG(LogAutomationController, Log, TEXT("Sending RunTest %s to %s"), *NextTest->GetDisplayName(), *DeviceAddress.ToString());
+
 							MessageEndpoint->Send(new FAutomationWorkerRunTests(ExecutionCount, AddressIndex, NextTest->GetCommand(), NextTest->GetDisplayName(), bSendAnalytics), DeviceAddress);
 
 							// Add a test so we can check later if the device is still active
@@ -718,44 +740,14 @@ void FAutomationControllerManager::ProcessResults()
 		}
 	}
 
-	if ( !ReportExportPath.IsEmpty() )
+	if ( JsonTestPassResults.IsRequired )
 	{
-		FDateTime StartTime = FDateTime::Now();
-
 		UE_LOG(LogAutomationController, Display, TEXT("Exporting Automation Report to %s."), *ReportExportPath);
 
-		FAutomatedTestPassResults SerializedPassResults;
+		FAutomatedTestPassResults SerializedPassResults = JsonTestPassResults;
 
-		{
-			FDateTime StepTime = FDateTime::Now();
-
-			UE_LOG(LogAutomationController, Log, TEXT("Exporting comparison results to %s..."), *ReportExportPath);
-
-			FScreenshotExportResults ExportResults = ScreenshotManager->ExportComparisonResultsAsync(ReportExportPath).Get();
-
-			SerializedPassResults = OurPassResults;
-
-			SerializedPassResults.ComparisonExported = ExportResults.Success;
-			SerializedPassResults.ComparisonExportDirectory = ExportResults.ExportPath;
-			SerializedPassResults.ReportCreatedOn = StartTime;
-			if (ReportURLPath.IsEmpty())
-			{
-				SerializedPassResults.ComparisonExportDirectory = ExportResults.ExportPath;
-			}
-			else
-			{
-				SerializedPassResults.ComparisonExportDirectory = ReportURLPath / FString::FromInt(FEngineVersion::Current().GetChangelist());
-			}
-
-			UE_LOG(LogAutomationController, Log, TEXT("Exported results in %.02f Seconds"), (FDateTime::Now() - StepTime).GetTotalSeconds());
-		}
-
-
-		{
-			FDateTime StepTime = FDateTime::Now();
-
-			UE_LOG(LogAutomationController, Log, TEXT("Copying artifacts to %s..."), *ReportExportPath);
-
+		{ 
+			// Sort result by failure to improve readability
 			SerializedPassResults.Tests.StableSort([](const FAutomatedTestResult& A, const FAutomatedTestResult& B) {
 				if (A.GetErrorTotal() > 0)
 				{
@@ -783,58 +775,6 @@ void FAutomationControllerManager::ProcessResults()
 
 				return A.FullTestPath < B.FullTestPath;
 			});
-
-			// used for reporting and sync during copies
-			FCriticalSection CS;
-			int TotalFileArtifacts = 0;
-			int CopiedFileArtifacts = 0;
-
-			// Get a total for reporting
-			for (FAutomatedTestResult& Test : SerializedPassResults.Tests)
-			{
-				for (FAutomationArtifact& Artifact : Test.GetArtifacts())
-				{
-					TotalFileArtifacts += Artifact.LocalFiles.Num();
-				}
-			}
-
-
-			// most tests have a single set of artifacts with three or more files, so we could optimize this further by gathering them all first...
-			for (FAutomatedTestResult& Test : SerializedPassResults.Tests)
-			{
-				int TestArtifactCount = 0;
-
-				for (FAutomationArtifact& Artifact : Test.GetArtifacts())
-				{
-					TArray<FString> Keys;
-					Artifact.LocalFiles.GetKeys(Keys);
-
-					ParallelFor(Keys.Num(), [&](int32 Index)
-					{
-						const FString& Key = Keys[Index];
-
-						FString Path = CopyArtifact(ReportExportPath, Artifact.LocalFiles[Key]);
-						{
-							FScopeLock Lock(&CS);
-							Artifact.Files.Add(Key, MoveTemp(Path));
-							CopiedFileArtifacts++;
-							TestArtifactCount++;
-
-							// Show occasional progress for larger result sets
-							if ((CopiedFileArtifacts % 50) == 0)
-							{
-								UE_LOG(LogAutomationController, Log, TEXT("Copied %d of %d files in %.02f Seconds"), CopiedFileArtifacts, TotalFileArtifacts, (FDateTime::Now() - StepTime).GetTotalSeconds());
-							}
-						}
-					});
-
-					//UE_LOG(LogAutomationController, Verbose, TEXT("Copied %d files from artifact %s"), Keys.Num(), *Artifact.Name);
-				}
-
-				//UE_LOG(LogAutomationController, Verbose, TEXT("Copied %d files from test %s"), TestArtifactCount, *Test.TestDisplayName);
-			}
-
-			UE_LOG(LogAutomationController, Log, TEXT("Copied %d files in %.02f Seconds"), TotalFileArtifacts, (FDateTime::Now() - StepTime).GetTotalSeconds());
 		}
 
 		{
@@ -842,10 +782,7 @@ void FAutomationControllerManager::ProcessResults()
 			UE_LOG(LogAutomationController, Log, TEXT("Writing reports to %s..."), *ReportExportPath);
 
 			// Generate Json
-			GenerateJsonTestPassSummary(SerializedPassResults, StartTime);
-
-			// Generate Html
-			GenerateHtmlTestPassSummary(SerializedPassResults, StartTime);
+			GenerateJsonTestPassSummary(SerializedPassResults);
 
 			UE_LOG(LogAutomationController, Log, TEXT("Exported report to '%s' in %.02f Seconds"), *ReportExportPath, (FDateTime::Now() - StepTime).GetTotalSeconds());
 		}
@@ -866,8 +803,7 @@ void FAutomationControllerManager::ProcessResults()
 	UE_LOG(LogAutomationController, Display, TEXT("Report can be opened in the editor at '%s'"), ReportExportPath.IsEmpty() ? *FPaths::ConvertRelativePathToFull(FPaths::AutomationReportsDir()) : *ReportExportPath);
 
 	// Then clean our array for the next pass.
-	OurPassResults.ClearAllEntries();
-	CleanUpCheckpointFile();
+	JsonTestPassResults.ClearAllEntries();
 
 	SetControllerStatus(EAutomationControllerModuleState::Ready);
 }
@@ -1048,6 +984,8 @@ bool FAutomationControllerManager::IsTestRunnable(IAutomationReportPtr InReport)
 
 void FAutomationControllerManager::HandleFindWorkersResponseMessage(const FAutomationWorkerFindWorkersResponse& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
+	UE_LOG(LogAutomationController, Log, TEXT("Received FindWorkersResponseMessage from %s"), *Context->GetSender().ToString());
+
 	if ( Message.SessionId == ActiveSessionId )
 	{
 		DeviceClusterManager.AddDeviceFromMessage(Context->GetSender(), Message, DeviceGroupFlags);
@@ -1065,8 +1003,9 @@ void FAutomationControllerManager::HandlePongMessage( const FAutomationWorkerPon
 
 void FAutomationControllerManager::HandleReceivedScreenShot(const FAutomationWorkerScreenImage& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
-	bool bTree = true;
+	UE_LOG(LogAutomationController, Log, TEXT("ReceivedScreenShot for %s (%dx%d) from %s"), *Message.Metadata.TestName, Message.Metadata.Width, Message.Metadata.Height, *Context->GetSender().ToString());
 
+	bool bTree = true;
 
 	FString OutputSubFolder = FPaths::Combine(Message.Metadata.Context, Message.Metadata.ScreenShotName);
 	FString OutputFolder = FPaths::Combine(FPaths::AutomationTransientDir(), FPaths::GetPath(Message.ScreenShotName));
@@ -1115,7 +1054,7 @@ void FAutomationControllerManager::HandleReceivedScreenShot(const FAutomationWor
 	// compare the incoming image and throw it away afterwards (note - there will be a copy in the report)
 	TSharedRef<FComparisonEntry> Comparison = MakeShareable(new FComparisonEntry());
 	Comparison->Sender = Context->GetSender();
-	Comparison->TestName = Message.Metadata.TestName;
+	Comparison->ScreenshotPath = Message.Metadata.Context /  Message.Metadata.ScreenShotName;
 	Comparison->PendingComparison = ScreenshotManager->CompareScreenshotAsync(IncomingFileName, Message.Metadata, EScreenShotCompareOptions::DiscardImage);
 
 	ComparisonQueue.Enqueue(Comparison);
@@ -1123,6 +1062,8 @@ void FAutomationControllerManager::HandleReceivedScreenShot(const FAutomationWor
 
 void FAutomationControllerManager::HandleTestDataRequest(const FAutomationWorkerTestDataRequest& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
+	UE_LOG(LogAutomationController, Log, TEXT("Received TestDataRequest from %s"), *Context->GetSender().ToString());
+
 	const FString TestDataRoot = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Test"));
 	const FString DataFile = Message.DataType / Message.DataPlatform / Message.DataTestName / Message.DataName + TEXT(".json");
 	const FString DataFullPath = TestDataRoot / DataFile;
@@ -1171,6 +1112,7 @@ void FAutomationControllerManager::HandleTestDataRequest(const FAutomationWorker
 void FAutomationControllerManager::HandlePerformanceDataRequest(const FAutomationWorkerPerformanceDataRequest& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
 	//TODO Read/Performance data.
+	UE_LOG(LogAutomationController, Log, TEXT("Received PerformanceDataRequest from %s"), *Context->GetSender().ToString());
 
 	FAutomationWorkerPerformanceDataResponse* ResponseMessage = new FAutomationWorkerPerformanceDataResponse();
 	ResponseMessage->bSuccess = true;
@@ -1181,6 +1123,8 @@ void FAutomationControllerManager::HandlePerformanceDataRequest(const FAutomatio
 
 void FAutomationControllerManager::HandleRequestNextNetworkCommandMessage(const FAutomationWorkerRequestNextNetworkCommand& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
+	UE_LOG(LogAutomationController, Log, TEXT("Received RequestNextNetworkCommandMessage from %s"), *Context->GetSender().ToString());
+
 	// Harvest iteration of running the tests this result came from (stops stale results from being committed to subsequent runs)
 	if ( Message.ExecutionCount == ExecutionCount )
 	{
@@ -1219,6 +1163,8 @@ void FAutomationControllerManager::HandleRequestNextNetworkCommandMessage(const 
 
 void FAutomationControllerManager::HandleRequestTestsReplyCompleteMessage(const FAutomationWorkerRequestTestsReplyComplete& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
+	UE_LOG(LogAutomationController, Log, TEXT("Received RequestTestsReplyCompleteMessage from %s"), *Context->GetSender().ToString());
+
 	TArray<FAutomationTestInfo> TestInfo;
 	TestInfo.Reset(Message.Tests.Num());
 	for (const FAutomationWorkerSingleTestReply& SingleTestReply : Message.Tests)
@@ -1226,6 +1172,8 @@ void FAutomationControllerManager::HandleRequestTestsReplyCompleteMessage(const 
 		FAutomationTestInfo NewTest = SingleTestReply.GetTestInfo();
 		TestInfo.Add(NewTest);
 	}
+
+	UE_LOG(LogAutomationController, Log, TEXT("%d tests available on %s"), TestInfo.Num(), *Context->GetSender().ToString());
 
 	SetTestNames(Context->GetSender(), TestInfo);
 }
@@ -1337,10 +1285,10 @@ void FAutomationControllerManager::HandleRunTestsReplyMessage(const FAutomationW
 
 			const FAutomationTestResults& FinalResults = Report->GetResults(ClusterIndex, CurrentTestPass);
 
+			ReportAutomationResult(Report, ClusterIndex, CurrentTestPass);
+
 			// Gather all of the data relevant to this test for our json reporting.
 			CollectTestResults(Report, FinalResults);
-
-			ReportAutomationResult(Report, ClusterIndex, CurrentTestPass);
 		}
 
 		// Device is now good to go
@@ -1376,72 +1324,6 @@ void FAutomationControllerManager::UpdateDeviceGroups( )
 	// Update the reports in case the number of clusters changed
 	int32 NumOfClusters = DeviceClusterManager.GetNumClusters();
 	ReportManager.ClustersUpdated(NumOfClusters);
-}
-
-TArray<FString> FAutomationControllerManager::GetCheckpointFileContents()
-{
-	TestsRun.Empty();
-	FString CheckpointFileName = FString::Printf(TEXT("%sautomationcheckpoint.log"), *FPaths::AutomationDir());
-	if (IFileManager::Get().FileExists(*CheckpointFileName))
-	{
-		FString FileData;
-		FFileHelper::LoadFileToString(FileData, *CheckpointFileName);
-		FileData.ParseIntoArrayLines(TestsRun);
-		for (int i = 0; i < TestsRun.Num(); i++)
-		{
-			UE_LOG(LogAutomationController, Log, TEXT("AutomationCheckpoint %s"), *TestsRun[i]);
-		}
-	}
-	return TestsRun;
-}
-
-FArchive* FAutomationControllerManager::GetCheckpointFileForWrite()
-{
-	if (!CheckpointFile)
-	{
-		FString CheckpointFileName = FString::Printf(TEXT("%sautomationcheckpoint.log"), *FPaths::AutomationDir());
-		CheckpointFile = IFileManager::Get().CreateFileWriter(*CheckpointFileName, 8);
-	}
-	return CheckpointFile;
-}
-
-void FAutomationControllerManager::CleanUpCheckpointFile()
-{
-	if (CheckpointFile)
-	{
-		CheckpointFile->Close();
-		CheckpointFile = nullptr;
-	}
-	FString CheckpointFileName = FString::Printf(TEXT("%sautomationcheckpoint.log"), *FPaths::AutomationDir());
-	if (IFileManager::Get().FileExists(*CheckpointFileName))
-	{
-		IFileManager::Get().Delete(*CheckpointFileName);
-	}
-}
-
-void FAutomationControllerManager::WriteLoadedCheckpointDataToFile()
-{
-	GetCheckpointFileForWrite();
-	if (CheckpointFile)
-	{
-		for (int i = 0; i < TestsRun.Num(); i++)
-		{
-			FString LineToWrite = FString::Printf(TEXT("%s\r\n"), *TestsRun[i]);
-			CheckpointFile->Serialize(TCHAR_TO_ANSI(*LineToWrite), LineToWrite.Len());
-			CheckpointFile->Flush();
-		}
-	}
-}
-
-void FAutomationControllerManager::WriteLineToCheckpointFile(FString StringToWrite)
-{
-	GetCheckpointFileForWrite();
-	if (CheckpointFile)
-	{
-		FString LineToWrite = FString::Printf(TEXT("%s\r\n"), *StringToWrite);
-		CheckpointFile->Serialize(TCHAR_TO_ANSI(*LineToWrite), LineToWrite.Len());
-		CheckpointFile->Flush();
-	}
 }
 
 void FAutomationControllerManager::ResetAutomationTestTimeout(const TCHAR* Reason)

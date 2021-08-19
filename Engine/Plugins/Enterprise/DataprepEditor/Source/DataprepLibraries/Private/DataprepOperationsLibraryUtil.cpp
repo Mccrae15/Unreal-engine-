@@ -90,9 +90,21 @@ namespace DataprepOperationsLibraryUtil
 			}
 			else if (UStaticMesh* StaticMesh = Cast< UStaticMesh >(Object))
 			{
-				for (int32 Index = 0; Index < StaticMesh->StaticMaterials.Num(); ++Index)
+				for (int32 Index = 0; Index < StaticMesh->GetStaticMaterials().Num(); ++Index)
 				{
 					MaterialSet.Add(StaticMesh->GetMaterial(Index));
+				}
+			}
+			else if (UMeshComponent* MeshComponent = Cast< UMeshComponent >(Object))
+			{
+				int32 MaterialCount = FMath::Max( MeshComponent->GetNumOverrideMaterials(), MeshComponent->GetNumMaterials() );
+
+				for (int32 Index = 0; Index < MaterialCount; ++Index)
+				{
+					if (UMaterialInterface* Material = MeshComponent->GetMaterial(Index))
+					{
+						MaterialSet.Add(Material);
+					}
 				}
 			}
 		}
@@ -189,9 +201,9 @@ namespace DataprepOperationsLibraryUtil
 	/** Customized version of UStaticMesh::SetMaterial avoiding the triggering of UStaticMesh::Build and its side-effects */
 	void SetMaterial( UStaticMesh* StaticMesh, int32 MaterialIndex, UMaterialInterface* NewMaterial )
 	{
-		if( StaticMesh->StaticMaterials.IsValidIndex( MaterialIndex ) )
+		if( StaticMesh->GetStaticMaterials().IsValidIndex( MaterialIndex ) )
 		{
-			FStaticMaterial& StaticMaterial = StaticMesh->StaticMaterials[ MaterialIndex ];
+			FStaticMaterial& StaticMaterial = StaticMesh->GetStaticMaterials()[ MaterialIndex ];
 			StaticMaterial.MaterialInterface = NewMaterial;
 			if( NewMaterial != nullptr )
 			{
@@ -224,7 +236,7 @@ namespace DataprepOperationsLibraryUtil
 		{
 			if(StaticMesh)
 			{
-				StaticMesh->RenderData.Reset();
+				StaticMesh->SetRenderData(nullptr);
 			}
 		}
 	}
@@ -244,7 +256,7 @@ namespace DataprepOperationsLibraryUtil
 		{
 			for(UStaticMesh* StaticMesh : StaticMeshes)
 			{
-				if(StaticMesh && (!StaticMesh->RenderData.IsValid() || !StaticMesh->RenderData->IsInitialized()))
+				if(StaticMesh && (!StaticMesh->GetRenderData() || !StaticMesh->GetRenderData()->IsInitialized()))
 				{
 					BuiltMeshes.Add( StaticMesh );
 				}
@@ -324,7 +336,7 @@ namespace DataprepOperationsLibraryUtil
 					SourceModels[SourceModelIndex].BuildSettings = PrevBuildSettings[SourceModelIndex];
 				}
 
-				for ( FStaticMeshLODResources& LODResources : StaticMesh->RenderData->LODResources )
+				for ( FStaticMeshLODResources& LODResources : StaticMesh->GetRenderData()->LODResources )
 				{
 					LODResources.bHasColorVertexData = true;
 				}

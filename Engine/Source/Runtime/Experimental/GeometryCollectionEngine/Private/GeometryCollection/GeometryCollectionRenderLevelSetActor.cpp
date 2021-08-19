@@ -123,7 +123,7 @@ void AGeometryCollectionRenderLevelSetActor::SyncLevelSetTransform(const FTransf
 	DynRayMarchMaterial->SetVectorParameterValue("WorldToLocalTranslation", FLinearColor(WorldToLocal.GetOrigin()));
 }
 
-bool AGeometryCollectionRenderLevelSetActor::SetLevelSetToRender(const Chaos::TLevelSet<float, 3> &LevelSet, const FTransform &LocalToWorld)
+bool AGeometryCollectionRenderLevelSetActor::SetLevelSetToRender(const Chaos::FLevelSet &LevelSet, const FTransform &LocalToWorld)
 {
 	// error case when the target volume texture isn't set
 	if (TargetVolumeTexture == NULL)
@@ -134,10 +134,10 @@ bool AGeometryCollectionRenderLevelSetActor::SetLevelSetToRender(const Chaos::TL
 
 	// get refs to the grid structures
 	const TArrayND<float, 3>& LevelSetPhiArray = LevelSet.GetPhiArray();
-	const TArrayND<TVector<float, 3>, 3>& LevelSetNormalsArray = LevelSet.GetNormalsArray();
+	const TArrayND<FVec3, 3>& LevelSetNormalsArray = LevelSet.GetNormalsArray();
 	const TUniformGrid<float, 3>& LevelSetGrid = LevelSet.GetGrid();
 
-	const TVector<int32, 3>& Counts = LevelSetGrid.Counts();
+	const TVec3<int32>& Counts = LevelSetGrid.Counts();
 	
 	// set bounding box
 	MinBBoxCorner = LevelSetGrid.MinCorner();
@@ -158,8 +158,8 @@ bool AGeometryCollectionRenderLevelSetActor::SetLevelSetToRender(const Chaos::TL
 	// @todo: we could encode voxel ordering more nicely in the UVolumeTexture
 	auto QueryVoxel = [&LevelSetPhiArray, &LevelSetNormalsArray](int32 PosX, int32 PosY, int32 PosZ, void* Value)
 	{
-		const TVector<float, 3> Normal = LevelSetNormalsArray(TVector<int32, 3>(PosX, PosY, PosZ)).GetSafeNormal();
-		const float Phi = LevelSetPhiArray(TVector<int32, 3>(PosX, PosY, PosZ));
+		const FVec3 Normal = LevelSetNormalsArray(TVec3<int32>(PosX, PosY, PosZ)).GetSafeNormal();
+		const float Phi = LevelSetPhiArray(TVec3<int32>(PosX, PosY, PosZ));
 
 		FFloat16* const Voxel = static_cast<FFloat16*>(Value);  // TSF_RGBA16F
 		Voxel[0] = Normal.X;
@@ -173,7 +173,7 @@ bool AGeometryCollectionRenderLevelSetActor::SetLevelSetToRender(const Chaos::TL
 
 	if (!success)
 	{
-		UE_LOG(LSR_LOG, Warning, TEXT("Couldn't create target volume texture from TLevelSet with %s"), *GetFullName());
+		UE_LOG(LSR_LOG, Warning, TEXT("Couldn't create target volume texture from FLevelSet with %s"), *GetFullName());
 		return false;
 	}
 

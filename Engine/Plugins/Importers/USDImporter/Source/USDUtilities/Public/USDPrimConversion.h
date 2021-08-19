@@ -6,6 +6,8 @@
 
 #include "CoreMinimal.h"
 
+#include "USDConversionUtils.h"
+
 #include "USDIncludesStart.h"
 	#include "pxr/pxr.h"
 #include "USDIncludesEnd.h"
@@ -24,13 +26,16 @@ PXR_NAMESPACE_OPEN_SCOPE
 	using UsdStageRefPtr = TfRefPtr< UsdStage >;
 PXR_NAMESPACE_CLOSE_SCOPE
 
-struct FFrameRate;
-struct FMovieSceneSequenceTransform;
+class AInstancedFoliageActor;
 class UCineCameraComponent;
+class UHierarchicalInstancedStaticMeshComponent;
+class ULevel;
 class UMeshComponent;
 class UMovieScene;
 class UMovieScene3DTransformTrack;
 class USceneComponent;
+struct FFrameRate;
+struct FMovieSceneSequenceTransform;
 
 namespace UsdToUnreal
 {
@@ -52,6 +57,8 @@ namespace UnrealToUsd
 {
 	USDUTILITIES_API bool ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const USceneComponent* SceneComponent, pxr::UsdPrim& UsdPrim );
 	USDUTILITIES_API bool ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const UMeshComponent* MeshComponent, pxr::UsdPrim& UsdPrim );
+	USDUTILITIES_API bool ConvertHierarchicalInstancedStaticMeshComponent( const UHierarchicalInstancedStaticMeshComponent* HISMComponent, pxr::UsdPrim& UsdPrim, double TimeCode = UsdUtils::GetDefaultTimeCode() );
+	USDUTILITIES_API bool ConvertCameraComponent( const pxr::UsdStageRefPtr& Stage, const UCineCameraComponent* CameraComponent, pxr::UsdPrim& UsdPrim );
 
 	USDUTILITIES_API bool ConvertXformable( const FTransform& RelativeTransform, pxr::UsdPrim& UsdPrim, double TimeCode );
 
@@ -62,6 +69,16 @@ namespace UnrealToUsd
 	 * @param SequenceTransform    The time transform to apply to the track keys to get them from Usd Stage time to track time (in other words: from main sequence to subsequence)
 	 */
 	USDUTILITIES_API bool ConvertXformable( const UMovieScene3DTransformTrack& MovieSceneTrack, pxr::UsdPrim& UsdPrim, const FMovieSceneSequenceTransform& SequenceTransform );
+
+	/**
+	 * Converts a AInstancedFoliageActor to a prim containing a pxr::UsdGeomPointInstancer schema. Each foliage type should correspond to a prototype.
+	 * This function only converts the protoIndices, positions, orientations and scales attributes.
+	 *
+	 * @param Actor				   The actor to convert data from
+	 * @param Prim                 The pxr::UsdGeomPointInstancer to write to
+	 * @param TimeCode			   TimeCode to write the attribute values at. Use UsdUtils::GetDefaultTimeCode() for the Default value.
+	 */
+	USDUTILITIES_API bool ConvertInstancedFoliageActor( const AInstancedFoliageActor& Actor, pxr::UsdPrim& UsdPrim, double TimeCode );
 }
 
 #endif // #if USE_USD_SDK

@@ -140,7 +140,6 @@ struct FBlueprintCompilationManagerImpl : public FGCObject
 	static UClass* FastGenerateSkeletonClass(UBlueprint* BP, FKismetCompilerContext& CompilerContext, bool bIsSkeletonOnly, TArray<FSkeletonFixupData>& OutSkeletonFixupData);
 	static bool IsQueuedForCompilation(UBlueprint* BP);
 	static UObject* GetOuterForRename(UClass* ForClass);
-	static bool ReinstancerOrderingFunction( UClass* A, UClass* B );
 
 	// Declaration of archive to fix up bytecode references of blueprints that are actively compiled:
 	class FFixupBytecodeReferences : public FArchiveUObject
@@ -423,6 +422,7 @@ struct FCompilerData
 		InternalOptions.bSaveIntermediateProducts = (UserOptions & EBlueprintCompileOptions::SaveIntermediateProducts) != EBlueprintCompileOptions::None;
 		InternalOptions.bSkipDefaultObjectValidation = (UserOptions & EBlueprintCompileOptions::SkipDefaultObjectValidation) != EBlueprintCompileOptions::None;
 		InternalOptions.bSkipFiBSearchMetaUpdate = (UserOptions & EBlueprintCompileOptions::SkipFiBSearchMetaUpdate) != EBlueprintCompileOptions::None;
+		InternalOptions.bUseDeltaSerializationDuringReinstancing = (UserOptions & EBlueprintCompileOptions::UseDeltaSerializationDuringReinstancing) != EBlueprintCompileOptions::None;
 		InternalOptions.CompileType = bBytecodeOnly ? EKismetCompileType::BytecodeOnly : EKismetCompileType::Full;
 
 		if(!bBytecodeOnly && CPPResults.CppOptions)
@@ -452,6 +452,7 @@ struct FCompilerData
 	bool ShouldSkipIfDependenciesAreUnchanged() const { return InternalOptions.CompileType == EKismetCompileType::BytecodeOnly || JobType == ECompilationManagerJobType::RelinkOnly; }
 	bool ShouldValidateClassDefaultObject() const { return JobType == ECompilationManagerJobType::Normal && !InternalOptions.bSkipDefaultObjectValidation; }
 	bool ShouldUpdateBlueprintSearchMetadata() const { return JobType == ECompilationManagerJobType::Normal && !InternalOptions.bSkipFiBSearchMetaUpdate; }
+	bool UseDeltaSerializationDuringReinstancing() const { return InternalOptions.bUseDeltaSerializationDuringReinstancing; }
 
 	UBlueprint* BP;
 	FCompilerResultsLog* ActiveResultsLog;
@@ -505,6 +506,16 @@ FReinstancingJob::FReinstancingJob(TPair<UClass*, UClass*> InOldToNew)
 	, Compiler()
 	, OldToNew(InOldToNew)
 {
+}
+
+namespace SkelReinstUtils
+{
+	/** Flag to use the new FBlueprintCompileReinstancer::MoveDependentSkelToReinst and avoid problematic recursion during reinstancing */
+	static bool bEnableSkelReinstUpdate = false;
+	static FAutoConsoleVariableRef CVarEnableSkelReinstUpdate(
+		TEXT("BP.bEnableSkelReinstUpdate"), bEnableSkelReinstUpdate,
+		TEXT("If true the Reinstancing of SKEL classes will use the new FBlueprintCompileReinstancer::MoveDependentSkelToReinst(o(n)) instead of the old MoveSkelCDOAside (o(n^2))"),
+		ECVF_Default);
 }
 
 void FBlueprintCompilationManagerImpl::FlushCompilationQueueImpl(bool bSuppressBroadcastCompiled, TArray<UBlueprint*>* BlueprintsCompiled, TArray<UBlueprint*>* BlueprintsCompiledOrSkeletonCompiled, FUObjectSerializeContext* InLoadContext)
@@ -802,7 +813,7 @@ void FBlueprintCompilationManagerImpl::FlushCompilationQueueImpl(bool bSuppressB
 				return false;
 			}
 
-			return FBlueprintCompilationManagerImpl::ReinstancerOrderingFunction(A.GeneratedClass, B.GeneratedClass);
+			return FBlueprintCompileReinstancer::ReinstancerOrderingFunction(A.GeneratedClass, B.GeneratedClass);
 		};
 		CurrentlyCompilingBPs.Sort( HierarchyDepthSortFn );
 
@@ -846,7 +857,10 @@ void FBlueprintCompilationManagerImpl::FlushCompilationQueueImpl(bool bSuppressB
 
 			CompilerData.Compiler->ValidateVariableNames();
 			CompilerData.Compiler->ValidateClassPropertyDefaults();
-
+		}
+		// STAGE V (phase 2): Give the blueprint the possibility for edits
+		for (FCompilerData& CompilerData : CurrentlyCompilingBPs)
+		{
 			UBlueprint* BP = CompilerData.BP;
 			if (BP->bIsRegeneratingOnLoad)
 			{
@@ -882,7 +896,18 @@ void FBlueprintCompilationManagerImpl::FlushCompilationQueueImpl(bool bSuppressB
 				UClass* OldSkeletonClass = BP->SkeletonGeneratedClass;
 				if(OldSkeletonClass)
 				{
-					MoveSkelCDOAside(OldSkeletonClass, NewSkeletonToOldSkeleton);
+					if (SkelReinstUtils::bEnableSkelReinstUpdate)
+					{
+						TRACE_CPUPROFILER_EVENT_SCOPE(MoveDependentSkelToReinst);
+
+						FBlueprintCompileReinstancer::MoveDependentSkelToReinst(OldSkeletonClass, NewSkeletonToOldSkeleton);
+					}
+					else
+					{
+						TRACE_CPUPROFILER_EVENT_SCOPE(MoveSkelCDOAside_OLD);
+
+						MoveSkelCDOAside(OldSkeletonClass, NewSkeletonToOldSkeleton);
+					}
 				}
 			}
 		
@@ -1186,6 +1211,11 @@ void FBlueprintCompilationManagerImpl::FlushCompilationQueueImpl(bool bSuppressB
 					CompileReinstancerFlags |= EBlueprintCompileReinstancerFlags::AvoidCDODuplication;
 				}
 
+				if (CompilerData.UseDeltaSerializationDuringReinstancing())
+				{
+					CompileReinstancerFlags |= EBlueprintCompileReinstancerFlags::UseDeltaSerialization;
+				}
+
 				CompilerData.Reinstancer = TSharedPtr<FBlueprintCompileReinstancer>(
 					new FBlueprintCompileReinstancer(
 						BP->GeneratedClass,
@@ -1364,10 +1394,6 @@ void FBlueprintCompilationManagerImpl::FlushCompilationQueueImpl(bool bSuppressB
 			}
 			
 			FKismetCompilerUtilities::UpdateDependentBlueprints(BP);
-			if (CompilerData.Reinstancer.IsValid())
-			{
-				FBlueprintEditorUtils::GetDependentBlueprints(BP, CompilerData.Reinstancer->Dependencies);
-			}
 
 			ensure(BPGC == nullptr || BPGC->ClassDefaultObject->GetClass() == BPGC);
 		}
@@ -1761,7 +1787,7 @@ void FBlueprintCompilationManagerImpl::ReparentHierarchies(const TMap<UClass*, U
 
 	// Order the classes we're about to reinstance by hierarchy depth. This will improve determinism
 	// and is as logical an order as I can come up with:
-	ClassesOrdered.Sort( [](UClass& A, UClass& B)->bool { return FBlueprintCompilationManagerImpl::ReinstancerOrderingFunction(&A, &B); } );
+	ClassesOrdered.Sort( [](UClass& A, UClass& B)->bool { return FBlueprintCompileReinstancer::ReinstancerOrderingFunction(&A, &B); } );
 
 	// create reinstancing jobs, no need to create a reinstancer when there is a new UClass* available (e.g. asset reload, hot reload):
 	TArray<FReinstancingJob> Reinstancers;
@@ -2041,7 +2067,7 @@ void FBlueprintCompilationManagerImpl::ReinstanceBatch(TArray<FReinstancingJob>&
 	Reinstancers.Sort(
 		[](const FReinstancingJob& ReinstancingDataA, const FReinstancingJob& ReinstancingDataB)
 		{
-			return FBlueprintCompilationManagerImpl::ReinstancerOrderingFunction(
+			return FBlueprintCompileReinstancer::ReinstancerOrderingFunction(
 				ReinstancingDataA.OldToNew.Value, 
 				ReinstancingDataB.OldToNew.Value
 			);
@@ -2058,8 +2084,9 @@ void FBlueprintCompilationManagerImpl::ReinstanceBatch(TArray<FReinstancingJob>&
 			OldCDO = ReinstancingJob.OldToNew.Key->ClassDefaultObject;
 			if (OldCDO && ReinstancingJob.Reinstancer.IsValid())
 			{
+				const bool bUseDeltaSerialization = ReinstancingJob.Reinstancer.IsValid() ? ReinstancingJob.Reinstancer->bUseDeltaSerializationToCopyProperties : false;
 				UObject* NewCDO = ReinstancingJob.OldToNew.Value->GetDefaultObject(true);
-				FBlueprintCompileReinstancer::CopyPropertiesForUnrelatedObjects(OldCDO, NewCDO, true);
+				FBlueprintCompileReinstancer::CopyPropertiesForUnrelatedObjects(OldCDO, NewCDO, true, bUseDeltaSerialization);
 
 				if (ReinstancingJob.Compiler.IsValid())
 				{
@@ -2256,8 +2283,10 @@ void FBlueprintCompilationManagerImpl::ReinstanceBatch(TArray<FReinstancingJob>&
 				{
 					// The new object hierarchy has been created, all of the old instances are in the transient package and new
 					// ones have taken their place. Referenc members will mostly be pointing at *old* instances, and will get fixed
-					// up below:
-					FBlueprintCompileReinstancer::CopyPropertiesForUnrelatedObjects(OldInstance, *NewInstance, false);
+					// up below:			
+					const bool bUseDeltaSerialization = ReinstancingJob.Reinstancer.IsValid() ? ReinstancingJob.Reinstancer->bUseDeltaSerializationToCopyProperties : false;
+
+					FBlueprintCompileReinstancer::CopyPropertiesForUnrelatedObjects(OldInstance, *NewInstance, false, bUseDeltaSerialization);
 				}
 			}
 		}
@@ -2836,34 +2865,10 @@ UObject* FBlueprintCompilationManagerImpl::GetOuterForRename(UClass* ForClass)
 	// just leave them directly parented to the transient package:
 	if(ForClass->ClassWithin && ForClass->ClassWithin != ForClass && ForClass->ClassWithin != UObject::StaticClass())
 	{
+		FScopedAllowAbstractClassAllocation AllowAbstract;
 		return NewObject<UObject>( GetOuterForRename(ForClass->ClassWithin), ForClass->ClassWithin, NAME_None, RF_Transient );
 	}
 	return GetTransientPackage();
-}
-
-bool FBlueprintCompilationManagerImpl::ReinstancerOrderingFunction( UClass* A, UClass* B )
-{
-	int32 DepthA = 0;
-	int32 DepthB = 0;
-	UStruct* Iter = A ? A->GetSuperStruct() : nullptr;
-	while (Iter)
-	{
-		++DepthA;
-		Iter = Iter->GetSuperStruct();
-	}
-
-	Iter = B ? B->GetSuperStruct() : nullptr;
-	while (Iter)
-	{
-		++DepthB;
-		Iter = Iter->GetSuperStruct();
-	}
-
-	if (DepthA == DepthB && A && B)
-	{
-		return A->GetFName().LexicalLess(B->GetFName());
-	}
-	return DepthA < DepthB;
 }
 
 // FFixupBytecodeReferences Implementation:

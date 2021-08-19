@@ -5,7 +5,6 @@
 #include "Mac/MacCursor.h"
 #include "Mac/CocoaMenu.h"
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
-#include "HIDInputInterface.h"
 #include "IInputDeviceModule.h"
 #include "IInputDevice.h"
 #include "AnalyticsEventAttribute.h"
@@ -29,6 +28,9 @@
 #include <IOKit/graphics/IOGraphicsLib.h>
 #include "Misc/CoreDelegates.h"
 
+#include "Apple/AppleControllerInterface.h"
+#include "HIDInputInterface.h"
+
 FMacApplication* MacApplication = nullptr;
 
 static FCriticalSection GAllScreensMutex;
@@ -44,6 +46,57 @@ extern "C" void MTDeviceStart(void*, int);
 extern "C" bool MTDeviceIsBuiltIn(void*);
 #endif
 
+// Simple wrapper for Legacy HID Implementation and AppleControllerInterface GCController implementation selection
+// Remove this wrapper and HIDInputInterface once 10.14.0 is no longer supported
+static TAutoConsoleVariable<int32> CVarMacControllerPreferGCImpl(
+	TEXT("Slate.MacControllerPreferGCImpl"),
+	1,
+	TEXT("Prefer Selection of Mac Controller implementation:\n")
+	TEXT("\t0: Use legacy HID System.\n")
+	TEXT("\t1: Use GCController implementation.\n")
+	TEXT("Default is 1."),
+	ECVF_ReadOnly);
+class FMacControllerInterface
+{
+public:
+	void SetMessageHandler(const TSharedRef< FGenericApplicationMessageHandler >& InMessageHandler)
+	{
+		if(AppleControllerInterface.IsValid()) 		AppleControllerInterface->SetMessageHandler(InMessageHandler);
+		else if(HIDControllerInterface.IsValid()) 	HIDControllerInterface->SetMessageHandler(InMessageHandler);
+	}
+	void Tick(float DeltaTime)
+	{
+		if(AppleControllerInterface.IsValid()) 		AppleControllerInterface->Tick(DeltaTime);
+		// No tick in HIDInputInterface
+	}
+	void SendControllerEvents()
+	{
+		if(AppleControllerInterface.IsValid()) 		AppleControllerInterface->SendControllerEvents();
+		else if(HIDControllerInterface.IsValid()) 	HIDControllerInterface->SendControllerEvents();
+	}
+	bool IsGamepadAttached() const
+	{
+		if(AppleControllerInterface.IsValid()) 		return AppleControllerInterface->IsGamepadAttached();
+		else if(HIDControllerInterface.IsValid()) 	return HIDControllerInterface->IsGamepadAttached();
+		return false;
+	}
+	
+	FMacControllerInterface(const TSharedRef< FGenericApplicationMessageHandler >& InMessageHandler)
+	{
+		if(FPlatformMisc::MacOSXVersionCompare(10,15,0) >= 0 && CVarMacControllerPreferGCImpl.GetValueOnAnyThread() > 0)
+		{
+			AppleControllerInterface = FAppleControllerInterface::Create(InMessageHandler);
+		}
+		else
+		{
+			HIDControllerInterface = HIDInputInterface::Create(InMessageHandler);
+		}
+	}
+private:
+	TSharedPtr<FAppleControllerInterface> AppleControllerInterface;
+	TSharedPtr<HIDInputInterface> HIDControllerInterface;
+};
+
 FMacApplication::MenuBarShutdownFuncPtr FMacApplication::MenuBarShutdownFunc = nullptr;
 
 FMacApplication* FMacApplication::CreateMacApplication()
@@ -58,7 +111,7 @@ FMacApplication::FMacApplication()
 ,	bUsingTrackpad(false)
 ,	LastPressedMouseButton(EMouseButtons::Invalid)
 ,	bIsProcessingDeferredEvents(false)
-,	HIDInput(HIDInputInterface::Create(MessageHandler))
+, 	HIDInput(MakeShareable(new FMacControllerInterface(MessageHandler)))
 ,   bHasLoadedInputPlugins(false)
 ,	DraggedWindow(nullptr)
 ,	WindowUnderCursor(nullptr)
@@ -256,6 +309,7 @@ void FMacApplication::PollGameDeviceState(const float TimeDelta)
 	}
 
 	// Poll game device state and send new events
+	HIDInput->Tick( TimeDelta );
 	HIDInput->SendControllerEvents();
 
 	// Poll externally-implemented devices
@@ -1387,6 +1441,10 @@ void FMacApplication::OnApplicationDidBecomeActive()
 		FGenericCrashContext::SetEngineData(TEXT("Platform.AppHasFocus"), TEXT("true"));
 #endif
 	}, @[ NSDefaultRunLoopMode ], false);
+	
+	// Call out to update isOnActiveSpace per FCocoaWindow when the app becomes active.  Works round unrespostive crash reporter on Catalina
+	// First call to isOnActiveSpace in OnActiveSpaceDidChange() during crash reporter startup returns false on Catalina but true on BigSur.
+	OnActiveSpaceDidChange();
 }
 
 void FMacApplication::OnApplicationWillResignActive()

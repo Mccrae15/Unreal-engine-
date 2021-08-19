@@ -9,6 +9,7 @@ using Autodesk.Revit.ApplicationServices;
 using Autodesk.Revit.DB.Events;
 using System.Threading.Tasks;
 using System.Threading;
+using System.Linq;
 
 namespace DatasmithRevitExporter
 {
@@ -21,6 +22,8 @@ namespace DatasmithRevitExporter
 			public Queue<KeyValuePair<ElementId, FDocumentData.FBaseElementData>>	ElementsWithoutMetadata = new Queue<KeyValuePair<ElementId, FDocumentData.FBaseElementData>>();
 			public HashSet<ElementId>												ExportedElements = new HashSet<ElementId>();
 			public HashSet<ElementId>												ModifiedElements = new HashSet<ElementId>();
+			public Dictionary<string, FDatasmithFacadeActor>						ExportedActorsMap = new Dictionary<string, FDatasmithFacadeActor>();
+
 			public Dictionary<ElementId, FCachedDocumentData>						LinkedDocumentsCache = new Dictionary<ElementId, FCachedDocumentData>();
 		
 			public FCachedDocumentData(Document InDocument)
@@ -85,8 +88,17 @@ namespace DatasmithRevitExporter
 					CachedElements.Remove(ElemId);
 					ElementData.Parent?.ChildElements.Remove(ElementData);
 					DatasmithScene.RemoveActor(ElementData.ElementActor);
+					ExportedActorsMap.Remove(ElementData.ElementActor.GetName());
 				}
 			}
+		};
+
+		struct SectionBoxInfo
+		{
+			public Element SectionBox;
+			// Store bounding box because removed section boxes lose their bounding box 
+			// and we can't query it anymore
+			public BoundingBoxXYZ SectionBoxBounds;
 		};
 
 		public FDatasmithFacadeScene									DatasmithScene { get; private set; }
@@ -97,6 +109,8 @@ namespace DatasmithRevitExporter
 		private HashSet<Document>										ModifiedLinkedDocuments = new HashSet<Document>();
 		private HashSet<ElementId>										ExportedLinkedDocuments = new HashSet<ElementId>();
 		private Stack<FCachedDocumentData>								CacheStack = new Stack<FCachedDocumentData>();
+
+		private IList<SectionBoxInfo>									PrevSectionBoxes = new List<SectionBoxInfo>();
 
 		// Sets of elements related to current sync.
 		private HashSet<ElementId>										DeletedElements = new HashSet<ElementId>();
@@ -204,6 +218,19 @@ namespace DatasmithRevitExporter
 				{
 					DirectLink.ModifiedLinkedDocuments.Add((ModifiedElement as RevitLinkInstance).GetLinkDocument());
 				}
+				else
+				{
+					// Handles a case where Revit won't notify us about modified mullions and their transform remains obsolte, thus wrong.
+					ElementCategoryFilter Filter = new ElementCategoryFilter(BuiltInCategory.OST_CurtainWallMullions);
+					IList<ElementId> DependentElements = ModifiedElement.GetDependentElements(Filter);
+					if (DependentElements != null && DependentElements.Count > 0)
+					{
+						foreach (ElementId DepElemId in DependentElements)
+						{
+							DirectLink.RootCache.ModifiedElements.Add(DepElemId);
+						}
+					}
+				}
 
 				DirectLink.RootCache.ModifiedElements.Add(ElemId);
 			}
@@ -221,9 +248,9 @@ namespace DatasmithRevitExporter
 				InDocument.Application.VersionNumber);
 
 			SceneName = Path.GetFileNameWithoutExtension(RootCache.SourceDocument.PathName);
-
-			string SceneLabel = Path.GetFileNameWithoutExtension(InDocument.PathName);
-			DatasmithScene.SetLabel(SceneLabel);
+			string OutputPath = Path.Combine(Path.GetTempPath(), SceneName);
+			DatasmithScene.SetName(SceneName);
+			DatasmithScene.SetLabel(SceneName);
 
 			DocumentChangedHandler = new EventHandler<DocumentChangedEventArgs>(OnDocumentChanged);
 			InDocument.Application.DocumentChanged += DocumentChangedHandler;
@@ -302,6 +329,15 @@ namespace DatasmithRevitExporter
 				CurrentCache.CachedElements[InElement.Id] = InElementData;
 				CurrentCache.ElementsWithoutMetadata.Enqueue(new KeyValuePair<ElementId, FDocumentData.FBaseElementData>(InElement.Id, InElementData));
 			}
+			CacheActorType(InElementData.ElementActor);
+		}
+
+		public void CacheActorType(FDatasmithFacadeActor InActor)
+		{
+			if (CurrentCache != null)
+			{
+				CurrentCache.ExportedActorsMap[InActor.GetName()] = InActor;
+			}
 		}
 
 		public FDocumentData.FBaseElementData GetCachedElement(Element InElement)
@@ -317,6 +353,16 @@ namespace DatasmithRevitExporter
 				}
 			}
 			return Result;
+		}
+
+		public FDatasmithFacadeActor GetCachedActor(string InActorName)
+		{
+			FDatasmithFacadeActor Actor = null;
+			if (CurrentCache != null)
+			{
+				CurrentCache.ExportedActorsMap.TryGetValue(InActorName, out Actor);
+			}
+			return Actor;
 		}
 
 		public bool IsElementCached(Element InElement)
@@ -354,9 +400,11 @@ namespace DatasmithRevitExporter
 		{
 			StopMetadataExport();
 
+			SetSceneCachePath();
+
 			foreach (var Link in RootCache.LinkedDocumentsCache.Values)
 			{
-				if (ModifiedLinkedDocuments.Contains(Link.SourceDocument))
+				if (Link.SourceDocument.IsValidObject && ModifiedLinkedDocuments.Contains(Link.SourceDocument))
 				{
 					Link.SetAllElementsModified();
 				}
@@ -364,27 +412,102 @@ namespace DatasmithRevitExporter
 
 			// Handle section boxes.
 			FilteredElementCollector Collector = new FilteredElementCollector(RootCache.SourceDocument, RootCache.SourceDocument.ActiveView.Id);
-			IList<Element> SectionBoxes = Collector.OfCategory(BuiltInCategory.OST_SectionBox).ToElements();
+			List<SectionBoxInfo> CurrentSectionBoxes =  new List<SectionBoxInfo>();
 
-			foreach(var SectionBox in SectionBoxes)
+			foreach (Element SectionBox in Collector.OfCategory(BuiltInCategory.OST_SectionBox).ToElements())
 			{
-				if (!RootCache.ModifiedElements.Contains(SectionBox.Id))
+				SectionBoxInfo Info = new SectionBoxInfo();
+				Info.SectionBox = SectionBox;
+				Info.SectionBoxBounds = SectionBox.get_BoundingBox(RootCache.SourceDocument.ActiveView);
+				CurrentSectionBoxes.Add(Info);
+			}
+
+			List<SectionBoxInfo> ModifiedSectionBoxes = new List<SectionBoxInfo>();
+
+			foreach(SectionBoxInfo CurrentSectionBoxInfo in CurrentSectionBoxes)
+			{
+				if (!RootCache.ModifiedElements.Contains(CurrentSectionBoxInfo.SectionBox.Id))
 				{
 					continue;
 				}
 
-				// This section box was modified, need to make all elements it intersects dirty, so they 
-				// can be re-exported.
-				BoundingBoxXYZ BBox = SectionBox.get_BoundingBox(RootCache.SourceDocument.ActiveView);
-				ElementFilter IntersectFilterStart = new BoundingBoxIntersectsFilter(new Outline(BBox.Min, BBox.Max));
-				ICollection<ElementId> IntersectedElements = new FilteredElementCollector(RootCache.SourceDocument).WherePasses(IntersectFilterStart).ToElementIds();
+				ModifiedSectionBoxes.Add(CurrentSectionBoxInfo);
+			}
 
-				foreach (var ElemId in IntersectedElements)
+			// Check for old section boxes that were disabled since last sync.
+			foreach (SectionBoxInfo PrevSectionBoxInfo in PrevSectionBoxes)
+			{
+				bool bSectionBoxWasDisabled = !CurrentSectionBoxes.Any(Info => Info.SectionBox == PrevSectionBoxInfo.SectionBox);
+
+				if (bSectionBoxWasDisabled)
 				{
-					if (!RootCache.ModifiedElements.Contains(ElemId))
-					{
-						RootCache.ModifiedElements.Add(ElemId);
-					}
+					// Section box was removed, need to mark the elemets it intersected as modified
+					ModifiedSectionBoxes.Add(PrevSectionBoxInfo);
+				}
+			}
+
+			// Check all elements that need to be re-exported
+			foreach(var SectionBoxInfo in ModifiedSectionBoxes)
+			{
+				MarkIntersectedElementsAsModified(RootCache, SectionBoxInfo.SectionBox, SectionBoxInfo.SectionBoxBounds);
+			}
+
+			PrevSectionBoxes = CurrentSectionBoxes;
+		}
+
+		void SetSceneCachePath()
+		{
+			string OutputPath = null;
+
+			IDirectLinkUI DirectLinkUI = IDatasmithExporterUIModule.Get()?.GetDirectLinkExporterUI();
+			if (DirectLinkUI != null)
+			{
+				OutputPath = Path.Combine(DirectLinkUI.GetDirectLinkCacheDirectory(), SceneName);
+			}
+			else
+			{
+				OutputPath = Path.Combine(Path.GetTempPath(), SceneName);
+			}
+
+			if (!Directory.Exists(OutputPath))
+			{
+				Directory.CreateDirectory(OutputPath);
+			}
+
+			DatasmithScene.SetOutputPath(OutputPath);
+		}
+
+		void MarkIntersectedElementsAsModified(FCachedDocumentData InData, Element InSectionBox, BoundingBoxXYZ InSectionBoxBounds)
+		{
+			ElementFilter IntersectFilter = new BoundingBoxIntersectsFilter(new Outline(InSectionBoxBounds.Min, InSectionBoxBounds.Max));
+			ICollection<ElementId> IntersectedElements = new FilteredElementCollector(InData.SourceDocument).WherePasses(IntersectFilter).ToElementIds();
+
+			ElementFilter InsideFilter = new BoundingBoxIsInsideFilter(new Outline(InSectionBoxBounds.Min, InSectionBoxBounds.Max));
+			ICollection<ElementId> InsideElements = new FilteredElementCollector(InData.SourceDocument).WherePasses(InsideFilter).ToElementIds();
+
+			// Elements that are fully inside the section box should not be marked modified to save export time
+			foreach (ElementId InsideElement in InsideElements)
+			{
+				IntersectedElements.Remove(InsideElement);
+			}
+			
+			foreach (var ElemId in IntersectedElements)
+			{
+				if (!InData.ModifiedElements.Contains(ElemId))
+				{
+					InData.ModifiedElements.Add(ElemId);
+				}
+			}
+
+			// Run the linked documents
+			foreach (var LinkedDoc in InData.LinkedDocumentsCache)
+			{
+				MarkIntersectedElementsAsModified(LinkedDoc.Value, InSectionBox, InSectionBoxBounds);
+
+				if (LinkedDoc.Value.ModifiedElements.Count > 0)
+				{
+					InData.ModifiedElements.Add(LinkedDoc.Key);
+					ModifiedLinkedDocuments.Add(LinkedDoc.Value.SourceDocument);
 				}
 			}
 		}
@@ -419,6 +542,60 @@ namespace DatasmithRevitExporter
 			}
 		}
 
+		// Sync materials: DatasmithScene.CleanUp() might have deleted some materials that are not referenced by 
+		// meshes anymore, so we need to update our map.
+		void SyncMaterials()
+		{
+			HashSet<string> SceneMaterials = new HashSet<string>();
+			for (int MaterialIndex = 0; MaterialIndex < DatasmithScene.GetMaterialsCount(); ++MaterialIndex)
+			{
+				FDatasmithFacadeBaseMaterial Material = DatasmithScene.GetMaterial(MaterialIndex);
+				SceneMaterials.Add(Material.GetName());
+			}
+
+			List<string> MaterialsToDelete = new List<string>();
+
+			foreach (var MaterialKV in MaterialDataMap)
+			{
+				string MaterialName = MaterialKV.Key;
+
+				if (!SceneMaterials.Contains(MaterialName))
+				{
+					MaterialsToDelete.Add(MaterialName);
+				}
+			}
+			foreach (string MaterialName in MaterialsToDelete)
+			{
+				MaterialDataMap.Remove(MaterialName);
+			}
+		}
+
+		// Sync textures: DatasmithScene.CleanUp() might have deleted some textures that are not referenced by 
+		// materials anymore, so we need to update our cache.
+		void SyncTextures()
+		{
+			HashSet<string> SceneTextures = new HashSet<string>();
+			for (int TextureIndex = 0; TextureIndex < DatasmithScene.GetTexturesCount(); ++TextureIndex)
+			{
+				FDatasmithFacadeTexture Texture = DatasmithScene.GetTexture(TextureIndex);
+				SceneTextures.Add(Texture.GetName());
+			}
+
+			List<string> TexturesToDelete = new List<string>();
+
+			foreach (var CachedTextureName in UniqueTextureNameSet)
+			{
+				if (!SceneTextures.Contains(CachedTextureName))
+				{
+					TexturesToDelete.Add(CachedTextureName);
+				}
+			}
+			foreach (string TextureName in TexturesToDelete)
+			{
+				UniqueTextureNameSet.Remove(TextureName);
+			}
+		}
+
 		public void OnEndExport()
 		{
 			if (RootCache.LinkedDocumentsCache.Count > 0)
@@ -433,24 +610,11 @@ namespace DatasmithRevitExporter
 			RootCache.ClearModified();
 			RootCache.ExportedElements.Clear();
 
-			string OutputPath = null;
+			DatasmithScene.CleanUp();
+			DatasmithDirectLink.UpdateScene(DatasmithScene);
 
-			IDirectLinkUI DirectLinkUI = IDatasmithExporterUIModule.Get()?.GetDirectLinkExporterUI();
-			if (DirectLinkUI != null)
-			{
-				OutputPath = DirectLinkUI.GetDirectLinkCacheDirectory();
-			}
-			else
-			{
-				OutputPath = Path.Combine(Path.GetTempPath(), SceneName);
-			}
-
-			Directory.CreateDirectory(OutputPath);
-
-			DatasmithScene.ExportAssets(OutputPath);
-			DatasmithScene.BuildScene(SceneName);
-
-			bool bUpdateOk = DatasmithDirectLink.UpdateScene(DatasmithScene);
+			SyncMaterials();
+			SyncTextures();
 
 			SyncCount++;
 
@@ -480,7 +644,7 @@ namespace DatasmithRevitExporter
 						CurrentBatchSize = 0;
 
 						// Send metadata to DirectLink.
-						DatasmithScene.BuildScene(SceneName);
+						DatasmithScene.CleanUp();
 						DatasmithDirectLink.UpdateScene(DatasmithScene);
 
 						MetadataEvent.WaitOne(DelayExport);
@@ -555,7 +719,7 @@ namespace DatasmithRevitExporter
 			if (CurrentBatchSize > 0)
 			{
 				// Send remaining chunk of metadata.
-				DatasmithScene.BuildScene(SceneName);
+				DatasmithScene.CleanUp();
 				DatasmithDirectLink.UpdateScene(DatasmithScene);
 			}
 

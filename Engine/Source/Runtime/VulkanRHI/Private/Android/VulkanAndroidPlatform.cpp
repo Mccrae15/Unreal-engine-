@@ -30,6 +30,15 @@ static FAutoConsoleVariableRef CVarVulkanExtensionFramePacer(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarVulkanSupportsTimestampQueries(
+	TEXT("r.Vulkan.SupportsTimestampQueries"),
+	0,
+	TEXT("State of Vulkan timestamp queries support on an Android device\n")
+	TEXT("  0 = unsupported\n")
+	TEXT("  1 = supported."),
+	ECVF_SetByDeviceProfile
+);
+
 // Vulkan function pointers
 #define DEFINE_VK_ENTRYPOINTS(Type,Func) Type VulkanDynamicAPI::Func = NULL;
 ENUM_VK_ENTRYPOINTS_ALL(DEFINE_VK_ENTRYPOINTS)
@@ -48,6 +57,8 @@ TUniquePtr<struct FAndroidVulkanFramePacer> FVulkanAndroidPlatform::FramePacer;
 int32 FVulkanAndroidPlatform::CachedFramePace = 60;
 int32 FVulkanAndroidPlatform::CachedRefreshRate = 60;
 int32 FVulkanAndroidPlatform::CachedSyncInterval = 1;
+
+bool FVulkanAndroidPlatform::bSupportsUniformBufferPatching = false;
 
 #define CHECK_VK_ENTRYPOINTS(Type,Func) if (VulkanDynamicAPI::Func == NULL) { bFoundAllEntryPoints = false; UE_LOG(LogRHI, Warning, TEXT("Failed to find entry point for %s"), TEXT(#Func)); }
 
@@ -261,6 +272,8 @@ bool FVulkanAndroidPlatform::LoadVulkanLibrary()
 	FramePacer = MakeUnique<FAndroidVulkanFramePacer>();
 	FPlatformRHIFramePacer::Init(FramePacer.Get());
 
+	FVulkanAndroidPlatform::bSupportsUniformBufferPatching = FAndroidMisc::GetDeviceMake() == FString("Oculus");
+
 	return true;
 }
 
@@ -359,12 +372,29 @@ void FVulkanAndroidPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<c
 	OutExtensions.Add(VK_KHR_SURFACE_EXTENSION_NAME);
 	OutExtensions.Add(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 	OutExtensions.Add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
-	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
+
+	OutExtensions.Add(VK_EXT_ASTC_DECODE_MODE_EXTENSION_NAME);
 
 	if (GVulkanQcomRenderPassTransform)
 	{
 		OutExtensions.Add(VK_QCOM_RENDER_PASS_TRANSFORM_EXTENSION_NAME);
 	}
+
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
+	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2
+	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_2_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_MULTIVIEW
+	OutExtensions.Add(VK_KHR_MULTIVIEW_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+	OutExtensions.Add(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+#endif
 
 #if !UE_BUILD_SHIPPING
 	OutExtensions.Add(VULKAN_MALI_LAYER_NAME);
@@ -379,39 +409,10 @@ void FVulkanAndroidPlatform::NotifyFoundDeviceLayersAndExtensions(VkPhysicalDevi
 #endif
 }
 
-bool FVulkanAndroidPlatform::SupportsStandardSwapchain()
-{
-	if (FPlatformMisc::IsStandaloneStereoOnlyDevice())
-	{
-		return false;
-	}
-	else
-	{
-		return FVulkanGenericPlatform::SupportsStandardSwapchain();
-	}
-}
-
-bool FVulkanAndroidPlatform::RequiresRenderingBackBuffer()
-{
-	return !FPlatformMisc::IsStandaloneStereoOnlyDevice();
-}
-
-EPixelFormat FVulkanAndroidPlatform::GetPixelFormatForNonDefaultSwapchain()
-{
-	if (FPlatformMisc::IsStandaloneStereoOnlyDevice())
-	{
-		return PF_R8G8B8A8;
-	}
-	else
-	{
-		return FVulkanGenericPlatform::GetPixelFormatForNonDefaultSwapchain();
-	}
-}
-
 bool FVulkanAndroidPlatform::SupportsTimestampRenderQueries()
 {
 	// standalone devices have newer drivers where timestamp render queries work.
-	return false;// FPlatformMisc::IsStandaloneStereoOnlyDevice();
+	return (CVarVulkanSupportsTimestampQueries.GetValueOnAnyThread() == 1);
 }
 
 void FVulkanAndroidPlatform::OverridePlatformHandlers(bool bInit)
@@ -445,6 +446,13 @@ void FVulkanAndroidPlatform::SetupMaxRHIFeatureLevelAndShaderPlatform(ERHIFeatur
 		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
 		GMaxRHIShaderPlatform = SP_VULKAN_SM5_ANDROID;
 	}
+}
+
+bool FVulkanAndroidPlatform::SupportsUniformBufferPatching()
+{
+	// Only Allow it on ( Oculus + Vulkan + Android ) devices for now to reduce the impact on general system
+	// So far, the feature is designed on top of emulated UBs.
+	return !UseRealUBsOptimization(true) && bSupportsUniformBufferPatching;
 }
 
 bool FVulkanAndroidPlatform::FramePace(FVulkanDevice& Device, VkSwapchainKHR Swapchain, uint32 PresentID, VkPresentInfoKHR& Info)

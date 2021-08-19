@@ -62,16 +62,7 @@ public:
 		return Setup != nullptr;
 	}
 
-	static ENGINE_API TUniquePtr<Chaos::FTriangleMeshImplicitObject> BuildSingleTrimesh(const FTriMeshCollisionData& Desc, TArray<int32>& OutFaceRemap);
-
 private:
-
-	void BuildInternal(Chaos::FChaosArchive& Ar, FCookBodySetupInfo& InInfo);
-
-	void BuildTriangleMeshes(TArray<TUniquePtr<Chaos::FTriangleMeshImplicitObject>>& OutTriangleMeshes, TArray<int32>& OutFaceRemap, const FCookBodySetupInfo& InParams);
-
-	void BuildConvexMeshes(TArray<TUniquePtr<Chaos::FImplicitObject>>& OutTriangleMeshes, const FCookBodySetupInfo& InParams);
-
 	UBodySetup* Setup;
 	FName RequestedFormat;
 };

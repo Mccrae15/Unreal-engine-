@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -120,6 +121,22 @@ namespace Gauntlet
 		public string AutomationReportURL { get; protected set; } = "";
 
 		/// <summary>
+		/// Returns entries in the log file related to automation
+		/// </summary>
+		public IEnumerable<UnrealLogParser.LogEntry> AutomationLogEntries { get; protected set; }
+	
+		/// <summary>
+		/// Returns warning/errors in the logfile related to automation
+		/// </summary>
+		public IEnumerable<UnrealLogParser.LogEntry> AutomationWarningsAndErrors
+		{
+			get
+			{
+				return AutomationLogEntries.Where(E => E.Level == UnrealLogParser.LogLevel.Error || E.Level == UnrealLogParser.LogLevel.Warning);
+			}
+		}
+
+		/// <summary>
 		/// Constructor that uses an existing log parser
 		/// </summary>
 		/// <param name="InParser"></param>
@@ -131,14 +148,20 @@ namespace Gauntlet
 
 			if (ReportPathMatch.Any())
 			{
-				AutomationReportPath = ReportPathMatch.First().Groups[1].ToString();
+				AutomationReportPath = Path.GetFullPath(ReportPathMatch.First().Groups[1].ToString());
 			}
-			IEnumerable<Match> ReportUrlMatch = Parser.GetAllMatches(@"LogAutomationController.+Report can be viewed at.+'(.+)'");
+			IEnumerable<Match> ReportUrlMatch = Parser.GetAllMatches(@"LogAutomationController.+Report can be viewed.+'(.+)'");
 
 			if (ReportUrlMatch.Any())
 			{
 				AutomationReportURL = ReportUrlMatch.First().Groups[1].ToString();
 			}
+
+			AutomationLogEntries = Parser.Entries.Where(
+										E => E.Category.StartsWith("Automation", StringComparison.OrdinalIgnoreCase)
+										|| E.Category.StartsWith("FunctionalTest", StringComparison.OrdinalIgnoreCase)
+										)
+									.ToArray();
 		}
 
 		/// <summary>
@@ -202,6 +225,10 @@ namespace Gauntlet
 							Events.Add(Event);
 						}
 					}
+				}
+				else
+				{
+					Events.Add(string.Format("Gauntlet.AutomationLogParser: Error: Test {0} incomplete.", DisplayName));
 				}
 
 				AutomationTestResult Result = new AutomationTestResult(DisplayName, LongName, Completed, Passed, Events);

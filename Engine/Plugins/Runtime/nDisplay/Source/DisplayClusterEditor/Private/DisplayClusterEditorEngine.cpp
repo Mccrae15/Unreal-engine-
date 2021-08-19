@@ -76,11 +76,15 @@ void UDisplayClusterEditorEngine::StartPlayInEditorSession(FRequestPlaySessionPa
 {
 	UE_LOG(LogDisplayClusterEditorEngine, VeryVerbose, TEXT("UDisplayClusterEditorEngine::StartPlayInEditorSession"));
 
+	// Reset session frame counter
+	SessionFrameCounter = 0;
+
+	// Get PIE world
 	UWorld* EditorWorldPreDup = GetEditorWorldContext().World();
 
 	if (DisplayClusterModule)
 	{
-		// Find nDisplay root actor
+		// Find any nDisplay root actor in the PIE world
 		ADisplayClusterRootActor* RootActor = FindDisplayClusterRootActor(EditorWorldPreDup);
 		if (!RootActor && EditorWorldPreDup)
 		{
@@ -107,8 +111,10 @@ void UDisplayClusterEditorEngine::StartPlayInEditorSession(FRequestPlaySessionPa
 		{
 			bIsNDisplayPIE = true;
 
-			// Load config data
-			const UDisplayClusterConfigurationData* ConfigData = IDisplayClusterConfiguration::Get().LoadConfig(RootActor->GetPreviewConfigPath());
+			// Get current config data from the root actor
+			UDisplayClusterConfigurationData* ConfigData = DuplicateObject<UDisplayClusterConfigurationData>(RootActor->GetConfigData(), this);
+
+			// And start PIE session with that config data
 			if (ConfigData)
 			{
 				if (!DisplayClusterModule->StartSession(ConfigData, ConfigData->Cluster->MasterNode.Id))
@@ -166,16 +172,20 @@ bool UDisplayClusterEditorEngine::LoadMap(FWorldContext& WorldContext, FURL URL,
 
 void UDisplayClusterEditorEngine::Tick(float DeltaSeconds, bool bIdleMode)
 {
+	// Perform nDisplay Tick
 	if (DisplayClusterModule && bIsActivePIE && bIsNDisplayPIE)
 	{
-		DisplayClusterModule->StartFrame(GFrameCounter);
+		DisplayClusterModule->StartFrame(SessionFrameCounter);
 		DisplayClusterModule->PreTick(DeltaSeconds);
 		DisplayClusterModule->Tick(DeltaSeconds);
 		DisplayClusterModule->PostTick(DeltaSeconds);
-		DisplayClusterModule->EndFrame(GFrameCounter);
+		DisplayClusterModule->EndFrame(SessionFrameCounter);
 	}
 
 	Super::Tick(DeltaSeconds, bIdleMode);
+
+	// Increment session frame counter
+	++SessionFrameCounter;
 }
 
 void UDisplayClusterEditorEngine::OnBeginPIE(const bool bSimulate)
@@ -189,9 +199,11 @@ void UDisplayClusterEditorEngine::OnEndPIE(const bool bSimulate)
 {
 	UE_LOG(LogDisplayClusterEditorEngine, VeryVerbose, TEXT("UDisplayClusterEditorEngine::OnEndPIE"));
 
+	// Reset PIE flags
 	bIsActivePIE   = false;
 	bIsNDisplayPIE = false;
 
+	// Notify nDisplay about session end
 	DisplayClusterModule->EndScene();
 	DisplayClusterModule->EndSession();
 }

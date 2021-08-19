@@ -112,7 +112,7 @@ bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Componen
 	FString AssetPath;
 	FString AssetName;
 
-	if (!Component || !Component->SkeletalMesh || !Component->SkeletalMesh->Skeleton)
+	if (!Component || !Component->SkeletalMesh || !Component->SkeletalMesh->GetSkeleton())
 	{
 		return false;
 	}
@@ -128,7 +128,7 @@ bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Componen
 
 bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Component, const FString& InAssetPath, const FString& InAssetName)
 {
-	if (!Component || !Component->SkeletalMesh || !Component->SkeletalMesh->Skeleton)
+	if (!Component || !Component->SkeletalMesh || !Component->SkeletalMesh->GetSkeleton())
 	{
 		return false;
 	}
@@ -169,7 +169,7 @@ bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Componen
 	if (NewSeq)
 	{
 		// set skeleton
-		NewSeq->SetSkeleton(Component->SkeletalMesh->Skeleton);
+		NewSeq->SetSkeleton(Component->SkeletalMesh->GetSkeleton());
 		// Notify the asset registry
 		FAssetRegistryModule::AssetCreated(NewSeq);
 		StartRecord(Component, NewSeq);
@@ -672,7 +672,7 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 				if (BoneTreeIndex != INDEX_NONE)
 				{
 					int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
-					int32 ParentIndex = SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
+					int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
 					FTransform LocalTransform = SpacesBases[BoneIndex];
 					if (ParentIndex == INDEX_NONE)
 					{
@@ -709,7 +709,7 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 			if (BoneTreeIndex != INDEX_NONE)
 			{
 				int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
-				int32 ParentIndex = SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
+				int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
 				FTransform LocalTransform = SpacesBases[BoneIndex];
 				if ( ParentIndex != INDEX_NONE )
 				{
@@ -957,9 +957,14 @@ FAnimRecorderInstance::~FAnimRecorderInstance()
 
 bool FAnimRecorderInstance::BeginRecording()
 {
+	if (SkelComp.IsValid() == false)
+	{
+		UE_LOG(LogAnimation, Log, TEXT("Animation Recorder:  Begin Recording: SkelMeshComp not Valid, No Recording will occur."));
+		return false;
+	}
 	if (Recorder.IsValid())
 	{
-		if(Sequence.IsValid())
+		if (Sequence.IsValid())
 		{
 			Recorder->StartRecord(SkelComp.Get(), Sequence.Get());
 			return true;
@@ -970,17 +975,26 @@ bool FAnimRecorderInstance::BeginRecording()
 		}
 	}
 
+	UE_LOG(LogAnimation, Log, TEXT("Animation Recorder: Begin Recording: Recorder not Valid, No Recording will occur."));
 	return false;
 }
 
 void FAnimRecorderInstance::Update(float DeltaTime)
 {
+	if (SkelComp.IsValid() == false)
+	{
+		UE_LOG(LogAnimation, Log, TEXT("Animation Recorder:  Update: SkelMeshComp not Valid, No Recording will occur."));
+		return;
+	}
 	if (Recorder.IsValid())
 	{
 		Recorder->UpdateRecord(SkelComp.Get(), DeltaTime);
 	}
+	else
+	{
+		UE_LOG(LogAnimation, Log, TEXT("Animation Recorder:  Update: Recoder not Valid, No Recording will occur."));
+	}
 }
-
 void FAnimRecorderInstance::FinishRecording(bool bShowMessage)
 {
 	const FText FinishRecordingAnimationSlowTask = LOCTEXT("FinishRecordingAnimationSlowTask", "Finalizing recorded animation");

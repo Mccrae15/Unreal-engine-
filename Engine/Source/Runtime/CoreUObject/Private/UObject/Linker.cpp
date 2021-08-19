@@ -604,7 +604,12 @@ static bool DoesPackageExistForGetPackageLinker(const FString& LongPackageName, 
 	}
 	else
 	{
-		return FPackageName::DoesPackageExist(LongPackageName, Guid, &OutFilename);
+		bool DoesPackageExist = FPackageName::DoesPackageExist(LongPackageName, Guid, &OutFilename, /* AllowTextFormat */ true);
+#if WITH_IOSTORE_IN_EDITOR
+	// Only look for non cooked packages on disk
+	DoesPackageExist &= !DoesPackageExistInIoStore(FName(*LongPackageName));
+#endif
+		return DoesPackageExist;
 	}
 }
 
@@ -847,7 +852,9 @@ FLinkerLoad* GetPackageLinker
 	}
 
 	// Verify compatibility.
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (Result && CompatibleGuid && Result->Summary.Guid != *CompatibleGuid)
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		// This should never fire, because FindPackageFile should never return an incompatible file
 		LogGetPackageLinkerError(Result, InExistingContext, InLongPackageName, LOCTEXT("PackageVersionShort", "Asset version mismatch"), InOuter, LoadFlags);

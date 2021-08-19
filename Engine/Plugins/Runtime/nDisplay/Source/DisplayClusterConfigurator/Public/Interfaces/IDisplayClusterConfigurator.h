@@ -21,8 +21,7 @@ public:
 	static constexpr auto ModuleName = TEXT("DisplayClusterConfigurator");
 
 public:
-	virtual ~IDisplayClusterConfigurator() = 0
-	{ }
+	virtual ~IDisplayClusterConfigurator() = default;
 
 public:
 	/**
@@ -48,4 +47,6 @@ public:
 
 public:
 	DISPLAYCLUSTERCONFIGURATOR_API virtual const FDisplayClusterConfiguratorCommands& GetCommands() const = 0;
+	DISPLAYCLUSTERCONFIGURATOR_API virtual TSharedPtr<class FExtensibilityManager> GetMenuExtensibilityManager() const = 0;
+	DISPLAYCLUSTERCONFIGURATOR_API virtual TSharedPtr<class FExtensibilityManager> GetToolBarExtensibilityManager() const = 0;
 };

@@ -36,15 +36,39 @@ public:
 
 	FORCEINLINE void AddDynamicParam(TArray<FNiagaraRibbonVertexDynamicParameter>& ParamData, const FVector4& DynamicParam);
 protected:
+	struct FRibbonRenderingIndexOffsets
+	{
+		uint32 TotalBitCount;
+		bool bWantsEnd;
+
+		uint32 SegmentBitShift;
+		uint32 SegmentBitMask;
+
+		uint32 InterpBitShift;
+		uint32 InterpBitMask;
+
+		uint32 SliceVertexBitMask;
+	};
+
+	static int32 CalculateBitsForRange(int32 Range);
+	static FRibbonRenderingIndexOffsets CalculateIndexBufferPacking(int32 NumSegments, int32 NumInterpolations, int32 NumSliceVertices);
 
 	template <typename TValue>
-	static TValue* AppendToIndexBuffer(TValue* OutIndices, uint32& OutMaxUsedIndex, const TArrayView<int32>& SegmentData, int32 InterpCount, bool bInvertOrder);
+	TValue* AppendToIndexBuffer(
+		TValue* OutIndices,
+		uint32& OutMaxUsedIndex,
+		const TArrayView<int32>& SegmentData,
+		const FRibbonRenderingIndexOffsets& Offsets,
+		int32 InterpCount,
+		bool bInvertOrder) const;
+
 
 	/** Generate the raw index buffer preserving multi ribbon ordering. */
 	template <typename TValue>
 	void GenerateIndexBuffer(
 		FGlobalDynamicIndexBuffer::FAllocationEx& InOutIndexAllocation, 
-		int32 InterpCount, 
+		const FRibbonRenderingIndexOffsets& Offsets,
+		int32 InterpCount,
 		const FVector& ViewDirection, 
 		const FVector& ViewOriginForDistanceCulling, 
 		struct FNiagaraDynamicDataRibbon* DynamicData) const;
@@ -80,12 +104,21 @@ private:
 	FNiagaraRibbonUVSettings UV0Settings;
 	FNiagaraRibbonUVSettings UV1Settings;
 	ENiagaraRibbonDrawDirection DrawDirection;
+
+	ENiagaraRibbonShapeMode Shape;
+	bool bEnableAccurateGeometry;
+	int32 WidthSegmentationCount;
+	int32 MultiPlaneCount;
+	int32 TubeSubdivisions;
+	TArray<FNiagaraRibbonShapeCustomVertex> CustomVertices;
+
 	ENiagaraRibbonTessellationMode TessellationMode;
 	float CustomCurveTension;
 	int32 CustomTessellationFactor;
 	bool bCustomUseConstantFactor;
 	float CustomTessellationMinAngle;
 	bool bCustomUseScreenSpace;
+
 
 	uint32 MaterialParamValidMask;
 	const FNiagaraRendererLayout* RendererLayout;

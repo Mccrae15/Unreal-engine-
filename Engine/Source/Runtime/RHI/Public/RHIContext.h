@@ -93,6 +93,33 @@ private:
 	TArray<FRHIUniformBuffer*, TInlineAllocator<InlineUniformBufferCount>> UniformBuffers;
 };
 
+/** Parameters for RHITransferTextures, used to copy memory between GPUs */
+struct FTransferTextureParams
+{
+	FTransferTextureParams() {}
+
+	FTransferTextureParams(FRHITexture2D* InTexture, const FIntRect& InRect, uint32 InSrcGPUIndex, uint32 InDestGPUIndex, bool InPullData, bool InLockStepGPUs)
+		: Texture(InTexture), Min(InRect.Min.X, InRect.Min.Y, 0), Max(InRect.Max.X, InRect.Max.Y, 1), SrcGPUIndex(InSrcGPUIndex), DestGPUIndex(InDestGPUIndex), bPullData(InPullData), bLockStepGPUs(InLockStepGPUs)
+	{
+	}
+
+	// The texture which must be must be allocated on both GPUs 
+	FTexture2DRHIRef Texture;
+	// The min rect of the texture region to copy
+	FIntVector Min;
+	// The max rect of the texture region to copy
+	FIntVector Max;
+	// The GPU index where the data will be read from.
+	uint32 SrcGPUIndex;
+	// The GPU index where the data will be written to.
+	uint32 DestGPUIndex;
+	// Whether the data is read by the dest GPU, or written by the src GPU (not allowed if the texture is a backbuffer)
+	bool bPullData = true;
+	// Whether the GPUs must handshake before and after the transfer. Required if the texture rect is being written to in several render passes.
+	// Otherwise, minimal synchronization will be used.
+	bool bLockStepGPUs = true;
+};
+
 /** Context that is capable of doing Compute work.  Can be async or compute on the gfx pipe. */
 class IRHIComputeContext
 {
@@ -243,7 +270,22 @@ public:
 	{
 		/* empty default implementation */
 	}
+
+	virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHIVertexBuffer*> InBuffers)
+	{
+		/* empty default implementation */
+	}
 #endif // WITH_MGPU
+
+	/**
+	 * Synchronizes the content of a texture resource between two GPUs using a copy operation.
+	 * @param Params - the parameters for each texture region copied between GPUse.
+	 */
+	virtual void RHITransferTextures(const TArrayView<const FTransferTextureParams> Params)
+	{
+		/* empty default implementation */
+	}
+
 
 	virtual void RHIBuildAccelerationStructure(FRHIRayTracingGeometry* Geometry)
 	{
@@ -259,7 +301,6 @@ public:
 	{
 		checkNoEntry();
 	}
-
 #if ENABLE_RHI_VALIDATION
 
 	RHIValidation::FTracker* Tracker = nullptr;
@@ -281,6 +322,9 @@ public:
 	inline IRHIComputeContext& GetHighestLevelContext() { return *this; }
 
 #endif
+
+	virtual void* RHIGetNativeCommandBuffer() { return nullptr; }
+	virtual void RHIPostExternalCommandsReset() { }
 };
 
 enum class EAccelerationStructureBuildMode
@@ -311,16 +355,6 @@ struct FCopyBufferRegionParams
 	FRHIVertexBuffer* SourceBuffer;
 	uint64 SrcOffset;
 	uint64 NumBytes;
-};
-
-struct FTransferTextureParams
-{
-	FRHITexture2D* Texture;
-	FIntVector Min;
-	FIntVector Max;
-	uint32 SrcGPUIndex;
-	uint32 DestGPUIndex;
-	bool PullData;
 };
 
 /** The interface RHI command context. Sometimes the RHI handles these. On platforms that can processes command lists in parallel, it is a separate object. */
@@ -539,6 +573,7 @@ public:
 		/* empty default implementation */
 	} 
 	
+	UE_DEPRECATED(4.27, "RHISetShadingRateImage is deprecated. Bind the shading rate image as part of the RHISetRenderTargetsInfo struct.")
 	virtual void RHISetShadingRateImage(FRHITexture* RateImageTexture, EVRSRateCombiner Combiner)
 	{
 		/* empty default implementation */
@@ -549,6 +584,24 @@ public:
 	virtual void RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, const TCHAR* InName) = 0;
 
 	virtual void RHIEndRenderPass() = 0;
+
+	/** 
+	* Enable/begin recording for late-latching (for ulta-late uniform buffer patching for VR devices)
+	* @param RHICmdList		The command list
+	* @param FrameNumber	Frame number this is applied to.
+	*/
+	virtual void RHIBeginLateLatching(int32 FrameNumber)
+	{
+		/* empty default implementation */
+	}
+
+	/**
+	* End recording for late-latching (for ulta-late uniform buffer patching for VR devices)
+	*/
+	virtual void RHIEndLateLatching()
+	{
+		/* empty default implementation */
+	}
 
 	virtual void RHINextSubpass()
 	{

@@ -16,6 +16,7 @@
 #include "Components/SplineMeshComponent.h"
 #include "Components/BoxComponent.h"
 #include "BuoyancyComponent.h"
+#include "Modules/ModuleManager.h"
 #include "WaterModule.h"
 #include "WaterSubsystem.h"
 #include "WaterMeshActor.h"
@@ -63,18 +64,6 @@ const FName AWaterBody::OverriddenWaterDepthName(TEXT("Overridden Water Depth"))
 
 // ----------------------------------------------------------------------------------
 
-float FWaterBodyQueryResult::LazilyComputeSplineKey(const AWaterBody& InWaterBody, const FVector& InWorldLocation)
-{
-	// only compute if not done (or set) before : 
-	if (!SplineInputKey.IsSet())
-	{
-		SplineInputKey = TOptional<float>(InWaterBody.FindInputKeyClosestToWorldLocation(InWorldLocation));
-	}
-	return SplineInputKey.GetValue();
-}
-
-// ----------------------------------------------------------------------------------
-
 AWaterBody::AWaterBody(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -105,7 +94,7 @@ AWaterBody::AWaterBody(const FObjectInitializer& ObjectInitializer)
 		SplineComp->OnSplineDataChanged().AddUObject(this, &AWaterBody::OnSplineDataChanged);
 	}
 
-	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterSprite"), LOCTEXT("WaterBodySpriteName", "Water Body"));
+	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterSprite"));
 #endif
 
 	RootComponent = SplineComp;
@@ -666,9 +655,9 @@ void AWaterBody::SetWaterWavesInternal(UWaterWavesBase* InWaterWaves, bool bTrig
 		// Waves data can affect the navigation: 
 		if (bTriggerWaterBodyChanged)
 		{
-			OnWaterBodyChanged(/*bShapeOrPositionChanged = */true);
-		}
+		OnWaterBodyChanged(/*bShapeOrPositionChanged = */true);
 	}
+}
 }
 
 // Our transient MIDs are per-object and shall not survive duplicating nor be exported to text when copy-pasting : 
@@ -797,18 +786,16 @@ void AWaterBody::PrepareCurrentPostProcessSettings()
 
 ALandscapeProxy* AWaterBody::FindLandscape() const
 {
-	if (bAffectsLandscape && !Landscape.IsValid())
+	UWorld* World = GetWorld();
+	if (bAffectsLandscape && !Landscape.IsValid() && (World != nullptr))
 	{
-		for (TObjectIterator<ALandscapeProxy> It; It; ++It)
+		FBox WaterBodyAABB = GetComponentsBoundingBox();
+		for (TActorIterator<ALandscapeProxy> It(World); It; ++It)
 		{
-			if (It->GetWorld() == GetWorld())
+			if (WaterBodyAABB.Intersect(It->GetComponentsBoundingBox()))
 			{
-				FBox Box = It->GetComponentsBoundingBox();
-				if (Box.IsInsideXY(GetActorLocation()))
-				{
-					Landscape = *It;
-					return Landscape.Get();
-				}
+				Landscape = *It;
+				return Landscape.Get();
 			}
 		}
 	}
@@ -889,12 +876,26 @@ void AWaterBody::PostEditImport()
 
 void AWaterBody::UpdateActorIcon()
 {
-	if (ActorIcon)
+	if (ActorIcon && !bIsEditorPreviewActor)
 	{
 		// Actor icon gets in the way of meshes
 		ActorIcon->SetVisibility(IsIconVisible());
 
-		FWaterIconHelper::UpdateSpriteComponent(this, ActorIcon->Sprite);
+		UTexture2D* IconTexture = ActorIcon->Sprite;
+		IWaterModuleInterface& WaterModule = FModuleManager::GetModuleChecked<IWaterModuleInterface>("Water");
+		if (const IWaterEditorServices* WaterEditorServices = WaterModule.GetWaterEditorServices())
+		{
+			if (CheckWaterBodyStatus() != EWaterBodyStatus::Valid)
+			{
+				IconTexture = WaterEditorServices->GetErrorSprite();
+			}
+			else
+			{
+				IconTexture = WaterEditorServices->GetWaterActorSprite(GetClass());
+			}
+		}
+		FWaterIconHelper::UpdateSpriteComponent(this, IconTexture);
+
 
 		if (GetWaterBodyType() == EWaterBodyType::Lake && SplineComp)
 		{
@@ -976,33 +977,48 @@ void AWaterBody::OnPostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 	}
 }
 
+AWaterBody::EWaterBodyStatus AWaterBody::CheckWaterBodyStatus() const
+{
+	if (!IsTemplate())
+	{
+		if (const UWorld* World = GetWorld())
+		{
+			if (const UWaterSubsystem* WaterSubsystem = UWaterSubsystem::GetWaterSubsystem(World))
+			{
+				if (AffectsWaterMesh() && (WaterSubsystem->GetWaterMeshActor() == nullptr))
+				{
+					return EWaterBodyStatus::MissingWaterMesh;
+				}
+			}
+
+			if (AffectsLandscape() && FindLandscape() == nullptr)
+			{
+				return EWaterBodyStatus::MissingLandscape;
+			}
+		}
+	}
+
+	return EWaterBodyStatus::Valid;
+}
+
 void AWaterBody::CheckForErrors()
 {
 	Super::CheckForErrors();
 
-	if (!IsTemplate())
+	switch (CheckWaterBodyStatus())
 	{
-		if (UWorld* World = GetWorld())
-		{
-			if (UWaterSubsystem* WaterSubsystem = UWaterSubsystem::GetWaterSubsystem(World))
-			{
-				if (AffectsWaterMesh() && (WaterSubsystem->GetWaterMeshActor() == nullptr))
-				{
-					FMessageLog("MapCheck").Error()
-						->AddToken(FUObjectToken::Create(this))
-						->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_MissingWaterMesh", "This water body requires a WaterMeshActor to be rendered. Please add one to the map. ")))
-						->AddToken(FMapErrorToken::Create(TEXT("WaterBodyMissingWaterMesh")));
-				}
-			}
-
-			if (AffectsLandscape() && (FindLandscape() == nullptr))
-			{
-				FMessageLog("MapCheck").Error()
-					->AddToken(FUObjectToken::Create(this))
-					->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_MissingLandscape", "This water body requires a Landscape to be rendered. Please add one to the map. ")))
-					->AddToken(FMapErrorToken::Create(TEXT("WaterBodyMissingLandscape")));
-			}
-		}
+	case EWaterBodyStatus::MissingWaterMesh:
+		FMessageLog("MapCheck").Error()
+			->AddToken(FUObjectToken::Create(this))
+			->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_MissingWaterMesh", "This water body requires a WaterMeshActor to be rendered. Please add one to the map. ")))
+			->AddToken(FMapErrorToken::Create(TEXT("WaterBodyMissingWaterMesh")));
+		break;
+	case EWaterBodyStatus::MissingLandscape:
+		FMessageLog("MapCheck").Error()
+			->AddToken(FUObjectToken::Create(this))
+			->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_MissingLandscape", "This water body requires a Landscape to be rendered. Please add one to the map. ")))
+			->AddToken(FMapErrorToken::Create(TEXT("WaterBodyMissingLandscape")));
+		break;
 	}
 }
 
@@ -1012,10 +1028,10 @@ void AWaterBody::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 	bool bWeightmapSettingsChanged = false;
 
 	OnPostEditChangeProperty(PropertyChangedEvent, bShapeOrPositionChanged, bWeightmapSettingsChanged);
+	
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	OnWaterBodyChanged(bShapeOrPositionChanged, bWeightmapSettingsChanged);
-
-	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
 void AWaterBody::OnSplineDataChanged()
@@ -1136,6 +1152,12 @@ void AWaterBody::UpdateAll(bool bShapeOrPositionChanged)
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_Water_UpdateAll);
 
 		bShapeOrPositionChanged |= UpdateWaterHeight();
+
+		if (bShapeOrPositionChanged)
+		{
+			// We might be affected to a different landscape now that our shape has changed : 
+			Landscape.Reset();
+		}
 
 		// First, update the water body without taking into account exclusion volumes, as those rely on the collision to detect overlapping water bodies
 		UpdateWaterBody(/* bWithExclusionVolumes*/false);
@@ -1277,7 +1299,7 @@ void AWaterBody::PostLoad()
 		// Try to retrieve wave data from BP properties when it was defined in BP : 
 		if (UClass* WaterBodyClass = GetClass())
 		{
-			if ((WaterBodyClass->ClassGeneratedBy != nullptr) && bHasWaveSpectrumSettings_DEPRECATED)
+			if (WaterBodyClass->ClassGeneratedBy != nullptr)
 			{
 				FStructProperty* OldWaveStructProperty = nullptr;
 				for (FProperty* BPProperty = WaterBodyClass->PropertyLink; BPProperty != nullptr; BPProperty = BPProperty->PropertyLinkNext)
@@ -1293,9 +1315,11 @@ void AWaterBody::PostLoad()
 				if (OldWaveStructProperty != nullptr)
 				{
 					void* OldPropertyOnWaveSpectrumSettings = OldWaveStructProperty->ContainerPtrToValuePtr<void>(this);
-					UGerstnerWaterWaves* GerstnerWaves = NewObject<UGerstnerWaterWaves>(this, MakeUniqueObjectName(this, UGerstnerWaterWaves::StaticClass(), TEXT("GestnerWaterWaves")));
+					// We need to propagate object flags to the sub objects (if we deprecate an archetype's data, it is public and its sub-object need to be as well) :
+					EObjectFlags NewFlags = GetMaskedFlags(RF_PropagateToSubObjects);
+					UGerstnerWaterWaves* GerstnerWaves = NewObject<UGerstnerWaterWaves>(this, MakeUniqueObjectName(this, UGerstnerWaterWaves::StaticClass(), TEXT("GestnerWaterWaves")), NewFlags);
 					UClass* NewGerstnerClass = UGerstnerWaterWaveGeneratorSimple::StaticClass();
-					UGerstnerWaterWaveGeneratorSimple* GerstnerWavesGenerator = NewObject<UGerstnerWaterWaveGeneratorSimple>(this, MakeUniqueObjectName(this, NewGerstnerClass, TEXT("GestnerWaterWavesGenerator")));
+					UGerstnerWaterWaveGeneratorSimple* GerstnerWavesGenerator = NewObject<UGerstnerWaterWaveGeneratorSimple>(this, MakeUniqueObjectName(this, NewGerstnerClass, TEXT("GestnerWaterWavesGenerator")), NewFlags);
 					GerstnerWaves->GerstnerWaveGenerator = GerstnerWavesGenerator;
 					SetWaterWavesInternal(GerstnerWaves, /*bTriggerWaterBodyChanged = */false); // we're in PostLoad, we don't want to send the water body changed event as it might re-enter into BP script
 
@@ -1326,9 +1350,6 @@ void AWaterBody::PostLoad()
 						}
 					}
 				}
-
-				// WaveSpectrumSettings has been deprecated, we don't need to do it anymore, ever: 
-				bHasWaveSpectrumSettings_DEPRECATED = false;
 			}
 		}
 	}
@@ -1338,6 +1359,7 @@ void AWaterBody::PostLoad()
 		// At one point, some attributes from UGerstnerWaterWaves were transient, recompute those here at load-time (nowadays, they are serialized properly so they should be properly recompute on property change)
 		if (HasWaves())
 		{
+			check(WaterWaves != nullptr);
 			if (UGerstnerWaterWaves* GerstnerWaterWaves = Cast<UGerstnerWaterWaves>(WaterWaves->GetWaterWaves()))
 			{
 				GerstnerWaterWaves->ConditionalPostLoad();
@@ -1347,15 +1369,24 @@ void AWaterBody::PostLoad()
 	}
 
 #if WITH_EDITORONLY_DATA
-	if ((GetLinkerCustomVersion(FWaterCustomVersion::GUID) < FWaterCustomVersion::MoveTerrainCarvingSettingsToWater) && bHasTerrainCarvingSettingsSettings_DEPRECATED)
+	if (GetLinkerCustomVersion(FWaterCustomVersion::GUID) < FWaterCustomVersion::MoveTerrainCarvingSettingsToWater)
 	{
 		static_assert(sizeof(WaterHeightmapSettings) == sizeof(TerrainCarvingSettings_DEPRECATED), "Both old and old water heightmap settings struct should be exactly similar");
 		FMemory::Memcpy((void*)&WaterHeightmapSettings, (void*)&TerrainCarvingSettings_DEPRECATED, sizeof(WaterHeightmapSettings));
-
-		// TerrainCarvingSettings has been deprecated, we don't need to do it anymore, ever: 
-		bHasTerrainCarvingSettingsSettings_DEPRECATED = false;
 	}
-#endif
+#endif // WITH_EDITORONLY_DATA
+
+#if WITH_EDITOR
+	if (GIsEditor && !HasAnyFlags(RF_ClassDefaultObject))
+	{
+		if (WaterWaves && (WaterWaves->GetOuter() != this))
+		{
+			WaterWaves->ClearFlags(RF_Public);
+			// At one point, WaterWaves's outer was the level. We need them to be outered by the water body : 
+			WaterWaves->Rename(nullptr, this, REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
+		}
+	}
+#endif // WITH_EDITOR
 
 #if WITH_EDITOR
 	RegisterOnUpdateWavesData(WaterWaves, /* bRegister = */true);
@@ -1383,9 +1414,11 @@ void AWaterBody::PostRegisterAllComponents()
 	}
 #endif // WITH_EDITOR
 
-	check(WaterBodyIndex == INDEX_NONE); // Must not register if already registered 
+	// We must check for WaterBodyIndex to see if we have already been registered because PostRegisterAllComponents can be called multiple times in a row (e.g. if the actor is a child 
+	//  actor of another BP, the parent BP instance will register first, with all its child components, which will trigger registration of the child water body actor, and then 
+	//  the water body actor will also get registered independently as a "standard" actor) :
 	FWaterBodyManager* Manager = UWaterSubsystem::GetWaterBodyManager(GetWorld());
-	if (Manager && !IsTemplate())
+	if (Manager && !IsTemplate() && (WaterBodyIndex == INDEX_NONE))
 	{
 		WaterBodyIndex = Manager->AddWaterBody(this);
 	}
@@ -1399,8 +1432,9 @@ void AWaterBody::PostUnregisterAllComponents()
 {
 	Super::PostUnregisterAllComponents();
 
+	// We must check for WaterBodyIndex because PostUnregisterAllComponents can be called multiple times in a row by PostEditChangeProperty, etc.
 	FWaterBodyManager* Manager = UWaterSubsystem::GetWaterBodyManager(GetWorld());
-	if (Manager && !IsTemplate() && WaterBodyIndex != INDEX_NONE)
+	if (Manager && !IsTemplate() && (WaterBodyIndex != INDEX_NONE))
 	{
 		Manager->RemoveWaterBody(this);
 	}

@@ -7,11 +7,6 @@
 
 namespace DisplayClusterPostprocessStrings
 {
-	namespace output_remap
-	{
-		static constexpr auto File = TEXT("file");
-	}
-
 	namespace texture_share
 	{
 		static constexpr auto ShareName = TEXT("share");
@@ -31,7 +26,6 @@ namespace DisplayClusterPostprocessStrings
 
 	namespace postprocess
 	{
-		static constexpr auto OutputRemap   = TEXT("OutputRemap");
 		static constexpr auto TextureShare  = TEXT("TextureShare");
 		static constexpr auto D3D12CrossGPU = TEXT("D3D12CrossGPU");
 	}

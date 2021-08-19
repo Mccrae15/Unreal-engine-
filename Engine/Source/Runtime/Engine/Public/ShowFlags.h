@@ -447,6 +447,8 @@ private:
 		SetVisualizeCalibrationGrayscale(false);
 		SetVisualizeCalibrationCustom(false);
 		SetVirtualTexturePrimitives(false);
+		SetVisualizeVolumetricCloudConservativeDensity(false);
+		SetSingleLayerWaterRefractionFullPrecision(false);
 	}
 
 

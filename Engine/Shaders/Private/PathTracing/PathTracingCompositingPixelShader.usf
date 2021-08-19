@@ -5,27 +5,22 @@ ReferencePathTracinPixelShader.ush: Reference path tracing  compositing pixel sh
 ===============================================================================================*/
 
 #include "../Common.ush"
-#include "Utilities/PathTracingFixedPointArithmetic.ush"
 
-Texture2D<uint> RadianceRedTexture;
-Texture2D<uint> RadianceGreenTexture;
-Texture2D<uint> RadianceBlueTexture;
-Texture2D<uint> RadianceAlphaTexture;
-Texture2D<uint> SampleCountTexture;
+uint Iteration;
+uint MaxSamples;
+int ProgressDisplayEnabled;
+Texture2D<float4> RadianceTexture;
 
-Texture2D<float4> CumulativeIrradianceTexture;
-Texture2D<uint> CumulativeSampleCountTexture;
 
-// TODO: Make C1 continuous
 float TonemapGammaAndHDR(float Value)
 {
 	if (Value > 1.0)
 	{
-		Value = log(Value);
+		Value = 1.0 + 2.0 * log(Value);
 	}
 	else
 	{
-		Value = pow(Value, 2.2);
+		Value = pow(Value, 2.0);
 	}
 	return Value;
 }
@@ -42,52 +37,76 @@ float Tonemap(float Value)
 
 void CompositeMain(
 	in noperspective float2 UV : TEXCOORD0,
-	out float4 OutColor : SV_Target0,
-	out float4 OutCumulativeIrradiance : SV_Target1,
-	out uint OutCumulativeSampleCount : SV_Target2
+	out float4 OutColor : SV_Target0
 )
 {
 	float2 BufferSize = View.BufferSizeAndInvSize.xy;
-	int3 TexCoord = int3(UV * BufferSize, 0);
+	int3 TexCoord = int3(UV * BufferSize - View.ViewRectMin.xy, 0);
 
-	float RadianceRed = FixedPointToFloat(RadianceRedTexture.Load(TexCoord), 24);
-	float RadianceGreen = FixedPointToFloat(RadianceGreenTexture.Load(TexCoord), 24);
-	float RadianceBlue = FixedPointToFloat(RadianceBlueTexture.Load(TexCoord), 24);
-	float RadianceAlpha = FixedPointToFloat(RadianceAlphaTexture.Load(TexCoord), 24);
-	float4 Radiance = float4(RadianceRed, RadianceGreen, RadianceBlue, RadianceAlpha);
-	float SampleCount = SampleCountTexture.Load(TexCoord);
+	float4 Radiance = RadianceTexture.Load(TexCoord);
 
-	float4 CumulativeIrradiance = CumulativeIrradianceTexture.Load(TexCoord);
-	float CumulativeSampleCount = CumulativeSampleCountTexture.Load(TexCoord);
+	OutColor = float4(Radiance.rgb * View.PreExposure, 1.0);
 
-	float CumulativeVariance = CumulativeIrradiance.a;
-
-	OutCumulativeSampleCount = CumulativeSampleCount + SampleCount;
-	OutCumulativeIrradiance.rgb = (CumulativeIrradiance.rgb * CumulativeSampleCount + Radiance.rgb) / OutCumulativeSampleCount;
-
-	float OutVariance = 0;
-	if (OutCumulativeSampleCount > 1 && OutCumulativeSampleCount < 4096)
+	if (ProgressDisplayEnabled && (Iteration + 1) < MaxSamples)
 	{
-#if 0
-		// Per-sample variance
-		float IrradianceY = Tonemap(Luminance(Radiance));
-		float DeviationSquared = IrradianceY - Tonemap(Luminance(OutCumulativeIrradiance));
-#else
-		// Variance of the mean
-		float IrradianceY = Luminance(CumulativeIrradiance);
-		float DeviationSquared = IrradianceY - Luminance(OutCumulativeIrradiance);
-#endif
-		DeviationSquared *= DeviationSquared;
-		OutVariance = DeviationSquared;
-		if (CumulativeSampleCount > 0)
-		{
-			OutVariance += CumulativeVariance * (CumulativeSampleCount - 1);
-		}
-		OutVariance /= OutCumulativeSampleCount - 1;
-	}
-	OutCumulativeIrradiance.a = OutVariance;
-	OutColor = float4(OutCumulativeIrradiance.rgb * View.PreExposure, 1.0);
+		// Draw a progress meter for how far along we are to the max number of passes
+		float Aspect = View.BufferSizeAndInvSize.y * View.BufferSizeAndInvSize.z;
+		float Size = 50.0 * View.BufferSizeAndInvSize.zz;
+		float2 P = float2(UV.x, UV.y * Aspect);
+		float2 RectMin = View.ViewRectMin.xy;
+		float2 RectMax = View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy;
 
-	// To visualize the current frame:
-	// OutColor = float4(Irradiance.rgb / SampleCount, 1.0);
+		// center progress in middle-bottom of the frame
+		float2 Center = float2(lerp(RectMin.x, RectMax.x, 0.5), RectMax.y) * View.BufferSizeAndInvSize.zz - float2(0, Size * 0.75);
+		P -= Center;
+		float Fraction = saturate(float(Iteration + 1) / float(MaxSamples));
+#if 0
+		// measure progress like a clock
+		float R2 = dot(P, P);
+		float ROuter2 = Square(0.50 * Size);
+		float RInner2 = Square(0.35 * Size);
+
+		float R2f = fwidth(R2);
+
+		// point is on the progress ring
+		if (R2 < ROuter2 + R2f && R2 > RInner2 - R2f)
+		{
+			float Angle = (atan2(-P.x, P.y) + PI) / (2 * PI);
+			// anti-alias progress bar edge
+			float Blend = smoothstep(Fraction - fwidth(Angle), Fraction + fwidth(Angle), Angle);
+			// Grey/Red blend
+			float4 ProgressBarColor = lerp(float4(1.0, 0.1, 0.1, 1), float4(0.5, 0.5, 0.5, 1), Blend);
+			// anti-alias ring edges
+			float BlendOuter = 1 - smoothstep(ROuter2 - R2f, ROuter2 + R2f, R2);
+			float BlendInner =     smoothstep(RInner2 - R2f, RInner2 + R2f, R2);
+			OutColor = lerp(OutColor, ProgressBarColor, 0.75 * BlendInner * BlendOuter);
+		}
+#else
+		// simple linear progress bar
+		float2 ProgressSize = float2(2.0 * Size, 0.15 * Size);
+		if (all(abs(P) < ProgressSize))
+		{
+			P += ProgressSize;
+			P /= ProgressSize * 2;
+			float Blend = smoothstep(Fraction - fwidth(P.x), Fraction + fwidth(P.x), P.x);
+			// Grey/Red blend
+			float4 ProgressBarColor = lerp(float4(1.0, 0.1, 0.1, 1), float4(0.5, 0.5, 0.5, 1), Blend);
+			OutColor = lerp(OutColor, ProgressBarColor, 0.75);
+		}
+#endif
+	}
+
+#if 0
+    // split-screen debugging aids
+	if (UV.x < 0.5)
+	{
+		uint NumSamples = Iteration + 1;
+		float OutVariance = Radiance.a;
+		float Lum = Luminance(Radiance.rgb); // mean
+		float StdErr = NumSamples > 0 ? sqrt(OutVariance / NumSamples) : 0; // stderr
+		//OutColor = Tonemap(Lum + 3 * StdErr) - Tonemap(max(Lum - 3 * StdErr, 0.0)); // error estimator
+		OutColor = StdErr * View.PreExposure;
+		//OutColor = StdErr / (Lum + 0.0001) * View.PreExposure;
+	}
+#endif
 }

@@ -115,8 +115,10 @@ bool FRigVMRegisterOffset::Serialize(FArchive& Ar)
 			{
 				CachedSegmentPath = SegmentPath;
 			}
-			else if (ParentScriptStruct != nullptr && !SegmentPath.IsEmpty())
+			else if (ParentScriptStruct != nullptr)
 			{
+				// if segment path is empty, it implies that the register offset refers to an element in a struct array
+				// so segments also need to be recalculated
 				int32 InitialOffset = ArrayIndex * ParentScriptStruct->GetStructureSize();
 				FRigVMRegisterOffset TempOffset(ParentScriptStruct, SegmentPath, InitialOffset, ElementSize);
 				if (TempOffset.GetSegments().Num() == Segments.Num())
@@ -291,7 +293,8 @@ FRigVMRegisterOffset::FRigVMRegisterOffset(UScriptStruct* InScriptStruct, const 
 
 	Segments.Add(InInitialOffset);
 
-	if (!InSegmentPath.IsEmpty() || InScriptStruct != nullptr)
+	// if segment path is not empty, it implies that the register offset refers to a sub-property in a struct pin
+	if (!InSegmentPath.IsEmpty())
 	{
 		ensure(!InSegmentPath.IsEmpty());
 		check(InScriptStruct)
@@ -309,6 +312,16 @@ FRigVMRegisterOffset::FRigVMRegisterOffset(UScriptStruct* InScriptStruct, const 
 			{
 				Type = ERigVMRegisterType::String;
 			}
+		}
+	}
+	else
+	{
+		// if segment path is empty, it implies that the register offset refers to an element in a struct array
+		if (ParentScriptStruct)
+		{
+			ScriptStruct = ParentScriptStruct;
+			Type = ERigVMRegisterType::Struct;
+			CPPType = *ScriptStruct->GetStructCPPName();
 		}
 	}
 
@@ -392,7 +405,11 @@ public:
 
 	FORCEINLINE_DEBUGGABLE void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
 	{
+#if WITH_EDITOR
+		UE_LOG(LogRigVM, Display, TEXT("Skipping Importing To MemoryContainer: %s"), V);
+#else
 		UE_LOG(LogRigVM, Error, TEXT("Error Importing To MemoryContainer: %s"), V);
+#endif
 		NumErrors++;
 	}
 };
@@ -564,6 +581,25 @@ bool FRigVMMemoryContainer::Serialize(FArchive& Ar)
 				}
 			}
 			UpdateRegisters();
+
+			for (int32 RegisterOffsetIndex = 0; RegisterOffsetIndex < RegisterOffsets.Num(); RegisterOffsetIndex++)
+			{
+				FRigVMRegisterOffset& RegisterOffset = RegisterOffsets[RegisterOffsetIndex];
+
+				UScriptStruct* ScriptStruct = RegisterOffset.GetScriptStruct();
+				if (ScriptStruct)
+				{
+					RegisterOffset.SetElementSize(ScriptStruct->GetStructureSize());
+				}
+				if (RegisterOffset.GetType() == ERigVMRegisterType::Name)
+				{
+					RegisterOffset.SetElementSize(sizeof(FName));
+				}
+				else if (RegisterOffset.GetType() == ERigVMRegisterType::String)
+				{
+					RegisterOffset.SetElementSize(sizeof(FString));
+				}
+			}
 
 			// once the register memory is allocated we can construt its contents.
 			for (int32 RegisterIndex = 0; RegisterIndex < Registers.Num(); RegisterIndex++)
@@ -1589,14 +1625,16 @@ int32 FRigVMMemoryContainer::GetOrAddRegisterOffset(int32 InRegisterIndex, UScri
 		return INDEX_NONE;
 	}
 
-	ensure(Registers.IsValidIndex(InRegisterIndex));
-
+	// if this is a register offset for a external variable
+	// the register index is expected to be INDEX_NONE
+	// and it is also expected that InElementSize != 0
 	if (InElementSize == 0)
 	{
+		ensure(Registers.IsValidIndex(InRegisterIndex)); 
 		InElementSize = (int32)Registers[InRegisterIndex].ElementSize;
 	}
 
-	FRigVMRegisterOffset Offset(InSegmentPath.IsEmpty() ? nullptr : InScriptStruct, InSegmentPath, InInitialOffset, InElementSize);
+	FRigVMRegisterOffset Offset(InScriptStruct, InSegmentPath, InInitialOffset, InElementSize);
 	int32 ExistingIndex = RegisterOffsets.Find(Offset);
 	if (ExistingIndex == INDEX_NONE)
 	{
@@ -1786,27 +1824,36 @@ void FRigVMMemoryContainer::UpdateRegisters()
 
 		if (Alignment != 0)
 		{
-			uint8* Pointer = GetData(RegisterIndex);
-
-			if (Register.AlignmentBytes > 0)
+			// no need to adjust for alignment if nothing is allocated
+			if (!Register.IsDynamic() && Register.ElementCount == 0)
 			{
-				if (!IsAligned(Pointer, Alignment))
-				{
-					Data.RemoveAt(Register.GetFirstAllocatedByte(), Register.AlignmentBytes);
-					AlignmentShift -= Register.AlignmentBytes;
-					Register.ByteIndex -= Register.AlignmentBytes;
-					Register.AlignmentBytes = 0;
-					Pointer = GetData(RegisterIndex);
-				}
+				continue;
 			}
 
-			while (!IsAligned(Pointer, Alignment))
+			if (ensure(Data.IsValidIndex(Register.GetWorkByteIndex())))
 			{
-				Data.InsertZeroed(Register.GetFirstAllocatedByte(), 1);
-				Register.AlignmentBytes++;
-				Register.ByteIndex++;
-				AlignmentShift++;
-				Pointer = GetData(RegisterIndex);
+				uint8* Pointer = (uint8*)(&(Data[Register.GetWorkByteIndex()]));
+
+				if (Register.AlignmentBytes > 0)
+				{
+					if (!IsAligned(Pointer, Alignment))
+					{
+						Data.RemoveAt(Register.GetFirstAllocatedByte(), Register.AlignmentBytes);
+						AlignmentShift -= Register.AlignmentBytes;
+						Register.ByteIndex -= Register.AlignmentBytes;
+						Register.AlignmentBytes = 0;
+						Pointer = (uint8*)(&(Data[Register.GetWorkByteIndex()]));
+					}
+				}
+
+				while (!IsAligned(Pointer, Alignment))
+				{
+					Data.InsertZeroed(Register.GetFirstAllocatedByte(), 1);
+					Register.AlignmentBytes++;
+					Register.ByteIndex++;
+					AlignmentShift++;
+					Pointer = (uint8*)(&(Data[Register.GetWorkByteIndex()]));
+				}
 			}
 		}
 	}

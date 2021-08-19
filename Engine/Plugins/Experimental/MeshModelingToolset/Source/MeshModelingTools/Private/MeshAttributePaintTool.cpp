@@ -11,13 +11,6 @@
 
 #define LOCTEXT_NAMESPACE "UMeshAttributePaintTool"
 
-/**
- * 4.26 HOTFIX: this is used to keep dynamically-created Material Instances that we pass to USimpleDynamicMeshComponent
- * from being Garbage Collected. USimpleDynamicMeshComponent stores raw UMaterialInterface* pointers, instead of proper UProperty
- * pointers, which cannot be fixed in a Hotfix.
- */
-#include "MeshModelingToolsObjectKeepaliveFix.h"
-static FModelingModeObjectsKeepaliveHelper MeshAttributePaintObjectKeepalive;
 
 
 class FMeshDescriptionVertexAttributeAdapter : public IMeshVertexAttributeAdapter
@@ -153,8 +146,6 @@ void UMeshAttributePaintTool::Setup()
 {
 	UDynamicMeshBrushTool::Setup();
 
-	MeshAttributePaintObjectKeepalive.Enable();
-
 	// hide strength and falloff
 	BrushProperties->RestoreProperties(this);
 
@@ -185,7 +176,6 @@ void UMeshAttributePaintTool::Setup()
 	if (VtxColorMaterial != nullptr)
 	{
 		PreviewMesh->SetOverrideRenderMaterial(VtxColorMaterial);
-		MeshAttributePaintObjectKeepalive.AddKeepaliveObject(VtxColorMaterial);
 	}
 
 	RecalculateBrushRadius();
@@ -577,8 +567,6 @@ void UMeshAttributePaintTool::OnShutdown(EToolShutdownType ShutdownType)
 		});
 		GetToolManager()->EndUndoTransaction();
 	}
-
-	MeshAttributePaintObjectKeepalive.Disable();
 }
 
 

@@ -19,8 +19,9 @@ TRACE_DECLARE_INT_COUNTER(MovieSceneEntitySystemEvaluations, TEXT("MovieScene/EC
 
 FMovieSceneEntitySystemRunner::FMovieSceneEntitySystemRunner()
 	: Linker(nullptr)
-	, GameThread(ENamedThreads::GameThread_Local)
 	, CompletionTask(nullptr)
+	, GameThread(ENamedThreads::GameThread_Local)
+	, CurrentPhase(UE::MovieScene::ESystemPhase::None)
 {
 }
 
@@ -132,12 +133,18 @@ void FMovieSceneEntitySystemRunner::Flush()
 	EntityManager.SetDispatchThread(ENamedThreads::GameThread_Local);
 	EntityManager.SetGatherThread(ENamedThreads::GameThread_Local);
 
+	// We specifically only check whether the entity manager has changed since the last instantation once
+	// to ensure that we are not vulnerable to infinite loops where components are added/removed in post-evaluation
+	bool bStructureHadChanged = Linker->EntityManager.HasStructureChangedSince(LastInstantiationVersion);
+
 	// Start flushing the update queue... keep flushing as long as we have work to do.
 	while (UpdateQueue.Num() > 0 || 
 			DissectedUpdates.Num() > 0 ||
-			Linker->EntityManager.HasStructureChangedSince(LastInstantiationVersion))
+			bStructureHadChanged)
 	{
 		DoFlushUpdateQueueOnce();
+
+		bStructureHadChanged = false;
 	}
 
 	Linker->EndEvaluation(*this);
@@ -168,12 +175,15 @@ void FMovieSceneEntitySystemRunner::DoFlushUpdateQueueOnce()
 	{
 		GameThread_ProcessQueue();
 	}
+
 	FTaskGraphInterface::Get().WaitUntilTaskCompletes(CompletionTask->GetCompletionEvent(), ENamedThreads::GameThread_Local);
+
 	// TODO: delete?
 	CompletionTask = nullptr;
 
 	// Now run the post-evaluation logic, which contains stuff we don't want to run from inside a task
 	// graph call.
+	GameThread_EvaluationFinalizationPhase();
 	GameThread_PostEvaluationPhase();
 }
 
@@ -215,7 +225,7 @@ void FMovieSceneEntitySystemRunner::GameThread_ProcessQueue()
 				for (int32 Index = 0; Index < Dissections.Num()-1; ++Index)
 				{
 					FDissectedUpdate Dissection {
-						FMovieSceneContext(FMovieSceneEvaluationRange(Dissections[Index], Request.Context.GetFrameRate(), Request.Context.GetDirection())),
+						FMovieSceneContext(FMovieSceneEvaluationRange(Dissections[Index], Request.Context.GetFrameRate(), Request.Context.GetDirection()), Request.Context.GetStatus()),
 						Request.InstanceHandle,
 						Index
 					};
@@ -224,7 +234,7 @@ void FMovieSceneEntitySystemRunner::GameThread_ProcessQueue()
 
 				// Add the last one with MAX_int32 so it gets evaluated with all the others in this flush
 				FDissectedUpdate Dissection {
-					FMovieSceneContext(FMovieSceneEvaluationRange(Dissections.Last(), Request.Context.GetFrameRate(), Request.Context.GetDirection())),
+					FMovieSceneContext(FMovieSceneEvaluationRange(Dissections.Last(), Request.Context.GetFrameRate(), Request.Context.GetDirection()), Request.Context.GetStatus()),
 					Request.InstanceHandle,
 					MAX_int32
 				};
@@ -258,6 +268,8 @@ void FMovieSceneEntitySystemRunner::GameThread_SpawnPhase()
 	check(GameThread == ENamedThreads::GameThread || GameThread == ENamedThreads::GameThread_Local);
 
 	Linker->EntityManager.IncrementSystemSerial();
+
+	CurrentPhase = ESystemPhase::Spawn;
 
 	FInstanceRegistry* InstanceRegistry = GetInstanceRegistry();
 
@@ -341,6 +353,8 @@ void FMovieSceneEntitySystemRunner::GameThread_InstantiationPhase()
 
 	check(GameThread == ENamedThreads::GameThread || GameThread == ENamedThreads::GameThread_Local);
 
+	CurrentPhase = ESystemPhase::Instantiation;
+
 	FGraphEventArray AllTasks;
 	Linker->SystemGraph.ExecutePhase(ESystemPhase::Instantiation, Linker, AllTasks);
 
@@ -377,9 +391,8 @@ void FMovieSceneEntitySystemRunner::GameThread_PostInstantiation()
 	// Nothing needs linking, caching or restoring any more
 	FRemoveMultipleMutation Mutation;
 	Mutation.RemoveComponent(BuiltInComponentTypes->Tags.NeedsLink);
-	Mutation.RemoveComponent(BuiltInComponentTypes->Tags.CachePreAnimatedValue);
 
-	FEntityComponentFilter Filter = FEntityComponentFilter().Any({ BuiltInComponentTypes->Tags.NeedsLink, BuiltInComponentTypes->Tags.CachePreAnimatedValue });
+	FEntityComponentFilter Filter = FEntityComponentFilter().Any({ BuiltInComponentTypes->Tags.NeedsLink });
 	EntityManager.MutateAll(Filter, Mutation);
 
 	// Free anything that has been unlinked
@@ -398,6 +411,8 @@ void FMovieSceneEntitySystemRunner::GameThread_EvaluationPhase()
 
 	SCOPE_CYCLE_COUNTER(MovieSceneEval_EvaluationPhase);
 
+	CurrentPhase = ESystemPhase::Evaluation;
+
 	// --------------------------------------------------------------------------------------------------------------------------------------------
 	// Step 2: Run the evaluation phase. The entity manager is locked down for this phase, meaning no changes to entity-component structure is allowed
 	//         This vastly simplifies the concurrent handling of entity component allocations
@@ -408,19 +423,22 @@ void FMovieSceneEntitySystemRunner::GameThread_EvaluationPhase()
 	FGraphEventArray AllTasks;
 	Linker->SystemGraph.ExecutePhase(ESystemPhase::Evaluation, Linker, AllTasks);
 
+	auto Finish = [this]
+	{
+		// We are now done with the current update batch. Let's unlock the completion task to unblock
+		// the main thread, which is waiting on it inside Flush().
+		check(this->CompletionTask != nullptr);
+		this->CompletionTask->Unlock();
+	};
+
 	if (AllTasks.Num() != 0)
 	{
 		TGraphTask<TFunctionGraphTaskImpl<void(), ESubsequentsMode::TrackSubsequents>>::CreateTask(&AllTasks, ENamedThreads::GameThread)
-		.ConstructAndDispatchWhenReady(
-			[this]
-			{
-				this->GameThread_EvaluationFinalizationPhase();
-			}
-		, TStatId(), GameThread);
+		.ConstructAndDispatchWhenReady(MoveTemp(Finish), TStatId(), GameThread);
 	}
 	else
 	{
-		this->GameThread_EvaluationFinalizationPhase();
+		Finish();
 	}
 }
 
@@ -432,20 +450,21 @@ void FMovieSceneEntitySystemRunner::GameThread_EvaluationFinalizationPhase()
 
 	Linker->EntityManager.ReleaseLockDown();
 
+	CurrentPhase = ESystemPhase::Finalization;
+
 	// Post-eval events can be queued during the finalization phase so let's open that up.
 	// The events are actually executed a bit later, in GameThread_PostEvaluationPhase.
 	bCanQueueEventTriggers = true;
 	{
+		GetInstanceRegistry()->FinalizeFrame();
+
 		FGraphEventArray Tasks;
 		Linker->SystemGraph.ExecutePhase(ESystemPhase::Finalization, Linker, Tasks);
 		checkf(Tasks.Num() == 0, TEXT("Cannot dispatch new tasks during finalization"));
 	}
 	bCanQueueEventTriggers = false;
 
-	// We are now done with the current update batch. Let's unlock the completion task to unblock
-	// the main thread, which is waiting on it inside Flush().
-	check(CompletionTask != nullptr);
-	CompletionTask->Unlock();
+	CurrentPhase = ESystemPhase::None;
 }
 
 void FMovieSceneEntitySystemRunner::GameThread_PostEvaluationPhase()

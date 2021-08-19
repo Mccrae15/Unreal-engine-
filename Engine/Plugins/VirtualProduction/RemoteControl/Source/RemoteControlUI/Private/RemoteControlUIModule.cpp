@@ -1,22 +1,44 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RemoteControlUIModule.h"
+
 #include "AssetToolsModule.h"
 #include "AssetTools/RemoteControlPresetActions.h"
-#include "UI/RemoteControlPanelStyle.h"
-#include "Widgets/SWidget.h"
-#include "PropertyHandle.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/Input/SButton.h"
 #include "EditorStyleSet.h"
-#include "Widgets/Images/SImage.h"
-#include "Textures/SlateIcon.h"
-#include "HAL/PlatformApplicationMisc.h"
-#include "UI/SRemoteControlPanel.h"
-#include "RemoteControlPreset.h"
+#include "ISettingsModule.h"
+#include "ISettingsSection.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "PropertyHandle.h"
+#include "RemoteControlActor.h"
+#include "RemoteControlField.h"
+#include "RemoteControlPreset.h"
+#include "RemoteControlSettings.h"
+#include "Textures/SlateIcon.h"
+#include "UI/Customizations/RemoteControlEntityCustomization.h"
+#include "UI/RemoteControlPanelStyle.h"
+#include "UI/SRCPanelExposedEntitiesList.h"
+#include "UI/SRemoteControlPanel.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/SWidget.h"
 
 #define LOCTEXT_NAMESPACE "RemoteControlUI"
+
+namespace RemoteControlUIModule
+{
+	const TArray<FName>& GetCustomizedStructNames()
+	{
+		static TArray<FName> CustomizedStructNames =
+		{
+			FRemoteControlProperty::StaticStruct()->GetFName(),
+			FRemoteControlFunction::StaticStruct()->GetFName(),
+			FRemoteControlActor::StaticStruct()->GetFName()
+		};
+		return CustomizedStructNames;
+	};
+}
 
 void FRemoteControlUIModule::StartupModule()
 {
@@ -24,14 +46,40 @@ void FRemoteControlUIModule::StartupModule()
 	RegisterAssetTools();
 	RegisterDetailRowExtension();
 	RegisterContextMenuExtender();
+	RegisterStructCustomizations();
+	RegisterSettings();
 }
 
 void FRemoteControlUIModule::ShutdownModule()
 {
+	UnregisterSettings();
+	UnregisterStructCustomizations();
 	UnregisterContextMenuExtender();
 	UnregisterDetailRowExtension();
 	UnregisterAssetTools();
 	FRemoteControlPanelStyle::Shutdown();
+}
+
+FDelegateHandle FRemoteControlUIModule::AddPropertyFilter(FOnDisplayExposeIcon OnDisplayExposeIcon)
+{
+	FDelegateHandle Handle = OnDisplayExposeIcon.GetHandle();
+	ExternalFilterDelegates.Add(Handle, MoveTemp(OnDisplayExposeIcon));
+	return Handle;
+}
+
+void FRemoteControlUIModule::RemovePropertyFilter(const FDelegateHandle& Handle)
+{
+	ExternalFilterDelegates.Remove(Handle);
+}
+
+void FRemoteControlUIModule::RegisterMetadataCustomization(FName MetadataKey, FOnCustomizeMetadataEntry OnCustomizeCallback)
+{
+	ExternalEntityMetadataCustomizations.FindOrAdd(MetadataKey) = MoveTemp(OnCustomizeCallback);
+}
+
+void FRemoteControlUIModule::UnregisterMetadataCustomization(FName MetadataKey)
+{
+	ExternalEntityMetadataCustomizations.Remove(MetadataKey);
 }
 
 TSharedRef<SRemoteControlPanel> FRemoteControlUIModule::CreateRemoteControlPanel(URemoteControlPreset* Preset)
@@ -58,7 +106,6 @@ TSharedRef<SRemoteControlPanel> FRemoteControlUIModule::CreateRemoteControlPanel
 					WeakActivePanel = MoveTemp(Panel);
 				}
 			});
-
 	return PanelRef;
 }
 
@@ -94,8 +141,20 @@ void FRemoteControlUIModule::RegisterDetailRowExtension()
 
 void FRemoteControlUIModule::UnregisterDetailRowExtension()
 {
-	FPropertyEditorModule& Module = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	Module.GetGlobalRowExtensionDelegate().RemoveAll(this);
+	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+	{
+		FPropertyEditorModule& Module = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		Module.GetGlobalRowExtensionDelegate().RemoveAll(this);
+	}
+}
+
+URemoteControlPreset* FRemoteControlUIModule::GetActivePreset() const
+{
+	if (const TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	{
+		return Panel->GetPreset();
+	}
+	return nullptr;
 }
 
 void FRemoteControlUIModule::RegisterAssetTools()
@@ -169,19 +228,28 @@ EVisibility FRemoteControlUIModule::OnGetExposeButtonVisibility(TSharedPtr<IProp
 {
 	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
 	{
-		if (Panel->GetPreset() && Panel->IsInEditMode())
+		if (Handle)
 		{
-			EPropertyExposeStatus ExposeStatus = GetPropertyExposeStatus(Handle);
-			if (ExposeStatus == EPropertyExposeStatus::Exposed || ExposeStatus == EPropertyExposeStatus::Unexposed)
+			if (!ShouldDisplayExposeIcon(Handle.ToSharedRef()))
 			{
-				return EVisibility::Visible;
+				return EVisibility::Collapsed;
 			}
-			else
+
+			if (Panel->GetPreset() && Panel->IsInEditMode())
 			{
-				// Show no icon when property is unexposable.
-				return EVisibility::Hidden;
+				EPropertyExposeStatus ExposeStatus = GetPropertyExposeStatus(Handle);
+				if (ExposeStatus == EPropertyExposeStatus::Exposed || ExposeStatus == EPropertyExposeStatus::Unexposed)
+				{
+					return EVisibility::Visible;
+				}
+				else
+				{
+					// Show no icon when property is unexposable.
+					return EVisibility::Hidden;
+				}
 			}
 		}
+
 	}
 	return EVisibility::Collapsed;
 }
@@ -241,6 +309,97 @@ TSharedRef<FExtender> FRemoteControlUIModule::ExtendLevelViewportContextMenuForR
 	}
 
 	return Extender.ToSharedRef();
+}
+
+bool FRemoteControlUIModule::ShouldDisplayExposeIcon(const TSharedRef<IPropertyHandle>& PropertyHandle) const
+{
+	if (FProperty* Prop = PropertyHandle->GetProperty())
+	{
+		// Don't display an expose icon for RCEntities since they're only displayed in the Remote Control Panel.
+		if (Prop->GetOwnerStruct() && Prop->GetOwnerStruct()->IsChildOf(FRemoteControlEntity::StaticStruct()))
+		{
+			return false;
+		}
+
+		if (PropertyHandle->GetNumOuterObjects() == 1)
+		{
+			TArray<UObject*> OuterObjects;
+			PropertyHandle->GetOuterObjects(OuterObjects);
+
+			if (OuterObjects[0])
+			{
+				// Don't display an expose icon for default objects.
+				if (OuterObjects[0]->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+				{
+					return false;
+				}
+
+				// Don't display an expose icon for transient objects such as material editor parameters.
+				if (OuterObjects[0]->GetOutermost()->HasAnyFlags(RF_Transient))
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	for (const TPair<FDelegateHandle, FOnDisplayExposeIcon>& DelegatePair : ExternalFilterDelegates)
+	{
+		if (DelegatePair.Value.IsBound())
+		{
+			if (!DelegatePair.Value.Execute(PropertyHandle))
+			{
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
+void FRemoteControlUIModule::RegisterStructCustomizations()
+{
+	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	
+	for (FName Name : RemoteControlUIModule::GetCustomizedStructNames())
+	{
+		PropertyEditorModule.RegisterCustomClassLayout(Name, FOnGetDetailCustomizationInstance::CreateStatic(&FRemoteControlEntityCustomization::MakeInstance));
+	}
+}
+
+void FRemoteControlUIModule::UnregisterStructCustomizations()
+{
+	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	
+	// Unregister delegates in reverse order.
+	for (int8 NameIndex = RemoteControlUIModule::GetCustomizedStructNames().Num() - 1; NameIndex >= 0; NameIndex--)
+	{
+		PropertyEditorModule.UnregisterCustomClassLayout(RemoteControlUIModule::GetCustomizedStructNames()[NameIndex]);
+	}
+}
+
+void FRemoteControlUIModule::RegisterSettings()
+{
+	GetMutableDefault<URemoteControlSettings>()->OnSettingChanged().AddRaw(this, &FRemoteControlUIModule::OnSettingsModified);
+}
+
+void FRemoteControlUIModule::UnregisterSettings()
+{
+	if (UObjectInitialized())
+	{
+		GetMutableDefault<URemoteControlSettings>()->OnSettingChanged().RemoveAll(this);
+	}
+}
+
+void FRemoteControlUIModule::OnSettingsModified(UObject*, FPropertyChangedEvent&)
+{
+	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	{
+		if (TSharedPtr<SRCPanelExposedEntitiesList> EntityList = Panel->GetEntityList())
+		{
+			EntityList->Refresh();
+		}	
+	}
 }
 
 IMPLEMENT_MODULE(FRemoteControlUIModule, RemoteControlUI);

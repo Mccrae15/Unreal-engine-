@@ -38,9 +38,6 @@
 
 //PRAGMA_DISABLE_OPTIMIZATION
 
-// Whether to use RigidBody AnimNode for simulation preview when using Chaos since we don't have constraints in the main scene yet.
-// NOTE: The SkeletalMeshComponent simulation overrides the AnimNode simulation if enabled, so PHAT_USE_RBAN_SIMULATION switches it off.
-#define PHAT_USE_RBAN_SIMULATION WITH_CHAOS
 
 FScopedBulkSelection::FScopedBulkSelection(TSharedPtr<FPhysicsAssetEditorSharedData> InSharedData)
 	: SharedData(InSharedData)
@@ -78,11 +75,6 @@ FPhysicsAssetEditorSharedData::FPhysicsAssetEditorSharedData()
 	
 	// Construct mouse handle
 	MouseHandle = NewObject<UPhysicsAssetEditorPhysicsHandleComponent>();
-
-	// in Chaos, we have to manipulate the RBAN node in the Anim Instance (at least until we get SkelMeshComp implemented)
-#if PHAT_USE_RBAN_SIMULATION
-	MouseHandle->SetAnimInstanceMode(true);
-#endif
 
 	// Construct sim options.
 	EditorOptions = NewObject<UPhysicsAssetEditorOptions>(GetTransientPackage(), MakeUniqueObjectName(GetTransientPackage(), UPhysicsAssetEditorOptions::StaticClass(), FName(TEXT("EditorOptions"))), RF_Transactional);
@@ -152,7 +144,7 @@ void FPhysicsAssetEditorSharedData::Initialize(const TSharedRef<IPersonaPreviewS
 				continue;
 			}
 			FName BoneName = PhysicsAsset->SkeletalBodySetups[i]->BoneName;
-			int32 BoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(BoneName);
+			int32 BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(BoneName);
 			if (BoneIndex == INDEX_NONE)
 			{
 				MissingBodyIndices.Add( i );
@@ -224,7 +216,7 @@ void FPhysicsAssetEditorSharedData::CachePreviewMesh()
 				LOCTEXT("Error_PhysicsAssetHasNoSkelMesh", "Warning: Physics Asset has no skeletal mesh assigned.\nFor now, a simple default skeletal mesh ({0}) will be used.\nYou can fix this by opening the asset and choosing another skeletal mesh from the toolbar."),
 				FText::FromString(PreviewMesh->GetFullName())));
 	}
-	else if(PreviewMesh->Skeleton == nullptr)
+	else if(PreviewMesh->GetSkeleton() == nullptr)
 	{
 		// Fall back in the case of a deleted skeleton
 		PreviewMesh = (USkeletalMesh*)StaticLoadObject(USkeletalMesh::StaticClass(), NULL, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"), NULL, LOAD_None, NULL);
@@ -302,7 +294,7 @@ void FPhysicsAssetEditorSharedData::Mirror()
 
 		for (FMirrorInfo & MirrorInfo : MirrorInfos)	//mirror all selected bodies/constraints
 		{
-			int32 BoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(MirrorInfo.BoneName);
+			int32 BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(MirrorInfo.BoneName);
 
 			int32 MirrorBoneIndex = PhysicsAsset->FindMirroredBone(EditorSkelMesh, BoneIndex);
 			if (MirrorBoneIndex != INDEX_NONE)
@@ -750,6 +742,27 @@ void FPhysicsAssetEditorSharedData::HideSelected()
 	}
 }
 
+void FPhysicsAssetEditorSharedData::ToggleShowOnlyColliding()
+{
+	// important that we check this before calling ShowAll
+	const bool bIsShowingColliding = (HiddenBodies == NoCollisionBodies);
+
+	// in any case first show all
+	ShowAll();
+
+	if (!bIsShowingColliding)
+	{
+		// only works if one only body is selected
+		if (PhysicsAsset != nullptr && SelectedBodies.Num() == 1)
+		{
+
+			// NoCollisionBodies already contains the non colliding bodies from the one selection
+			HiddenBodies.Empty();
+			HiddenBodies.Append(NoCollisionBodies);
+		}
+	}
+}
+
 void FPhysicsAssetEditorSharedData::UpdateNoCollisionBodies()
 {
 	NoCollisionBodies.Empty();
@@ -1120,15 +1133,15 @@ bool FPhysicsAssetEditorSharedData::WeldSelectedBodies(bool bWeld /* = true */)
 	const FSelection& Body1 = SelectedBodies[BodyIndex1];
 
 	FName Bone0Name = PhysicsAsset->SkeletalBodySetups[Body0.Index]->BoneName;
-	int32 Bone0Index = EditorSkelMesh->RefSkeleton.FindBoneIndex(Bone0Name);
+	int32 Bone0Index = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(Bone0Name);
 	check(Bone0Index != INDEX_NONE);
 
 	FName Bone1Name = PhysicsAsset->SkeletalBodySetups[Body1.Index]->BoneName;
-	int32 Bone1Index = EditorSkelMesh->RefSkeleton.FindBoneIndex(Bone1Name);
+	int32 Bone1Index = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(Bone1Name);
 	check(Bone1Index != INDEX_NONE);
 
-	int32 Bone0ParentIndex = EditorSkelMesh->RefSkeleton.GetParentIndex(Bone0Index);
-	int32 Bone1ParentIndex = EditorSkelMesh->RefSkeleton.GetParentIndex(Bone1Index);
+	int32 Bone0ParentIndex = EditorSkelMesh->GetRefSkeleton().GetParentIndex(Bone0Index);
+	int32 Bone1ParentIndex = EditorSkelMesh->GetRefSkeleton().GetParentIndex(Bone1Index);
 
 	int ParentBodyIndex = INDEX_NONE;
 	int ChildBodyIndex = INDEX_NONE;
@@ -1246,7 +1259,7 @@ void FPhysicsAssetEditorSharedData::MakeNewBody(int32 NewBoneIndex, bool bAutoSe
 	}
 	PhysicsAsset->Modify();
 
-	FName NewBoneName = EditorSkelMesh->RefSkeleton.GetBoneName(NewBoneIndex);
+	FName NewBoneName = EditorSkelMesh->GetRefSkeleton().GetBoneName(NewBoneIndex);
 
 	// If this body is already physical, remove the current body
 	int32 NewBodyIndex = PhysicsAsset->FindBodyIndex(NewBoneName);
@@ -1285,11 +1298,11 @@ void FPhysicsAssetEditorSharedData::MakeNewBody(int32 NewBoneIndex, bool bAutoSe
 	}
 
 	// Check if the bone of the new body has any physical children bones
-	for (int32 i = 0; i < EditorSkelMesh->RefSkeleton.GetRawBoneNum(); ++i)
+	for (int32 i = 0; i < EditorSkelMesh->GetRefSkeleton().GetRawBoneNum(); ++i)
 	{
-		if (EditorSkelMesh->RefSkeleton.BoneIsChildOf(i, NewBoneIndex))
+		if (EditorSkelMesh->GetRefSkeleton().BoneIsChildOf(i, NewBoneIndex))
 		{
-			const int32 ChildBodyIndex = PhysicsAsset->FindBodyIndex(EditorSkelMesh->RefSkeleton.GetBoneName(i));
+			const int32 ChildBodyIndex = PhysicsAsset->FindBodyIndex(EditorSkelMesh->GetRefSkeleton().GetBoneName(i));
 			
 			// If the child bone is physical, it may require fixing up in regards to constraints
 			if (ChildBodyIndex != INDEX_NONE)
@@ -1319,11 +1332,11 @@ void FPhysicsAssetEditorSharedData::MakeNewBody(int32 NewBoneIndex, bool bAutoSe
 					UPhysicsConstraintTemplate* ExistingConstraintSetup = PhysicsAsset->ConstraintSetup[ ConstraintIndex ];
 					check(ExistingConstraintSetup);
 					
-					const int32 ExistingConstraintBoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(ExistingConstraintSetup->DefaultInstance.ConstraintBone2);
+					const int32 ExistingConstraintBoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ExistingConstraintSetup->DefaultInstance.ConstraintBone2);
 					check(ExistingConstraintBoneIndex != INDEX_NONE);
 
 					// If the constraint exists between two child bones, then no fix up is required
-					if (EditorSkelMesh->RefSkeleton.BoneIsChildOf(ExistingConstraintBoneIndex, NewBoneIndex))
+					if (EditorSkelMesh->GetRefSkeleton().BoneIsChildOf(ExistingConstraintBoneIndex, NewBoneIndex))
 					{
 						continue;
 					}
@@ -1416,7 +1429,7 @@ void FPhysicsAssetEditorSharedData::SetConstraintRelTM(const FPhysicsAssetEditor
 	ConstraintSetup->Modify();
 
 	// Get child bone transform
-	int32 BoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone1);
+	int32 BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone1);
 	if (BoneIndex != INDEX_NONE)
 	{
 		FTransform BoneTM = EditorSkelComp->GetBoneTransform(BoneIndex);
@@ -1441,8 +1454,8 @@ void FPhysicsAssetEditorSharedData::SnapConstraintToBone(FConstraintInstance& Co
 		return;
 	}
 
-	const int32 BoneIndex1 = EditorSkelMesh->RefSkeleton.FindBoneIndex(ConstraintInstance.ConstraintBone1);
-	const int32 BoneIndex2 = EditorSkelMesh->RefSkeleton.FindBoneIndex(ConstraintInstance.ConstraintBone2);
+	const int32 BoneIndex1 = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintInstance.ConstraintBone1);
+	const int32 BoneIndex2 = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintInstance.ConstraintBone2);
 
 	check(BoneIndex1 != INDEX_NONE);
 	check(BoneIndex2 != INDEX_NONE);
@@ -1624,7 +1637,7 @@ void FPhysicsAssetEditorSharedData::DeleteBody(int32 DelBodyIndex, bool bRefresh
 	TArray<int32> NearestBodiesBelow;
 	PhysicsAsset->GetNearestBodyIndicesBelow(NearestBodiesBelow, BodySetup->BoneName, EditorSkelMesh);
 	
-	int32 BoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(BodySetup->BoneName);
+	int32 BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(BodySetup->BoneName);
 
 	if (BoneIndex != INDEX_NONE)	//it's possible to delete bodies that have no bones. In this case just ignore all of this fixup code
 	{
@@ -1776,11 +1789,11 @@ FTransform FPhysicsAssetEditorSharedData::GetConstraintBodyTM(const UPhysicsCons
 	int32 BoneIndex;
 	if (Frame == EConstraintFrame::Frame1)
 	{
-		BoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone1);
+		BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone1);
 	}
 	else
 	{
-		BoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone2);
+		BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone2);
 	}
 
 	// If we couldn't find the bone - fall back to identity.
@@ -1816,11 +1829,11 @@ FTransform FPhysicsAssetEditorSharedData::GetConstraintWorldTM(const UPhysicsCon
 	FTransform LFrame = ConstraintSetup->DefaultInstance.GetRefFrame(Frame);
 	if (Frame == EConstraintFrame::Frame1)
 	{
-		BoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone1);
+		BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone1);
 	}
 	else
 	{
-		BoneIndex = EditorSkelMesh->RefSkeleton.FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone2);
+		BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone2);
 	}
 
 	// If we couldn't find the bone - fall back to identity.
@@ -1912,21 +1925,42 @@ void FPhysicsAssetEditorSharedData::EnableSimulation(bool bEnableSimulation)
 {
 	if (bEnableSimulation)
 	{
-#if !PHAT_USE_RBAN_SIMULATION
-		// We should not already have an instance (destroyed when stopping sim).
-		EditorSkelComp->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-		EditorSkelComp->SetSimulatePhysics(true);
-		EditorSkelComp->ResetAllBodiesSimulatePhysics();
-		EditorSkelComp->SetPhysicsBlendWeight(EditorOptions->PhysicsBlend);
-		PhysicalAnimationComponent->SetSkeletalMeshComponent(EditorSkelComp);
+		// in Chaos, we have to manipulate the RBAN node in the Anim Instance (at least until we get SkelMeshComp implemented)
+		const bool bUseRBANSolver = (PhysicsAsset->SolverType == EPhysicsAssetSolverType::RBAN);
+		MouseHandle->SetAnimInstanceMode(bUseRBANSolver);
 
-		// Make it start simulating
-		EditorSkelComp->WakeAllRigidBodies();
-#else
-		// Enable the PreviewInstance (containing the AnimNode_RigidBody)
-		EditorSkelComp->SetAnimationMode(EAnimationMode::AnimationCustomMode);
-		EditorSkelComp->InitAnim(true);
-#endif
+		if (!bUseRBANSolver)
+		{
+			// We should not already have an instance (destroyed when stopping sim).
+			EditorSkelComp->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			EditorSkelComp->SetSimulatePhysics(true);
+			EditorSkelComp->ResetAllBodiesSimulatePhysics();
+			EditorSkelComp->SetPhysicsBlendWeight(EditorOptions->PhysicsBlend);
+			PhysicalAnimationComponent->SetSkeletalMeshComponent(EditorSkelComp);
+
+			// Make it start simulating
+			EditorSkelComp->WakeAllRigidBodies();
+		}
+		else
+		{
+			// Enable the PreviewInstance (containing the AnimNode_RigidBody)
+			EditorSkelComp->SetAnimationMode(EAnimationMode::AnimationCustomMode);
+			EditorSkelComp->InitAnim(true);
+
+			// Disable main solver physics
+			EditorSkelComp->SetAllBodiesSimulatePhysics(false);
+
+			// Add the floor
+			TSharedPtr<IPersonaPreviewScene> Scene = PreviewScene.Pin();
+			if (Scene != nullptr)
+			{
+				UStaticMeshComponent* FloorMeshComponent = const_cast<UStaticMeshComponent*>(Scene->GetFloorMeshComponent());
+				if ((FloorMeshComponent != nullptr) && (FloorMeshComponent->GetBodyInstance() != nullptr))
+				{
+					EditorSkelComp->CreateSimulationFloor(FloorMeshComponent->GetBodyInstance(), FloorMeshComponent->GetBodyInstance()->GetUnrealWorldTransform());
+				}
+			}
+		}
 
 		if(EditorOptions->bResetClothWhenSimulating)
 		{
@@ -1945,10 +1979,8 @@ void FPhysicsAssetEditorSharedData::EnableSimulation(bool bEnableSimulation)
 		// Stop any animation and clear node when stopping simulation.
 		PhysicalAnimationComponent->SetSkeletalMeshComponent(nullptr);
 
-#if PHAT_USE_RBAN_SIMULATION
 		// Undo ends up recreating the anim script instance, so we need to remove it here (otherwise the AnimNode_RigidBody similation starts when we undo)
 		EditorSkelComp->ClearAnimScriptInstance();
-#endif
 
 		EditorSkelComp->SetPhysicsBlendWeight(0.f);
 		EditorSkelComp->ResetAllBodiesSimulatePhysics();

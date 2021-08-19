@@ -10,13 +10,24 @@
 
 #define DEBUG_HULL_GENERATION 0
 
+// Those flags allow to output geometric data in OBJ compatible format
+// INSTRUCTIONS:
+//     Get the data form the log, remove the log header part and save it to a .obj file,
+//     in a 3D viewer or DCC ( Windows 3D Viewer, Maya, Blender ... ), open/import the .obj file
+// WARNING: 
+//    - this needs DEBUG_HULL_GENERATION to also be enabled
+//    - this may produce a lot of data and slow down levels have assets with a lot of convexes
+#define DEBUG_HULL_GENERATION_HULLSTEPS_TO_OBJ 0
+#define DEBUG_HULL_GENERATION_BUILDHORIZON_TO_OBJ 0
+
 namespace Chaos
 {
 	// When encountering a triangle or quad in hull generation (3-points or 4 coplanar points) we will instead generate
 	// a prism with a small thickness to emulate the desired result as a hull. Otherwise hull generation will fail on
 	// these cases. Verbose logging on LogChaos will point out when this path is taken for further scrutiny about
 	// the geometry
-	static constexpr float TriQuadPrismInflation() { return 0.1f; }
+	static constexpr FReal TriQuadPrismInflation() { return 0.1f; }
+	static constexpr FReal DefaultHorizonEpsilon() { return 0.1f; }
 
 	class FConvexBuilder
 	{
@@ -26,29 +37,35 @@ namespace Chaos
 		{
 		public:
 			Params()
-				: HorizonEpsilon(0.1f)
+				: HorizonEpsilon(DefaultHorizonEpsilon())
 			{}
 
 			FReal HorizonEpsilon;
 		};
 
-		static FReal SuggestEpsilon(const TParticles<FReal, 3>& InParticles)
+		static CHAOS_API FReal SuggestEpsilon(const TArray<FVec3>& InVertices)
 		{
+			if (ComputeHorizonEpsilonFromMeshExtends == 0)
+			{
+				// legacy path, return the hardcoded default value
+				return DefaultHorizonEpsilon();
+			}
+
 			// Create a scaled epsilon for our input data set. FLT_EPSILON is the distance between 1.0 and the next value
 			// above 1.0 such that 1.0 + FLT_EPSILON != 1.0. Floats aren't equally disanced though so big or small numbers
 			// don't work well with it. Here we take the max absolute of each axis and scale that for a wider margin and
 			// use that to scale FLT_EPSILON to get a more relevant value.
-			TVector<FReal, 3> MaxAxes(TNumericLimits<FReal>::Lowest());
-			const int32 NumParticles = InParticles.Size();
+			FVec3 MaxAxes(TNumericLimits<FReal>::Lowest());
+			const int32 NumVertices = InVertices.Num();
 
-			if(NumParticles <= 1)
+			if (NumVertices <= 1)
 			{
 				return FLT_EPSILON;
 			}
 
-			for(int32 Index = 0; Index < NumParticles; ++Index)
+			for (int32 Index = 0; Index < NumVertices; ++Index)
 			{
-				TVector<FReal, 3> PositionAbs = InParticles.X(Index).GetAbs();
+				FVec3 PositionAbs = InVertices[Index].GetAbs();
 
 				MaxAxes[0] = FMath::Max(MaxAxes[0], PositionAbs[0]);
 				MaxAxes[1] = FMath::Max(MaxAxes[1], PositionAbs[1]);
@@ -76,29 +93,29 @@ namespace Chaos
 		static bool IsValidQuad(const FVec3& A, const FVec3& B, const FVec3& C, const FVec3& D, FVec3& OutNormal)
 		{
 			FPlane TriPlane(A, B, C);
-			const float DPointDistance = FMath::Abs(TriPlane.PlaneDot(D));
+			const FReal DPointDistance = FMath::Abs(TriPlane.PlaneDot(D));
 			OutNormal = FVec3(TriPlane.X, TriPlane.Y, TriPlane.Z);
 			return FMath::IsNearlyEqual(DPointDistance, 0, KINDA_SMALL_NUMBER);
 		}
 
-		static bool IsPlanarShape(const TParticles<FReal, 3>& InParticles, FVec3& OutNormal)
+		static bool IsPlanarShape(const TArray<FVec3>& InVertices, FVec3& OutNormal)
 		{
 			bool bResult = false;
-			const int32 NumParticles = InParticles.Size();
+			const int32 NumVertices = InVertices.Num();
 			
-			if(NumParticles <= 3)
+			if (NumVertices <= 3)
 			{
 				// Nothing, point, line or triangle, not a planar set
 				return false;
 			}
 			else // > 3 points
 			{
-				FPlane TriPlane(InParticles.X(0), InParticles.X(1), InParticles.X(2));
+				FPlane TriPlane(InVertices[0], InVertices[1], InVertices[2]);
 				OutNormal = FVec3(TriPlane.X, TriPlane.Y, TriPlane.Z);
 
-				for(int32 Index = 3; Index < NumParticles; ++Index)
+				for (int32 Index = 3; Index < NumVertices; ++Index)
 				{
-					const float PointPlaneDot = FMath::Abs(TriPlane.PlaneDot(InParticles.X(Index)));
+					const FReal PointPlaneDot = FMath::Abs(TriPlane.PlaneDot(InVertices[Index]));
 					if(!FMath::IsNearlyEqual(PointPlaneDot, 0, KINDA_SMALL_NUMBER))
 					{
 						return false;
@@ -237,45 +254,45 @@ namespace Chaos
 
 	public:
 
-		static void Build(const TParticles<FReal, 3>& InParticles, TArray <TPlaneConcrete<FReal, 3>>& OutPlanes, TArray<TArray<int32>>& OutFaceIndices, TParticles<FReal, 3>& OutSurfaceParticles, TAABB<FReal, 3>& OutLocalBounds)
+		static void Build(const TArray<FVec3>& InVertices, TArray <TPlaneConcrete<FReal, 3>>& OutPlanes, TArray<TArray<int32>>& OutFaceIndices, TArray<FVec3>& OutVertices, FAABB3& OutLocalBounds)
 		{
 			OutPlanes.Reset();
-			OutSurfaceParticles.Resize(0);
-			OutLocalBounds = TAABB<FReal, 3>::EmptyAABB();
+			OutVertices.Reset();
+			OutLocalBounds = FAABB3::EmptyAABB();
 
-			const uint32 NumParticlesIn = InParticles.Size();
-			if(NumParticlesIn == 0)
+			const int32 NumVerticesIn = InVertices.Num();
+			if(NumVerticesIn == 0)
 			{
 				return;
 			}
 
-			const TParticles<FReal, 3>* ParticlesToUse = &InParticles;
-			TParticles<FReal, 3> ModifiedParticles;
+			const TArray<FVec3>* VerticesToUse = &InVertices;
+			TArray<FVec3> ModifiedVertices;
 
 			// For triangles and planar shapes, create a very thin prism as a convex
-			auto Inflate = [](const TParticles<FReal, 3>& Source, TParticles<FReal, 3>& Destination, const FVec3& Normal, float Inflation)
+			auto Inflate = [](const TArray<FVec3>& Source, TArray<FVec3>& Destination, const FVec3& Normal, FReal Inflation)
 			{
-				const int32 NumSource = Source.Size();
-				Destination.Resize(0);
-				Destination.AddParticles(NumSource * 2);
+				const int32 NumSource = Source.Num();
+				Destination.Reset();
+				Destination.SetNum(NumSource * 2);
 
 				for(int32 Index = 0; Index < NumSource; ++Index)
 				{
-					Destination.X(Index) = Source.X(Index);
-					Destination.X(NumSource + Index) = Source.X(Index) + Normal * Inflation;
+					Destination[Index] = Source[Index];
+					Destination[NumSource + Index] = Source[Index] + Normal * Inflation;
 				}
 			};
 
 			FVec3 PlanarNormal(0);
-			if(NumParticlesIn == 3)
+			if (NumVerticesIn == 3)
 			{
-				const bool bIsValidTriangle = IsValidTriangle(InParticles.X(0), InParticles.X(1), InParticles.X(2), PlanarNormal);
+				const bool bIsValidTriangle = IsValidTriangle(InVertices[0], InVertices[1], InVertices[2], PlanarNormal);
 
 				//TODO_SQ_IMPLEMENTATION: should do proper cleanup to avoid this
 				if(ensureMsgf(bIsValidTriangle, TEXT("FConvexBuilder::Build(): Generated invalid triangle!")))
 				{
-					Inflate(InParticles, ModifiedParticles, PlanarNormal, TriQuadPrismInflation());
-					ParticlesToUse = &ModifiedParticles;
+					Inflate(InVertices, ModifiedVertices, PlanarNormal, TriQuadPrismInflation());
+					VerticesToUse = &ModifiedVertices;
 					UE_LOG(LogChaos, Verbose, TEXT("Encountered a triangle in convex hull generation. Will prepare a prism of thickness %.5f in place of a triangle."), TriQuadPrismInflation());
 				}
 				else
@@ -283,25 +300,27 @@ namespace Chaos
 					return;
 				}
 			}
-			else if(IsPlanarShape(InParticles, PlanarNormal))
+			else if (IsPlanarShape(InVertices, PlanarNormal))
 			{
-				Inflate(InParticles, ModifiedParticles, PlanarNormal, TriQuadPrismInflation());
-				ParticlesToUse = &ModifiedParticles;
+				Inflate(InVertices, ModifiedVertices, PlanarNormal, TriQuadPrismInflation());
+				VerticesToUse = &ModifiedVertices;
 				UE_LOG(LogChaos, Verbose, TEXT("Encountered a planar shape in convex hull generation. Will prepare a prism of thickness %.5f in place of a triangle."), TriQuadPrismInflation());
 			}
 
-			const int32 NumParticlesToUse = ParticlesToUse->Size();
+			const int32 NumVerticesToUse = VerticesToUse->Num();
 
-			OutLocalBounds = TAABB<FReal, 3>(ParticlesToUse->X(0), ParticlesToUse->X(0));
-			for(int32 ParticleIndex = 0; ParticleIndex < NumParticlesToUse; ++ParticleIndex)
+			OutLocalBounds = FAABB3((*VerticesToUse)[0], (*VerticesToUse)[0]);
+			for (int32 VertexIndex = 0; VertexIndex < NumVerticesToUse; ++VertexIndex)
 			{
-				OutLocalBounds.GrowToInclude(ParticlesToUse->X(ParticleIndex));
+				OutLocalBounds.GrowToInclude((*VerticesToUse)[VertexIndex]);
 			}
 
-			if(NumParticlesToUse >= 4)
+			if (NumVerticesToUse >= 4)
 			{
-				TArray<TVector<int32, 3>> Indices;
-				BuildConvexHull(*ParticlesToUse, Indices);
+				TArray<TVec3<int32>> Indices;
+				Params BuildParams;
+				BuildParams.HorizonEpsilon = Chaos::FConvexBuilder::SuggestEpsilon(*VerticesToUse);
+				BuildConvexHull(*VerticesToUse, Indices, BuildParams);
 				OutPlanes.Reserve(Indices.Num());
 				TMap<int32, int32> IndexMap; // maps original particle indices to output particle indices
 				int32 NewIdx = 0;
@@ -316,9 +335,9 @@ namespace Chaos
 					return NewIdx++;
 				};
 
-				for(const TVector<int32, 3>& Idx : Indices)
+				for(const TVec3<int32>& Idx : Indices)
 				{
-					FVec3 Vs[3] = {ParticlesToUse->X(Idx[0]), ParticlesToUse->X(Idx[1]), ParticlesToUse->X(Idx[2])};
+					FVec3 Vs[3] = { (*VerticesToUse)[Idx[0]], (*VerticesToUse)[Idx[1]], (*VerticesToUse)[Idx[2]] };
 					const FVec3 Normal = FVec3::CrossProduct(Vs[1] - Vs[0], Vs[2] - Vs[0]).GetUnsafeNormal();
 					OutPlanes.Add(TPlaneConcrete<FReal, 3>(Vs[0], Normal));
 					TArray<int32> FaceIndices;
@@ -329,21 +348,21 @@ namespace Chaos
 					OutFaceIndices.Add(FaceIndices);
 				}
 
-				OutSurfaceParticles.AddParticles(IndexMap.Num());
+				OutVertices.SetNum(IndexMap.Num());
 				for(const auto& Elem : IndexMap)
 				{
-					OutSurfaceParticles.X(Elem.Value) = ParticlesToUse->X(Elem.Key);
+					OutVertices[Elem.Value] = (*VerticesToUse)[Elem.Key];
 				}
 			}
 
-			UE_CLOG(OutSurfaceParticles.Size() == 0, LogChaos, Warning, TEXT("Convex hull generation produced zero convex particles, collision will fail for this primitive."));
+			UE_CLOG(OutVertices.Num() == 0, LogChaos, Warning, TEXT("Convex hull generation produced zero convex particles, collision will fail for this primitive."));
 		}
 
-		static void BuildConvexHull(const TParticles<FReal, 3>& InParticles, TArray<TVector<int32, 3>>& OutIndices, const Params& InParams = Params())
+		static void BuildConvexHull(const TArray<FVec3>& InVertices, TArray<TVec3<int32>>& OutIndices, const Params& InParams = Params())
 		{
 			OutIndices.Reset();
 			FMemPool Pool;
-			FConvexFace* Faces = BuildInitialHull(Pool, InParticles);
+			FConvexFace* Faces = BuildInitialHull(Pool, InVertices);
 			if(Faces == nullptr)
 			{
 				return;
@@ -365,38 +384,60 @@ namespace Chaos
 			DummyFace->Next = Faces;
 			Faces->Prev = DummyFace;
 
-			FHalfEdge* ConflictV = FindConflictVertex(InParticles, DummyFace->Next);
+			FHalfEdge* ConflictV = FindConflictVertex(InVertices, DummyFace->Next);
 			while(ConflictV)
 			{
-				AddVertex(Pool, InParticles, ConflictV, InParams);
-				ConflictV = FindConflictVertex(InParticles, DummyFace->Next);
+
+#if DEBUG_HULL_GENERATION
+#if DEBUG_HULL_GENERATION_HULLSTEPS_TO_OBJ
+				UE_LOG(LogChaos, VeryVerbose, TEXT("# ======================================================"));
+				const FVec3 ConflictPos = InVertices[ConflictV->Vertex];
+				UE_LOG(LogChaos, VeryVerbose, TEXT("# GENERATED HULL before adding Vtx %d (%f %f %f)"), ConflictV->Vertex, ConflictPos.X, ConflictPos.Y, ConflictPos.Z);
+				UE_LOG(LogChaos, VeryVerbose, TEXT("# ------------------------------------------------------"));
+				FConvexFace* Face = DummyFace->Next;
+				while (Face)
+				{
+					const FVector P1 = InVertices[Face->FirstEdge->Prev->Vertex];
+					const FVector P2 = InVertices[Face->FirstEdge->Next->Vertex];
+					const FVector P3 = InVertices[Face->FirstEdge->Vertex];
+					UE_LOG(LogChaos, VeryVerbose, TEXT("v %f %f %f"), P1.X, P1.Y, P1.Z);
+					UE_LOG(LogChaos, VeryVerbose, TEXT("v %f %f %f"), P2.X, P2.Y, P2.Z);
+					UE_LOG(LogChaos, VeryVerbose, TEXT("v %f %f %f"), P3.X, P3.Y, P3.Z);
+					UE_LOG(LogChaos, VeryVerbose, TEXT("f -3 -2 -1"));
+					Face = Face->Next;
+				}
+#endif
+#endif
+
+				AddVertex(Pool, InVertices, ConflictV, InParams);
+				ConflictV = FindConflictVertex(InVertices, DummyFace->Next);
 			}
 
 			FConvexFace* Cur = DummyFace->Next;
 			while(Cur)
 			{
 				//todo(ocohen): this assumes faces are triangles, not true once face merging is added
-				OutIndices.Add(TVector<int32, 3>(Cur->FirstEdge->Vertex, Cur->FirstEdge->Next->Vertex, Cur->FirstEdge->Next->Next->Vertex));
+				OutIndices.Add(TVec3<int32>(Cur->FirstEdge->Vertex, Cur->FirstEdge->Next->Vertex, Cur->FirstEdge->Next->Next->Vertex));
 				FConvexFace* Next = Cur->Next;
 				Cur = Next;
 			}
 		}
 
-		static TTriangleMesh<FReal> BuildConvexHullTriMesh(const TParticles<FReal, 3>& InParticles)
+		static FTriangleMesh BuildConvexHullTriMesh(const TArray<FVec3>& InVertices)
 		{
-			TArray<TVector<int32, 3>> Indices;
-			BuildConvexHull(InParticles, Indices);
-			return TTriangleMesh<FReal>(MoveTemp(Indices));
+			TArray<TVec3<int32>> Indices;
+			BuildConvexHull(InVertices, Indices);
+			return FTriangleMesh(MoveTemp(Indices));
 		}
 
-		static CHAOS_API bool IsPerformanceWarning(int32 NumPlanes, int32 NumParticles)
+		static CHAOS_API bool IsPerformanceWarning(int32 NumPlanes, int32 NumVertices)
 		{
 			if (!PerformGeometryCheck)
 			{
 				return false;
 			}
 
-			return (NumParticles > ParticlesThreshold);
+			return (NumVertices > VerticesThreshold);
 		}
 
 		static CHAOS_API bool IsGeometryReductionEnabled()
@@ -404,12 +445,12 @@ namespace Chaos
 			return (PerformGeometryReduction>0)?true:false;
 		}
 
-		static FString PerformanceWarningString(int32 NumPlanes, int32 NumParticles)
+		static FString PerformanceWarningString(int32 NumPlanes, int32 NumVertices)
 		{
-			return FString::Printf(TEXT("Planes %d, SurfaceParticles %d"), NumPlanes, NumParticles);
+			return FString::Printf(TEXT("Planes %d, Vertices %d"), NumPlanes, NumVertices);
 		}
 
-		static CHAOS_API void Simplify(TArray <TPlaneConcrete<FReal, 3>>& InOutPlanes, TArray<TArray<int32>>& InOutFaces, TParticles<FReal, 3>& InOutParticles, TAABB<FReal, 3>& InOutLocalBounds)
+		static CHAOS_API void Simplify(TArray <TPlaneConcrete<FReal, 3>>& InOutPlanes, TArray<TArray<int32>>& InOutFaces, TArray<FVec3>& InOutVertices, FAABB3& InOutLocalBounds)
 		{
 			struct TPair
 			{
@@ -418,17 +459,12 @@ namespace Chaos
 				uint32 B;
 			};
 
-			uint32 NumberOfParticlesRequired = ParticlesThreshold;
-			uint32 NumberOfParticlesWeHave = InOutParticles.Size();
-			int32 NumToDelete = NumberOfParticlesWeHave - NumberOfParticlesRequired;
+			uint32 NumberOfVerticesRequired = VerticesThreshold;
+			uint32 NumberOfVerticesWeHave = InOutVertices.Num();
+			int32 NumToDelete = NumberOfVerticesWeHave - NumberOfVerticesRequired;
 
-			uint32 Size = InOutParticles.Size();
-			TArray<FVec3> Particles;
-			Particles.AddUninitialized(Size);
-			for (uint32 A = 0; A < Size; A++)
-			{
-				Particles[A] = InOutParticles.X(A);
-			}
+			int32 Size = InOutVertices.Num();
+			TArray<FVec3> Vertices(InOutVertices);
 
 			TArray<bool> IsDeleted;
 			IsDeleted.Reset();
@@ -439,18 +475,18 @@ namespace Chaos
 				for (uint32 Iteration = 0; Iteration < (uint32)NumToDelete; Iteration++)
 				{
 					TPair ClosestPair;
-					float ClosestDistSqr = FLT_MAX;
+					FReal ClosestDistSqr = FLT_MAX;
 
-					for (uint32 A = 0; A < (Size - 1); A++)
+					for (int32 A = 0; A < (Size - 1); A++)
 					{
 						if (!IsDeleted[A])
 						{
-							for (uint32 B = A + 1; B < Size; B++)
+							for (int32 B = A + 1; B < Size; B++)
 							{
 								if (!IsDeleted[B])
 								{
-									FVec3 Vec = Particles[A] - Particles[B];
-									float LengthSqr = Vec.SizeSquared();
+									FVec3 Vec = Vertices[A] - Vertices[B];
+									FReal LengthSqr = Vec.SizeSquared();
 									if (LengthSqr < ClosestDistSqr)
 									{
 										ClosestDistSqr = LengthSqr;
@@ -465,29 +501,28 @@ namespace Chaos
 					if (ClosestPair.A != -1)
 					{
 						// merge to mid point
-						Particles[ClosestPair.A] = Particles[ClosestPair.A] + (Particles[ClosestPair.B] - Particles[ClosestPair.A]) * 0.5f;
+						Vertices[ClosestPair.A] = Vertices[ClosestPair.A] + (Vertices[ClosestPair.B] - Vertices[ClosestPair.A]) * 0.5f;
 						IsDeleted[ClosestPair.B] = true;
 					}
 				}
 			}
 
-			TParticles<FReal, 3> TmpParticles;
-			for (int Idx = 0; Idx < Particles.Num(); Idx++)
+			TArray<FVec3> TmpVertices;
+			for (int Idx = 0; Idx < Vertices.Num(); Idx++)
 			{
-				// Only add particles that have not been merged away
+				// Only add vertices that have not been merged away
 				if (!IsDeleted[Idx])
 				{
-					TmpParticles.AddParticles(1);
-					TmpParticles.X(TmpParticles.Size() - 1) = Particles[Idx];
+					TmpVertices.Add(Vertices[Idx]);
 				}
 			}
 
-			Build(TmpParticles, InOutPlanes, InOutFaces, InOutParticles, InOutLocalBounds);
-			check(InOutParticles.Size() > 3);
+			Build(TmpVertices, InOutPlanes, InOutFaces, InOutVertices, InOutLocalBounds);
+			check(InOutVertices.Num() > 3);
 		}
 
 		// Convert multi-triangle faces to single n-gons
-		static void MergeFaces(TArray<TPlaneConcrete<FReal, 3>>& InOutPlanes, TArray<TArray<int32>>& InOutFaceVertexIndices, const TParticles<FReal, 3>& SurfaceParticles)
+		static void MergeFaces(TArray<TPlaneConcrete<FReal, 3>>& InOutPlanes, TArray<TArray<int32>>& InOutFaceVertexIndices, const TArray<FVec3>& Vertices, FReal DistanceThreshold)
 		{
 			const FReal NormalThreshold = 1.e-4f;
 
@@ -502,19 +537,49 @@ namespace Chaos
 					const TPlaneConcrete<FReal, 3>& Plane1 = InOutPlanes[PlaneIndex1];
 					const TArray<int32>& Vertices1 = InOutFaceVertexIndices[PlaneIndex1];
 
+					// First similarity test: normals are close - this will reject all very dissimilar faces
 					const FReal PlaneNormalDot = FVec3::DotProduct(Plane0.Normal(), Plane1.Normal());
 					if (PlaneNormalDot > 1.0f - NormalThreshold)
 					{
-						// Merge the verts from the second plane into the first
-						for (int32 VertexIndex1 = 0; VertexIndex1 < Vertices1.Num(); ++VertexIndex1)
+						// Second similarity test: vertices of one plane are within threshold distance of the other. This is slower but more accurate
+						bool bWithinDistanceThreshold = true;
+						for (int32 Plane0VertexIndex : Vertices0)
 						{
-							Vertices0.AddUnique(Vertices1[VertexIndex1]);
+							const FVec3 Plane0Vertex = Vertices[Plane0VertexIndex];
+							const FReal Plane0VertexDistance = FMath::Abs(FVec3::DotProduct(Plane1.X() - Plane0Vertex, Plane1.Normal()));
+							if (Plane0VertexDistance > DistanceThreshold)
+							{
+								bWithinDistanceThreshold = false;
+								break;
+							}
+						}
+						if (bWithinDistanceThreshold)
+						{
+							for (int32 Plane1VertexIndex : Vertices1)
+							{
+								const FVec3 Plane1Vertex = Vertices[Plane1VertexIndex];
+								const FReal Plane1VertexDistance = FMath::Abs(FVec3::DotProduct(Plane0.X() - Plane1Vertex, Plane0.Normal()));
+								if (Plane1VertexDistance > DistanceThreshold)
+								{
+									bWithinDistanceThreshold = false;
+									break;
+								}
+							}
 						}
 
-						// Erase the second plane
-						InOutPlanes.RemoveAtSwap(PlaneIndex1, 1, false);
-						InOutFaceVertexIndices.RemoveAtSwap(PlaneIndex1, 1, false);
-						--PlaneIndex1;
+						if (bWithinDistanceThreshold)
+						{
+							// Merge the verts from the second plane into the first
+							for (int32 VertexIndex1 = 0; VertexIndex1 < Vertices1.Num(); ++VertexIndex1)
+							{
+								Vertices0.AddUnique(Vertices1[VertexIndex1]);
+							}
+
+							// Erase the second plane
+							InOutPlanes.RemoveAtSwap(PlaneIndex1, 1, false);
+							InOutFaceVertexIndices.RemoveAtSwap(PlaneIndex1, 1, false);
+							--PlaneIndex1;
+						}
 					}
 				}
 			}
@@ -522,26 +587,26 @@ namespace Chaos
 			// Re-order the face vertices to form the face half-edges
 			for (int32 PlaneIndex0 = 0; PlaneIndex0 < InOutPlanes.Num(); ++PlaneIndex0)
 			{
-				SortFaceVerticesCCW(InOutPlanes[PlaneIndex0], InOutFaceVertexIndices[PlaneIndex0], SurfaceParticles);
+				SortFaceVerticesCCW(InOutPlanes[PlaneIndex0], InOutFaceVertexIndices[PlaneIndex0], Vertices);
 			}
 		}
 
 		// Reorder the vertices to be counter-clockwise about the normal
-		static void SortFaceVerticesCCW(const TPlaneConcrete<FReal, 3>& Face, TArray<int32>& InOutFaceVertexIndices, const TParticles<FReal, 3>& SurfaceParticles)
+		static void SortFaceVerticesCCW(const TPlaneConcrete<FReal, 3>& Face, TArray<int32>& InOutFaceVertexIndices, const TArray<FVec3>& Vertices)
 		{
 			FMatrix33 FaceMatrix = FRotationMatrix::MakeFromZ(Face.Normal());
 
 			FVec3 Centroid = FVec3(0);
 			for (int32 VertexIndex = 0; VertexIndex < InOutFaceVertexIndices.Num(); ++VertexIndex)
 			{
-				Centroid += SurfaceParticles.X(InOutFaceVertexIndices[VertexIndex]);
+				Centroid += Vertices[InOutFaceVertexIndices[VertexIndex]];
 			}
 			Centroid /= FReal(InOutFaceVertexIndices.Num());
 
 			// [2, -2] based on clockwise angle about the normal
-			auto VertexScore = [&Centroid, &FaceMatrix, &SurfaceParticles](int32 VertexIndex)
+			auto VertexScore = [&Centroid, &FaceMatrix, &Vertices](int32 VertexIndex)
 			{
-				const FVec3 CentroidOffsetDir = (SurfaceParticles.X(VertexIndex) - Centroid).GetSafeNormal();
+				const FVec3 CentroidOffsetDir = (Vertices[VertexIndex] - Centroid).GetSafeNormal();
 				const FReal DotX = FVec3::DotProduct(CentroidOffsetDir, FaceMatrix.GetAxis(0));
 				const FReal DotY = FVec3::DotProduct(CentroidOffsetDir, FaceMatrix.GetAxis(1));
 				const FReal Score = (DotX >= 0.0f) ? 1.0f + DotY : -1.0f - DotY;
@@ -557,21 +622,21 @@ namespace Chaos
 		}
 
 		// Generate the vertex indices for all planes in CCW order (used to serialize old data that did not have structure data)
-		static void BuildPlaneVertexIndices(const TArray<TPlaneConcrete<FReal, 3>>& InPlanes, const TParticles<FReal, 3>& SurfaceParticles, TArray<TArray<int32>>& OutFaceVertexIndices, const FReal DistanceTolerance = 1.e-3f)
+		static void BuildPlaneVertexIndices(const TArray<TPlaneConcrete<FReal, 3>>& InPlanes, const TArray<FVec3>& Vertices, TArray<TArray<int32>>& OutFaceVertexIndices, const FReal DistanceTolerance = 1.e-3f)
 		{
 			OutFaceVertexIndices.Reset(InPlanes.Num());
 			for (int32 PlaneIndex = 0; PlaneIndex < InPlanes.Num(); ++PlaneIndex)
 			{
-				for (int32 VertexIndex = 0; VertexIndex < (int32)SurfaceParticles.Size(); ++VertexIndex)
+				for (int32 VertexIndex = 0; VertexIndex < Vertices.Num(); ++VertexIndex)
 				{
-					const FReal PlaneVertexDistance = FVec3::DotProduct(InPlanes[PlaneIndex].Normal(), SurfaceParticles.X(VertexIndex) - InPlanes[PlaneIndex].X());
+					const FReal PlaneVertexDistance = FVec3::DotProduct(InPlanes[PlaneIndex].Normal(), Vertices[VertexIndex] - InPlanes[PlaneIndex].X());
 					if (FMath::Abs(PlaneVertexDistance) < DistanceTolerance)
 					{
 						OutFaceVertexIndices[PlaneIndex].Add(VertexIndex);
 					}
 				}
 
-				SortFaceVerticesCCW(InPlanes[PlaneIndex], OutFaceVertexIndices[PlaneIndex], SurfaceParticles);
+				SortFaceVerticesCCW(InPlanes[PlaneIndex], OutFaceVertexIndices[PlaneIndex], Vertices);
 			}
 		}
 
@@ -579,11 +644,13 @@ namespace Chaos
 #if PLATFORM_MAC || PLATFORM_LINUX
 		static CHAOS_API int32 PerformGeometryCheck;
 		static CHAOS_API int32 PerformGeometryReduction;
-		static CHAOS_API int32 ParticlesThreshold;
+		static CHAOS_API int32 VerticesThreshold;
+		static CHAOS_API int32 ComputeHorizonEpsilonFromMeshExtends;
 #else
 		static int32 PerformGeometryCheck;
 		static int32 PerformGeometryReduction;
-		static int32 ParticlesThreshold;
+		static int32 VerticesThreshold;
+		static int32 ComputeHorizonEpsilonFromMeshExtends;
 #endif
 
 	private:
@@ -593,7 +660,7 @@ namespace Chaos
 			return FVec3::CrossProduct((B - A), (C - A));
 		}
 
-		static FConvexFace* CreateFace(FMemPool& Pool, const TParticles<FReal, 3>& InParticles, FHalfEdge* RS, FHalfEdge* ST, FHalfEdge* TR)
+		static FConvexFace* CreateFace(FMemPool& Pool, const TArray<FVec3>& InVertices, FHalfEdge* RS, FHalfEdge* ST, FHalfEdge* TR)
 		{
 			RS->Prev = TR;
 			RS->Next = ST;
@@ -601,11 +668,11 @@ namespace Chaos
 			ST->Next = TR;
 			TR->Prev = ST;
 			TR->Next = RS;
-			FVec3 RSTNormal = ComputeFaceNormal(InParticles.X(RS->Vertex), InParticles.X(ST->Vertex), InParticles.X(TR->Vertex));
+			FVec3 RSTNormal = ComputeFaceNormal(InVertices[RS->Vertex], InVertices[ST->Vertex], InVertices[TR->Vertex]);
 			const FReal RSTNormalSize = RSTNormal.Size();
-			check(RSTNormalSize > 1e-4);
+			check(RSTNormalSize > FLT_EPSILON);
 			RSTNormal = RSTNormal * (1 / RSTNormalSize);
-			FConvexFace* RST = Pool.AllocConvexFace(TPlaneConcrete<FReal, 3>(InParticles.X(RS->Vertex), RSTNormal));
+			FConvexFace* RST = Pool.AllocConvexFace(TPlaneConcrete<FReal, 3>(InVertices[RS->Vertex], RSTNormal));
 			RST->FirstEdge = RS;
 			RS->Face = RST;
 			ST->Face = RST;
@@ -613,7 +680,7 @@ namespace Chaos
 			return RST;
 		}
 
-		static void StealConflictList(FMemPool& Pool, const TParticles<FReal, 3>& InParticles, FHalfEdge* OldList, FConvexFace** Faces, int32 NumFaces)
+		static void StealConflictList(FMemPool& Pool, const TArray<FVec3>& InVertices, FHalfEdge* OldList, FConvexFace** Faces, int32 NumFaces)
 		{
 			FHalfEdge* Cur = OldList;
 			while(Cur)
@@ -622,7 +689,7 @@ namespace Chaos
 				int32 MaxIdx = -1;
 				for(int32 Idx = 0; Idx < NumFaces; ++Idx)
 				{
-					FReal Distance = Faces[Idx]->Plane.SignedDistance(InParticles.X(Cur->Vertex));
+					FReal Distance = Faces[Idx]->Plane.SignedDistance(InVertices[Cur->Vertex]);
 					if(Distance > MaxD)
 					{
 						MaxD = Distance;
@@ -634,8 +701,8 @@ namespace Chaos
 				if(!bDeleteVertex)
 				{
 					//let's make sure faces created with this new conflict vertex will be valid. The plane check above is not sufficient because long thin triangles will have a plane with its point at one of these. Combined with normal and precision we can have errors
-					auto PretendNormal = [&InParticles](FHalfEdge* A, FHalfEdge* B, FHalfEdge* C) {
-						return FVec3::CrossProduct(InParticles.X(B->Vertex) - InParticles.X(A->Vertex), InParticles.X(C->Vertex) - InParticles.X(A->Vertex)).SizeSquared();
+					auto PretendNormal = [&InVertices](FHalfEdge* A, FHalfEdge* B, FHalfEdge* C) {
+						return FVec3::CrossProduct(InVertices[B->Vertex] - InVertices[A->Vertex], InVertices[C->Vertex] - InVertices[A->Vertex]).SizeSquared();
 					};
 					FHalfEdge* Edge = Faces[MaxIdx]->FirstEdge;
 					do
@@ -672,16 +739,16 @@ namespace Chaos
 			}
 		}
 
-		static FConvexFace* BuildInitialHull(FMemPool& Pool, const TParticles<FReal, 3>& InParticles)
+		static FConvexFace* BuildInitialHull(FMemPool& Pool, const TArray<FVec3>& InVertices)
 		{
-			if(InParticles.Size() < 4) //not enough points
+			if (InVertices.Num() < 4) //not enough points
 			{
 				return nullptr;
 			}
 
 			constexpr FReal Epsilon = 1e-4;
 
-			const int32 NumParticles = InParticles.Size();
+			const int32 NumVertices = InVertices.Num();
 
 			//We store the vertex directly in the half-edge. We use its next to group free vertices by context list
 			//create a starting triangle by finding min/max on X and max on Y
@@ -694,13 +761,13 @@ namespace Chaos
 			DummyHalfEdge->Next = nullptr;
 			FHalfEdge* Prev = DummyHalfEdge;
 
-			for(int32 i = 0; i < NumParticles; ++i)
+			for (int32 i = 0; i < NumVertices; ++i)
 			{
 				FHalfEdge* VHalf = Pool.AllocHalfEdge(i); //todo(ocohen): preallocate these
 				Prev->Next = VHalf;
 				VHalf->Prev = Prev;
 				VHalf->Next = nullptr;
-				const FVec3& V = InParticles.X(i);
+				const FVec3& V = InVertices[i];
 
 				if(V[0] < MinX)
 				{
@@ -717,7 +784,7 @@ namespace Chaos
 			}
 
 			check(A && B);
-			if(A == B || (InParticles.X(A->Vertex) - InParticles.X(B->Vertex)).SizeSquared() < Epsilon) //infinitely thin
+			if (A == B || (InVertices[A->Vertex] - InVertices[B->Vertex]).SizeSquared() < Epsilon) //infinitely thin
 			{
 				return nullptr;
 			}
@@ -736,11 +803,11 @@ namespace Chaos
 
 			//find C so that we get the biggest base triangle
 			FReal MaxTriSize = Epsilon;
-			const FVec3 AToB = InParticles.X(B->Vertex) - InParticles.X(A->Vertex);
+			const FVec3 AToB = InVertices[B->Vertex] - InVertices[A->Vertex];
 			FHalfEdge* C = nullptr;
 			for(FHalfEdge* V = DummyHalfEdge->Next; V; V = V->Next)
 			{
-				FReal TriSize = FVec3::CrossProduct(AToB, InParticles.X(V->Vertex) - InParticles.X(A->Vertex)).SizeSquared();
+				FReal TriSize = FVec3::CrossProduct(AToB, InVertices[V->Vertex] - InVertices[A->Vertex]).SizeSquared();
 				if(TriSize > MaxTriSize)
 				{
 					MaxTriSize = TriSize;
@@ -761,8 +828,8 @@ namespace Chaos
 			}
 
 			//find farthest D along normal
-			const FVec3 AToC = InParticles.X(C->Vertex) - InParticles.X(A->Vertex);
-			const FVec3 Normal = FVec3::CrossProduct(AToB, AToC);
+			const FVec3 AToC = InVertices[C->Vertex] - InVertices[A->Vertex];
+			const FVec3 Normal = FVec3::CrossProduct(AToB, AToC).GetSafeNormal();
 
 			FReal MaxPosDistance = Epsilon;
 			FReal MaxNegDistance = Epsilon;
@@ -770,7 +837,7 @@ namespace Chaos
 			FHalfEdge* NegD = nullptr;
 			for(FHalfEdge* V = DummyHalfEdge->Next; V; V = V->Next)
 			{
-				FReal Dot = FVec3::DotProduct(InParticles.X(V->Vertex) - InParticles.X(A->Vertex), Normal);
+				FReal Dot = FVec3::DotProduct(InVertices[V->Vertex] - InVertices[A->Vertex], Normal);
 				if(Dot > MaxPosDistance)
 				{
 					MaxPosDistance = Dot;
@@ -812,10 +879,10 @@ namespace Chaos
 			}
 
 			FConvexFace* Faces[4];
-			Faces[0] = CreateFace(Pool, InParticles, Edges[0], Edges[1], Edges[2]); //base
-			Faces[1] = CreateFace(Pool, InParticles, Pool.AllocHalfEdge(Edges[1]->Vertex), Pool.AllocHalfEdge(Edges[0]->Vertex), Edges[3]);
-			Faces[2] = CreateFace(Pool, InParticles, Pool.AllocHalfEdge(Edges[0]->Vertex), Pool.AllocHalfEdge(Edges[2]->Vertex), Pool.AllocHalfEdge(Edges[3]->Vertex));
-			Faces[3] = CreateFace(Pool, InParticles, Pool.AllocHalfEdge(Edges[2]->Vertex), Pool.AllocHalfEdge(Edges[1]->Vertex), Pool.AllocHalfEdge(Edges[3]->Vertex));
+			Faces[0] = CreateFace(Pool, InVertices, Edges[0], Edges[1], Edges[2]); //base
+			Faces[1] = CreateFace(Pool, InVertices, Pool.AllocHalfEdge(Edges[1]->Vertex), Pool.AllocHalfEdge(Edges[0]->Vertex), Edges[3]);
+			Faces[2] = CreateFace(Pool, InVertices, Pool.AllocHalfEdge(Edges[0]->Vertex), Pool.AllocHalfEdge(Edges[2]->Vertex), Pool.AllocHalfEdge(Edges[3]->Vertex));
+			Faces[3] = CreateFace(Pool, InVertices, Pool.AllocHalfEdge(Edges[2]->Vertex), Pool.AllocHalfEdge(Edges[1]->Vertex), Pool.AllocHalfEdge(Edges[3]->Vertex));
 
 			auto MakeTwins = [](FHalfEdge* E1, FHalfEdge* E2) {
 				E1->Twin = E2;
@@ -838,11 +905,11 @@ namespace Chaos
 			Faces[3]->Next = nullptr;
 
 			//split up the conflict list
-			StealConflictList(Pool, InParticles, DummyHalfEdge->Next, Faces, 4);
+			StealConflictList(Pool, InVertices, DummyHalfEdge->Next, Faces, 4);
 			return Faces[0];
 		}
 
-		static FHalfEdge* FindConflictVertex(const TParticles<FReal, 3>& InParticles, FConvexFace* FaceList)
+		static FHalfEdge* FindConflictVertex(const TArray<FVec3>& InVertices, FConvexFace* FaceList)
 		{
 			UE_CLOG(DEBUG_HULL_GENERATION, LogChaos, VeryVerbose, TEXT("Finding conflict vertex"));
 
@@ -855,7 +922,7 @@ namespace Chaos
 				for(FHalfEdge* CurFaceVertex = CurFace->ConflictList; CurFaceVertex; CurFaceVertex = CurFaceVertex->Next)
 				{
 					//is it faster to cache this from stealing stage?
-					FReal Dist = FVec3::DotProduct(InParticles.X(CurFaceVertex->Vertex), CurFace->Plane.Normal());
+					FReal Dist = FVec3::DotProduct(InVertices[CurFaceVertex->Vertex], CurFace->Plane.Normal());
 					if(Dist > MaxD)
 					{
 						MaxD = Dist;
@@ -889,13 +956,13 @@ namespace Chaos
 			return nullptr;
 		}
 
-		static void BuildHorizon(const TParticles<FReal, 3>& InParticles, FHalfEdge* ConflictV, TArray<FHalfEdge*>& HorizonEdges, TArray<FConvexFace*>& FacesToDelete, const Params& InParams)
+		static void BuildHorizon(const TArray<FVec3>& InVertices, FHalfEdge* ConflictV, TArray<FHalfEdge*>& HorizonEdges, TArray<FConvexFace*>& FacesToDelete, const Params& InParams)
 		{
 			//We must flood fill from the initial face and mark edges of faces the conflict vertex cannot see
 			//In order to return a CCW ordering we must traverse each face in CCW order from the edge we crossed over
 			//This should already be the ordering in the half edge
 			const FReal Epsilon = InParams.HorizonEpsilon;
-			const FVec3 V = InParticles.X(ConflictV->Vertex);
+			const FVec3 V = InVertices[ConflictV->Vertex];
 			TSet<FConvexFace*> Processed;
 			TArray<FHalfEdge*> Queue;
 			check(ConflictV->Face);
@@ -925,9 +992,29 @@ namespace Chaos
 					HorizonEdges.Add(Edge);
 				}
 			}
+
+#if DEBUG_HULL_GENERATION
+#if DEBUG_HULL_GENERATION_BUILDHORIZON_TO_OBJ
+			UE_LOG(LogChaos, VeryVerbose, TEXT("# ======================================================"));
+			const FVec3 ConflictPos = InVertices[ConflictV->Vertex];
+			UE_LOG(LogChaos, VeryVerbose, TEXT("# BUILD_HORIZON - Conflict Vertex = %d (%f %f %f)"), ConflictV->Vertex, ConflictPos.X, ConflictPos.Y, ConflictPos.Z);
+			UE_LOG(LogChaos, VeryVerbose, TEXT("# ------------------------------------------------------"));
+			for (TSet<FConvexFace*>::TConstIterator SetIt(Processed); SetIt; ++SetIt)
+			{
+				const FConvexFace* Face = *SetIt;
+				const FVector P1 = InVertices[Face->FirstEdge->Prev->Vertex];
+				const FVector P2 = InVertices[Face->FirstEdge->Next->Vertex];
+				const FVector P3 = InVertices[Face->FirstEdge->Vertex];
+				UE_LOG(LogChaos, VeryVerbose, TEXT("v %f %f %f"), P1.X, P1.Y, P1.Z);
+				UE_LOG(LogChaos, VeryVerbose, TEXT("v %f %f %f"), P2.X, P2.Y, P2.Z);
+				UE_LOG(LogChaos, VeryVerbose, TEXT("v %f %f %f"), P3.X, P3.Y, P3.Z);
+				UE_LOG(LogChaos, VeryVerbose, TEXT("f -3 -2 -1"));
+			}
+#endif
+#endif
 		}
 
-		static void BuildFaces(FMemPool& Pool, const TParticles<FReal, 3>& InParticles, const FHalfEdge* ConflictV, const TArray<FHalfEdge*>& HorizonEdges, const TArray<FConvexFace*> OldFaces, TArray<FConvexFace*>& NewFaces)
+		static void BuildFaces(FMemPool& Pool, const TArray<FVec3>& InVertices, const FHalfEdge* ConflictV, const TArray<FHalfEdge*>& HorizonEdges, const TArray<FConvexFace*> OldFaces, TArray<FConvexFace*>& NewFaces)
 		{
 			//The HorizonEdges are in CCW order. We must make new faces and edges to join from ConflictV to these edges
 			check(HorizonEdges.Num() >= 3);
@@ -950,7 +1037,7 @@ namespace Chaos
 				PrevEdge = HorizonNext;
 
 				//link new faces together
-				FConvexFace* NewFace = CreateFace(Pool, InParticles, NewHorizonEdge, HorizonNext, V);
+				FConvexFace* NewFace = CreateFace(Pool, InVertices, NewHorizonEdge, HorizonNext, V);
 				if(NewFaces.Num() > 0)
 				{
 					NewFace->Prev = NewFaces[NewFaces.Num() - 1];
@@ -971,7 +1058,7 @@ namespace Chaos
 			//redistribute conflict list
 			for(FConvexFace* OldFace : OldFaces)
 			{
-				StealConflictList(Pool, InParticles, OldFace->ConflictList, &NewFaces[0], NewFaces.Num());
+				StealConflictList(Pool, InVertices, OldFace->ConflictList, &NewFaces[0], NewFaces.Num());
 			}
 
 			//insert all new faces after conflict vertex face
@@ -987,13 +1074,13 @@ namespace Chaos
 			StartFace->Prev = OldFace;
 		}
 
-		static void AddVertex(FMemPool& Pool, const TParticles<FReal, 3>& InParticles, FHalfEdge* ConflictV, const Params& InParams)
+		static void AddVertex(FMemPool& Pool, const TArray<FVec3>& InVertices, FHalfEdge* ConflictV, const Params& InParams)
 		{
 			UE_CLOG(DEBUG_HULL_GENERATION, LogChaos, VeryVerbose, TEXT("Adding Vertex %d"), ConflictV->Vertex);
 
 			TArray<FHalfEdge*> HorizonEdges;
 			TArray<FConvexFace*> FacesToDelete;
-			BuildHorizon(InParticles, ConflictV, HorizonEdges, FacesToDelete, InParams);
+			BuildHorizon(InVertices, ConflictV, HorizonEdges, FacesToDelete, InParams);
 
 #if DEBUG_HULL_GENERATION
 			FString HorizonString(TEXT("\tHorizon: ("));
@@ -1006,7 +1093,7 @@ namespace Chaos
 #endif
 
 			TArray<FConvexFace*> NewFaces;
-			BuildFaces(Pool, InParticles, ConflictV, HorizonEdges, FacesToDelete, NewFaces);
+			BuildFaces(Pool, InVertices, ConflictV, HorizonEdges, FacesToDelete, NewFaces);
 
 #if DEBUG_HULL_GENERATION
 			FString NewFaceString(TEXT("\tNew Faces: "));

@@ -82,6 +82,7 @@ namespace UnrealBuildTool
 		private bool FacebookPluginEnabled = false;
 		private bool OculusMobilePluginEnabled = false;
 		private bool GoogleVRPluginEnabled = false;
+		private bool EOSSDKPluginEnabled = false;
 
 		public void SetAndroidPluginData(List<string> Architectures, List<string> inPluginExtraData)
 		{
@@ -97,8 +98,9 @@ namespace UnrealBuildTool
 			// check if certain plugins are enabled
 			ARCorePluginEnabled = false;
 			FacebookPluginEnabled = false;
-			GoogleVRPluginEnabled = false;
 			OculusMobilePluginEnabled = false;
+			GoogleVRPluginEnabled = false;
+			EOSSDKPluginEnabled = false;
 			ActiveUPLFiles = "";
 			foreach (string Plugin in inPluginExtraData)
 			{
@@ -131,6 +133,13 @@ namespace UnrealBuildTool
 					GoogleVRPluginEnabled = true;
 					continue;
 				}
+
+				// check if the EOSShared plugin was enabled
+				if (Plugin.Contains("EOSSDK"))
+				{
+					EOSSDKPluginEnabled = true;
+					continue;
+				}
 			}
 
 			UPL = new UnrealPluginLanguage(ProjectFile, inPluginExtraData, NDKArches, "http://schemas.android.com/apk/res/android", "xmlns:android=\"http://schemas.android.com/apk/res/android\"", UnrealTargetPlatform.Android);
@@ -147,6 +156,10 @@ namespace UnrealBuildTool
 			if (ARCorePluginEnabled)
 			{
 				MinimumSDKLevelForGradle = Math.Max(MinimumSDKLevelForGradle, 19);
+			}
+			if(EOSSDKPluginEnabled)
+			{
+				MinimumSDKLevelForGradle = Math.Max(MinimumSDKLevelForGradle, 23);
 			}
 		}
 
@@ -1424,6 +1437,57 @@ namespace UnrealBuildTool
 			}
 		}
 
+		void CopyClangSanitizerLib(string UE4BuildPath, string UE4Arch, string NDKArch, AndroidToolChain.ClangSanitizer Sanitizer)
+		{
+			string Architecture = "-aarch64";
+			switch (NDKArch)
+			{
+				case "armeabi-v7a":
+					Architecture = "-arm";
+					break;
+				case "x86_64":
+					Architecture = "-x86_64";
+					break;
+				case "x86":
+					Architecture = "-i686";
+					break;
+			}
+
+			string LibName = "asan";
+			switch (Sanitizer)
+			{
+				case AndroidToolChain.ClangSanitizer.HwAddress:
+					LibName = "hwasan";
+					break;
+				case AndroidToolChain.ClangSanitizer.UndefinedBehavior:
+					LibName = "ubsan_standalone";
+					break;
+				case AndroidToolChain.ClangSanitizer.UndefinedBehaviorMinimal:
+					LibName = "ubsan_minimal";
+					break;
+			}
+			
+			string SanitizerFullLibName = "libclang_rt." + LibName + Architecture + "-android.so";
+
+			string WrapSh = Path.Combine(UnrealBuildTool.EngineDirectory.ToString(), "Build", "Android", "ClangSanitizers", "wrap.sh");
+			string SanitizerLib = Path.Combine(Environment.ExpandEnvironmentVariables("%NDKROOT%"), "toolchains", "llvm", "prebuilt", "windows-x86_64", "lib64", "clang", "9.0.8", "lib", "linux", SanitizerFullLibName);
+			if (File.Exists(SanitizerLib) && File.Exists(WrapSh))
+			{
+				string LibDestDir = Path.Combine(UE4BuildPath, "libs", NDKArch);
+				Directory.CreateDirectory(LibDestDir);
+				Log.TraceInformation("Copying asan lib from {0} to {1}", SanitizerLib, LibDestDir);
+				File.Copy(SanitizerLib, Path.Combine(LibDestDir, SanitizerFullLibName), true);
+				string WrapDestDir = Path.Combine(UE4BuildPath, "resources", "lib", NDKArch);
+				Directory.CreateDirectory(WrapDestDir);
+				Log.TraceInformation("Copying wrap.sh from {0} to {1}", WrapSh, WrapDestDir);
+				File.Copy(WrapSh, Path.Combine(WrapDestDir, "wrap.sh"), true);
+			}
+			else
+			{
+				throw new BuildException("No asan lib found in {0} or wrap.sh in {1}", SanitizerLib, WrapSh);
+			}
+		}
+
 		private static int RunCommandLineProgramAndReturnResult(string WorkingDirectory, string Command, string Params, string OverrideDesc = null, bool bUseShellExecute = false)
 		{
 			if (OverrideDesc == null)
@@ -1482,34 +1546,159 @@ namespace UnrealBuildTool
 			}
 		}
 
+		private enum FilterAction
+		{
+			Skip,
+			Replace,
+			Error
+		}
+
+		private class FilterOperation
+		{
+			public FilterAction Action;
+			public string Condition;
+			public string Match;
+			public string ReplaceWith;
+
+			public FilterOperation(FilterAction InAction, string InCondition, string InMatch, string InReplaceWith)
+			{
+				Action = InAction;
+				Condition = InCondition;
+				Match = InMatch;
+				ReplaceWith = InReplaceWith;
+			}
+		}
+
+		static private List<FilterOperation> ActiveStdOutFilter = null;
+
+		static List<string> ParseCSVString(string Input)
+		{
+			List<string> Results = new List<string>();
+			StringBuilder WorkString = new StringBuilder();
+
+			int FinalIndex = Input.Length;
+			int CurrentIndex = 0;
+			bool InQuote = false;
+
+			while (CurrentIndex < FinalIndex)
+			{
+				char CurChar = Input[CurrentIndex++];
+
+				if (InQuote)
+				{
+					if (CurChar == '\\')
+					{
+						if (CurrentIndex < FinalIndex)
+						{
+							CurChar = Input[CurrentIndex++];
+							WorkString.Append(CurChar);
+						}
+					}
+					else if (CurChar == '"')
+					{
+						InQuote = false;
+					}
+					else
+					{
+						WorkString.Append(CurChar);
+					}
+				}
+				else
+				{
+					if (CurChar == '"')
+					{
+						InQuote = true;
+					}
+					else if (CurChar == ',')
+					{
+						Results.Add(WorkString.ToString());
+						WorkString.Clear();
+					}
+					else if (!char.IsWhiteSpace(CurChar))
+					{
+						WorkString.Append(CurChar);
+					}
+				}
+			}
+			if (CurrentIndex > 0)
+			{
+				Results.Add(WorkString.ToString());
+			}
+
+			return Results;
+		}
+
+		static void ParseFilterFile(string Filename)
+		{
+
+			if (File.Exists(Filename))
+			{
+				ActiveStdOutFilter = new List<FilterOperation>();
+
+				string[] FilterContents = File.ReadAllLines(Filename);
+				foreach (string FileLine in FilterContents)
+				{
+					List<string> Parts = ParseCSVString(FileLine);
+
+					if (Parts.Count > 1)
+					{
+						if (Parts[0].Equals("S"))
+						{
+							ActiveStdOutFilter.Add(new FilterOperation(FilterAction.Skip, Parts[1], "", ""));
+						}
+						else if (Parts[0].Equals("R"))
+						{
+							if (Parts.Count == 4)
+							{
+								ActiveStdOutFilter.Add(new FilterOperation(FilterAction.Replace, Parts[1], Parts[2], Parts[3]));
+							}
+						}
+						else if (Parts[0].Equals("E"))
+						{
+							if (Parts.Count == 4)
+							{
+								ActiveStdOutFilter.Add(new FilterOperation(FilterAction.Error, Parts[1], Parts[2], Parts[3]));
+							}
+						}
+					}
+				}
+
+				if (ActiveStdOutFilter.Count == 0)
+				{
+					ActiveStdOutFilter = null;
+				}
+			}
+		}
+
 		static void FilterStdOutErr(object sender, DataReceivedEventArgs e)
 		{
 			if (e.Data != null)
 			{
-				// apply filtering of the warnings we want to ignore
-				if (e.Data.Contains("WARNING: The option 'android.enableD8' is deprecated and should not be used anymore."))
+				if (ActiveStdOutFilter != null)
 				{
-					Log.TraceInformation("{0}", e.Data.Replace("WARNING: ", ">> "));
-					return;
-				}
-				if (e.Data.Contains("WARNING: The specified Android SDK Build Tools version"))
-				{
-					Log.TraceInformation("{0}", e.Data.Replace("WARNING: ", ">> "));
-					return;
-				}
-				if (e.Data.Contains("Warning: Resigning with jarsigner."))
-				{
-					Log.TraceInformation("{0}", e.Data.Replace("Warning: ", ">> "));
-					return;
-				}
-				if (e.Data.Contains("Unable to strip library"))
-				{
-					Log.TraceInformation("{0}", e.Data.Replace("due to error", ""));
-					return;
-				}
-				if (e.Data.Contains("To suppress this warning,"))
-				{
-					Log.TraceInformation("{0}", e.Data.Replace(" warning,", ","));
+					foreach (FilterOperation FilterOp in ActiveStdOutFilter)
+					{
+						if (e.Data.Contains(FilterOp.Condition))
+						{
+							switch (FilterOp.Action)
+							{
+								case FilterAction.Skip:
+									break;
+
+								case FilterAction.Replace:
+									Log.TraceInformation("{0}", e.Data.Replace(FilterOp.Match, FilterOp.ReplaceWith));
+									break;
+
+								case FilterAction.Error:
+									Log.TraceError("{0}", e.Data.Replace(FilterOp.Match, FilterOp.ReplaceWith));
+									break;
+
+								default:
+									break;
+							}
+							return;
+						}
+					}
 				}
 				Log.TraceInformation("{0}", e.Data);
 			}
@@ -2362,6 +2551,13 @@ namespace UnrealBuildTool
 			Text.AppendLine("\t<!-- Application Definition -->");
 			Text.AppendLine("\t<application android:label=\"@string/app_name\"");
 			Text.AppendLine("\t             android:icon=\"@drawable/icon\"");
+
+			AndroidToolChain.ClangSanitizer Sanitizer = AndroidToolChain.BuildWithSanitizer(ProjectFile);
+			if (Sanitizer != AndroidToolChain.ClangSanitizer.None && Sanitizer != AndroidToolChain.ClangSanitizer.HwAddress)
+			{
+				Text.AppendLine("\t             android:extractNativeLibs=\"true\"");
+			}
+
 			bool bRequestedLegacyExternalStorage = false;
 			if (ExtraApplicationNodeTags != null)
 			{
@@ -3035,6 +3231,12 @@ namespace UnrealBuildTool
 				}
 			}
 
+			if ((AndroidToolChain.BuildWithSanitizer(ProjectFile) != AndroidToolChain.ClangSanitizer.None) && (MinSDKVersion < 27))
+			{
+				MinSDKVersion = 27;
+				Log.TraceInformation("Fixing minSdkVersion; requires minSdkVersion of {0} for Clang's Sanitizers", 27);
+			}
+
 			if (bEnableBundle && MinSDKVersion < MinimumSDKLevelForBundle)
 			{
 				MinSDKVersion = MinimumSDKLevelForBundle;
@@ -3091,6 +3293,8 @@ namespace UnrealBuildTool
 			GradleProperties.AppendLine("org.gradle.daemon=false");
 			GradleProperties.AppendLine("org.gradle.jvmargs=-XX:MaxHeapSize=4096m -Xmx9216m");
 			GradleProperties.AppendLine("android.injected.testOnly=false");
+			GradleProperties.AppendLine("android.useAndroidX=true");
+			GradleProperties.AppendLine("android.enableJetifier=true");
 			GradleProperties.AppendLine(string.Format("COMPILE_SDK_VERSION={0}", CompileSDKVersion));
 			GradleProperties.AppendLine(string.Format("BUILD_TOOLS_VERSION={0}", BuildToolsVersion));
 			GradleProperties.AppendLine(string.Format("PACKAGE_NAME={0}", PackageName));
@@ -3668,6 +3872,7 @@ namespace UnrealBuildTool
 			// make up a dictionary of strings to replace in xml files (strings.xml)
 			Dictionary<string, string> Replacements = new Dictionary<string, string>();
 			Replacements.Add("${EXECUTABLE_NAME}", ApplicationDisplayName);
+			Replacements.Add("${PY_VISUALIZER_PATH}", Path.GetFullPath(Path.Combine(EngineDirectory, "Extras", "LLDBDataFormatters", "UE4DataFormatters_2ByteChars.py")));
 
 			// steps run for each build combination (note: there should only be one GPU in future)
 			foreach (Tuple<string, string, string> build in BuildList)
@@ -3732,6 +3937,9 @@ namespace UnrealBuildTool
 				CopyFileDirectory(GameBuildFilesPath_NFL, UE4BuildPath, Replacements);
 				CopyFileDirectory(GameBuildFilesPath_NR, UE4BuildPath, Replacements);
 
+				// Parse Gradle filters (may have been replaced by above copies)
+				ParseFilterFile(Path.Combine(UE4BuildPath, "GradleFilter.txt"));
+
 				//Generate Gradle AAR dependencies
 				GenerateGradleAARImports(EngineDirectory, UE4BuildPath, NDKArches);
 
@@ -3745,10 +3953,10 @@ namespace UnrealBuildTool
 
 				//Now keep the splash screen images matching orientation requested
 				PickSplashScreenOrientation(UE4BuildPath, bNeedPortrait, bNeedLandscape);
-			
+
 				//Now package the app based on Daydream packaging settings 
 				PackageForDaydream(UE4BuildPath);
-			
+
 				//Similarly, keep only the downloader screen image matching the orientation requested
 				PickDownloaderScreenOrientation(UE4BuildPath, bNeedPortrait, bNeedLandscape);
 
@@ -3838,6 +4046,11 @@ namespace UnrealBuildTool
 				CopySTL(ToolChain, UE4BuildPath, Arch, NDKArch, bForDistribution);
 				CopyGfxDebugger(UE4BuildPath, Arch, NDKArch);
 				CopyVulkanValidationLayers(UE4BuildPath, Arch, NDKArch, Configuration.ToString());
+				AndroidToolChain.ClangSanitizer Sanitizer = AndroidToolChain.BuildWithSanitizer(ProjectFile);
+				if (Sanitizer != AndroidToolChain.ClangSanitizer.None && Sanitizer != AndroidToolChain.ClangSanitizer.HwAddress)
+				{
+					CopyClangSanitizerLib(UE4BuildPath, Arch, NDKArch, Sanitizer);
+				}
 
 				// copy postbuild plugin files
 				UPL.ProcessPluginNode(NDKArch, "resourceCopies", "");
@@ -3907,6 +4120,10 @@ namespace UnrealBuildTool
 
 				CleanCopyDirectory(Path.Combine(UE4BuildPath, "jni"), Path.Combine(UE4BuildGradleMainPath, "jniLibs"), Excludes);  // has debug symbols
 				CleanCopyDirectory(Path.Combine(UE4BuildPath, "libs"), Path.Combine(UE4BuildGradleMainPath, "libs"), Excludes);
+				if (Sanitizer != AndroidToolChain.ClangSanitizer.None && Sanitizer != AndroidToolChain.ClangSanitizer.HwAddress)
+				{
+					CleanCopyDirectory(Path.Combine(UE4BuildPath, "resources"), Path.Combine(UE4BuildGradleMainPath, "resources"), Excludes);
+				}
 
 				CleanCopyDirectory(Path.Combine(UE4BuildPath, "assets"), Path.Combine(UE4BuildGradleMainPath, "assets"));
 				CleanCopyDirectory(Path.Combine(UE4BuildPath, "res"), Path.Combine(UE4BuildGradleMainPath, "res"));

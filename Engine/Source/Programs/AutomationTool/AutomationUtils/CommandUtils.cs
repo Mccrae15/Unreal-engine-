@@ -1725,15 +1725,26 @@ namespace AutomationTool
 		/// <param name="SourceAndTargetPairs">Pairs of source and target files</param>
 		public static void ParallelMoveFiles(IEnumerable<KeyValuePair<FileReference, FileReference>> SourceAndTargetPairs)
 		{
-            try
-            {
-                Parallel.ForEach(SourceAndTargetPairs, x => MoveFile(x.Key, x.Value));
-            }
-            catch (AggregateException Ex)
-            {
-                throw new AutomationException(Ex, "Failed to thread-copy files.");
-            }
+			ParallelMoveFiles(SourceAndTargetPairs, false);
         }
+
+		/// <summary>
+		/// Moves files in parallel
+		/// </summary>
+		/// <param
+		/// <param name="SourceAndTargetPairs">Pairs of source and target files</param>
+		/// <param name="Overwrite">Whether or not to overwrite target files if they already exist</param>
+		public static void ParallelMoveFiles(IEnumerable<KeyValuePair<FileReference, FileReference>> SourceAndTargetPairs, bool Overwrite)
+		{
+			try
+			{
+				Parallel.ForEach(SourceAndTargetPairs, x => MoveFile(x.Key, x.Value, Overwrite));
+			}
+			catch (AggregateException Ex)
+			{
+				throw new AutomationException(Ex, "Failed to thread-copy files.");
+			}
+		}
 
 		/// <summary>
 		/// Move a file from one place to another 
@@ -1741,12 +1752,21 @@ namespace AutomationTool
 		/// <param name="SourceAndTarget">Source and target file</param>
 		public static void MoveFile(FileReference SourceFile, FileReference TargetFile)
 		{
+			MoveFile(SourceFile, TargetFile, false);
+		}
+
+		/// <summary>
+		/// Move a file from one place to another 
+		/// </summary>
+		/// <param name="SourceAndTarget">Source and target file</param>
+		public static void MoveFile(FileReference SourceFile, FileReference TargetFile, bool Overwrite)
+		{
 			// Create the directory for the target file
 			try
 			{
 				Directory.CreateDirectory(TargetFile.Directory.FullName);
 			}
-			catch(Exception Ex)
+			catch (Exception Ex)
 			{
 				throw new AutomationException(Ex, "Unable to create directory {0} while moving {1} to {2}", TargetFile.Directory, SourceFile, TargetFile);
 			}
@@ -1754,9 +1774,13 @@ namespace AutomationTool
 			// Move the file
 			try
 			{
+				if (Overwrite && FileReference.Exists(TargetFile))
+				{
+					FileReference.Delete(TargetFile);
+				}
 				File.Move(SourceFile.FullName, TargetFile.FullName);
 			}
-			catch(Exception Ex)
+			catch (Exception Ex)
 			{
 				throw new AutomationException(Ex, "Unable to move {0} to {1}", SourceFile, TargetFile);
 			}
@@ -2711,6 +2735,7 @@ namespace AutomationTool
 		static readonly string[] TimestampServersSHA1 =
 		{
 			"http://timestamp.comodoca.com/authenticode",
+			"http://timestamp.digicert.com",
 			"http://timestamp.globalsign.com/scripts/timstamp.dll"
 		};
 
@@ -2778,7 +2803,7 @@ namespace AutomationTool
 						break;
 					}
 
-					if (Timer.Elapsed.TotalMinutes > 3.0)
+					if (Timer.Elapsed.TotalMinutes > 3.0 && NumAttempts >= 6)
 					{
 						throw new AutomationException("Failed to sign files {0} times over a period of {1}", NumAttempts, Timer.Elapsed);
 					}
@@ -2877,48 +2902,88 @@ namespace AutomationTool
 		/// <summary>
 		/// Code signs the specified file or folder
 		/// </summary>
-		public static void SignMacFileOrFolder(string InPath, bool bIgnoreExtension = false)
+		public static void SignMacFileOrFolder(string InPath, bool bIgnoreExtension = false, string NotarizationEntitlements = null)
 		{
 			TimeSpan CodeSignTimeOut = new TimeSpan(0, 3, 0); // Keep trying to sign one file for up to 3 minutes
-
-			bool bExists = CommandUtils.FileExists(InPath) || CommandUtils.DirectoryExists(InPath);
+			bool bIsDirectory = CommandUtils.DirectoryExists(InPath);
+			bool bExists = CommandUtils.FileExists(InPath) || bIsDirectory;
 			if (!bExists)
 			{
 				throw new AutomationException("Can't sign '{0}', file or folder does not exist.", InPath);
 			}
 
+			if (string.IsNullOrEmpty(NotarizationEntitlements))
+			{
+				string EntitlementsPath = Path.Combine(Path.GetDirectoryName(InPath), "Notarization.entitlements");
+				if (File.Exists(EntitlementsPath))
+				{
+					NotarizationEntitlements = EntitlementsPath;
+				}
+			}
+
+			if (bIsDirectory && !InPath.EndsWith(".app/Contents/_CodeSignature"))
+			{
+				DirectoryReference PathRef = new DirectoryReference(InPath);
+				foreach (DirectoryReference DirRef in DirectoryReference.EnumerateDirectories(PathRef, "*", SearchOption.TopDirectoryOnly))
+				{
+					SignMacFileOrFolder(DirRef.FullName, bIgnoreExtension, NotarizationEntitlements);
+				}
+
+				foreach (FileReference FileRef in DirectoryReference.EnumerateFiles(PathRef, "*", SearchOption.TopDirectoryOnly))
+				{
+					if (FileRef.GetExtension() == ".dylib" || FileRef.GetExtension() == ".so" || FileRef.GetExtension() == ".bundle")
+					{
+						SignMacFileOrFolder(FileRef.FullName, bIgnoreExtension, NotarizationEntitlements);
+					}
+				}
+			}
+
 			// Executable extensions
 			List<string> Extensions = new List<string>();
 			Extensions.Add(".dylib");
+			Extensions.Add(".so");
 			Extensions.Add(".app");
 			Extensions.Add(".framework");
+			Extensions.Add(".bundle");
 
-			bool IsExecutable = bIgnoreExtension || (Path.GetExtension(InPath) == "" && !InPath.EndsWith("PkgInfo"));
+			bool bIsExecutable = bIgnoreExtension || (!bIsDirectory && Path.GetExtension(InPath) == "" && !InPath.EndsWith("PkgInfo"));
 
 			foreach (var Ext in Extensions)
 			{
 				if (InPath.EndsWith(Ext, StringComparison.InvariantCultureIgnoreCase))
 				{
-					IsExecutable = true;
+					bIsExecutable = true;
 					break;
 				}
 			}
-			if (!IsExecutable)
+			if (!bIsExecutable)
 			{
-				CommandUtils.LogLog(String.Format("Won't sign '{0}', not an executable.", InPath));
+				if (!bIsDirectory)
+				{
+					CommandUtils.LogLog(String.Format("Won't sign '{0}', not an executable.", InPath));
+				}
 				return;
 			}
 
 			// Use the old codesigning tool after the upgrade due to segmentation fault on Sierra
 			string SignToolName = "/usr/local/bin/codesign_old";
-			
-			// unless it doesn't exist, then use the Sierra one.
-			if(!File.Exists(SignToolName))
+
+			// unless it doesn't exist or we're codesigning for notarization, then use the latest one.
+			if (!File.Exists(SignToolName) || !string.IsNullOrEmpty(NotarizationEntitlements))
 			{
 				SignToolName = "/usr/bin/codesign";
 			}
 
-			string CodeSignArgs = String.Format("-f --deep -s \"{0}\" -v \"{1}\" --no-strict", "Developer ID Application", InPath);
+
+			string CodeSignArgs;
+			if (string.IsNullOrEmpty(NotarizationEntitlements))
+			{
+				CodeSignArgs = String.Format("-f --deep -s \"{0}\" -v \"{1}\" --no-strict", "Developer ID Application", InPath);
+			}
+			else
+			{
+				CodeSignArgs = String.Format("-f --deep -s \"{0}\" -o runtime --entitlements \"{1}\" -v \"{2}\" --timestamp --no-strict", "Developer ID Application", NotarizationEntitlements, InPath);
+			}
 
 			DateTime StartTime = DateTime.Now;
 

@@ -80,8 +80,8 @@ public:
 	virtual void RemoveSource(TSharedPtr<ILiveLinkSource> Source) override;
 	virtual void RemoveSource(FGuid InEntryGuid) override;
 	virtual bool HasSourceBeenAdded(TSharedPtr<ILiveLinkSource> Source) const override;
-	virtual TArray<FGuid> GetSources() const override;
-	virtual TArray<FGuid> GetVirtualSources() const override;
+	virtual TArray<FGuid> GetSources(bool bEvenIfPendingKill = false) const override;
+	virtual TArray<FGuid> GetVirtualSources(bool bEvenIfPendingKill = false) const override;
 	virtual FLiveLinkSourcePreset GetSourcePreset(FGuid SourceGuid, UObject* DuplicatedObjectOuter) const override;
 	virtual FText GetSourceType(FGuid EntryGuid) const override;
 
@@ -106,6 +106,7 @@ public:
 	virtual void SetSubjectEnabled(const FLiveLinkSubjectKey& SubjectKey, bool bEnabled) override;
 	virtual bool IsSubjectTimeSynchronized(const FLiveLinkSubjectKey& SubjectKey) const override;
 	virtual bool IsSubjectTimeSynchronized(FLiveLinkSubjectName SubjectName) const override;
+	virtual bool IsVirtualSubject(const FLiveLinkSubjectKey& SubjectKey) const override;
 
 	virtual TSubclassOf<ULiveLinkRole> GetSubjectRole(const FLiveLinkSubjectKey& SubjectKey) const override;
 	virtual TSubclassOf<ULiveLinkRole> GetSubjectRole(FLiveLinkSubjectName SubjectName) const override;
@@ -146,9 +147,6 @@ public:
 
 	/** Remove all sources from the live link client */
 	void RemoveAllSources();
-
-	/** Is the supplied subject virtual */
-	bool IsVirtualSubject(const FLiveLinkSubjectKey& Subject) const;
 
 #if WITH_EDITOR
 	/** Call initialize again on an existing virtual subject. Used for when a Blueprint Virtual Subject is compiled */
@@ -232,6 +230,9 @@ private:
 
 	/** Remove all sources. */
 	void Shutdown();
+
+	/** Process virtual subject for rebroadcast purpose */
+	void HandleSubjectRebroadcast(ILiveLinkSubject* InSubject, const FLiveLinkFrameDataStruct& InFrameData);
 
 private:
 	/** The current collection used. */

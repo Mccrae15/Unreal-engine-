@@ -55,7 +55,7 @@ public:
 	{
 		for (const FItem& Item : DraggedWidgets)
 		{
-			if (Item.Widget.WidgetEditor.Pin() != BlueprintEditor)
+			if (Item.Widget.GetWidgetEditor() != BlueprintEditor)
 			{
 				return false;
 			}

@@ -93,7 +93,7 @@ static FString MakeNewAssetName(const FString& BaseAssetPath, const FString& Bas
 	return AssetName;
 }
 
-TArray<UTakeRecorderSource*> UTakeRecorderMicrophoneAudioSource::PreRecording(ULevelSequence* InSequence, ULevelSequence* InMasterSequence, FManifestSerializer* InManifestSerializer)
+TArray<UTakeRecorderSource*> UTakeRecorderMicrophoneAudioSource::PreRecording(ULevelSequence* InSequence, FMovieSceneSequenceID InSequenceID, ULevelSequence* InMasterSequence, FManifestSerializer* InManifestSerializer)
 {
 	UMovieScene* MovieScene = InSequence->GetMovieScene();
 	for (auto MasterTrack : MovieScene->GetMasterTracks())
@@ -148,7 +148,12 @@ void UTakeRecorderMicrophoneAudioSource::StartRecording(const FTimecode& InSecti
 	AudioRecorder = Recorder.CreateAudioRecorder();
 	if (AudioRecorder)
 	{
+		UE_LOG(LogTakesCore, Verbose, TEXT("Microphone Audio Source AudioRecorder Start: %s"), *AssetName);
 		AudioRecorder->Start(AudioSettings);
+	}
+	else
+	{
+		UE_LOG(LogTakesCore, Error, TEXT("Microphone Audio Source could not start. Please check that the AudioCapture plugin is enabled"));
 	}
 }
 
@@ -186,9 +191,7 @@ void UTakeRecorderMicrophoneAudioSource::StopRecording(class ULevelSequence* InS
 		CachedAudioTrack->RemoveAllAnimationData();
 	}
 
-	FTakeRecorderParameters Parameters;
-	Parameters.User = GetDefault<UTakeRecorderUserSettings>()->Settings;
-	Parameters.Project = GetDefault<UTakeRecorderProjectSettings>()->Settings;
+	UTakeRecorderSources* Sources = GetTypedOuter<UTakeRecorderSources>();
 
 	for (USoundWave* RecordedAudio : RecordedSoundWaves)
 	{
@@ -200,15 +203,15 @@ void UTakeRecorderMicrophoneAudioSource::StopRecording(class ULevelSequence* InS
 
 		UMovieSceneAudioSection* NewAudioSection = NewObject<UMovieSceneAudioSection>(CachedAudioTrack.Get(), UMovieSceneAudioSection::StaticClass());
 
-		FFrameNumber RecordStartFrame = Parameters.Project.bStartAtCurrentTimecode ? FFrameRate::TransformTime(FFrameTime(TimecodeSource.ToFrameNumber(DisplayRate)), DisplayRate, TickResolution).FloorToFrame() : MovieScene->GetPlaybackRange().GetLowerBoundValue();
+		FFrameNumber RecordStartFrame = MovieScene->GetPlaybackRange().GetLowerBoundValue();
 
 		NewAudioSection->SetSound(RecordedAudio);
 		NewAudioSection->SetRange(TRange<FFrameNumber>(RecordStartFrame, RecordStartFrame + (RecordedAudio->GetDuration() * TickResolution).CeilToFrame()));
-		NewAudioSection->TimecodeSource = TimecodeSource;
+		NewAudioSection->TimecodeSource = FTimecode::FromFrameNumber(RecordStartFrame, DisplayRate);
 
 		CachedAudioTrack->AddSection(*NewAudioSection);
 
-		if (Parameters.User.bSaveRecordedAssets || GEditor == nullptr)
+		if ((Sources && Sources->GetSettings().bSaveRecordedAssets) || GEditor == nullptr)
 		{
 			TakesUtils::SaveAsset(RecordedAudio);
 		}

@@ -182,6 +182,14 @@ namespace GeometryCollectionAlgo
 	CHAOS_API
 	AddFaces(FGeometryCollection* GeometryCollection, const TArray<TArray<FIntVector>> &Faces);
 
+	/**
+	 * Sets new sizes (face/vertex counts) for each geometry
+	 * Added vertices and faces contain arbitrary data; other elements remain unchanged
+	 */
+	void
+	CHAOS_API
+	ResizeGeometries(FGeometryCollection* GeometryCollection, const TArray<int32>& FaceCounts, const TArray<int32>& VertexCounts);
+
 	void
 	CHAOS_API
 	ComputeCoincidentVertices(const FGeometryCollection* GeometryCollection, const float Tolerance, TMap<int32, int32>& CoincidentVerticesMap, TSet<int32>& VertexToDeleteSet);
@@ -263,5 +271,12 @@ namespace GeometryCollectionAlgo
 	bool
 	CHAOS_API
 	HasValidGeometryReferences(const FGeometryCollection* GeometryCollection);
+
+	/*
+	* Computes the order of transform indices so that children in a tree always appear before their parents. Handles forests
+	*/
+	TArray<int32>
+	CHAOS_API
+	ComputeRecursiveOrder(const FGeometryCollection& Collection);
 
 }

@@ -74,6 +74,20 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 		}
 	}
 
+	if (Manager.OnFilterGameplayTag.IsBound())
+	{
+		for (int32 Idx = TagItems.Num() - 1; Idx >= 0; --Idx)
+		{
+			bool DelegateShouldHide = false;
+			FGameplayTagSource* Source = Manager.FindTagSource(TagItems[Idx]->SourceName);
+			Manager.OnFilterGameplayTag.Broadcast(UGameplayTagsManager::FFilterGameplayTagContext(RootFilterString, TagItems[Idx], Source, PropertyHandle), DelegateShouldHide);
+			if (DelegateShouldHide)
+			{
+				TagItems.RemoveAtSwap(Idx);
+			}
+		}
+	}
+
 	// Tag the assets as transactional so they can support undo/redo
 	TArray<UObject*> ObjectsToMarkTransactional;
 	if (PropertyHandle.IsValid())
@@ -281,7 +295,6 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 	 
 	LoadSettings();
 
-	// Strip any invalid tags from the assets being edited
 	VerifyAssetTagValidity();
 }
 
@@ -376,9 +389,14 @@ bool SGameplayTagWidget::FilterChildrenCheck( TSharedPtr<FGameplayTagNode> InIte
 		return false;
 	});
 
-
+	UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
 	bool DelegateShouldHide = false;
-	UGameplayTagsManager::Get().OnFilterGameplayTagChildren.Broadcast(RootFilterString, InItem, DelegateShouldHide);
+	Manager.OnFilterGameplayTagChildren.Broadcast(RootFilterString, InItem, DelegateShouldHide);
+	if (!DelegateShouldHide && Manager.OnFilterGameplayTag.IsBound())
+	{
+		FGameplayTagSource* Source = Manager.FindTagSource(InItem->SourceName);
+		Manager.OnFilterGameplayTag.Broadcast(UGameplayTagsManager::FFilterGameplayTagContext(RootFilterString, InItem, Source, PropertyHandle), DelegateShouldHide);
+	}
 	if (DelegateShouldHide)
 	{
 		// The delegate wants to hide, see if any children need to show
@@ -529,10 +547,7 @@ TSharedRef<ITableRow> SGameplayTagWidget::OnGenerateRow(TSharedPtr<FGameplayTagN
 				.ContentPadding(0)
 				.ForegroundColor(FSlateColor::UseForeground())
 				.HasDownArrow(true)
-				.MenuContent()
-				[
-					MakeTagActionsMenu(InItem)
-				]
+				.OnGetMenuContent(this, &SGameplayTagWidget::MakeTagActionsMenu, InItem)
 			]
 		];
 }
@@ -890,7 +905,9 @@ TSharedRef<SWidget> SGameplayTagWidget::MakeTagActionsMenu(TSharedPtr<FGameplayT
 		bShowManagement = false;
 	}
 
-	FMenuBuilder MenuBuilder(true, nullptr);
+	// Do not close menu after selection. The close deletes this widget before action is executed leading to no action being performed.
+	// Occurs when SGameplayTagWidget is being used as a menu item itself (Details panel of blueprint editor for example).
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/ false, nullptr);
 
 	// Rename
 	if (bShowManagement)
@@ -1011,73 +1028,6 @@ void SGameplayTagWidget::SetTagNodeItemExpansion(TSharedPtr<FGameplayTagNode> No
 		for (int32 ChildIdx = 0; ChildIdx < ChildTags.Num(); ++ChildIdx)
 		{
 			SetTagNodeItemExpansion(ChildTags[ChildIdx], bExpand);
-		}
-	}
-}
-
-void SGameplayTagWidget::VerifyAssetTagValidity()
-{
-	FGameplayTagContainer LibraryTags;
-
-	// Create a set that is the library of all valid tags
-	TArray< TSharedPtr<FGameplayTagNode> > NodeStack;
-
-	UGameplayTagsManager& TagsManager = UGameplayTagsManager::Get();
-	
-	TagsManager.GetFilteredGameplayRootTags(TEXT(""), NodeStack);
-
-	while (NodeStack.Num() > 0)
-	{
-		TSharedPtr<FGameplayTagNode> CurNode = NodeStack.Pop();
-		if (CurNode.IsValid())
-		{
-			LibraryTags.AddTag(CurNode->GetCompleteTag());
-			NodeStack.Append(CurNode->GetChildTagNodes());
-		}
-	}
-
-	// Find and remove any tags on the asset that are no longer in the library
-	for (int32 ContainerIdx = 0; ContainerIdx < TagContainers.Num(); ++ContainerIdx)
-	{
-		UObject* OwnerObj = TagContainers[ContainerIdx].TagContainerOwner.Get();
-		FGameplayTagContainer* Container = TagContainers[ContainerIdx].TagContainer;
-
-		if (Container)
-		{
-			FGameplayTagContainer EditableContainer = *Container;
-
-			// Use a set instead of a container so we can find and remove None tags
-			TSet<FGameplayTag> InvalidTags;
-
-			for (auto It = Container->CreateConstIterator(); It; ++It)
-			{
-				FGameplayTag TagToCheck = *It;
-
-				// Check redirectors, these will get fixed on load time
-				UGameplayTagsManager::Get().RedirectSingleGameplayTag(TagToCheck, nullptr);
-
-				if (!LibraryTags.HasTagExact(TagToCheck))
-				{
-					InvalidTags.Add(*It);
-				}
-			}
-			if (InvalidTags.Num() > 0)
-			{
-				FString InvalidTagNames;
-
-				for (auto InvalidIter = InvalidTags.CreateConstIterator(); InvalidIter; ++InvalidIter)
-				{
-					EditableContainer.RemoveTag(*InvalidIter);
-					InvalidTagNames += InvalidIter->ToString() + TEXT("\n");
-				}
-				SetContainer(Container, &EditableContainer, OwnerObj);
-
-				FFormatNamedArguments Arguments;
-				Arguments.Add(TEXT("Objects"), FText::FromString( InvalidTagNames ));
-				FText DialogText = FText::Format( LOCTEXT("GameplayTagWidget_InvalidTags", "Invalid Tags that have been removed: \n\n{Objects}"), Arguments );
-				FText DialogTitle = LOCTEXT("GameplayTagWidget_Warning", "Warning");
-				FMessageDialog::Open( EAppMsgType::Ok, DialogText, &DialogTitle );
-			}
 		}
 	}
 }
@@ -1255,6 +1205,20 @@ void SGameplayTagWidget::RefreshTags()
 		}
 	}
 
+	if (Manager.OnFilterGameplayTag.IsBound())
+	{
+		for (int32 Idx = TagItems.Num() - 1; Idx >= 0; --Idx)
+		{
+			bool DelegateShouldHide = false;
+			FGameplayTagSource* Source = Manager.FindTagSource(TagItems[Idx]->SourceName);
+			Manager.OnFilterGameplayTag.Broadcast(UGameplayTagsManager::FFilterGameplayTagContext(RootFilterString, TagItems[Idx], Source, PropertyHandle), DelegateShouldHide);
+			if (DelegateShouldHide)
+			{
+				TagItems.RemoveAtSwap(Idx);
+			}
+		}
+	}
+
 	FilterTagTree();
 }
 
@@ -1413,6 +1377,54 @@ void SGameplayTagWidget::OpenRenameGameplayTagDialog(TSharedPtr<FGameplayTagNode
 TSharedPtr<SWidget> SGameplayTagWidget::GetWidgetToFocusOnOpen()
 {
 	return SearchTagBox;
+}
+
+void SGameplayTagWidget::VerifyAssetTagValidity()
+{
+	UGameplayTagsManager& TagsManager = UGameplayTagsManager::Get();
+
+	// Find and remove any tags on the asset that are no longer in the library
+	for (int32 ContainerIdx = 0; ContainerIdx < TagContainers.Num(); ++ContainerIdx)
+	{
+		UObject* OwnerObj = TagContainers[ContainerIdx].TagContainerOwner.Get();
+		FGameplayTagContainer* Container = TagContainers[ContainerIdx].TagContainer;
+
+		if (Container)
+		{
+			FGameplayTagContainer EditableContainer = *Container;
+
+			// Use a set instead of a container so we can find and remove None tags
+			TSet<FGameplayTag> InvalidTags;
+
+			for (auto It = Container->CreateConstIterator(); It; ++It)
+			{
+				FGameplayTag TagToCheck = *It;
+
+				if (!UGameplayTagsManager::Get().RequestGameplayTag(TagToCheck.GetTagName(), false).IsValid())
+				{
+					InvalidTags.Add(*It);
+				}
+			}
+
+			if (InvalidTags.Num() > 0)
+			{
+				FString InvalidTagNames;
+
+				for (auto InvalidIter = InvalidTags.CreateConstIterator(); InvalidIter; ++InvalidIter)
+				{
+					EditableContainer.RemoveTag(*InvalidIter);
+					InvalidTagNames += InvalidIter->ToString() + TEXT("\n");
+				}
+				SetContainer(Container, &EditableContainer, OwnerObj);
+
+				FFormatNamedArguments Arguments;
+				Arguments.Add(TEXT("Objects"), FText::FromString(InvalidTagNames));
+				FText DialogText = FText::Format(LOCTEXT("GameplayTagWidget_InvalidTags", "Invalid Tags that have been removed: \n\n{Objects}"), Arguments);
+				FText DialogTitle = LOCTEXT("GameplayTagWidget_Warning", "Warning");
+				FMessageDialog::Open(EAppMsgType::Ok, DialogText, &DialogTitle);
+			}
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

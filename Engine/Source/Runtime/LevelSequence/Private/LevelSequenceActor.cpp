@@ -104,6 +104,16 @@ UObject* ALevelSequenceActor::GetInstanceData() const
 	return bOverrideInstanceData ? DefaultInstanceData : nullptr;
 }
 
+TOptional<EAspectRatioAxisConstraint> ALevelSequenceActor::GetAspectRatioAxisConstraint() const
+{
+	TOptional<EAspectRatioAxisConstraint> AspectRatioAxisConstraint;
+	if (CameraSettings.bOverrideAspectRatioAxisConstraint)
+	{
+		AspectRatioAxisConstraint = CameraSettings.AspectRatioAxisConstraint;
+	}
+	return AspectRatioAxisConstraint;
+}
+
 ULevelSequencePlayer* ALevelSequenceActor::GetSequencePlayer() const
 {
 	return SequencePlayer && SequencePlayer->GetSequence() ? SequencePlayer : nullptr;
@@ -139,35 +149,20 @@ void ALevelSequenceActor::PostInitializeComponents()
 	{
 		SetReplicates(bReplicatePlayback);
 	}
+	
+	// Initialize this player for tick as soon as possible to ensure that a persistent
+	// reference to the tick manager is maintained
+	SequencePlayer->InitializeForTick(this);
 
-	// ---------------------------------------------------------------------------------
-	// This code exists in UMovieSceneSequencePlayer for 4.27+, but has been back-ported
-	// in a hotfix-conformant mannger for 4.26. It is required in order to ensure that 
-	// the tick manager is kept alive by this actor before the player is initialized with
-	// a loaded sequence
-	class HACK_SetTickManager : public ULevelSequencePlayer
-	{
-	public:
-		void InitializeForTick(UObject* Context)
-		{
-			// Store a reference to the global tick manager to keep it alive while there are sequence players active.
-			if (ensure(Context))
-			{
-				TickManager = UMovieSceneSequenceTickManager::Get(Context);
-			}
-		}
-	};
-
-	static_cast<HACK_SetTickManager*>(SequencePlayer)->InitializeForTick(this);
 	InitializePlayer();
 }
 
 void ALevelSequenceActor::BeginPlay()
 {
-	UMovieSceneSequenceTickManager* TickManager = UMovieSceneSequenceTickManager::Get(this);
+	UMovieSceneSequenceTickManager* TickManager = SequencePlayer->GetTickManager();
 	if (ensure(TickManager))
 	{
-		TickManager->SequenceActors.Add(this);
+		TickManager->RegisterSequenceActor(this);
 	}
 
 	Super::BeginPlay();
@@ -188,21 +183,18 @@ void ALevelSequenceActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		// during EndPlay (when Actors + World are still valid) instead
 		// of waiting for the UObject to be destroyed by GC.
 		SequencePlayer->Stop();
-	}
 
-	UMovieSceneSequenceTickManager* TickManager = UMovieSceneSequenceTickManager::Get(this);
-	if (ensure(TickManager))
-	{
-		TickManager->SequenceActors.Remove(this);
+		if (UMovieSceneSequenceTickManager* TickManager = SequencePlayer->GetTickManager())
+		{
+			TickManager->UnregisterSequenceActor(this);
+		}
 	}
 
 	Super::EndPlay(EndPlayReason);
 }
 
-void ALevelSequenceActor::Tick(float DeltaSeconds)
+void ALevelSequenceActor::TickFromSequenceTickManager(float DeltaSeconds)
 {
-	Super::Tick(DeltaSeconds);
-
 	if (SequencePlayer)
 	{
 		SequencePlayer->Update(DeltaSeconds);
@@ -374,7 +366,8 @@ void ALevelSequenceActor::SetBinding(FMovieSceneObjectBindingID Binding, const T
 		BindingOverrides->SetBinding(Binding, TArray<UObject*>(Actors), bAllowBindingsFromAsset);
 		if (SequencePlayer)
 		{
-			SequencePlayer->State.Invalidate(Binding.GetGuid(), Binding.GetSequenceID());
+			FMovieSceneSequenceID SequenceID = Binding.ResolveSequenceID(MovieSceneSequenceID::Root, *SequencePlayer);
+			SequencePlayer->State.Invalidate(Binding.GetGuid(), SequenceID);
 		}
 	}
 }
@@ -411,7 +404,8 @@ void ALevelSequenceActor::AddBinding(FMovieSceneObjectBindingID Binding, AActor*
 		BindingOverrides->AddBinding(Binding, Actor, bAllowBindingsFromAsset);
 		if (SequencePlayer)
 		{
-			SequencePlayer->State.Invalidate(Binding.GetGuid(), Binding.GetSequenceID());
+			FMovieSceneSequenceID SequenceID = Binding.ResolveSequenceID(MovieSceneSequenceID::Root, *SequencePlayer);
+			SequencePlayer->State.Invalidate(Binding.GetGuid(), SequenceID);
 		}
 	}
 }
@@ -448,7 +442,8 @@ void ALevelSequenceActor::RemoveBinding(FMovieSceneObjectBindingID Binding, AAct
 		BindingOverrides->RemoveBinding(Binding, Actor);
 		if (SequencePlayer)
 		{
-			SequencePlayer->State.Invalidate(Binding.GetGuid(), Binding.GetSequenceID());
+			FMovieSceneSequenceID SequenceID = Binding.ResolveSequenceID(MovieSceneSequenceID::Root, *SequencePlayer);
+			SequencePlayer->State.Invalidate(Binding.GetGuid(), SequenceID);
 		}
 	}
 }
@@ -485,7 +480,8 @@ void ALevelSequenceActor::ResetBinding(FMovieSceneObjectBindingID Binding)
 		BindingOverrides->ResetBinding(Binding);
 		if (SequencePlayer)
 		{
-			SequencePlayer->State.Invalidate(Binding.GetGuid(), Binding.GetSequenceID());
+			FMovieSceneSequenceID SequenceID = Binding.ResolveSequenceID(MovieSceneSequenceID::Root, *SequencePlayer);
+			SequencePlayer->State.Invalidate(Binding.GetGuid(), SequenceID);
 		}
 	}
 }

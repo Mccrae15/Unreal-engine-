@@ -278,9 +278,13 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Build", meta = (EditCondition = "bUseRSync", DisplayName = "Username on Remote Server.", ConfigHierarchyEditable))
 	FString RSyncUsername;
 
-	// The install directory of DeltaCopy.
+	// Optional path on the remote mac where the build files will be copied. If blank, ~/UE4/Builds will be used.
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Build", meta = (ConfigHierarchyEditable))
+	FString RemoteServerOverrideBuildPath;
+
+	// The install directory of cwrsync.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Build", meta = (EditCondition = "bUseRSync", ConfigHierarchyEditable))
-	FIOSBuildResourceDirectory DeltaCopyInstallPath;
+	FIOSBuildResourceDirectory CwRsyncInstallPath;
 
 	// The existing location of an SSH Key found by UE4.
 	UPROPERTY(VisibleAnywhere, Category = "Build", meta = (DisplayName = "Found Existing SSH permissions file"))

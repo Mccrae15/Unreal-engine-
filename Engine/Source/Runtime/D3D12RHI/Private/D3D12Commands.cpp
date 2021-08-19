@@ -52,6 +52,10 @@ bool GIsDoingQuery = false;
 #define VALIDATE_BOUND_SHADER(s)
 #endif
 
+#if !defined(D3D12_PLATFORM_SUPPORTS_RESOLVE_SHADERS)
+	#define D3D12_PLATFORM_SUPPORTS_RESOLVE_SHADERS 1
+#endif
+
 void FD3D12DynamicRHI::SetupRecursiveResources()
 {
 	auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
@@ -67,11 +71,11 @@ void FD3D12DynamicRHI::SetupRecursiveResources()
 	}
 
 	// TODO: Waiting to integrate MSAA fix for ResolveShader.h
-	if (!(PLATFORM_WINDOWS || PLATFORM_HOLOLENS))
+	if (!D3D12_PLATFORM_SUPPORTS_RESOLVE_SHADERS)
 		return;
 
 	TShaderMapRef<FResolveVS> ResolveVertexShader(ShaderMap);
-	if (GMaxRHIShaderPlatform == SP_PCD3D_SM5 || GMaxRHIShaderPlatform == SP_XBOXONE_D3D12)
+	if (GMaxRHIShaderPlatform == SP_PCD3D_SM5)
 	{
 		TShaderMapRef<FResolveDepthPS> ResolvePixelShader_Depth(ShaderMap);
 		ResolvePixelShader_Depth.GetPixelShader();
@@ -393,6 +397,12 @@ void FD3D12CommandContext::RHIEndTransitions(TArrayView<const FRHITransition*> T
 					}
 					else if (EnumHasAnyFlags(Info.AccessAfter, ERHIAccess::EReadable))
 					{
+#if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
+						if (EnumHasAnyFlags(Info.AccessAfter, ERHIAccess::ShadingRateSource) && GRHISupportsPipelineVariableRateShading)
+						{
+							State |= D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE;
+						}
+#endif
 						if (bIsAsyncComputeContext)
 						{
 							State |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -557,7 +567,7 @@ void FD3D12CommandContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState
 		StateCache.SetDepthBounds(0.0f, 1.0f);
 	}
 
-	if (GRHISupportsVariableRateShading  )
+	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled)
 	{
 		StateCache.SetShadingRate(GraphicsPipelineState->PipelineStateInitializer.ShadingRate, VRSRB_Passthrough);
 	}
@@ -1110,6 +1120,27 @@ void FD3D12CommandContext::SetRenderTargets(
 	}
 }
 
+#if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
+static D3D12_SHADING_RATE_COMBINER ConvertShadingRateCombiner(EVRSRateCombiner InCombiner)
+{
+	switch (InCombiner)
+	{
+	case VRSRB_Override:
+		return D3D12_SHADING_RATE_COMBINER_OVERRIDE;
+	case VRSRB_Min:
+		return D3D12_SHADING_RATE_COMBINER_MIN;
+	case VRSRB_Max:
+		return D3D12_SHADING_RATE_COMBINER_MAX;
+	case VRSRB_Sum:
+		return D3D12_SHADING_RATE_COMBINER_SUM;
+	case VRSRB_Passthrough:
+	default:
+		return D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+	}
+	return D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+}
+#endif
+
 void FD3D12CommandContext::SetRenderTargetsAndClear(const FRHISetRenderTargetsInfo& RenderTargetsInfo)
 {
 	FRHIUnorderedAccessView* UAVs[MaxSimultaneousUAVs] = {};
@@ -1121,6 +1152,7 @@ void FD3D12CommandContext::SetRenderTargetsAndClear(const FRHISetRenderTargetsIn
 	if (RenderTargetsInfo.bClearColor || RenderTargetsInfo.bClearStencil || RenderTargetsInfo.bClearDepth)
 	{
 		FLinearColor ClearColors[MaxSimultaneousRenderTargets];
+		bool bClearColorArray[MaxSimultaneousRenderTargets];
 		float DepthClear = 0.0;
 		uint32 StencilClear = 0;
 
@@ -1138,6 +1170,7 @@ void FD3D12CommandContext::SetRenderTargetsAndClear(const FRHISetRenderTargetsIn
 				{
 					ClearColors[i] = FLinearColor(ForceInitToZero);
 				}
+				bClearColorArray[i] = RenderTargetsInfo.ColorRenderTarget[i].LoadAction == ERenderTargetLoadAction::EClear;
 			}
 		}
 		if (RenderTargetsInfo.bClearDepth || RenderTargetsInfo.bClearStencil)
@@ -1147,8 +1180,35 @@ void FD3D12CommandContext::SetRenderTargetsAndClear(const FRHISetRenderTargetsIn
 			ClearValue.GetDepthStencil(DepthClear, StencilClear);
 		}
 
-		this->RHIClearMRTImpl(RenderTargetsInfo.bClearColor, RenderTargetsInfo.NumColorRenderTargets, ClearColors, RenderTargetsInfo.bClearDepth, DepthClear, RenderTargetsInfo.bClearStencil, StencilClear);
+		this->RHIClearMRTImpl(RenderTargetsInfo.bClearColor ? bClearColorArray : nullptr, RenderTargetsInfo.NumColorRenderTargets, ClearColors, RenderTargetsInfo.bClearDepth, DepthClear, RenderTargetsInfo.bClearStencil, StencilClear);
 	}
+
+#if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
+	// If we support tier 2, we will support tier 1.
+	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled && CommandListHandle.GraphicsCommandList5() != nullptr)
+	{
+		if (GRHISupportsAttachmentVariableRateShading && GRHIAttachmentVariableRateShadingEnabled)
+		{
+			VRSCombiners[1] = ConvertShadingRateCombiner(RenderTargetsInfo.ShadingRateTextureCombiner); // Combiner 1 is used to mix rates from a texture and the previous combiner
+			if (RenderTargetsInfo.ShadingRateTexture != nullptr)
+			{
+				FD3D12Resource* Resource = RetrieveTextureBase(RenderTargetsInfo.ShadingRateTexture)->GetResource();
+				CommandListHandle.GraphicsCommandList5()->RSSetShadingRateImage(Resource->GetResource());
+			}
+			else
+			{
+				CommandListHandle.GraphicsCommandList5()->RSSetShadingRateImage(nullptr);
+			}
+		}
+		else
+		{
+			// Ensure this is set appropriate if image-based VRS not supported or not enabled.
+			VRSCombiners[1] = D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+		}
+
+		CommandListHandle.GraphicsCommandList5()->RSSetShadingRate(VRSShadingRate, VRSCombiners);
+	}
+#endif
 }
 
 // Occlusion/Timer queries.
@@ -1201,8 +1261,8 @@ void FD3D12CommandContext::RHIEndRenderQuery(FRHIRenderQuery* QueryRHI)
 void FD3D12CommandContext::RHICalibrateTimers(FRHITimestampCalibrationQuery* CalibrationQuery)
 {
 	FGPUTimingCalibrationTimestamp Timestamp = GetParentDevice()->GetCommandListManager().GetCalibrationTimestamp();
-	CalibrationQuery->CPUMicroseconds = Timestamp.CPUMicroseconds;
-	CalibrationQuery->GPUMicroseconds = Timestamp.GPUMicroseconds;
+	CalibrationQuery->CPUMicroseconds[GetGPUIndex()] = Timestamp.CPUMicroseconds;
+	CalibrationQuery->GPUMicroseconds[GetGPUIndex()] = Timestamp.GPUMicroseconds;
 }
 
 // Primitive drawing.
@@ -1507,7 +1567,7 @@ void FD3D12CommandContext::CommitComputeResourceTables(FD3D12ComputeShader* InCo
 
 void FD3D12CommandContext::RHIDrawPrimitive(uint32 BaseVertexIndex, uint32 NumPrimitives, uint32 NumInstances)
 {
-	RHI_DRAW_CALL_STATS(StateCache.GetGraphicsPipelinePrimitiveType(), FMath::Max(NumInstances, 1U) * NumPrimitives);
+	RHI_DRAW_CALL_STATS_MGPU(GetGPUIndex(), StateCache.GetGraphicsPipelinePrimitiveType(), FMath::Max(NumInstances, 1U) * NumPrimitives);
 
 	CommitGraphicsResourceTables();
 	CommitNonComputeShaderConstants();
@@ -1534,7 +1594,7 @@ void FD3D12CommandContext::RHIDrawPrimitiveIndirect(FRHIVertexBuffer* ArgumentBu
 	FD3D12Buffer* ArgumentBuffer = RetrieveObject<FD3D12Buffer>(ArgumentBufferRHI);
 
 	numDraws++;
-	RHI_DRAW_CALL_INC();
+	RHI_DRAW_CALL_INC_MGPU(GetGPUIndex());
 	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(0);
@@ -1578,7 +1638,7 @@ void FD3D12CommandContext::RHIDrawIndexedIndirect(FRHIIndexBuffer* IndexBufferRH
 	FD3D12Buffer* ArgumentsBuffer = RetrieveObject<FD3D12Buffer>(ArgumentsBufferRHI);
 
 	numDraws++;
-	RHI_DRAW_CALL_INC();
+	RHI_DRAW_CALL_INC_MGPU(GetGPUIndex());
 	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(1);
@@ -1622,7 +1682,7 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitive(FRHIIndexBuffer* IndexBufferR
 {
 	// called should make sure the input is valid, this avoid hidden bugs
 	ensure(NumPrimitives > 0);
-	RHI_DRAW_CALL_STATS(StateCache.GetGraphicsPipelinePrimitiveType(), FMath::Max(NumInstances, 1U) * NumPrimitives);
+	RHI_DRAW_CALL_STATS_MGPU(GetGPUIndex(), StateCache.GetGraphicsPipelinePrimitiveType(), FMath::Max(NumInstances, 1U) * NumPrimitives);
 
 	NumInstances = FMath::Max<uint32>(1, NumInstances);
 	numDraws++;
@@ -1664,7 +1724,7 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitiveIndirect(FRHIIndexBuffer* Inde
 	FD3D12Buffer* ArgumentBuffer = RetrieveObject<FD3D12Buffer>(ArgumentBufferRHI);
 
 	numDraws++;
-	RHI_DRAW_CALL_INC();
+	RHI_DRAW_CALL_INC_MGPU(GetGPUIndex());
 	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(0);
@@ -1704,12 +1764,12 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitiveIndirect(FRHIIndexBuffer* Inde
 }
 
 // Raster operations.
-void FD3D12CommandContext::RHIClearMRT(bool bClearColor, int32 NumClearColors, const FLinearColor* ClearColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil)
+void FD3D12CommandContext::RHIClearMRT(bool* bClearColorArray, int32 NumClearColors, const FLinearColor* ClearColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil)
 {
-	RHIClearMRTImpl(bClearColor, NumClearColors, ClearColorArray, bClearDepth, Depth, bClearStencil, Stencil);
+	RHIClearMRTImpl(bClearColorArray, NumClearColors, ClearColorArray, bClearDepth, Depth, bClearStencil, Stencil);
 }
 
-void FD3D12CommandContext::RHIClearMRTImpl(bool bClearColor, int32 NumClearColors, const FLinearColor* ClearColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil)
+void FD3D12CommandContext::RHIClearMRTImpl(bool* bClearColorArray, int32 NumClearColors, const FLinearColor* ClearColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil)
 {
 	SCOPE_CYCLE_COUNTER(STAT_D3D12ClearMRT);
 
@@ -1741,7 +1801,7 @@ void FD3D12CommandContext::RHIClearMRTImpl(bool bClearColor, int32 NumClearColor
 	}
 
 	// Must specify enough clear colors for all active RTs
-	check(!bClearColor || NumClearColors >= BoundRenderTargets.GetNumActiveTargets());
+	check(!bClearColorArray || NumClearColors >= BoundRenderTargets.GetNumActiveTargets());
 
 	const bool bSupportsFastClear = true;
 	uint32 ClearRectCount = 0;
@@ -1768,7 +1828,7 @@ void FD3D12CommandContext::RHIClearMRTImpl(bool bClearColor, int32 NumClearColor
 		}
 	}
 
-	const bool ClearRTV = bClearColor && BoundRenderTargets.GetNumActiveTargets() > 0;
+	const bool ClearRTV = bClearColorArray && BoundRenderTargets.GetNumActiveTargets() > 0;
 	const bool ClearDSV = (bClearDepth || bClearStencil) && DepthStencilView;
 
 	if (ClearRTV)
@@ -1838,7 +1898,7 @@ void FD3D12CommandContext::RHIClearMRTImpl(bool bClearColor, int32 NumClearColor
 			{
 				FD3D12RenderTargetView* RTView = BoundRenderTargets.GetRenderTargetView(TargetIndex);
 
-				if (RTView != nullptr)
+				if (RTView != nullptr && bClearColorArray[TargetIndex])
 				{
 					numClears++;
 					CommandListHandle->ClearRenderTargetView(RTView->GetView(), (float*)&ClearColorArray[TargetIndex], ClearRectCount, pClearRects);
@@ -1912,28 +1972,6 @@ void FD3D12CommandContext::SetDepthBounds(float MinDepth, float MaxDepth)
 #endif
 }
 
-
-#if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
-static D3D12_SHADING_RATE_COMBINER ConvertShadingRateCombiner(EVRSRateCombiner InCombiner)
-{
-	switch (InCombiner)
-	{
-	case VRSRB_Override:
-		return D3D12_SHADING_RATE_COMBINER_OVERRIDE;
-	case VRSRB_Min:
-		return D3D12_SHADING_RATE_COMBINER_MIN;
-	case VRSRB_Max:
-		return D3D12_SHADING_RATE_COMBINER_MAX;
-	case VRSRB_Sum:
-		return D3D12_SHADING_RATE_COMBINER_SUM;
-	case VRSRB_Passthrough:
-	default:
-		return D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
-	}
-	return D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
-}
-#endif
-
 void FD3D12CommandContext::RHISetShadingRate(EVRSShadingRate ShadingRate, EVRSRateCombiner Combiner)
 {
 #if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
@@ -1944,34 +1982,26 @@ void FD3D12CommandContext::RHISetShadingRate(EVRSShadingRate ShadingRate, EVRSRa
  void FD3D12CommandContext::SetShadingRate(EVRSShadingRate ShadingRate, EVRSRateCombiner Combiner)
  {
  #if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
- 	if (GRHISupportsVariableRateShading && CommandListHandle.GraphicsCommandList5())
+ 	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled && CommandListHandle.GraphicsCommandList5())
  	{
  		VRSCombiners[0] = ConvertShadingRateCombiner(Combiner);	// Combiner 0 is used to mix per draw and per VS/GS rates
  		VRSShadingRate = static_cast<D3D12_SHADING_RATE>(ShadingRate);
  		CommandListHandle.GraphicsCommandList5()->RSSetShadingRate(VRSShadingRate, VRSCombiners);
  	}
+	else
+	{
+		// Ensure we're at a reasonable default in the case we're not supporting VRS.
+		VRSCombiners[0] = VRSCombiners[1] = D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+	}
  #endif
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void FD3D12CommandContext::RHISetShadingRateImage(FRHITexture* RateImageTexture, EVRSRateCombiner Combiner)
 {
-#if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
-	if (GRHISupportsVariableRateShading && CommandListHandle.GraphicsCommandList5())
-	{
-		VRSCombiners[1] = ConvertShadingRateCombiner(Combiner); // Combiner 1 is used to mix rates from a texture and the previous combiner
-		if (RateImageTexture)
-		{
-			FD3D12Resource* Resource = RetrieveTextureBase(RateImageTexture)->GetResource();
-			CommandListHandle.GraphicsCommandList5()->RSSetShadingRateImage(Resource->GetResource());
-		}
-		else
-		{
-			CommandListHandle.GraphicsCommandList5()->RSSetShadingRateImage(nullptr);
-		}
-		CommandListHandle.GraphicsCommandList5()->RSSetShadingRate(VRSShadingRate, VRSCombiners);
-	}
-#endif
+	checkf(false, TEXT("RHISetShadingRateImage API is deprecated. Use the ShadingRateImage attachment in the RHISetRenderTargetsInfo struct instead."));
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void FD3D12CommandContext::RHISubmitCommandsHint()
 {
@@ -2012,7 +2042,8 @@ void FD3D12CommandContext::RHIWaitForTemporalEffect(const FName& InEffectName)
 #endif // WITH_MGPU
 }
 
-void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures)
+template <typename TD3D12Resource, typename TCopyFunction>
+void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<TD3D12Resource*> InResources, const TCopyFunction& InCopyFunction)
 {
 #if WITH_MGPU
 	check(IsDefaultContext());
@@ -2023,14 +2054,7 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 	}
 
 	const uint32 GPUIndex = GetGPUIndex();
-	TArray<FD3D12TextureBase*, TInlineAllocator<MAX_NUM_GPUS>> SrcTextures, DstTextures;
-	const int32 NumTextures = InTextures.Num();
-	for (int32 i = 0; i < NumTextures; i++)
-	{
-		SrcTextures.Emplace(RetrieveTextureBase(InTextures[i]));
-		const uint32 NextSiblingGPUIndex = AFRUtils::GetNextSiblingGPUIndex(GPUIndex);
-		DstTextures.Emplace(RetrieveTextureBase(InTextures[i], NextSiblingGPUIndex));
-	}
+	const uint32 NextSiblingGPUIndex = AFRUtils::GetNextSiblingGPUIndex(GPUIndex);
 
 	FD3D12Device* Device = GetParentDevice();
 	FD3D12Adapter* Adapter = Device->GetParentAdapter();
@@ -2038,11 +2062,12 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 
 #if USE_COPY_QUEUE_FOR_RESOURCE_SYNC
 
-	for (int32 i = 0; i < NumTextures; i++)
+	for (TD3D12Resource* SrcResource : InResources)
 	{
 		// Resources must be in the COMMON state before using on the copy queue.
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		TD3D12Resource* DstResource = SrcResource->GetLinkedObject(NextSiblingGPUIndex);
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcResource->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstResource->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 	}
 	CommandListHandle.FlushResourceBarriers();
 
@@ -2059,10 +2084,11 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 	FD3D12CommandListHandle hCopyCommandList = CopyCommandListManager.ObtainCommandList(*CopyCommandAllocator);
 	hCopyCommandList.SetCurrentOwningContext(this);
 
-	for (int32 i = 0; i < NumTextures; i++)
+	for (TD3D12Resource* SrcResource : InResources)
 	{
 		// NB: We do not increment numCopies here because the main context isn't doing any work.
-		hCopyCommandList->CopyResource(DstTextures[i]->GetResource()->GetResource(), SrcTextures[i]->GetResource()->GetResource());
+		TD3D12Resource* DstResource = SrcResource->GetLinkedObject(NextSiblingGPUIndex);
+		InCopyFunction(hCopyCommandList, DstResource, SrcResource);
 	}
 	hCopyCommandList.Close();
 
@@ -2074,17 +2100,19 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 
 #else
 
-	for (int32 i = 0; i < NumTextures; i++)
+	for (TD3D12Resource* SrcResource : InResources)
 	{
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		TD3D12Resource* DstResource = SrcResource->GetLinkedObject(NextSiblingGPUIndex);;
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcResource->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstResource->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 	}
 	CommandListHandle.FlushResourceBarriers();
 
-	for (int32 i = 0; i < NumTextures; i++)
+	for (TD3D12Resource* SrcResource : InResources)
 	{
 		numCopies++;
-		CommandListHandle->CopyResource(DstTextures[i]->GetResource()->GetResource(), SrcTextures[i]->GetResource()->GetResource());
+		TD3D12Resource* DstResource = SrcResource->GetLinkedObject(NextSiblingGPUIndex);;
+		InCopyFunction(CommandListHandle, DstResource, SrcResource);
 	}
 
 	FlushCommands();
@@ -2094,3 +2122,46 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 #endif // USE_COPY_QUEUE_FOR_RESOURCE_SYNC
 #endif // WITH_MGPU
 }
+
+void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures)
+{
+#if WITH_MGPU
+	FMemMark Mark(FMemStack::Get());
+	TArray<FD3D12TextureBase*, TMemStackAllocator<>> Resources;
+	Resources.Reserve(InTextures.Num());
+	for (FRHITexture* Texture : InTextures)
+	{
+		Resources.Emplace(RetrieveTextureBase(Texture));
+	}
+	auto CopyFunction = [](FD3D12CommandListHandle& CommandList, FD3D12TextureBase* Dst, FD3D12TextureBase* Src)
+	{
+		CommandList->CopyResource(Dst->GetResource()->GetResource(), Src->GetResource()->GetResource());
+	};
+	RHIBroadcastTemporalEffect(InEffectName, MakeArrayView(Resources), CopyFunction);
+#endif // WITH_MGPU
+}
+
+void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHIVertexBuffer*> InBuffers)
+{
+#if WITH_MGPU
+	FMemMark Mark(FMemStack::Get());
+	TArray<FD3D12Buffer*, TMemStackAllocator<>> Resources;
+	Resources.Reserve(InBuffers.Num());
+	for (auto* Buffer : InBuffers)
+	{
+		Resources.Emplace(RetrieveObject<FD3D12Buffer>(Buffer));
+	}
+	auto CopyFunction = [](FD3D12CommandListHandle& CommandList, FD3D12Buffer* Dst, FD3D12Buffer* Src)
+	{
+		CommandList->CopyBufferRegion(
+			Dst->GetResource()->GetResource(),
+			Dst->ResourceLocation.GetOffsetFromBaseOfResource(),
+			Src->GetResource()->GetResource(),
+			Src->ResourceLocation.GetOffsetFromBaseOfResource(),
+			Src->ResourceLocation.GetSize()
+		);
+	};
+	RHIBroadcastTemporalEffect(InEffectName, MakeArrayView(Resources), CopyFunction);
+#endif // WITH_MGPU
+}
+

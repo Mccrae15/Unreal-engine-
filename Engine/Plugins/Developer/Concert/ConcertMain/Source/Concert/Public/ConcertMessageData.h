@@ -20,6 +20,25 @@ enum class EConcertServerFlags : uint8
 };
 ENUM_CLASS_FLAGS(EConcertServerFlags)
 
+UENUM()
+enum class EConcertPayloadCompressionType : uint8
+{
+	// The serialized data will not be compressed.
+	None = 0,
+	// The serialized data will be compressed based on struct size.
+	Heuristic,
+	// The serialized data will always be compressed.
+	Always
+};
+
+UENUM()
+enum class EConcertPayloadSerializationMethod : uint8
+{
+	// The data will be serialized using standard platform method.
+	Standard = 0,
+	// The data will be serialized using Cbor method.
+	Cbor,
+};
 
 /** Holds info on an instance communicating through concert */
 USTRUCT()
@@ -74,7 +93,7 @@ struct FConcertServerInfo
 
 	/** Contains information on the server settings */
 	UPROPERTY(VisibleAnywhere, Category = "Server Info")
-	EConcertServerFlags ServerFlags;
+	EConcertServerFlags ServerFlags = EConcertServerFlags::None;
 };
 
 /** Holds info on a client connected through concert */
@@ -109,8 +128,8 @@ struct FConcertClientInfo
 	FString DisplayName;
 
 	/** Holds the color of the user avatar in a session. */
-	UPROPERTY(VisibleAnywhere, Category="Client Info")
-	FLinearColor AvatarColor;
+	UPROPERTY(VisibleAnywhere, Category = "Client Info")
+	FLinearColor AvatarColor = {1.0f, 1.0f, 1.0f, 1.0f};
 
 	/** Holds the string representation of the desktop actor class to be used as the avatar for a representation of a client */
 	UPROPERTY(VisibleAnywhere, Category = "Client Info")
@@ -126,11 +145,11 @@ struct FConcertClientInfo
 
 	/** True if this instance was built with editor-data */
 	UPROPERTY(VisibleAnywhere, Category="Client Info")
-	bool bHasEditorData;
+	bool bHasEditorData = true;
 
 	/** True if this platform requires cooked data */
 	UPROPERTY(VisibleAnywhere, Category="Client Info")
-	bool bRequiresCookedData;
+	bool bRequiresCookedData = false;
 
 	CONCERT_API bool operator==(const FConcertClientInfo& Other) const;
 	CONCERT_API bool operator!=(const FConcertClientInfo& Other) const;
@@ -233,18 +252,56 @@ struct FConcertSessionFilter
 };
 
 USTRUCT()
+struct FConcertByteArray
+{
+	GENERATED_BODY()
+
+	bool Serialize(FArchive& Ar)
+	{
+		int32 Num = Bytes.Num();
+		Ar << Num;
+		if (Ar.IsLoading())
+		{
+			Bytes.AddUninitialized(Num);
+		}
+		Ar.Serialize(Bytes.GetData(), Num);
+		return true;
+	}
+
+	UPROPERTY()
+	TArray<uint8> Bytes;
+};
+
+template<>
+struct TStructOpsTypeTraits<FConcertByteArray> : public TStructOpsTypeTraitsBase2<FConcertByteArray>
+{
+	enum
+	{
+		WithSerializer = true,
+	};
+};
+
+
+USTRUCT()
 struct FConcertSessionSerializedPayload
 {
 	GENERATED_BODY()
 
+	FConcertSessionSerializedPayload() = default;
+
+	FConcertSessionSerializedPayload( EConcertPayloadSerializationMethod SerializeMethod )
+		: SerializationMethod(SerializeMethod)
+	{
+	}
+
 	/** Initialize this payload from the given data */
-	CONCERT_API bool SetPayload(const FStructOnScope& InPayload);
-	CONCERT_API bool SetPayload(const UScriptStruct* InPayloadType, const void* InPayloadData);
+	CONCERT_API bool SetPayload(const FStructOnScope& InPayload, EConcertPayloadCompressionType CompressionType = EConcertPayloadCompressionType::Heuristic);
+	CONCERT_API bool SetPayload(const UScriptStruct* InPayloadType, const void* InPayloadData, EConcertPayloadCompressionType CompressionType = EConcertPayloadCompressionType::Heuristic);
 
 	template <typename T>
-	bool SetTypedPayload(const T& InPayloadData)
+	bool SetTypedPayload(const T& InPayloadData, EConcertPayloadCompressionType CompressType = EConcertPayloadCompressionType::Heuristic)
 	{
-		return SetPayload(TBaseStructure<T>::Get(), &InPayloadData);
+		return SetPayload(TBaseStructure<T>::Get(), &InPayloadData, CompressType);
 	}
 
 	/** Extract the payload into an in-memory instance */
@@ -261,49 +318,19 @@ struct FConcertSessionSerializedPayload
 	UPROPERTY(VisibleAnywhere, Category="Payload")
 	FName PayloadTypeName;
 
-	/** The uncompressed size of the user-defined payload data. */
+	/** Specifies the serialization method used to pack the data */
+	UPROPERTY(VisibleAnywhere, Category = "Payload")
+	EConcertPayloadSerializationMethod SerializationMethod = EConcertPayloadSerializationMethod::Standard;
+
+	/** Indicates if the serialized payload has been compressed. */
 	UPROPERTY(VisibleAnywhere, Category="Payload")
-	int32 UncompressedPayloadSize = 0;
-
-	/** The data of the user-defined payload (stored as compressed binary for compact transfer). */
-	UPROPERTY()
-	TArray<uint8> CompressedPayload;
-};
-
-USTRUCT()
-struct FConcertSessionSerializedCborPayload
-{
-	GENERATED_BODY()
-
-	/** Initialize this payload from the given data */
-	CONCERT_API bool SetPayload(const FStructOnScope& InPayload);
-	CONCERT_API bool SetPayload(const UScriptStruct* InPayloadType, const void* InPayloadData);
-
-	template <typename T>
-	bool SetTypedPayload(const T& InPayloadData)
-	{
-		return SetPayload(TBaseStructure<T>::Get(), &InPayloadData);
-	}
-
-	/** Extract the payload into an in-memory instance */
-	CONCERT_API bool GetPayload(FStructOnScope& OutPayload) const;
-	CONCERT_API bool GetPayload(const UScriptStruct* InPayloadType, void* InOutPayloadData) const;
-
-	template <typename T>
-	bool GetTypedPayload(T& OutPayloadData) const
-	{
-		return GetPayload(TBaseStructure<T>::Get(), &OutPayloadData);
-	}
-
-	/** The typename of the user-defined payload. */
-	UPROPERTY(VisibleAnywhere, Category="Payload")
-	FName PayloadTypeName;
+	bool bPayloadIsCompressed = false;
 
 	/** The uncompressed size of the user-defined payload data. */
 	UPROPERTY(VisibleAnywhere, Category="Payload")
-	int32 UncompressedPayloadSize = 0;
+	int32 PayloadSize = 0;
 
-	/** The data of the user-defined payload (stored as compressed Cbor for compact transfer). */
+	/** The data of the user-defined payload (potentially stored as compressed binary for compact transfer). */
 	UPROPERTY()
-	TArray<uint8> CompressedPayload;
+	FConcertByteArray PayloadBytes;
 };

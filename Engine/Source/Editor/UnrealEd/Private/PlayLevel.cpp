@@ -349,7 +349,7 @@ void UEditorEngine::EndPlayMap()
 	FGameDelegates::Get().GetEndPlayMapDelegate().Broadcast();
 	
 	// find objects like Textures in the playworld levels that won't get garbage collected as they are marked RF_Standalone
-	for (FObjectIterator It; It; ++It)
+	for (FThreadSafeObjectIterator It; It; ++It)
 	{
 		UObject* Object = *It;
 
@@ -429,7 +429,7 @@ void UEditorEngine::EndPlayMap()
 	}
 
 	// Make sure that all objects in the temp levels were entirely garbage collected.
-	for( FObjectIterator ObjectIt; ObjectIt; ++ObjectIt )
+	for(FThreadSafeObjectIterator ObjectIt; ObjectIt; ++ObjectIt )
 	{
 		UObject* Object = *ObjectIt;
 		if( Object->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
@@ -602,7 +602,7 @@ void UEditorEngine::TeardownPlaySession(FWorldContext& PieWorldContext)
 			{
 				TSharedPtr<IAssetViewport> Viewport = SlatePlayInEditorSession->DestinationSlateViewport.Pin();
 
-				if(PlayInEditorSessionInfo->OriginalRequestParams.WorldType == EPlaySessionWorldType::PlayInEditor)
+				if(PlayInEditorSessionInfo.IsSet() && PlayInEditorSessionInfo->OriginalRequestParams.WorldType == EPlaySessionWorldType::PlayInEditor)
 				{
 					// Set the editor viewport location to match that of Play in Viewport if we aren't simulating in the editor, we have a valid player to get the location from (unless we're going back to VR Editor, in which case we won't teleport the user.)
 					if (bLastViewAndLocationValid == true && !GEngine->IsStereoscopic3D( Viewport->GetActiveViewport() ) )
@@ -2198,7 +2198,9 @@ UWorld* UEditorEngine::CreatePIEWorldByDuplication(FWorldContext &WorldContext, 
 	PlayWorldPackage->SetPackageFlags(PKG_PlayInEditor);
 	PlayWorldPackage->PIEInstanceID = WorldContext.PIEInstance;
 	PlayWorldPackage->FileName = InPackage->FileName;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	PlayWorldPackage->SetGuid( InPackage->GetGuid() );
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	PlayWorldPackage->MarkAsFullyLoaded();
 
 	// check(GPlayInEditorID == -1 || GPlayInEditorID == WorldContext.PIEInstance);

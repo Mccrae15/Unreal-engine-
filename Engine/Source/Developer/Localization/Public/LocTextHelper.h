@@ -245,9 +245,10 @@ public:
 	 * @note This kind of helper is only suitable for dealing with manifests, *not* archives.
 	 *
 	 * @param InLocFileNotifies		Interface for allowing source control integration (may be null).
+	 * @param InTargetName			The name of the target we're working with (eg, Game).
 	 * @param InPlatformSplitMode	Should we split localization data per-platform?
 	 */
-	explicit FLocTextHelper(TSharedPtr<ILocFileNotifies> InLocFileNotifies, const ELocTextPlatformSplitMode InPlatformSplitMode = ELocTextPlatformSplitMode::None);
+	FLocTextHelper(FString InTargetName, TSharedPtr<ILocFileNotifies> InLocFileNotifies, const ELocTextPlatformSplitMode InPlatformSplitMode = ELocTextPlatformSplitMode::None);
 
 	/**
 	 * Construct a helper for the given target information.
@@ -812,7 +813,8 @@ public:
 	/**
 	 * Sanitize any output from the given string that may cause the build machine to generate erroneous errors.
 	 */
-	static FString SanitizeLogOutput(const FString& InString);
+	static FString SanitizeLogOutput(FStringView InString);
+	static FString SanitizeLogOutput(FString&& InString);
 
 	/**
 	 * Given a culture, try and find all the keys that the source string should use by checking the manifest.

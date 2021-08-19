@@ -30,21 +30,44 @@ struct FActiveCameraShakeInfo
 {
 	GENERATED_BODY()
 
-	FActiveCameraShakeInfo() : ShakeInstance(nullptr), ShakeSource(nullptr) {}
+	FActiveCameraShakeInfo() 
+		: ShakeInstance(nullptr)
+		, ShakeSource(nullptr)
+		, bIsCustomInitialized(false)
+	{}
 
 	UPROPERTY()
 	UCameraShakeBase* ShakeInstance;
 
 	UPROPERTY()
 	TWeakObjectPtr<const UCameraShakeSourceComponent> ShakeSource;
+
+	UPROPERTY()
+	bool bIsCustomInitialized;
 };
 
+DECLARE_DELEGATE_OneParam(FOnInitializeCameraShake, UCameraShakeBase*);
+
+/** Parameter struct for adding new camera shakes to UCameraModifier_CameraShake */
 struct FAddCameraShakeParams
 {
+	/** Global scale to use for the new camera shake */
 	float Scale;
+	/** The transform space to use for the new camera shake */
 	ECameraShakePlaySpace PlaySpace;
+	/** User space to use when PlaySpace is UserDefined */
 	FRotator UserPlaySpaceRot;
+
+	/** The source to use for dynamically attenuating the new camera shake */
 	const UCameraShakeSourceComponent* SourceComponent;
+
+	/**
+	 * A custom callback to initialize the new camera shake.
+	 *
+	 * Note that when this is set, the given camera shake will not be recycled. It will be discarded
+	 * completely upon finishing.
+	 */
+	FOnInitializeCameraShake Initializer;
 
 	FAddCameraShakeParams()
 		: Scale(1.f), PlaySpace(ECameraShakePlaySpace::CameraLocal), UserPlaySpaceRot(FRotator::ZeroRotator), SourceComponent(nullptr)
@@ -129,6 +152,7 @@ public:
 	
 	//~ Begin UCameraModifer Interface
 	virtual bool ModifyCamera(float DeltaTime, struct FMinimalViewInfo& InOutPOV) override;
+	virtual void DisplayDebug(class UCanvas* Canvas, const FDebugDisplayInfo& DebugDisplay, float& YL, float& YPos) override;
 	//~ End UCameraModifer Interface
 
 protected:
@@ -140,6 +164,7 @@ protected:
 	UPROPERTY()
 	TMap<TSubclassOf<UCameraShakeBase>, FPooledCameraShakes> ExpiredPooledShakesMap;
 
+	void SaveShakeInExpiredPoolIfPossible(const FActiveCameraShakeInfo& ShakeInfo);
 	void SaveShakeInExpiredPool(UCameraShakeBase* ShakeInst);
 	UCameraShakeBase* ReclaimShakeFromExpiredPool(TSubclassOf<UCameraShakeBase> CameraShakeClass);
 

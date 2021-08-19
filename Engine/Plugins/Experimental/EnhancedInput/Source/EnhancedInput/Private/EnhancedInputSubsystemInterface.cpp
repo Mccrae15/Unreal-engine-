@@ -16,6 +16,17 @@
  * See EnhancedInputSubsystemInterfaceDebug.cpp for debug specific functionality.
  */
 
+static constexpr int32 GGlobalAxisConfigMode_Default = 0;
+static constexpr int32 GGlobalAxisConfigMode_All = 1;
+static constexpr int32 GGlobalAxisConfigMode_None = 2;
+
+static int32 GGlobalAxisConfigMode = 0;
+static FAutoConsoleVariableRef GCVarGlobalAxisConfigMode(
+	TEXT("input.GlobalAxisConfigMode"),
+	GGlobalAxisConfigMode,
+	TEXT("Whether or not to apply Global Axis Config settings. 0 = Default (Mouse Only), 1 = All, 2 = None")
+);
+
 void IEnhancedInputSubsystemInterface::ClearAllMappings()
 {
 	if (UEnhancedPlayerInput* PlayerInput = GetPlayerInput())
@@ -84,6 +95,11 @@ EMappingQueryResult IEnhancedInputSubsystemInterface::QueryMapKeyInActiveContext
 
 EMappingQueryResult IEnhancedInputSubsystemInterface::QueryMapKeyInContextSet(const TArray<UInputMappingContext*>& PrioritizedActiveContexts, const UInputMappingContext* InputContext, const UInputAction* Action, FKey Key, TArray<FMappingQueryIssue>& OutIssues, EMappingQueryIssue BlockingIssues/* = DefaultMappingIssues::StandardFatal*/)
 {
+	if (!Action)
+	{
+		return EMappingQueryResult::Error_InvalidAction;
+	}
+
 	OutIssues.Reset();
 
 	// Report on keys being bound that don't support the action's value type.
@@ -176,7 +192,6 @@ EMappingQueryResult IEnhancedInputSubsystemInterface::QueryMapKeyInContextSet(co
 
 }
 
-
 bool IEnhancedInputSubsystemInterface::HasTriggerWith(TFunctionRef<bool(const UInputTrigger*)> TestFn, const TArray<UInputTrigger*>& Triggers)
 {
 	for (const UInputTrigger* Trigger : Triggers)
@@ -189,7 +204,7 @@ bool IEnhancedInputSubsystemInterface::HasTriggerWith(TFunctionRef<bool(const UI
 	return false;
 };
 
-void IEnhancedInputSubsystemInterface::InjectChordBlockers(const TMap<FEnhancedActionKeyMapping*, int32>& ChordedMappings)
+void IEnhancedInputSubsystemInterface::InjectChordBlockers(const TArray<int32>& ChordedMappings)
 {
 	UEnhancedPlayerInput* PlayerInput = GetPlayerInput();
 	if (!PlayerInput)
@@ -198,13 +213,13 @@ void IEnhancedInputSubsystemInterface::InjectChordBlockers(const TMap<FEnhancedA
 	}
 
 	// Inject chord blockers into all lower priority action mappings with a shared key
-	for (const TPair<FEnhancedActionKeyMapping*, int32>& ChordPair : ChordedMappings)
+	for (int32 MappingIndex : ChordedMappings)
 	{
-		FEnhancedActionKeyMapping* ChordMapping = ChordPair.Key;
-		for (int32 i = ChordPair.Value; i < PlayerInput->EnhancedActionMappings.Num(); ++i)
+		FEnhancedActionKeyMapping& ChordMapping = PlayerInput->EnhancedActionMappings[MappingIndex];
+		for (int32 i = MappingIndex + 1; i < PlayerInput->EnhancedActionMappings.Num(); ++i)
 		{
 			FEnhancedActionKeyMapping& Mapping = PlayerInput->EnhancedActionMappings[i];
-			if (Mapping.Action && Mapping.Key == ChordMapping->Key)
+			if (Mapping.Action && Mapping.Key == ChordMapping.Key)
 			{
 				// If we have no explicit triggers we can't inject an implicit as it may cause us to fire when we shouldn't.
 				auto AnyExplicit = [](const UInputTrigger* Trigger) { return Trigger->GetTriggerType() == ETriggerType::Explicit; };
@@ -216,7 +231,7 @@ void IEnhancedInputSubsystemInterface::InjectChordBlockers(const TMap<FEnhancedA
 				}
 
 				UInputTriggerChordBlocker* ChordBlocker = NewObject<UInputTriggerChordBlocker>(PlayerInput);
-				ChordBlocker->ChordAction = ChordMapping->Action;
+				ChordBlocker->ChordAction = ChordMapping.Action;
 				// TODO: If the chording action is bound at a lower priority than the blocked action its trigger state will be evaluated too late, which may produce unintended effects on the first tick.
 				Mapping.Triggers.Add(ChordBlocker);
 			}
@@ -234,6 +249,18 @@ void IEnhancedInputSubsystemInterface::ApplyAxisPropertyModifiers(UEnhancedPlaye
 	//	return;
 	//}
 
+	if (GGlobalAxisConfigMode_None == GGlobalAxisConfigMode)
+	{
+		return;
+	}
+
+	// TODO: This function is causing issues with gamepads, applying a hidden 0.25 deadzone modifier by default. Apply it to mouse inputs only until a better system is in place.
+	if (GGlobalAxisConfigMode_All != GGlobalAxisConfigMode &&
+		!Mapping.Key.IsMouseButton())
+	{
+		return;
+	}
+
 	// Apply applicable axis property modifiers from the old input settings automatically.
 	// TODO: This needs to live at the EnhancedInputSettings level.
 	// TODO: Adopt this approach for all modifiers? Most of these are better done at the action level for most use cases.
@@ -245,13 +272,13 @@ void IEnhancedInputSubsystemInterface::ApplyAxisPropertyModifiers(UEnhancedPlaye
 		// If a modifier already exists it should override axis properties.
 		auto HasExistingModifier = [&Mapping](UClass* OfType)
 		{
-			auto TypeMatcher = [&OfType](UInputModifier* Modifier) { return Modifier->IsA(OfType); };
+			auto TypeMatcher = [&OfType](UInputModifier* Modifier) { return Modifier != nullptr && Modifier->IsA(OfType); };
 			return Mapping.Modifiers.ContainsByPredicate(TypeMatcher) || Mapping.Action->Modifiers.ContainsByPredicate(TypeMatcher);
 		};
 
 		// Maintain old input system modification order.
 
-		if (AxisProperties.DeadZone != FInputAxisProperties().DeadZone &&
+		if (AxisProperties.DeadZone > 0.f &&
 			!HasExistingModifier(UInputModifierDeadZone::StaticClass()))
 		{
 			UInputModifierDeadZone* DeadZone = NewObject<UInputModifierDeadZone>();
@@ -260,7 +287,7 @@ void IEnhancedInputSubsystemInterface::ApplyAxisPropertyModifiers(UEnhancedPlaye
 			Modifiers.Add(DeadZone);
 		}
 
-		if (AxisProperties.Exponent != FInputAxisProperties().Exponent &&
+		if (AxisProperties.Exponent != 1.f &&
 			!HasExistingModifier(UInputModifierResponseCurveExponential::StaticClass()))
 		{
 			UInputModifierResponseCurveExponential* Exponent = NewObject<UInputModifierResponseCurveExponential>();
@@ -269,8 +296,8 @@ void IEnhancedInputSubsystemInterface::ApplyAxisPropertyModifiers(UEnhancedPlaye
 		}
 
 		// Sensitivity stacks with user defined.
-		// TODO: Unexpected behaviour but makes sense for most use cases. E.g. Mouse sensitivity, which is scaled by 0.07 in BaseInput.ini, would be broken by adding a Look action sensitivity.
-		if (AxisProperties.Sensitivity != FInputAxisProperties().Sensitivity /* &&
+		// TODO: Unexpected behavior but makes sense for most use cases. E.g. Mouse sensitivity, which is scaled by 0.07 in BaseInput.ini, would be broken by adding a Look action sensitivity.
+		if (AxisProperties.Sensitivity != 1.f /* &&
 			!HasExistingModifier(UInputModifierScalar::StaticClass())*/)
 		{
 			UInputModifierScalar* Sensitivity = NewObject<UInputModifierScalar>();
@@ -296,6 +323,24 @@ bool IEnhancedInputSubsystemInterface::HasMappingContext(const UInputMappingCont
 	return GetPlayerInput() && GetPlayerInput()->AppliedInputContexts.Contains(MappingContext);
 }
 
+TArray<FKey> IEnhancedInputSubsystemInterface::QueryKeysMappedToAction(const UInputAction* Action) const
+{
+	TArray<FKey> MappedKeys;
+
+	if (const UEnhancedPlayerInput* const PlayerInput = GetPlayerInput())
+	{
+		for (const FEnhancedActionKeyMapping& Mapping : PlayerInput->EnhancedActionMappings)
+		{
+			if (Mapping.Action == Action)
+			{
+				MappedKeys.AddUnique(Mapping.Key);
+			}
+		}
+	}
+
+	return MappedKeys;
+}
+
 template<typename T>
 void DeepCopyPtrArray(const TArray<T*>& From, TArray<T*>& To)
 {
@@ -307,6 +352,70 @@ void DeepCopyPtrArray(const TArray<T*>& From, TArray<T*>& To)
 			To.Add(DuplicateObject<T>(ToDuplicate, nullptr));
 		}
 	}
+}
+
+// TODO: This should be a delegate (along with InjectChordBlockers), moving chording out of the underlying subsystem and enabling implementation of custom mapping handlers.
+TArray<FEnhancedActionKeyMapping> ReorderMappings(const TArray<FEnhancedActionKeyMapping>& UnorderedMappings)
+{
+	// Reorder mappings such that chording mappings > chorded mappings > everything else. This is used to ensure mappings within a single context are evaluated in the correct order to support chording.
+
+	TSet<const UInputAction*> ChordingActions;
+
+	// Gather all chording actions within a mapping's triggers.
+	auto GatherChordingActions = [&ChordingActions](const FEnhancedActionKeyMapping& Mapping) {
+		bool bFoundChordTrigger = false;
+		auto EvaluateTriggers = [&Mapping, &ChordingActions, &bFoundChordTrigger](const TArray<UInputTrigger*>& Triggers) {
+			for (const UInputTrigger* Trigger : Triggers)
+			{
+				if (const UInputTriggerChordAction* ChordTrigger = Cast<const UInputTriggerChordAction>(Trigger))
+				{
+					ChordingActions.Add(ChordTrigger->ChordAction);
+					bFoundChordTrigger = true;
+				}
+			}
+		};
+		EvaluateTriggers(Mapping.Triggers);
+		EvaluateTriggers(Mapping.Action->Triggers);
+		return bFoundChordTrigger;
+	};
+
+	// Split chorded mappings (second priority) from all others whilst building a list of chording actions to use for further prioritization.
+	TArray<FEnhancedActionKeyMapping> ChordedMappings;
+	TArray<FEnhancedActionKeyMapping> OtherMappings;
+	OtherMappings.Reserve(UnorderedMappings.Num());		// Mappings will most likely be Other
+	for (const FEnhancedActionKeyMapping& Mapping : UnorderedMappings)
+	{
+		TArray<FEnhancedActionKeyMapping>& MappingArray = GatherChordingActions(Mapping) ? ChordedMappings : OtherMappings;
+		MappingArray.Add(Mapping);
+	}
+
+	TArray<FEnhancedActionKeyMapping> OrderedMappings;
+	OrderedMappings.Reserve(UnorderedMappings.Num());
+
+	// Move chording mappings to the front as they need to be evaluated before chord and blocker triggers
+	// TODO: Further ordering of chording mappings may be required should one of them be chorded against another
+	auto ExtractChords = [&OrderedMappings, &ChordingActions](TArray<FEnhancedActionKeyMapping>& Mappings) {
+		for (int32 i = 0; i < Mappings.Num();)
+		{
+			if (ChordingActions.Contains(Mappings[i].Action))
+			{
+				OrderedMappings.Add(Mappings[i]);
+				Mappings.RemoveAtSwap(i);	// TODO: Do we care about reordering underlying mappings?
+			}
+			else
+			{
+				++i;
+			}
+		}
+	};
+	ExtractChords(ChordedMappings);
+	ExtractChords(OtherMappings);
+
+	OrderedMappings.Append(MoveTemp(ChordedMappings));
+	OrderedMappings.Append(MoveTemp(OtherMappings));
+	checkf(OrderedMappings.Num() == UnorderedMappings.Num(), TEXT("Number of mappings changed during reorder."));
+
+	return OrderedMappings;
 }
 
 void IEnhancedInputSubsystemInterface::RebuildControlMappings()
@@ -323,8 +432,9 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 		return;
 	}
 
+	// Clear existing mappings, but retain the mapping array for later processing
+	TArray<FEnhancedActionKeyMapping> OldMappings(MoveTemp(PlayerInput->EnhancedActionMappings));
 	PlayerInput->ClearAllMappings();
-	PlayerInput->ResetActionInstanceData();
 
 	// Order contexts by priority
 	TMap<const UInputMappingContext*, int32> OrderedInputContexts = PlayerInput->AppliedInputContexts;
@@ -332,7 +442,7 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 
 	TSet<FKey> AppliedKeys;
 
-	TMap<FEnhancedActionKeyMapping*, int32> ChordedMappings;
+	TArray<int32> ChordedMappings;
 
 	for (const TPair<const UInputMappingContext*, int32>& ContextPair : OrderedInputContexts)
 	{
@@ -340,20 +450,25 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 		TArray<FKey> ContextAppliedKeys;
 
 		const UInputMappingContext* MappingContext = ContextPair.Key;
-		for (const FEnhancedActionKeyMapping& Mapping : MappingContext->GetMappings())
+		TArray<FEnhancedActionKeyMapping>  OrderedMappings = ReorderMappings(MappingContext->GetMappings());
+
+		for (const FEnhancedActionKeyMapping& Mapping : OrderedMappings)
 		{
 			if (Mapping.Action && !AppliedKeys.Contains(Mapping.Key))
 			{
-				auto AnyChords = [](const UInputTrigger* Trigger) { return Cast<const UInputTriggerChordAction>(Trigger) != nullptr; };
-				bool bHasChords = HasTriggerWith(AnyChords, Mapping.Triggers) || HasTriggerWith(AnyChords, Mapping.Action->Triggers);
+				// TODO: Wasteful query as we've already established chord state within ReorderMappings. Store TOptional bConsumeInput per mapping, allowing override? Query override via delegate?
+				auto IsChord = [](const UInputTrigger* Trigger) { return Cast<const UInputTriggerChordAction>(Trigger) != nullptr; };
+				bool bHasActionChords = HasTriggerWith(IsChord, Mapping.Action->Triggers);
+				bool bHasChords = HasTriggerWith(IsChord, Mapping.Triggers) || bHasActionChords;
 
-				// Chorded actions can't consume input or they could hide the action they are chording.
+				// Chorded actions can't consume input or they would hide the action they are chording.
 				if (!bHasChords && Mapping.Action->bConsumeInput)
 				{
 					ContextAppliedKeys.Add(Mapping.Key);
 				}
 
-				FEnhancedActionKeyMapping& NewMapping = PlayerInput->AddMapping(Mapping);
+				int32 NewMappingIndex = PlayerInput->AddMapping(Mapping);
+				FEnhancedActionKeyMapping& NewMapping = PlayerInput->EnhancedActionMappings[NewMappingIndex];
 
 				// Re-instance modifiers
 				DeepCopyPtrArray<UInputModifier>(Mapping.Modifiers, NewMapping.Modifiers);
@@ -370,7 +485,20 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 				{
 					// TODO: Re-prioritize chorded mappings (within same context only?) by number of chorded actions, so Ctrl + Alt + [key] > Ctrl + [key] > [key].
 					// TODO: Above example shouldn't block [key] if only Alt is down, as there is no direct Alt + [key] mapping.y
-					ChordedMappings.Emplace(&NewMapping, PlayerInput->EnhancedActionMappings.Num());
+					ChordedMappings.Add(NewMappingIndex);
+
+					// Action level chording triggers need to be evaluated at the mapping level to ensure they block early enough.
+					// TODO: Continuing to evaluate these at the action level is redundant.
+					if (bHasActionChords)
+					{
+						for (const UInputTrigger* Trigger : Mapping.Action->Triggers)
+						{
+							if (IsChord(Trigger))
+							{
+								NewMapping.Triggers.Add(DuplicateObject(Trigger, nullptr));
+							}
+						}
+					}
 				}
 			}
 		}
@@ -381,6 +509,29 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 	InjectChordBlockers(ChordedMappings);
 
 	PlayerInput->ForceRebuildingKeyMaps(false);
+
+	// Remove action instance data for actions that are not referenced in the new action mappings
+	TSet<const UInputAction*> RemovedActions;
+	for (TPair<const UInputAction*, FInputActionInstance>& ActionInstance : PlayerInput->ActionInstanceData)
+	{
+		RemovedActions.Add(ActionInstance.Key);
+	}
+	for (FEnhancedActionKeyMapping& Mapping : PlayerInput->EnhancedActionMappings)
+	{
+		RemovedActions.Remove(Mapping.Action);
+
+		// Retain old mapping trigger/modifier state for identical key -> action mappings.
+		TArray<FEnhancedActionKeyMapping>::SizeType Idx = OldMappings.IndexOfByPredicate([&Mapping](const FEnhancedActionKeyMapping& Other) {return Mapping.Action == Other.Action && Mapping.Key == Other.Key; });
+		if (Idx != INDEX_NONE)
+		{
+			Mapping = MoveTemp(OldMappings[Idx]);
+			OldMappings.RemoveAtSwap(Idx);
+		}
+	}
+	for (const UInputAction* Action : RemovedActions)
+	{
+		PlayerInput->ActionInstanceData.Remove(Action);
+	}
 
 	bMappingRebuildPending = false;
 }

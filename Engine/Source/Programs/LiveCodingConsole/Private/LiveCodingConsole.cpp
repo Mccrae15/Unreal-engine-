@@ -11,6 +11,7 @@
 #include "ILiveCodingServer.h"
 #include "Features/IModularFeatures.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/Input/SButton.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Windows/WindowsHWrapper.h"
 #include "Misc/MonitoredProcess.h"
@@ -129,6 +130,8 @@ public:
 		// loop until the app is ready to quit
 		while (!IsEngineExitRequested())
 		{
+			BeginExitIfRequested();
+
 			Slate.PumpMessages();
 			Slate.Tick();
 

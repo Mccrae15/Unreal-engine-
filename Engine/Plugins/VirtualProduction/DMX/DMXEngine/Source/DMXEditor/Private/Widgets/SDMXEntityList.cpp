@@ -11,7 +11,6 @@
 #include "DMXProtocolTypes.h"
 #include "DMXRuntimeUtils.h"
 #include "DragDrop/DMXEntityDragDropOp.h"
-#include "Library/DMXEntityController.h"
 #include "Library/DMXEntityFixturePatch.h"
 #include "Library/DMXEntityFixtureType.h"
 #include "Library/DMXLibrary.h"
@@ -335,14 +334,33 @@ void FDMXTreeNodeBase::ApplyFilteredStateToParent()
 	}
 }
 
-FDMXCategoryTreeNode::FDMXCategoryTreeNode(ECategoryType InCategoryType, FText InCategoryName, const void* InCategoryValuePtr, const FText& InToolTip /*= FText::GetEmpty()*/)
+FDMXCategoryTreeNode::FDMXCategoryTreeNode(ECategoryType InCategoryType, FText InCategoryName, const FText& InToolTip /*= FText::GetEmpty()*/)
 	: FDMXTreeNodeBase(FDMXTreeNodeBase::ENodeType::CategoryNode)
 	, CategoryType(InCategoryType)
-	, CategoryValuePtr(InCategoryValuePtr)
 	, CategoryName(InCategoryName)
 	, ToolTip(InToolTip)
-{
-}
+	, bCanDropOntoCategory(false)
+	, IntValue(0)
+{}
+
+FDMXCategoryTreeNode::FDMXCategoryTreeNode(ECategoryType InCategoryType, FText InCategoryName, int32 Value, const FText& InToolTip /*= FText::GetEmpty()*/)
+	: FDMXTreeNodeBase(FDMXTreeNodeBase::ENodeType::CategoryNode)
+	, CategoryType(InCategoryType)
+	, CategoryName(InCategoryName)
+	, ToolTip(InToolTip)
+	, bCanDropOntoCategory(true)
+	, IntValue(Value)
+{}
+
+FDMXCategoryTreeNode::FDMXCategoryTreeNode(ECategoryType InCategoryType, FText InCategoryName, const FDMXFixtureCategory& Value, const FText& InToolTip /*= FText::GetEmpty()*/)
+	: FDMXTreeNodeBase(FDMXTreeNodeBase::ENodeType::CategoryNode)
+	, CategoryType(InCategoryType)
+	, CategoryName(InCategoryName)
+	, ToolTip(InToolTip)
+	, bCanDropOntoCategory(true)
+	, IntValue(0)
+	, CategoryValue(Value)
+{}
 
 FString FDMXCategoryTreeNode::GetDisplayString() const
 {
@@ -612,7 +630,7 @@ ECheckBoxState SDMXEntityRow::IsAutoAssignChannelEnabled() const
 	{
 		if (UDMXEntityFixturePatch* EntityAsPatch = Cast<UDMXEntityFixturePatch>(TreeNode->GetEntity()))
 		{
-			return EntityAsPatch->bAutoAssignAddress ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			return EntityAsPatch->IsAutoAssignAddress() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 		}
 	}
 	return ECheckBoxState::Undetermined;
@@ -866,12 +884,7 @@ void SDMXEntityList::Construct(const FArguments& InArgs, const TSubclassOf<UDMXE
 	// Top part, with the  [+ Add New] button and the filter box
 	FText AddButtonLabel;
 	FText AddButtonToolTip;
-	if (ListType->IsChildOf(UDMXEntityController::StaticClass()))
-	{
-		AddButtonLabel = FDMXEditorCommands::Get().AddNewEntityController->GetLabel();
-		AddButtonToolTip = FDMXEditorCommands::Get().AddNewEntityController->GetDescription();
-	}
-	else if (ListType->IsChildOf(UDMXEntityFixtureType::StaticClass()))
+	if (ListType->IsChildOf(UDMXEntityFixtureType::StaticClass()))
 	{
 		AddButtonLabel = FDMXEditorCommands::Get().AddNewEntityFixtureType->GetLabel();
 		AddButtonToolTip = FDMXEditorCommands::Get().AddNewEntityFixtureType->GetDescription();
@@ -1105,12 +1118,12 @@ void SDMXEntityList::OnPasteNodes()
 			if (UDMXEntityFixturePatch* AsPatch = Cast<UDMXEntityFixturePatch>(NewEntity))
 			{
 				// Do we need to replace the template?
-				if (UDMXEntityFixtureType* CopiedPatchTemplate = AsPatch->ParentFixtureTypeTemplate)
+				if (UDMXEntityFixtureType* CopiedPatchTemplate = AsPatch->GetFixtureType())
 				{
 					// Did it come from this editor's DMX Library and does the original still exists?
 					if (UDMXEntityFixtureType* OriginalTemplate = Cast<UDMXEntityFixtureType>(Library->FindEntity(CopiedPatchTemplate->GetID())))
 					{
-						AsPatch->ParentFixtureTypeTemplate = OriginalTemplate;
+						AsPatch->SetFixtureType(OriginalTemplate);
 					}
 					else
 					{
@@ -1120,7 +1133,7 @@ void SDMXEntityList::OnPasteNodes()
 						if (PatchTemplateReplacements.Contains(CopiedPatchTemplate))
 						{
 							// Replace the Patch's template with the replacement
-							AsPatch->ParentFixtureTypeTemplate = *PatchTemplateReplacements.Find(CopiedPatchTemplate);
+							AsPatch->SetFixtureType(*PatchTemplateReplacements.Find(CopiedPatchTemplate));
 						}
 						else
 						{
@@ -1131,7 +1144,7 @@ void SDMXEntityList::OnPasteNodes()
 							{
 								if (FDMXEditorUtils::AreFixtureTypesIdentical(CopiedPatchTemplate, ExistingFixtureType))
 								{
-									AsPatch->ParentFixtureTypeTemplate = ExistingFixtureType;
+									AsPatch->SetFixtureType(ExistingFixtureType);
 									PatchTemplateReplacements.Add(CopiedPatchTemplate, ExistingFixtureType);
 									bFoundReplacement = true;
 									break;
@@ -1196,8 +1209,8 @@ void SDMXEntityList::OnDuplicateNodes()
 		UDMXEntityFixturePatch* FirstPatch = CastChecked<UDMXEntityFixturePatch>(&FirstEntity);
 		UDMXEntityFixturePatch* SecondPatch = CastChecked<UDMXEntityFixturePatch>(&SecondEntity);
 		return
-			FirstPatch->UniverseID < SecondPatch->UniverseID ||
-			(FirstPatch->UniverseID == SecondPatch->UniverseID &&
+			FirstPatch->GetUniverseID() < SecondPatch->GetUniverseID() ||
+			(FirstPatch->GetUniverseID() == SecondPatch->GetUniverseID() &&
 				FirstPatch->GetStartingChannel() <= SecondPatch->GetStartingChannel());
 		});
 	
@@ -1250,9 +1263,8 @@ void SDMXEntityList::AutoAssignCopiedPatch(UDMXEntityFixturePatch* Patch) const
 	const int32 OriginalStartingChannel = Patch->GetStartingChannel();
 	
 	Patch->Modify();
-	Patch->bAutoAssignAddress = true;
+	Patch->SetAutoAssignAddressUnsafe(true);
 	FDMXEditorUtils::AutoAssignedAddresses(TArray<UDMXEntityFixturePatch*>{ Patch }, OriginalStartingChannel + 1);
-	Patch->ManualStartingAddress = Patch->AutoStartingAddress;
 }
 
 bool SDMXEntityList::CanDeleteNodes() const
@@ -1274,55 +1286,7 @@ void SDMXEntityList::OnDeleteNodes()
 		}
 	}
 
-	// Confirm deletion of Entities in use, if any
-	if (EntitiesInUse.Num() > 0)
-	{
-		FText ConfirmDelete;
-		
-		// Confirmation text for a single entity in use
-		if (EntitiesInUse.Num() == 1)
-		{
-			ConfirmDelete = FText::Format(LOCTEXT("ConfirmDeleteEntityInUse", "Entity \"{0}\" is in use! Do you really want to delete it?"),
-				FText::FromString(EntitiesInUse[0]->GetDisplayName()));
-		}
-		// Confirmation text for when all of the selected entities are in use
-		else if (EntitiesInUse.Num() == EntitiesToDelete.Num())
-		{
-			ConfirmDelete = LOCTEXT("ConfirmDeleteAllEntitiesInUse", "All selected entities are in use! Do you really want to delete them?");
-		}
-		// Confirmation text for multiple entities, but not so much that would make the dialog huge
-		else if (EntitiesInUse.Num() > 1 && EntitiesInUse.Num() <= 10)
-		{
-			FString EntitiesNames;
-			for (UDMXEntity* Entity : EntitiesInUse)
-			{
-				EntitiesNames += TEXT("\t") + Entity->GetDisplayName() + TEXT("\n");
-			}
-
-			ConfirmDelete = FText::Format(LOCTEXT("ConfirmDeleteSomeEntitiesInUse", "The Entities below are in use!\n{0}\nDo you really want to delete them?"),
-				FText::FromString(EntitiesNames));
-		}
-		// Confirmation text for several entities. Displaying each of their names would make a huge dialog
-		else
-		{
-			ConfirmDelete = FText::Format(LOCTEXT("ConfirmDeleteManyEntitiesInUse", "{0} of the selected entities are in use!\nDo you really want to delete them?"),
-				FText::AsNumber(EntitiesInUse.Num()));
-		}
-
-		// Warn the user that this may result in data loss
-		FSuppressableWarningDialog::FSetupInfo Info(ConfirmDelete, LOCTEXT("DeleteEntities", "Delete Entities"), "DeleteEntitiesInUse_Warning");
-		Info.ConfirmText = LOCTEXT("DeleteEntities_Yes", "Yes");
-		Info.CancelText = LOCTEXT("DeleteEntities_No", "No");
-
-		FSuppressableWarningDialog DeleteEntitiesInUse(Info);
-		if (DeleteEntitiesInUse.ShowModal() == FSuppressableWarningDialog::Cancel)
-		{
-			return;
-		}
-	}
-
 	// Clears references to the Entities and delete them
-	const FScopedTransaction Transaction(EntitiesToDelete.Num() > 1 ? LOCTEXT("RemoveEntities", "Remove Entities") : LOCTEXT("RemoveEntity", "Remove Entity"));
 	FDMXEditorUtils::RemoveEntities(GetDMXLibrary(), MoveTemp(EntitiesToDelete));
 
 	OnEntitiesRemoved.ExecuteIfBound();
@@ -1515,11 +1479,7 @@ void SDMXEntityList::InitializeNodes()
 	RootNode->ClearChildren();
 	EntitiesCount = 0;
 	
-	if (ListType->IsChildOf(UDMXEntityController::StaticClass()))
-	{
-		InitializeNodesForControllers();
-	}
-	else if (ListType->IsChildOf(UDMXEntityFixtureType::StaticClass()))
+	if (ListType->IsChildOf(UDMXEntityFixtureType::StaticClass()))
 	{
 		InitializeNodesForFixtureTypes();
 	}
@@ -1531,62 +1491,6 @@ void SDMXEntityList::InitializeNodes()
 	{
 		checkNoEntry();
 	}
-}
-
-void SDMXEntityList::InitializeNodesForControllers()
-{
-	constexpr FDMXTreeNodeBase::ECategoryType CategoryType = FDMXTreeNodeBase::ECategoryType::UniverseID;
-	
-	UDMXLibrary* Library = GetDMXLibrary();
-	check(Library != nullptr);
-
-	// Look for universe conflicts for a given entity type.
-	auto GetUniverseErrorText = [](UDMXEntity* EntityIn) -> FText
-	{
-		TArray<UDMXEntity*> ConflictingEntities;
-		if (FDMXEditorUtils::TryGetEntityUniverseConflicts(EntityIn, ConflictingEntities))
-		{
-			TMap<UDMXLibrary*, TArray<UDMXEntity*>> MappedEntities;
-
-			for (UDMXEntity* Entity : ConflictingEntities)
-			{
-				TArray<UDMXEntity*>& LibraryEntitites = MappedEntities.FindOrAdd(Entity->GetParentLibrary());
-				LibraryEntitites.Add(Entity);
-			}
-
-			FString ErrorMessage = FString::Printf(TEXT("Universe conflict in %s "), MappedEntities.Num() > 1 ? TEXT("libraries") : TEXT("library"));
-			for (const auto& LibraryEntity : MappedEntities)
-			{
-				ErrorMessage += FString::Printf(TEXT("%s, "), *LibraryEntity.Key->GetName());
-			}
-
-			ErrorMessage.RemoveAt(ErrorMessage.Len() - 2);
-			return FText::FromString(ErrorMessage);
-		}
-		return FText::GetEmpty();
-	};
-	
-	Library->ForEachEntityOfType<UDMXEntityController>([this, &CategoryType, &GetUniverseErrorText](UDMXEntityController* Controller)
-		{
-			// Create this entity's node
-			TSharedPtr<FDMXEntityTreeNode> ControllerNode = CreateEntityTreeNode(Controller);
-
-			// For each Entity, we find or create a category node then add the entity as its child
-			const FDMXProtocolName& Protocol = Controller->DeviceProtocol;
-			// Get the category if already existent or create it
-			TSharedPtr<FDMXTreeNodeBase> CategoryNode = GetOrCreateCategoryNode(CategoryType, FText::FromName(Protocol), &Controller->DeviceProtocol);
-
-			CategoryNode->AddChild(ControllerNode);
-
-			// Universe overlaps
-			const FText UniverseError = GetUniverseErrorText(Controller);
-			if (!UniverseError.IsEmpty())
-			{
-				ControllerNode->SetErrorStatus(UniverseError);
-			}
-		}
-	);
-	RootNode->SortChildren();
 }
 
 void SDMXEntityList::InitializeNodesForFixtureTypes()
@@ -1604,8 +1508,9 @@ void SDMXEntityList::InitializeNodesForFixtureTypes()
 			// For each Entity, we find or create a category node then add the entity as its child
 			const FDMXFixtureCategory DMXCategory = FixtureType->DMXCategory;
 			const FText DMXCategoryName = FText::FromName(DMXCategory);
+			
 			// Get the category if already existent or create it
-			TSharedPtr<FDMXTreeNodeBase> CategoryNode = GetOrCreateCategoryNode(CategoryType, DMXCategoryName, &FixtureType->DMXCategory);
+			TSharedPtr<FDMXTreeNodeBase> CategoryNode = GetOrCreateCategoryNode(CategoryType, DMXCategoryName, FixtureType->DMXCategory);
 
 			CategoryNode->AddChild(FixtureTypeNode);
 		}
@@ -1626,7 +1531,6 @@ void SDMXEntityList::InitializeNodesForPatches()
 			UDMXLibrary* Library = EntityList->GetDMXLibrary();
 			check(Library != nullptr);
 			
-			const TArray<UDMXEntityController*> Controllers = Library->GetEntitiesTypeCast<UDMXEntityController>();
 			Library->ForEachEntityOfType<UDMXEntityFixturePatch>([&] (UDMXEntityFixturePatch* FixturePatch)
 				{
 					// Create this entity's node
@@ -1635,16 +1539,14 @@ void SDMXEntityList::InitializeNodesForPatches()
 					const FText ErrorMessage = EntityList->CheckForPatchError(FixturePatch);
 					const bool bHasPatchNoErrors = ErrorMessage.IsEmpty();
 				
-					if (bHasPatchNoErrors 
-						&& FixturePatch->IsInControllersRange(Controllers) 
-						&& FixturePatch->ParentFixtureTypeTemplate 
+					if (bHasPatchNoErrors
+						&& FixturePatch->GetFixtureType()
 						&& FixturePatch->GetChannelSpan() > 0)
 					{
 						TSharedPtr<FDMXTreeNodeBase> UniverseCategoryNode = EntityList->GetOrCreateCategoryNode(
 							CategoryType,
-							FText::Format(LOCTEXT("UniverseSubcategoryLabel", "Universe {0}"),
-								FText::AsNumber(FixturePatch->UniverseID)),
-								&FixturePatch->UniverseID,
+							FText::Format(LOCTEXT("UniverseSubcategoryLabel", "Universe {0}"),	FText::AsNumber(FixturePatch->GetUniverseID())),
+								FixturePatch->GetUniverseID(),
 								AssignedFixturesCategoryNode
 						);
 						UniverseCategoryNode->AddChild(FixturePatchNode);
@@ -1726,14 +1628,13 @@ void SDMXEntityList::InitializeNodesForPatches()
 	TSharedPtr<FDMXCategoryTreeNode> AssignedFixturesCategoryNode = MakeShared<FDMXCategoryTreeNode>(
 		FDMXTreeNodeBase::ECategoryType::FixtureAssignmentState,
 		LOCTEXT("AssignedFixturesCategory", "Assigned Fixtures"),
-		nullptr,
-		LOCTEXT("AssignedFixturesToolTip", "Patches which Universe IDs match one of the Controllers")
+		LOCTEXT("AssignedFixturesToolTip", "Patches which Universe IDs match are in port range")
 	);
 	TSharedPtr<FDMXCategoryTreeNode> UnassignedFixturesCategoryNode = MakeShared<FDMXCategoryTreeNode>(
 		FDMXTreeNodeBase::ECategoryType::FixtureAssignmentState,
 		LOCTEXT("UnassignedFixturesCategory", "Unassigned Fixtures"),
-		&UnassignedUniverseValue,
-		LOCTEXT("UnassignedFixturesToolTip", "Patches which Universe IDs match no Controllers")
+		-1,
+		LOCTEXT("UnassignedFixturesToolTip", "Patches which Universe IDs are out of port range")
 	);
 	
 	RootNode->AddChild(AssignedFixturesCategoryNode);
@@ -1743,7 +1644,6 @@ void SDMXEntityList::InitializeNodesForPatches()
 	
 	RefreshFilteredState(AssignedFixturesCategoryNode, false);
 	RefreshFilteredState(UnassignedFixturesCategoryNode, false);
-
 
 	Local::AssignPatchesToUniversesOrShowErrors(this, AssignedFixturesCategoryNode, UnassignedFixturesCategoryNode);
 	
@@ -1755,51 +1655,41 @@ void SDMXEntityList::InitializeNodesForPatches()
 
 FText SDMXEntityList::CheckForPatchError(UDMXEntityFixturePatch* FixturePatch) const
 {
-	const TArray<UDMXEntityController*> Controllers = GetDMXLibrary()->GetEntitiesTypeCast<UDMXEntityController>();
-
-	if (FixturePatch->ParentFixtureTypeTemplate == nullptr || FixturePatch->ParentFixtureTypeTemplate->Modes.Num() == 0)
+	if (FixturePatch)
 	{
-		return LOCTEXT("DMXEntityList.FixtureTypeHasNoModes", "This patch's fixture type has no modes.");
-	}
-	
-	const bool bHasAnyFunctions = [FixturePatch]()
-	{
-		for(const FDMXFixtureMode& Mode : FixturePatch->ParentFixtureTypeTemplate->Modes)
+		UDMXEntityFixtureType* FixtureType = FixturePatch->GetFixtureType();
+		if (!FixtureType || FixtureType->Modes.Num() == 0)
 		{
-			if (Mode.Functions.Num() > 0 || 
-				Mode.FixtureMatrixConfig.CellAttributes.Num() > 0)
-			{
-				return true;
-			}
+			return LOCTEXT("DMXEntityList.FixtureTypeHasNoModes", "This patch's fixture type has no modes.");
 		}
-		return false;
-	}();
-	if (!bHasAnyFunctions)
-	{
-		return LOCTEXT("DMXEntityList.FixtureTypeHasNoFunctions", "This patch's fixture type has no functions.");
-	}
-	
-	if (FixturePatch->GetChannelSpan() == 0)
-	{
-		return LOCTEXT("DMXEntityList.FixtureTypeHasNoChannelSpan", "This patch has a channel span of 0.");
-	}
 
-	
-	if (FixturePatch->GetChannelSpan() > DMX_UNIVERSE_SIZE)
-	{
-		return LOCTEXT("DMXEntityList.ChannelSpanExceedsUniverseSize", "Patch uses more than 512 channels.");
-	}
+		const bool bHasAnyFunctions = [FixturePatch]()
+		{
+			for (const FDMXFixtureMode& Mode : FixturePatch->GetFixtureType()->Modes)
+			{
+				if (Mode.Functions.Num() > 0 ||
+					Mode.FixtureMatrixConfig.CellAttributes.Num() > 0)
+				{
+					return true;
+				}
+			}
+			return false;
+		}();
+		if (!bHasAnyFunctions)
+		{
+			return LOCTEXT("DMXEntityList.FixtureTypeHasNoFunctions", "This patch's fixture type has no functions.");
+		}
 
-	
-	if (Controllers.Num() == 0)
-	{
-		return LOCTEXT("DMXEntityList.PatchMissingController", "No controller available. See 'Controllers' tab to create one.");
-	}
+		if (FixturePatch->GetChannelSpan() == 0)
+		{
+			return LOCTEXT("DMXEntityList.FixtureTypeHasNoChannelSpan", "This patch has a channel span of 0.");
+		}
 
-	
-	if (!FixturePatch->IsInControllersRange(Controllers))
-	{
-		return LOCTEXT("DMXEntityList.PatchNotInControllersRange", "The Universe of the patch is smaller than 0 or not reachable by any Controller in the Library.");
+
+		if (FixturePatch->GetChannelSpan() > DMX_UNIVERSE_SIZE)
+		{
+			return LOCTEXT("DMXEntityList.ChannelSpanExceedsUniverseSize", "Patch uses more than 512 channels.");
+		}
 	}
 
 	return FText::GetEmpty();
@@ -1827,12 +1717,7 @@ FReply SDMXEntityList::OnAddNewClicked()
 	check(DMXEditor.IsValid());
 	TSharedPtr<FDMXEditor> PinnedEditor = DMXEditor.Pin();
 
-	if (ListType->IsChildOf(UDMXEntityController::StaticClass()))
-	{
-		PinnedEditor->GetToolkitCommands()->ExecuteAction(FDMXEditorCommands::Get().AddNewEntityController.ToSharedRef());
-		return FReply::Handled();
-	}
-	else if (ListType->IsChildOf(UDMXEntityFixtureType::StaticClass()))
+	if (ListType->IsChildOf(UDMXEntityFixtureType::StaticClass()))
 	{
 		PinnedEditor->GetToolkitCommands()->ExecuteAction(FDMXEditorCommands::Get().AddNewEntityFixtureType.ToSharedRef());
 		return FReply::Handled();
@@ -1864,8 +1749,7 @@ TSubclassOf<UDMXEntity> SDMXEntityList::GetListType() const
 
 void SDMXEntityList::PostUndo(bool bSuccess)
 {
-	UDMXLibrary* Library = GetDMXLibrary();
-	if (Library)
+	if (UDMXLibrary* Library = GetDMXLibrary())
 	{
 		Library->Modify();
 	}
@@ -2010,11 +1894,7 @@ void SDMXEntityList::BuildAddNewMenu(FMenuBuilder& MenuBuilder)
 {
 	MenuBuilder.BeginSection("AddNewItem", LOCTEXT("AddOperations", "Add New"));
 
-	if (ListType->IsChildOf(UDMXEntityController::StaticClass()))
-	{
-		MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().AddNewEntityController);
-	}
-	else if (ListType->IsChildOf(UDMXEntityFixtureType::StaticClass()))
+	if (ListType->IsChildOf(UDMXEntityFixtureType::StaticClass()))
 	{
 		MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().AddNewEntityFixtureType);
 	}
@@ -2119,7 +1999,8 @@ TSharedPtr<FDMXTreeNodeBase> SDMXEntityList::FindTreeNode(const FText& InName, T
 	return NodePtr;
 }
 
-TSharedPtr<FDMXTreeNodeBase> SDMXEntityList::GetOrCreateCategoryNode(const FDMXTreeNodeBase::ECategoryType InCategoryType, const FText InCategoryName, void* CategoryValuePtr, TSharedPtr<FDMXTreeNodeBase> InParentNodePtr /*= nullptr*/, const FText& InToolTip /*= FText::GetEmpty()*/)
+template <typename ValueType>
+TSharedPtr<FDMXTreeNodeBase> SDMXEntityList::GetOrCreateCategoryNode(const FDMXTreeNodeBase::ECategoryType InCategoryType, const FText InCategoryName, ValueType Value, TSharedPtr<FDMXTreeNodeBase> InParentNodePtr /*= nullptr*/, const FText& InToolTip /*= FText::GetEmpty()*/)
 {
 	for (const TSharedPtr<FDMXTreeNodeBase>& Node : InParentNodePtr.IsValid() ? InParentNodePtr->GetChildren() : RootNode->GetChildren())
 	{
@@ -2134,7 +2015,7 @@ TSharedPtr<FDMXTreeNodeBase> SDMXEntityList::GetOrCreateCategoryNode(const FDMXT
 	}
 
 	// Didn't find an existing node. Add one.
-	TSharedPtr<FDMXTreeNodeBase> NewNode = MakeShared<FDMXCategoryTreeNode>(InCategoryType, InCategoryName, CategoryValuePtr, InToolTip);
+	TSharedPtr<FDMXTreeNodeBase> NewNode = MakeShared<FDMXCategoryTreeNode>(InCategoryType, InCategoryName, Value, InToolTip);
 	if (InParentNodePtr.IsValid())
 	{
 		InParentNodePtr->AddChild(NewNode);
@@ -2509,34 +2390,27 @@ void SDMXEntityList::OnEditorSetupNewFixturePatch(UDMXEntity* InNewEntity, UDMXE
 		if (PinnedEditor.IsValid())
 		{
 			PinnedEditor->GetOnSetupNewEntity().Remove(OnSetupNewEntityHandle);
-			FixturePatch->ParentFixtureTypeTemplate = InSelectedFixtureType;
+			FixturePatch->SetFixtureType(InSelectedFixtureType);
 		
 			FDMXEditorUtils::UpdatePatchColors(FixturePatch->GetParentLibrary());
 			
 			const bool bExceedsUniverseSize = FixturePatch->GetChannelSpan() > DMX_UNIVERSE_SIZE;
 			if(bExceedsUniverseSize)
 			{
-				FixturePatch->UniverseID = INDEX_NONE;
+				FixturePatch->SetUniverseID(INDEX_NONE);
 			}
 			else
 			{
-				TSet<int32> UniversesReachableByControllers = [this]()
+				TSet<int32> UniverseIDsReachableByPorts = [this]()
 				{
-					TSet<int32> Result;
-					GetDMXLibrary()->ForEachEntityOfType<UDMXEntityController>([&Result](UDMXEntityController* Controller)
+					if (UDMXLibrary* Library = GetDMXLibrary())
 					{
-						check(Controller->UniverseLocalStart <= Controller->UniverseLocalEnd);
-						for(int32 ReachableUniverse = Controller->UniverseLocalStart; ReachableUniverse <= Controller->UniverseLocalEnd; ++ReachableUniverse)
-						{
-							Result.Add(ReachableUniverse);
-						}
-					});
-					return Result;
+						return Library->GetAllLocalUniversesIDsInPorts();
+					}
+
+					return TSet<int32>();
 				}();
-				FDMXEditorUtils::TryAutoAssignToUniverses(FixturePatch, UniversesReachableByControllers);
-				
-				// We want to use the auto assign address as the manual one for the new asset
-				FixturePatch->ManualStartingAddress = FixturePatch->AutoStartingAddress;
+				FDMXEditorUtils::TryAutoAssignToUniverses(FixturePatch, UniverseIDsReachableByPorts);
 			}
 
 			// Issue a selection to trigger a OnSelectionUpdate and make the inspector display the new values
@@ -2563,10 +2437,10 @@ void SDMXEntityList::OnAutoAssignChannelStateChanged(bool NewState, TSharedPtr<F
 		{
 			if (UDMXEntityFixturePatch* Patch = Cast<UDMXEntityFixturePatch>(SelectedEntity))
 			{
-				if (Patch->bAutoAssignAddress != NewState)
+				if (Patch->IsAutoAssignAddress() != NewState)
 				{
 					Patch->Modify();
-					Patch->bAutoAssignAddress = NewState;
+					Patch->SetAutoAssignAddressUnsafe(NewState);
 
 					ChangedPatches.Add(Patch);
 				}
@@ -2578,7 +2452,7 @@ void SDMXEntityList::OnAutoAssignChannelStateChanged(bool NewState, TSharedPtr<F
 		if (UDMXEntityFixturePatch* Patch = Cast<UDMXEntityFixturePatch>(InNodePtr->GetEntity()))
 		{
 			Patch->Modify();
-			Patch->bAutoAssignAddress = NewState;
+			Patch->SetAutoAssignAddressUnsafe(NewState);
 
 			ChangedPatches.Add(Patch);
 		}

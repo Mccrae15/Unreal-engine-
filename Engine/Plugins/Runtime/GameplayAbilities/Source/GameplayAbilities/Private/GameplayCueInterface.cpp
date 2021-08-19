@@ -25,7 +25,7 @@ UGameplayCueInterface::UGameplayCueInterface(const FObjectInitializer& ObjectIni
 {
 }
 
-void IGameplayCueInterface::DispatchBlueprintCustomHandler(UObject* Object, UFunction* Func, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+void IGameplayCueInterface::DispatchBlueprintCustomHandler(UObject* Object, UFunction* Func, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
 {
 	GameplayCueInterface_eventBlueprintCustomHandler_Parms Params;
 	Params.EventType = EventType;
@@ -39,12 +39,12 @@ void IGameplayCueInterface::ClearTagToFunctionMap()
 	GameplayCueInterfacePrivate::PerClassGameplayTagToFunctionMap.Empty();
 }
 
-void IGameplayCueInterface::HandleGameplayCues(AActor *Self, const FGameplayTagContainer& GameplayCueTags, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+void IGameplayCueInterface::HandleGameplayCues(AActor *Self, const FGameplayTagContainer& GameplayCueTags, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
 {
 	HandleGameplayCues((UObject*)Self, GameplayCueTags, EventType, Parameters);
 }
 
-void IGameplayCueInterface::HandleGameplayCues(UObject* Self, const FGameplayTagContainer& GameplayCueTags, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+void IGameplayCueInterface::HandleGameplayCues(UObject* Self, const FGameplayTagContainer& GameplayCueTags, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
 {
 	for (FGameplayTag CueTag : GameplayCueTags)
 	{
@@ -52,22 +52,22 @@ void IGameplayCueInterface::HandleGameplayCues(UObject* Self, const FGameplayTag
 	}
 }
 
-bool IGameplayCueInterface::ShouldAcceptGameplayCue(AActor *Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+bool IGameplayCueInterface::ShouldAcceptGameplayCue(AActor *Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
 {
 	return ShouldAcceptGameplayCue((UObject*)Self, GameplayCueTag, EventType, Parameters);
 }
 
-bool IGameplayCueInterface::ShouldAcceptGameplayCue(UObject* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+bool IGameplayCueInterface::ShouldAcceptGameplayCue(UObject* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
 {
 	return true;
 }
 
-void IGameplayCueInterface::HandleGameplayCue(AActor *Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+void IGameplayCueInterface::HandleGameplayCue(AActor *Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
 {
 	HandleGameplayCue((UObject*)Self, GameplayCueTag, EventType, Parameters);
 }
 
-void IGameplayCueInterface::HandleGameplayCue(UObject* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+void IGameplayCueInterface::HandleGameplayCue(UObject* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
 {
 	SCOPE_CYCLE_COUNTER(STAT_GameplayCueInterface_HandleGameplayCue);
 
@@ -165,7 +165,7 @@ void IGameplayCueInterface::HandleGameplayCue(UObject* Self, FGameplayTag Gamepl
 	}
 }
 
-void IGameplayCueInterface::GameplayCueDefaultHandler(EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+void IGameplayCueInterface::GameplayCueDefaultHandler(EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
 {
 	// No default handler, subclasses can implement
 }
@@ -377,9 +377,18 @@ void FMinimalGameplayCueReplicationProxy::PreReplication(const FActiveGameplayCu
 	{
 		LastSourceArrayReplicationKey = SourceContainer.ArrayReplicationKey;
 		ReplicatedTags.SetNum(SourceContainer.GameplayCues.Num(), false);
+		ReplicatedLocations.SetNum(SourceContainer.GameplayCues.Num(), false);
 		for (int32 idx=0; idx < SourceContainer.GameplayCues.Num(); ++idx)
 		{
 			ReplicatedTags[idx] = SourceContainer.GameplayCues[idx].GameplayCueTag;
+			if (SourceContainer.GameplayCues[idx].Parameters.bReplicateLocationWhenUsingMinimalRepProxy)
+			{
+				ReplicatedLocations[idx] = SourceContainer.GameplayCues[idx].Parameters.Location;
+			}
+			else
+			{
+				ReplicatedLocations[idx] = FVector::ZeroVector;
+			}
 		}
 	}
 }
@@ -411,6 +420,17 @@ bool FMinimalGameplayCueReplicationProxy::NetSerialize(FArchive& Ar, class UPack
 		for (uint8 i=0; i < NumElements; ++i)
 		{
 			ReplicatedTags[i].NetSerialize(Ar, Map, bOutSuccess);
+			if (ReplicatedLocations[i].IsZero())
+			{
+				bool bHasLocation = false;
+				Ar << bHasLocation;
+			}
+			else
+			{
+				bool bHasLocation = true;
+				Ar << bHasLocation;
+				ReplicatedLocations[i].NetSerialize(Ar, Map, bOutSuccess);
+			}
 		}
 	}
 	else
@@ -440,16 +460,31 @@ bool FMinimalGameplayCueReplicationProxy::NetSerialize(FArchive& Ar, class UPack
 		LocalBitMask.Init(true, LocalTags.Num());
 		
 		ReplicatedTags.SetNumUninitialized(NumElements, false);
+		ReplicatedLocations.SetNum(NumElements, false);
 
 		// This struct does not serialize GC parameters but will synthesize them on the receiving side.
 		FGameplayCueParameters Parameters;
 		InitGameplayCueParametersFunc(Parameters, Owner);
+		FVector OriginalLocationParameter = Parameters.Location;
 
 		for (uint8 i=0; i < NumElements; ++i)
 		{
 			FGameplayTag& ReplicatedTag = ReplicatedTags[i];
 
 			ReplicatedTag.NetSerialize(Ar, Map, bOutSuccess);
+
+			bool bHasReplicatedLocation = false;
+			Ar << bHasReplicatedLocation;
+			if (bHasReplicatedLocation)
+			{
+				FVector_NetQuantize& ReplicatedLocation = ReplicatedLocations[i];
+				ReplicatedLocation.NetSerialize(Ar, Map, bOutSuccess);
+				Parameters.Location = ReplicatedLocation;
+			}
+			else
+			{
+				Parameters.Location = OriginalLocationParameter;
+			}
 
 			int32 LocalIdx = LocalTags.IndexOfByKey(ReplicatedTag);
 			if (LocalIdx != INDEX_NONE)
@@ -468,6 +503,9 @@ bool FMinimalGameplayCueReplicationProxy::NetSerialize(FArchive& Ar, class UPack
 				LastSourceArrayReplicationKey++;
 			}
 		}
+
+		// Restore the location in case we touched it
+		Parameters.Location = OriginalLocationParameter;
 
 		if (UpdateOwnerTagMap)
 		{

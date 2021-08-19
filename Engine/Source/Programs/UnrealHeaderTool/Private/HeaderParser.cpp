@@ -1077,13 +1077,16 @@ namespace
 					InValue.ParseIntoArray(RawGroupings, TEXT(","), false);
 
 					FProperty* FirstInput = nullptr;
-					for (const FString& RawGroup : RawGroupings)
+					for (FString& RawGroup : RawGroupings)
 					{
+						RawGroup.TrimStartAndEndInline();
+
 						TArray<FString> IndividualEntries;
 						RawGroup.ParseIntoArray(IndividualEntries, TEXT("|"));
 
-						for (const FString& Entry : IndividualEntries)
+						for (FString& Entry : IndividualEntries)
 						{
+							Entry.TrimStartAndEndInline();
 							if (Entry.IsEmpty())
 							{
 								continue;
@@ -1280,6 +1283,15 @@ namespace
 		}
 
 		Parser.RequireSymbol(TEXT(')'), ErrorMessageGetter);
+	}
+
+	void SkipAlignasAndDeprecatedMacroIfNecessary(FBaseParser& Parser)
+	{
+		// alignas() can come before or after the deprecation macro.
+		// We can't have both, but the compiler will catch that anyway.
+		SkipAlignasIfNecessary(Parser);
+		SkipDeprecatedMacroIfNecessary(Parser);
+		SkipAlignasIfNecessary(Parser);
 	}
 
 	static const TCHAR* GLayoutMacroNames[] = {
@@ -1582,13 +1594,14 @@ UEnum* FHeaderParser::CompileEnum()
 
 	if (EnumToken.Matches(TEXT("namespace"), ESearchCase::CaseSensitive))
 	{
-		CppForm       = UEnum::ECppForm::Namespaced;
+		CppForm = UEnum::ECppForm::Namespaced;
+
+		SkipDeprecatedMacroIfNecessary(*this);
+
 		bReadEnumName = GetIdentifier(EnumToken);
 	}
 	else if (EnumToken.Matches(TEXT("enum"), ESearchCase::CaseSensitive))
 	{
-		SkipAlignasIfNecessary(*this);
-
 		if (!GetIdentifier(EnumToken))
 		{
 			FError::Throwf(TEXT("Missing identifier after enum") );
@@ -1596,18 +1609,19 @@ UEnum* FHeaderParser::CompileEnum()
 
 		if (EnumToken.Matches(TEXT("class"), ESearchCase::CaseSensitive) || EnumToken.Matches(TEXT("struct"), ESearchCase::CaseSensitive))
 		{
-			// You can't actually have an alignas() before the class/struct keyword, but this
-			// makes the parsing easier and illegal syntax will be caught by the compiler anyway.
-			SkipAlignasIfNecessary(*this);
-
-			CppForm       = UEnum::ECppForm::EnumClass;
-			bReadEnumName = GetIdentifier(EnumToken);
+			CppForm = UEnum::ECppForm::EnumClass;
 		}
 		else
 		{
-			CppForm       = UEnum::ECppForm::Regular;
-			bReadEnumName = true;
+			// Put whatever token we found back so that we can correctly skip below
+			UngetToken(EnumToken);
+
+			CppForm = UEnum::ECppForm::Regular;
 		}
+
+		SkipAlignasAndDeprecatedMacroIfNecessary(*this);
+
+		bReadEnumName = GetIdentifier(EnumToken);
 	}
 	else
 	{
@@ -1740,7 +1754,7 @@ UEnum* FHeaderParser::CompileEnum()
 			// Now handle the inner true enum portion
 			RequireIdentifier(TEXT("enum"), ESearchCase::CaseSensitive, TEXT("'Enum'"));
 
-			SkipAlignasIfNecessary(*this);
+			SkipAlignasAndDeprecatedMacroIfNecessary(*this);
 
 			FToken InnerEnumToken;
 			if (!GetIdentifier(InnerEnumToken))
@@ -2376,11 +2390,7 @@ UScriptStruct* FHeaderParser::CompileStructDeclaration(FClasses& AllClasses)
 	// The required API module for this struct, if any
 	FString RequiredAPIMacroIfPresent;
 
-	// alignas() can come before or after the deprecation macro.
-	// We can't have both, but the compiler will catch that anyway.
-	SkipAlignasIfNecessary(*this);
-	SkipDeprecatedMacroIfNecessary(*this);
-	SkipAlignasIfNecessary(*this);
+	SkipAlignasAndDeprecatedMacroIfNecessary(*this);
 
 	// Read the struct name
 	ParseNameWithPotentialAPIMacroPrefix(/*out*/ StructNameInScript, /*out*/ RequiredAPIMacroIfPresent, TEXT("struct"));
@@ -4419,6 +4429,11 @@ void FHeaderParser::GetVarType(
 		{
 			FError::Throwf(TEXT("FText is not currently supported as a key type."));
 		}
+		
+		if (EnumHasAnyFlags(Flags, CPF_Net))
+		{
+			UE_LOG_ERROR_UHT(TEXT("Replicated maps are not supported."));
+		}
 
 		FToken CommaToken;
 		if (!GetToken(CommaToken, /*bNoConsts=*/ true) || CommaToken.TokenType != TOKEN_Symbol || !CommaToken.Matches(TEXT(',')))
@@ -4466,11 +4481,6 @@ void FHeaderParser::GetVarType(
 
 			if (FCString::Strcmp(AllocatorToken.Identifier, TEXT("FMemoryImageSetAllocator")) == 0)
 			{
-				if (EnumHasAnyFlags(Flags, CPF_Net))
-				{
-					FError::Throwf(TEXT("Replicated maps with MemoryImageSetAllocators are not yet supported"));
-				}
-
 				RequireSymbol(TEXT('>'), TEXT("TMap template arguments"), ESymbolParseOption::CloseTemplateBracket);
 
 				VarProperty.AllocatorType = EAllocatorType::MemoryImage;
@@ -4502,6 +4512,11 @@ void FHeaderParser::GetVarType(
 		if (VarProperty.Type == CPT_Text)
 		{
 			FError::Throwf(TEXT("FText is not currently supported as an element type."));
+		}
+
+		if (EnumHasAnyFlags(Flags, CPF_Net))
+		{
+			UE_LOG_ERROR_UHT(TEXT("Replicated sets are not supported."));
 		}
 
 		VarType.PropertyFlags = VarProperty.PropertyFlags & (CPF_ContainsInstancedReference | CPF_InstancedReference); // propagate these to the set, we will fix them later
@@ -6335,11 +6350,7 @@ UClass* FHeaderParser::CompileClassDeclaration(FClasses& AllClasses)
 	// New style files have the class name / extends afterwards
 	RequireIdentifier(TEXT("class"), ESearchCase::CaseSensitive, TEXT("Class declaration"));
 
-	// alignas() can come before or after the deprecation macro.
-	// We can't have both, but the compiler will catch that anyway.
-	SkipAlignasIfNecessary(*this);
-	SkipDeprecatedMacroIfNecessary(*this);
-	SkipAlignasIfNecessary(*this);
+	SkipAlignasAndDeprecatedMacroIfNecessary(*this);
 
 	FString DeclaredClassName;
 	FString RequiredAPIMacroIfPresent;
@@ -6918,6 +6929,26 @@ void FHeaderParser::ParseParameterList(FClasses& AllClasses, UFunction* Function
 		// Check parameters.
 		if ((Function->FunctionFlags & FUNC_Net))
 		{
+			if (Property.MapKeyProp.IsValid())
+			{
+				if (!(Function->FunctionFlags & FUNC_NetRequest || Function->FunctionFlags & FUNC_NetResponse))
+				{
+					UE_LOG_ERROR_UHT(TEXT("Maps are not supported in an RPC."));
+				}
+			}
+			else if (Property.ArrayType == EArrayType::Set)
+			{
+				if (!(Function->FunctionFlags & FUNC_NetRequest || Function->FunctionFlags & FUNC_NetResponse))
+				{
+					UE_LOG_ERROR_UHT(TEXT("Sets are not supported in an RPC."));
+				}
+			}
+
+			if (Property.Type == CPT_Struct && Property.Struct && !(Function->FunctionFlags & FUNC_NetRequest || Function->FunctionFlags & FUNC_NetResponse))
+			{
+				ValidateScriptStructOkForNet(Property.Struct->GetName(), Property.Struct);
+			}
+
 			if (!(Function->FunctionFlags & FUNC_NetRequest))
 			{
 				if (Property.PropertyFlags & CPF_OutParm)
@@ -8008,6 +8039,63 @@ void FHeaderParser::ValidatePropertyIsDeprecatedIfNecessary(const FPropertyBase&
 	}
 }
 
+bool FHeaderParser::ValidateScriptStructOkForNet(const FString& OriginStructName, UScriptStruct* InStruct)
+{
+	if (!InStruct)
+	{
+		return false;
+	}
+
+	if (ScriptStructsValidForNet.Contains(InStruct))
+	{
+		return true;
+	}
+
+	bool bIsStructValid = true;
+
+	if (UScriptStruct* SuperScriptStruct = Cast<UScriptStruct>(InStruct->GetSuperStruct()))
+	{
+		if (!ValidateScriptStructOkForNet(OriginStructName, SuperScriptStruct))
+		{
+			bIsStructValid = false;
+		}
+	}
+
+	for (FField* ChildProp = InStruct->ChildProperties; ChildProp != nullptr; ChildProp = ChildProp->Next)
+	{
+		if (const FSetProperty* const SetProp = CastField<FSetProperty>(ChildProp))
+		{
+			if (!(SetProp->PropertyFlags & CPF_RepSkip))
+			{
+				bIsStructValid = false;
+				UE_LOG_ERROR_UHT(TEXT("Sets are not supported for Replication or RPCs.  Set %s in %s.  Origin %s"), *ChildProp->GetName(), *ChildProp->Owner.GetName(), *OriginStructName);
+			}
+		}
+		else if (const FMapProperty* const MapProp = CastField<FMapProperty>(ChildProp))
+		{
+			if (!(MapProp->PropertyFlags & CPF_RepSkip))
+			{
+				bIsStructValid = false;
+				UE_LOG_ERROR_UHT(TEXT("Maps are not supported for Replication or RPCs.  Map %s in %s.  Origin %s"), *ChildProp->GetName(), *ChildProp->Owner.GetName(), *OriginStructName);
+			}
+		}
+		else if (const FStructProperty* const StructProperty = CastField<FStructProperty>(ChildProp))
+		{
+			if (!ValidateScriptStructOkForNet(OriginStructName, StructProperty->Struct))
+			{
+				bIsStructValid = false;
+			}
+		}
+	}
+
+	if (bIsStructValid)
+	{
+		ScriptStructsValidForNet.Add(InStruct);
+	}
+
+	return bIsStructValid;
+}
+
 struct FExposeOnSpawnValidator
 {
 	// Keep this function synced with UEdGraphSchema_K2::FindSetVariableByNameFunction
@@ -8112,6 +8200,12 @@ void FHeaderParser::CompileVariableDeclaration(FClasses& AllClasses, UStruct* St
 	if (LayoutMacroType != ELayoutMacroType::None)
 	{
 		RequireSymbol(TEXT(','), GLayoutMacroNames[(int32)LayoutMacroType]);
+	}
+
+	// If Property is a Replicated Struct check to make sure there are no Properties that are not allowed to be Replicated in the Struct 
+	if (OriginalProperty.Type == CPT_Struct && OriginalProperty.PropertyFlags & CPF_Net && OriginalProperty.Struct)
+	{
+		ValidateScriptStructOkForNet(OriginalProperty.Struct->GetName(), OriginalProperty.Struct);
 	}
 
 	// Process all variables of this type.
@@ -9667,11 +9761,7 @@ void FHeaderPreParser::ParseClassDeclaration(const TCHAR* Filename, const TCHAR*
 	// Require 'class'
 	RequireIdentifier(TEXT("class"), ESearchCase::CaseSensitive, ErrorMsg);
 
-	// alignas() can come before or after the deprecation macro.
-	// We can't have both, but the compiler will catch that anyway.
-	SkipAlignasIfNecessary(*this);
-	SkipDeprecatedMacroIfNecessary(*this);
-	SkipAlignasIfNecessary(*this);
+	SkipAlignasAndDeprecatedMacroIfNecessary(*this);
 
 	// Read the class name
 	FString RequiredAPIMacroIfPresent;

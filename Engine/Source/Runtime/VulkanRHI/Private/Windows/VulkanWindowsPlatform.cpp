@@ -25,6 +25,25 @@ ENUM_VK_ENTRYPOINTS_ALL(DEFINE_VK_ENTRYPOINTS)
 #pragma warning(disable : 4191) // warning C4191: 'type cast': unsafe conversion
 bool FVulkanWindowsPlatform::LoadVulkanLibrary()
 {
+#if NV_AFTERMATH
+	GVulkanNVAftermathModuleLoaded = false;
+	const bool bAllowVendorDevice = !FParse::Param(FCommandLine::Get(), TEXT("novendordevice"));
+	if (bAllowVendorDevice)
+	{
+		// Note - can't check device type here, we'll check for that before actually initializing Aftermath
+		FString AftermathBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/NVIDIA/NVaftermath/Win64/");
+		if (LoadLibraryW(*(AftermathBinariesRoot + "GFSDK_Aftermath_Lib.x64.dll")) == nullptr)
+		{
+			UE_LOG(LogVulkanRHI, Warning, TEXT("Failed to load GFSDK_Aftermath_Lib.x64.dll"));
+		}
+		else
+		{
+			UE_LOG(LogVulkanRHI, Log, TEXT("Loaded GFSDK_Aftermath_Lib.x64.dll"));
+			GVulkanNVAftermathModuleLoaded = true;
+		}
+	}
+#endif
+
 #if VULKAN_HAS_DEBUGGING_ENABLED
 	if (GValidationCvar->GetInt() > 0)
 	{
@@ -172,15 +191,10 @@ void FVulkanWindowsPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<c
 			OutExtensions.Add(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
 		}
 #endif
-#if VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT
+#if VULKAN_SUPPORTS_NV_DIAGNOSTICS
 		if (VendorId == EGpuVendorId::Nvidia && bAllowVendorDevice)
 		{
 			OutExtensions.Add(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
-		}
-#endif
-#if VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT
-		if (VendorId == EGpuVendorId::Nvidia && bAllowVendorDevice)
-		{
 			OutExtensions.Add(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
 		}
 #endif
@@ -196,6 +210,18 @@ void FVulkanWindowsPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<c
 #if VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE
 	// Fullscreen requires Instance capabilities2
 	OutExtensions.Add(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
+	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2
+	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_2_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+	OutExtensions.Add(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
 #endif
 }
 
@@ -248,7 +274,7 @@ void FVulkanWindowsPlatform::CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId 
 	{
 		AGSGPUInfo AmdGpuInfo;
 		AGSContext* AmdAgsContext = nullptr;
-		if (agsInit(&AmdAgsContext, nullptr, &AmdGpuInfo) == AGS_SUCCESS)
+		if (agsInit(AGS_MAKE_VERSION(AMD_AGS_VERSION_MAJOR, AMD_AGS_VERSION_MINOR, AMD_AGS_VERSION_PATCH), nullptr, &AmdAgsContext, &AmdGpuInfo) == AGS_SUCCESS)
 		{
 			const char* Version = AmdGpuInfo.radeonSoftwareVersion;
 			if (DeviceIndex < (uint32)AmdGpuInfo.numDevices && Version && *Version)

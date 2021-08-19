@@ -12,6 +12,7 @@
 #include "MovieRenderPipelineSettings.h"
 #include "Sections/MovieSceneCameraCutSection.h"
 #include "MoviePipelineCommands.h"
+#include "MoviePipelineEditorBlueprintLibrary.h"
 
 // Slate Includes
 #include "Widgets/Input/SComboButton.h"
@@ -54,10 +55,6 @@ struct FMoviePipelineQueueJobTreeItem;
 struct FMoviePipelineMapTreeItem;
 struct FMoviePipelineShotItem;
 class SQueueJobListRow;
-
-// Forward Declare
-static void EnsureJobHasDefaultSettings(UMoviePipelineExecutorJob* NewJob);
-
 
 struct IMoviePipelineQueueTreeItem : TSharedFromThis<IMoviePipelineQueueTreeItem>
 {
@@ -201,7 +198,7 @@ public:
 		{
 			// Copy from the CDO's version of the job to pick up the right name.
 			Job->SetConfiguration(GetMutableDefault<UMoviePipelineExecutorJob>()->GetConfiguration());
-			EnsureJobHasDefaultSettings(Job);
+			UMoviePipelineEditorBlueprintLibrary::EnsureJobHasDefaultSettings(Job);
 		}
 
 		OnChosePresetCallback.ExecuteIfBound(WeakJob, nullptr);
@@ -1021,29 +1018,6 @@ TSharedRef<SWidget> SMoviePipelineQueueEditor::OnGenerateNewJobFromAssetMenu()
 
 PRAGMA_ENABLE_OPTIMIZATION
 
-void EnsureJobHasDefaultSettings(UMoviePipelineExecutorJob* NewJob)
-{
-	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
-	for (TSubclassOf<UMoviePipelineSetting> SettingClass : ProjectSettings->DefaultClasses)
-	{
-		if (!SettingClass)
-		{
-			continue;
-		}
-
-		if (SettingClass->HasAnyClassFlags(CLASS_Abstract))
-		{
-			continue;
-		}
-
-		UMoviePipelineSetting* ExistingSetting = NewJob->GetConfiguration()->FindSettingByClass(SettingClass);
-		if (!ExistingSetting)
-		{
-			NewJob->GetConfiguration()->FindOrAddSettingByClass(SettingClass);
-		}
-	}
-}
-
 void SMoviePipelineQueueEditor::OnCreateJobFromAsset(const FAssetData& InAsset)
 {
 	// Close the dropdown menu that showed them the assets to pick from.
@@ -1054,34 +1028,22 @@ void SMoviePipelineQueueEditor::OnCreateJobFromAsset(const FAssetData& InAsset)
 	if (LevelSequence)
 	{
 		FScopedTransaction Transaction(FText::Format(LOCTEXT("CreateJob_Transaction", "Add {0}|plural(one=Job, other=Jobs)"), 1));
-		const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
 
 		UMoviePipelineQueue* ActiveQueue = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>()->GetQueue();
 		check(ActiveQueue);
-		ActiveQueue->Modify();
-
-		UMoviePipelineExecutorJob* NewJob = ActiveQueue->AllocateNewJob(ProjectSettings->DefaultExecutorJob);
-		if (!ensureAlwaysMsgf(NewJob, TEXT("Failed to allocate new job! Check the DefaultExecutorJob is not null in Project Settings!")))
+		
+		UMoviePipelineExecutorJob* NewJob = UMoviePipelineEditorBlueprintLibrary::CreateJobFromSequence(ActiveQueue, LevelSequence);
+		if (!NewJob)
 		{
 			return;
 		}
 
-		NewJob->Modify();
-
 		PendingJobsToSelect.Add(NewJob);
-
-		// We'll assume they went to render from the current world - they can always override it later.
-		FSoftObjectPath CurrentWorld = FSoftObjectPath(GEditor->GetEditorWorldContext().World());
-		FSoftObjectPath Sequence = InAsset.ToSoftObjectPath();
-		NewJob->Map = CurrentWorld;
-		NewJob->Author = FPlatformProcess::UserName(false);
-		NewJob->SetSequence(Sequence);
-		NewJob->JobName = NewJob->Sequence.GetAssetName();
 		
-
 		{
 			// The job configuration is already set up with an empty configuration, but we'll try and use their last used preset 
 			// (or a engine supplied default) for better user experience. 
+			const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
 			if (ProjectSettings->LastPresetOrigin.IsValid())
 			{
 				NewJob->SetPresetOrigin(ProjectSettings->LastPresetOrigin.Get());
@@ -1089,8 +1051,8 @@ void SMoviePipelineQueueEditor::OnCreateJobFromAsset(const FAssetData& InAsset)
 		}
 
 		// Ensure the job has the settings specified by the project settings added. If they're already added
-		// we don't modify the object so that we don't make it confused about whehter or not you've modified the preset.
-		EnsureJobHasDefaultSettings(NewJob);
+		// we don't modify the object so that we don't make it confused about whether or not you've modified the preset.
+		UMoviePipelineEditorBlueprintLibrary::EnsureJobHasDefaultSettings(NewJob);
 	}
 }
 

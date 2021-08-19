@@ -15,7 +15,7 @@ DECLARE_DELEGATE_RetVal_TwoParams(EInstallBundleSourceUpdateBundleInfoResult, FI
 
 DECLARE_DELEGATE_TwoParams(FInstallBundleCompleteDelegate, TSharedRef<IInstallBundleSource> /*Source*/, FInstallBundleSourceUpdateContentResultInfo /*Result*/);
 DECLARE_DELEGATE_TwoParams(FInstallBundlePausedDelegate, TSharedRef<IInstallBundleSource> /*Source*/, FInstallBundleSourcePauseInfo /*PauseInfo*/);
-DECLARE_DELEGATE_TwoParams(FInstallBundleRemovedDelegate, TSharedRef<IInstallBundleSource> /*Source*/, FInstallBundleSourceRemoveContentResultInfo /*Result*/);
+DECLARE_DELEGATE_TwoParams(FInstallBundleRemovedDelegate, TSharedRef<IInstallBundleSource> /*Source*/, FInstallBundleSourceReleaseContentResultInfo /*Result*/);
 
 DECLARE_DELEGATE_TwoParams(FInstallBundleSourceContentPatchResultDelegate, TSharedRef<IInstallBundleSource> /*Source*/, bool /*bContentPatchRequired*/);
 
@@ -53,8 +53,8 @@ public:
 	virtual FString GetContentVersion() const = 0;
 
 	// Finds all dependencies for InBundleName, including InBundleName
-	// Sets bSkippedUnknownBundles if information for InBundleName or a dependency can't be found
-	virtual TSet<FName> GetBundleDependencies(FName InBundleName, bool* bSkippedUnknownBundles /*= nullptr*/) const = 0;
+	// SkippedUnknownBundles contains any unknown bundles that may have been found
+	virtual TSet<FName> GetBundleDependencies(FName InBundleName, TSet<FName>* SkippedUnknownBundles = nullptr) const = 0;
 
 	// Gets the state of content on disk
 	// BundleNames contains all dependencies and has been deduped
@@ -69,6 +69,7 @@ public:
 	{
 		FName BundleName;
 		EInstallBundleRequestFlags Flags = EInstallBundleRequestFlags::None;
+		ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging;
 		FInstallBundlePausedDelegate PausedCallback;
 		FInstallBundleCompleteDelegate CompleteCallback;
 		TSharedPtr<InstallBundleUtil::FContentRequestSharedContext> RequestSharedContext;
@@ -78,19 +79,22 @@ public:
 	// BundleContexts contains all dependencies and has been deduped
 	virtual void RequestUpdateContent(FRequestUpdateContentBundleContext BundleContext) = 0;
 
-	struct FRequestRemoveContentBundleContext
+	struct FRequestReleaseContentBundleContext
 	{
 		FName BundleName;
 		EInstallBundleReleaseRequestFlags Flags = EInstallBundleReleaseRequestFlags::None;
+		ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging;
 		FInstallBundleRemovedDelegate CompleteCallback;
 	};
 
-	// Removes content from disk if present
+	// Notify bundle source that a bundle has been released
+	// If EInstallBundleReleaseRequestFlags::RemoveFilesIfPossible is set, the source should remove content from disk if present
+	// The source should set bContentWasRemoved to indicate to bundle manager that the bundle content was uninstalled
 	// BundleContexts contains all dependencies and has been deduped
 	// Bundle manager will not schedule removes at the same time as updates for the same bundle
-	virtual void RequestRemoveContent(FRequestRemoveContentBundleContext BundleContext)
+	virtual void RequestReleaseContent(FRequestReleaseContentBundleContext BundleContext)
 	{
-		FInstallBundleSourceRemoveContentResultInfo ResultInfo;
+		FInstallBundleSourceReleaseContentResultInfo ResultInfo;
 		ResultInfo.BundleName = BundleContext.BundleName;
 		BundleContext.CompleteCallback.Execute(AsShared(), MoveTemp(ResultInfo));
 	}
@@ -103,7 +107,7 @@ public:
 	virtual bool CancelRequestRemoveContentOnNextInit(TArrayView<const FName> BundleNames) { return false; }
 
 	// Cancel the install for the specified bundles
-	virtual void CancelBundles(TArrayView<const FName> BundleNames, EInstallBundleCancelFlags Flags) {}
+	virtual void CancelBundles(TArrayView<const FName> BundleNames) {}
 
 	// User Pause/Resume bundles.
 	virtual void UserPauseBundles(TArrayView<const FName> BundleNames) {}

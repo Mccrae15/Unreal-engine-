@@ -20,6 +20,8 @@
 #define VULKAN_SUPPORTS_DEDICATED_ALLOCATION		0
 #define VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2	1
 #define VULKAN_SUPPORTS_ASTC_DECODE_MODE			(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)
+#define VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT	0
+#define VULKAN_SUPPORTS_NV_DIAGNOSTIC_CONFIG		0
 
 // crashing during callback setup on Android, code will fallback to VK_EXT_debug_report instead
 #define VULKAN_SUPPORTS_DEBUG_UTILS					0
@@ -40,7 +42,8 @@
 	EnumMacro(PFN_vkGetPastPresentationTimingGOOGLE, vkGetPastPresentationTimingGOOGLE) \
 	EnumMacro(PFN_vkGetPhysicalDeviceProperties2KHR, vkGetPhysicalDeviceProperties2KHR) \
 	EnumMacro(PFN_vkGetPhysicalDeviceFeatures2KHR, vkGetPhysicalDeviceFeatures2KHR) \
-	EnumMacro(PFN_vkGetPhysicalDeviceMemoryProperties2, vkGetPhysicalDeviceMemoryProperties2)
+	EnumMacro(PFN_vkGetPhysicalDeviceMemoryProperties2, vkGetPhysicalDeviceMemoryProperties2) \
+	EnumMacro(PFN_vkGetPhysicalDeviceFragmentShadingRatesKHR, vkGetPhysicalDeviceFragmentShadingRatesKHR)
 
 // and now, include the GenericPlatform class
 #include "../VulkanGenericPlatform.h"
@@ -82,11 +85,9 @@ public:
 		}
 	}
 
-	static bool SupportsStandardSwapchain();
-	static bool RequiresRenderingBackBuffer();
-	static EPixelFormat GetPixelFormatForNonDefaultSwapchain();
-
 	static bool SupportsTimestampRenderQueries();
+
+	static bool SupportsDynamicResolution() { return SupportsTimestampRenderQueries(); }
 
 	static bool RequiresMobileRenderer()
 	{
@@ -108,6 +109,8 @@ public:
 	{
 		return !RequiresMobileRenderer();
 	}
+
+	static bool SupportsUniformBufferPatching();
 
 	// Assume most devices can't use the extra cores for running parallel tasks
 	static bool SupportParallelRenderingTasks() { return false; }
@@ -142,6 +145,8 @@ protected:
 	static int32 CachedFramePace;
 	static int32 CachedRefreshRate;
 	static int32 CachedSyncInterval;
+
+	static bool bSupportsUniformBufferPatching;
 };
 
 #if VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING

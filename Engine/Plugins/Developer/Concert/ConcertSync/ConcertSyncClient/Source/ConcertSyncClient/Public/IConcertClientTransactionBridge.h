@@ -9,6 +9,8 @@
 #include "IdentifierTable/ConcertIdentifierTable.h"
 
 struct FConcertSessionVersionInfo;
+class UObject;
+class UPackage;
 
 /**
  * Common data for a transaction.
@@ -50,6 +52,14 @@ struct FConcertClientLocalTransactionFinalizedData
 	bool bWasCanceled = false;
 };
 
+enum class ETransactionNotification
+{
+	Begin,
+	End,
+};
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnApplyTransaction, ETransactionNotification, const bool bIsSnapshot);
+DECLARE_DELEGATE_RetVal_TwoParams(ETransactionFilterResult, FTransactionFilterDelegate, UObject*, UPackage*);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnConcertClientLocalTransactionSnapshot, const FConcertClientLocalTransactionCommonData&, const FConcertClientLocalTransactionSnapshotData&);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnConcertClientLocalTransactionFinalized, const FConcertClientLocalTransactionCommonData&, const FConcertClientLocalTransactionFinalizedData&);
 
@@ -91,6 +101,12 @@ public:
 	virtual bool CanApplyRemoteTransaction() const = 0;
 
 	/**
+	 * Notification of an application of a transaction. This will tell the user if the transaction
+	 * originates as a snapshot or is a finalized snapshot message.
+	 */
+	virtual FOnApplyTransaction& OnApplyTransaction() = 0;
+
+	/**
 	 * Apply a remote transaction event to this local instance.
 	 * @param InEvent					The event to apply.
 	 * @param InVersionInfo				The version information for the serialized data in the event, or null if the event should be serialized using the compiled in version info.
@@ -100,6 +116,11 @@ public:
 	 */
 	virtual void ApplyRemoteTransaction(const FConcertTransactionEventBase& InEvent, const FConcertSessionVersionInfo* InVersionInfo, const TArray<FName>& InPackagesToProcess, const FConcertLocalIdentifierTable* InLocalIdentifierTablePtr, const bool bIsSnapshot) = 0;
 
+	/** Callback to register delegate for handling transaction events */
+	virtual void RegisterTransactionFilter(FName FilterName, FTransactionFilterDelegate FilterHandle) = 0;
+
+	/** Callback to register delegate for handling transaction events */
+	virtual void UnregisterTransactionFilter(FName FilterName) = 0;
 protected:
 	/**
 	 * Function to access the internal bool controlling whether local transactions are currently being tracked.

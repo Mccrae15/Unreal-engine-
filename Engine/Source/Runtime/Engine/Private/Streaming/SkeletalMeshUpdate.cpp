@@ -13,7 +13,6 @@ SkeletalMeshUpdate.cpp: Helpers to stream in and out skeletal mesh LODs.
 #include "Serialization/MemoryReader.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Components/SkinnedMeshComponent.h"
-#include "Components/SkeletalMeshComponent.h"
 #include "Streaming/RenderAssetUpdate.inl"
 
 extern int32 GStreamingMaxReferenceChecks;
@@ -202,11 +201,32 @@ void FSkeletalMeshStreamIn::DoFinishUpdate(const FContext& Context)
 			for (int32 LODIndex = PendingFirstLODIdx; LODIndex < CurrentFirstLODIdx; ++LODIndex)
 			{
 				FSkeletalMeshLODRenderData& LODResource = *Context.LODResourcesView[LODIndex];
-				LODResource.IncrementMemoryStats(Mesh->bHasVertexColors);
+				LODResource.IncrementMemoryStats(Mesh->GetHasVertexColors());
 				IntermediateBuffersArray[LODIndex].TransferBuffers(LODResource, Batcher);
 			}
 		}
+
+#if RHI_RAYTRACING
+		// Must happen after the batched updates have been flushed
+		if (IsRayTracingEnabled())
+		{
+			for (int32 LODIndex = PendingFirstLODIdx; LODIndex < CurrentFirstLODIdx; ++LODIndex)
+			{
+				// Skip LODs that have their render data stripped
+				if (RenderData->LODRenderData[LODIndex].GetNumVertices() > 0)
+				{
+					if (RenderData->LODRenderData[LODIndex].bReferencedByStaticSkeletalMeshObjects_RenderThread)
+					{
+						ensure(!RenderData->LODRenderData[LODIndex].StaticRayTracingGeometry.IsInitialized());
+						RenderData->LODRenderData[LODIndex].StaticRayTracingGeometry.InitResource();
+					}
+				}
+			}
+		}
+#endif
+
 		RenderData->PendingFirstLODIdx = RenderData->CurrentFirstLODIdx = ResourceState.LODCountToAssetFirstLODIdx(ResourceState.NumRequestedLODs);
+		MarkAsSuccessfullyFinished();
 	}
 	else
 	{
@@ -254,13 +274,9 @@ void FSkeletalMeshStreamOut::ConditionalMarkComponentsDirty(const FContext& Cont
 		{
 			check(Comps[Idx]->IsA<USkinnedMeshComponent>());
 			USkinnedMeshComponent* Comp = (USkinnedMeshComponent*)Comps[Idx];
-			if (Comp->PredictedLODLevel < RenderData->PendingFirstLODIdx)
+			if (Comp->GetPredictedLODLevel() < RenderData->PendingFirstLODIdx)
 			{
-				Comp->PredictedLODLevel = RenderData->PendingFirstLODIdx;
-				if(USkeletalMeshComponent* SkelMeshComp = Cast<USkeletalMeshComponent>(Comp))
-				{
-					SkelMeshComp->bRequiredBonesUpToDate = false;
-				}
+				Comp->SetPredictedLODLevel(RenderData->PendingFirstLODIdx);
 				Comp->bForceMeshObjectUpdate = true;
 				Comp->MarkRenderDynamicDataDirty();
 			}
@@ -350,7 +366,18 @@ void FSkeletalMeshStreamOut::ReleaseBuffers(const FContext& Context)
 			{
 				// TODO requires more testing : LODResource.ReleaseCPUResources(true);
 			}
+
+#if RHI_RAYTRACING
+			if (IsRayTracingEnabled())
+			{
+				if (RenderData->LODRenderData[LODIndex].bReferencedByStaticSkeletalMeshObjects_RenderThread)
+				{
+					LODResource.StaticRayTracingGeometry.ReleaseResource();
+				}
+			}
+#endif
 		}
+		MarkAsSuccessfullyFinished();
 	}
 }
 

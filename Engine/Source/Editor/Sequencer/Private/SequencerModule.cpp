@@ -5,6 +5,7 @@
 #include "Textures/SlateIcon.h"
 #include "EditorModeRegistry.h"
 #include "Toolkits/AssetEditorToolkit.h"
+#include "IMovieRendererInterface.h"
 #include "ISequencer.h"
 #include "ISequencerModule.h"
 #include "SequencerCommands.h"
@@ -19,9 +20,10 @@
 
 #include "ToolMenus.h"
 #include "ContentBrowserMenuContexts.h"
+#include "SequencerUtilities.h"
 #include "FileHelpers.h"
 #include "LevelSequence.h"
-#include "AssetRegistryModule.h"
+
 
 #if !IS_MONOLITHIC
 	UE::MovieScene::FEntityManager*& GEntityManagerForDebugging = UE::MovieScene::GEntityManagerForDebuggingVisualizers;
@@ -155,29 +157,7 @@ public:
 			if (LevelSequence)
 			{
 				// if this LevelSequence has associated maps, offer to load them
-
-				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-				const FName LSMapPathName = *LevelSequence->GetOutermost()->GetPathName();
-
-				TArray<FString> AssociatedMaps;
-
-				TArray<FAssetIdentifier> AssociatedAssets;
-
-				// This makes the assumption these functions will append the array, and not clear it.
-				AssetRegistryModule.Get().GetReferencers(LSMapPathName, AssociatedAssets);
-				AssetRegistryModule.Get().GetDependencies(LSMapPathName, AssociatedAssets);
-
-				for (FAssetIdentifier& AssociatedMap : AssociatedAssets)
-				{
-					FString MapFilePath;
-					FString LevelPath = AssociatedMap.PackageName.ToString();
-					if (FEditorFileUtils::IsMapPackageAsset(LevelPath, MapFilePath))
-					{
-						AssociatedMaps.AddUnique(LevelPath);
-					}
-				}
-
-				AssociatedMaps.Sort([](const FString& One, const FString& Two){ return FPaths::GetBaseFilename(One) < FPaths::GetBaseFilename(Two); });
+				TArray<FString> AssociatedMaps = FSequencerUtilities::GetAssociatedMapPackages(LevelSequence);
 
 				if(AssociatedMaps.Num()>0)
 				{
@@ -309,6 +289,42 @@ public:
 
 	virtual TSharedPtr<FSequencerCustomizationManager> GetSequencerCustomizationManager() const override { return SequencerCustomizationManager; }
 
+
+	virtual FDelegateHandle RegisterMovieRenderer(TUniquePtr<IMovieRendererInterface>&& InMovieRenderer) override
+	{
+		FDelegateHandle NewHandle(FDelegateHandle::GenerateNewHandle);
+		MovieRenderers.Add(FMovieRendererEntry{ NewHandle, MoveTemp(InMovieRenderer) });
+		return NewHandle;
+	}
+
+	virtual void UnregisterMovieRenderer(FDelegateHandle InDelegateHandle) override
+	{
+		MovieRenderers.RemoveAll([InDelegateHandle](const FMovieRendererEntry& In){ return In.Handle == InDelegateHandle; });
+	}
+
+	virtual IMovieRendererInterface* GetMovieRenderer(const FString& InMovieRendererName) override
+	{
+		for (const FMovieRendererEntry& MovieRenderer : MovieRenderers)
+		{
+			if (MovieRenderer.Renderer->GetDisplayName() == InMovieRendererName)
+			{
+				return MovieRenderer.Renderer.Get();
+			}
+		}
+
+		return nullptr;
+	}
+
+	virtual TArray<FString> GetMovieRendererNames() override
+	{
+		TArray<FString> MovieRendererNames;
+		for (const FMovieRendererEntry& MovieRenderer : MovieRenderers)
+		{
+			MovieRendererNames.Add(MovieRenderer.Renderer->GetDisplayName());
+		}
+		return MovieRendererNames;
+	}
+
 private:
 
 	TSet<FAnimatedPropertyKey> PropertyAnimators;
@@ -339,6 +355,15 @@ private:
 	TSharedPtr<FExtensibilityManager> ToolBarExtensibilityManager;
 
 	TSharedPtr<FSequencerCustomizationManager> SequencerCustomizationManager;
+
+	struct FMovieRendererEntry
+	{
+		FDelegateHandle Handle;
+		TUniquePtr<IMovieRendererInterface> Renderer;
+	};
+
+	/** Array of movie renderers */
+	TArray<FMovieRendererEntry> MovieRenderers;
 };
 
 IMPLEMENT_MODULE(FSequencerModule, Sequencer);

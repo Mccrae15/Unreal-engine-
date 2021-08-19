@@ -22,7 +22,6 @@
 #include "Game/IPDisplayClusterGameManager.h"
 
 #include "Render/Device/DisplayClusterRenderDeviceFactoryInternal.h"
-#include "Render/Device/Monoscopic/DisplayClusterDeviceMonoscopicDX11.h"
 
 #include "Render/Device/IDisplayClusterRenderDeviceFactory.h"
 #include "Render/PostProcess/IDisplayClusterPostProcess.h"
@@ -34,7 +33,6 @@
 
 #include "Render/Synchronization/DisplayClusterRenderSyncPolicyFactoryInternal.h"
 #include "Render/Synchronization/DisplayClusterRenderSyncPolicyNone.h"
-#include "Render/Synchronization/DisplayClusterRenderSyncPolicySoftwareGeneric.h"
 
 #include "Framework/Application/SlateApplication.h"
 
@@ -43,6 +41,8 @@
 
 #include "CineCameraComponent.h"
 #include "Engine/Scene.h"
+
+#include "DisplayClusterRootActor.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -62,9 +62,10 @@ FDisplayClusterRenderManager::FDisplayClusterRenderManager()
 
 	// Instantiate and register internal sync policy factory
 	TSharedPtr<IDisplayClusterRenderSyncPolicyFactory> NewSyncPolicyFactory(new FDisplayClusterRenderSyncPolicyFactoryInternal);
-	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::None,     NewSyncPolicyFactory); // 0 - none
-	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::Ethernet, NewSyncPolicyFactory); // 1 - network sync (soft sync)
-	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::Nvidia,   NewSyncPolicyFactory); // 2 - hardware sync (NVIDIA frame lock and swap sync)
+	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::None,            NewSyncPolicyFactory); // None
+	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::Ethernet,        NewSyncPolicyFactory); // Ethernet
+	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::EthernetBarrier, NewSyncPolicyFactory); // Ethernet_Simple
+	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::Nvidia,          NewSyncPolicyFactory); // NVIDIA
 }
 
 FDisplayClusterRenderManager::~FDisplayClusterRenderManager()
@@ -87,7 +88,7 @@ void FDisplayClusterRenderManager::Release()
 	//@note: No need to release our RenderDevice. It will be released in a safe way by TSharedPtr.
 }
 
-bool FDisplayClusterRenderManager::StartSession(const UDisplayClusterConfigurationData* InConfigData, const FString& InNodeId)
+bool FDisplayClusterRenderManager::StartSession(UDisplayClusterConfigurationData* InConfigData, const FString& InNodeId)
 {
 	if (CurrentOperationMode == EDisplayClusterOperationMode::Disabled)
 	{
@@ -405,79 +406,81 @@ void FDisplayClusterRenderManager::GetRegisteredProjectionPolicies(TArray<FStrin
 }
 
 
-bool FDisplayClusterRenderManager::RegisterPostprocessOperation(const FString& InName, TSharedPtr<IDisplayClusterPostProcess>& InOperation, int InPriority /* = 0 */)
+bool FDisplayClusterRenderManager::RegisterPostProcessFactory(const FString& InPostProcessType, TSharedPtr<IDisplayClusterPostProcessFactory>& InFactory)
 {
-	IDisplayClusterRenderManager::FDisplayClusterPPInfo PPInfo(InOperation, InPriority);
-	return RegisterPostprocessOperation(InName, PPInfo);
-}
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registering factory for postprocess type: %s"), *InPostProcessType);
 
-bool FDisplayClusterRenderManager::RegisterPostprocessOperation(const FString& InName, IPDisplayClusterRenderManager::FDisplayClusterPPInfo& InPPInfo)
-{
-	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registering post-process operation: %s"), *InName);
-
-	if (!InPPInfo.Operation.IsValid())
+	if (!InFactory.IsValid())
 	{
-		UE_LOG(LogDisplayClusterRender, Warning, TEXT("Trying to set invalid post-process operation"));
-		return false;
-	}
-
-	if (InName.IsEmpty())
-	{
-		UE_LOG(LogDisplayClusterRender, Warning, TEXT("Invalid name of a post-process operation"));
+		UE_LOG(LogDisplayClusterRender, Warning, TEXT("Invalid factory object"));
 		return false;
 	}
 
 	{
 		FScopeLock Lock(&CritSecInternals);
 
-		if (PostProcessOperations.Contains(InName))
+		if (PostProcessFactories.Contains(InPostProcessType))
 		{
-			UE_LOG(LogDisplayClusterRender, Warning, TEXT("Post-process operation '%s' exists"), *InName);
-			return false;
+			UE_LOG(LogDisplayClusterRender, Warning, TEXT("A new factory for '%s' postprocess was set"), *InPostProcessType);
 		}
 
-		// Store new operation
-		PostProcessOperations.Emplace(InName, InPPInfo);
-
-		// Sort operations by priority
-		PostProcessOperations.ValueSort([](const FDisplayClusterPPInfo& Left, const FDisplayClusterPPInfo& Right)
-		{
-			return Left.Priority < Right.Priority;
-		});
+		PostProcessFactories.Emplace(InPostProcessType, InFactory);
 	}
 
-	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registered post-process operation: %s"), *InName);
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registered factory for postprocess type: %s"), *InPostProcessType);
 
 	return true;
 }
 
-bool FDisplayClusterRenderManager::UnregisterPostprocessOperation(const FString& InName)
+bool FDisplayClusterRenderManager::UnregisterPostProcessFactory(const FString& InPostProcessType)
 {
-	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistering post-process operation: %s"), *InName);
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistering factory for postprocess: %s"), *InPostProcessType);
 
 	{
 		FScopeLock Lock(&CritSecInternals);
 
-		if (!PostProcessOperations.Contains(InName))
+		if (!PostProcessFactories.Contains(InPostProcessType))
 		{
-			UE_LOG(LogDisplayClusterRender, Warning, TEXT("Post-process operation <%s> not found"), *InName);
+			UE_LOG(LogDisplayClusterRender, Warning, TEXT("A handler for '%s' postprocess type not found"), *InPostProcessType);
 			return false;
 		}
-		else
-		{
-			PostProcessOperations.Remove(InName);
-		}
+
+		PostProcessFactories.Remove(InPostProcessType);
 	}
 
-	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistered post-process operation: %s"), *InName);
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistered factory for postprocess: %s"), *InPostProcessType);
 
 	return true;
 }
 
-TMap<FString, IPDisplayClusterRenderManager::FDisplayClusterPPInfo> FDisplayClusterRenderManager::GetRegisteredPostprocessOperations() const
+TSharedPtr<IDisplayClusterPostProcessFactory> FDisplayClusterRenderManager::GetPostProcessFactory(const FString& InPostProcessType)
 {
 	FScopeLock Lock(&CritSecInternals);
-	return PostProcessOperations;
+
+	TSharedPtr<IDisplayClusterPostProcessFactory> Factory;
+	if (!DisplayClusterHelpers::map::template ExtractValue(PostProcessFactories, InPostProcessType, Factory))
+	{
+		UE_LOG(LogDisplayClusterRender, Warning, TEXT("No factory found for postprocess: %s"), *InPostProcessType);
+	}
+
+	return Factory;
+}
+
+void FDisplayClusterRenderManager::GetRegisteredPostProcess(TArray<FString>& OutPostProcessIDs) const
+{
+	FScopeLock Lock(&CritSecInternals);
+	PostProcessFactories.GetKeys(OutPostProcessIDs);
+}
+
+IDisplayClusterViewportManager* FDisplayClusterRenderManager::GetViewportManager() const
+{
+	ADisplayClusterRootActor* RootActor = GDisplayCluster->GetGameMgr()->GetRootActor();
+	if (RootActor)
+	{
+		return RootActor->GetViewportManager();
+	}
+
+	return nullptr;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -583,8 +586,9 @@ TSharedPtr<IDisplayClusterRenderSyncPolicy> FDisplayClusterRenderManager::Create
 	}
 	else
 	{
-		UE_LOG(LogDisplayClusterRender, Log, TEXT("No factory found for the requested synchronization policy <%s>. Using fallback 'generic' policy."), *SyncPolicyType);
-		NewSyncPolicy = MakeShared<FDisplayClusterRenderSyncPolicySoftwareGeneric>(FDisplayClusterRenderSyncPolicySoftwareGeneric::DefaultParameters);
+		const FString DefaultPolicy = DisplayClusterConfigurationStrings::config::cluster::render_sync::EthernetBarrier;
+		UE_LOG(LogDisplayClusterRender, Log, TEXT("No factory found for the requested synchronization policy <%s>. Default '%s' policy will be used."), *SyncPolicyType, *DefaultPolicy);
+		NewSyncPolicy = SyncPolicyFactories[DefaultPolicy]->Create(DefaultPolicy, RHIName, TMap<FString, FString>());
 	}
 
 	return NewSyncPolicy;

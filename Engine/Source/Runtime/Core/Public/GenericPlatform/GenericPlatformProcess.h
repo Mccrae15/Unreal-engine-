@@ -228,6 +228,12 @@ struct CORE_API FGenericPlatformProcess
 	 */
 	static void SetThreadName( const TCHAR* ThreadName ) { }
 
+	/** Get the active stack size for the currently running thread **/
+	static uint32 GetStackSize();
+
+	/** Output information about the currently active thread **/
+	static void DumpThreadInfo( const TCHAR* MarkerName ) { }
+
 	/** Allow the platform to do anything it needs for game thread */
 	static void SetupGameThread() { }
 
@@ -254,6 +260,9 @@ struct CORE_API FGenericPlatformProcess
 
 	/** Get the user temporary directory.  NOTE: Only one return value is valid at a time! **/
 	static const TCHAR *UserTempDir();
+
+	/** Get the user home directory.  NOTE: Only one return value is valid at a time! **/
+	static const TCHAR *UserHomeDir();
 
 	/** Get application settings directory.  NOTE: Only one return value is valid at a time! **/
 	static const TCHAR* ApplicationSettingsDir();
@@ -496,6 +505,8 @@ struct CORE_API FGenericPlatformProcess
 	static void SleepNoStats( float Seconds );
 	/** Sleep this thread infinitely. */
 	static void SleepInfinite();
+	/** Yield this thread so another may run for a while. */
+	static void YieldThread();
 
 #endif // PLATFORM_HAS_BSD_TIME
 

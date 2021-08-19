@@ -192,7 +192,7 @@ public:
 	) override
 	{
 		check(&InMesh != &OutReducedMesh);	// can't reduce in-place
-
+		TRACE_CPUPROFILER_EVENT_SCOPE(FQuadricSimplifierMeshReduction::ReduceMeshDescription);
 		const uint32 NumTexCoords = MAX_STATIC_TEXCOORDS;
 		int32 InMeshNumTexCoords = 1;
 		
@@ -575,7 +575,8 @@ public:
 
 	virtual bool ReduceSkeletalMesh(
 		USkeletalMesh* SkeletalMesh,
-		int32 LODIndex
+		int32 LODIndex,
+		const class ITargetPlatform* TargetPlatform
 		) override
 	{
 		return false;

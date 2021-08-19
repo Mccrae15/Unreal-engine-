@@ -903,7 +903,7 @@ void FIOSTargetSettingsCustomization::BuildRemoteBuildingSection(IDetailLayoutBu
 	TSharedRef<IPropertyHandle> RemoteServerNamePropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, RemoteServerName));
 	IDetailPropertyRow& RemoteServerNamePropertyRow = RemoteBuildingGroup.AddPropertyRow(RemoteServerNamePropertyHandle);
 	RemoteServerNamePropertyRow
-		.ToolTip(LOCTEXT("RemoteServerNameToolTip", "The name or ip address of the remote mac which will be used to build IOS"))
+		.ToolTip(RemoteServerNamePropertyHandle->GetToolTipText())
 		.CustomWidget()
 		.NameContent()
 		[
@@ -948,7 +948,7 @@ void FIOSTargetSettingsCustomization::BuildRemoteBuildingSection(IDetailLayoutBu
 	TSharedRef<IPropertyHandle> RSyncUsernamePropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, RSyncUsername));
 	IDetailPropertyRow& RSyncUsernamePropertyRow = RemoteBuildingGroup.AddPropertyRow(RSyncUsernamePropertyHandle);
 	RSyncUsernamePropertyRow
-		.ToolTip(LOCTEXT("RSyncUsernameToolTip", "The username of the mac user that matches the specified SSH Key."))
+		.ToolTip(RSyncUsernamePropertyHandle->GetToolTipText())
 		.CustomWidget()
 			.NameContent()
 			[
@@ -982,22 +982,21 @@ void FIOSTargetSettingsCustomization::BuildRemoteBuildingSection(IDetailLayoutBu
 			];
 
 
+	// Add Remote Server Override Build Path 
+	TSharedRef<IPropertyHandle> RemoteServerOverrideBuildPathPropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, RemoteServerOverrideBuildPath));
+	IDetailPropertyRow& RemoteServerOverrideBuildPathPropertyRow = RemoteBuildingGroup.AddPropertyRow(RemoteServerOverrideBuildPathPropertyHandle);
+	RemoteServerOverrideBuildPathPropertyRow
+		.ToolTip(RemoteServerOverrideBuildPathPropertyHandle->GetToolTipText());
+
 	// Add existing SSH path label.
 	TSharedRef<IPropertyHandle> SSHPrivateKeyLocationPropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, SSHPrivateKeyLocation));
 	IDetailPropertyRow& SSHPrivateKeyLocationPropertyRow = RemoteBuildingGroup.AddPropertyRow(SSHPrivateKeyLocationPropertyHandle);
 	SSHPrivateKeyLocationPropertyRow
-		.ToolTip(LOCTEXT("SSHPrivateKeyLocationToolTip", "The existing location of an SSH Key found by UE4."));
+		.ToolTip(SSHPrivateKeyLocationPropertyHandle->GetToolTipText());
 
-
-	// Add SSH override path
-	TSharedRef<IPropertyHandle> SSHPrivateKeyOverridePathPropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, SSHPrivateKeyOverridePath));
-	IDetailPropertyRow& SSHPrivateKeyOverridePathPropertyRow = RemoteBuildingGroup.AddPropertyRow(SSHPrivateKeyOverridePathPropertyHandle);
-	SSHPrivateKeyOverridePathPropertyRow
-		.ToolTip(LOCTEXT("SSHPrivateKeyOverridePathToolTip", "Override the existing SSH Private Key with one from a specified location."));
-
-	// delta copy path
-	TSharedRef<IPropertyHandle> DeltaCopyOverridePathPropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, DeltaCopyInstallPath));
-	IDetailPropertyRow& DeltaCopyOverridePathPropertyRow = RemoteBuildingGroup.AddPropertyRow(DeltaCopyOverridePathPropertyHandle);
+	// cwRsync path
+	TSharedRef<IPropertyHandle> CwRsyncOverridePathPropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, CwRsyncInstallPath));
+	IDetailPropertyRow& CwRsyncOverridePathPropertyRow = RemoteBuildingGroup.AddPropertyRow(CwRsyncOverridePathPropertyHandle);
 
 	const FText GenerateSSHText = LOCTEXT("GenerateSSHKey", "Generate SSH Key");
 
@@ -1341,31 +1340,24 @@ FReply FIOSTargetSettingsCustomization::OnGenerateSSHKey()
 	}
 
 	FString CmdExe = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Build/BatchFiles/MakeAndInstallSSHKey.bat"));
-	FString DeltaCopyPath = Settings.DeltaCopyInstallPath.Path;
-	if (DeltaCopyPath.IsEmpty() || !FPaths::DirectoryExists(DeltaCopyPath))
+	FString CwRsyncPath = Settings.CwRsyncInstallPath.Path;
+	if (CwRsyncPath.IsEmpty() || !FPaths::DirectoryExists(CwRsyncPath))
 	{
 		// If no user specified directory try the UE4 bundled directory
-		DeltaCopyPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Extras\\ThirdPartyNotUE\\DeltaCopy\\Binaries"));
+		CwRsyncPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Extras\\ThirdPartyNotUE\\cwrsync\\bin"));
 	}
 
-	if (!FPaths::DirectoryExists(DeltaCopyPath))
+	if (!FPaths::DirectoryExists(CwRsyncPath))
 	{
-		// if no UE4 bundled version of DeltaCopy, try and use the default install location
-		FString ProgramPath = FPlatformMisc::GetEnvironmentVariable(TEXT("PROGRAMFILES(X86)"));
-		DeltaCopyPath = FPaths::Combine(*ProgramPath, TEXT("DeltaCopy"));
-	}
-	
-	if (!FPaths::DirectoryExists(DeltaCopyPath))
-	{
-		UE_LOG(LogIOSTargetSettings, Error, TEXT("DeltaCopy is not installed correctly"));
+		UE_LOG(LogIOSTargetSettings, Error, TEXT("cwRsync is not installed correctly"));
 	}
 
 	FString CygwinPath = TEXT("/cygdrive/") + FString(Path).Replace(TEXT(":"), TEXT("")).Replace(TEXT("\\"), TEXT("/"));
 	FString EnginePath = FPaths::EngineDir();
 	FString CommandLine = FString::Printf(TEXT("\"%s/ssh.exe\" %s \"%s\\rsync.exe\" \"%s\" %s \"%s\" \"%s\" \"%s\""),
-		*DeltaCopyPath,
+		*CwRsyncPath,
 		*RemoteServerPort,
-		*DeltaCopyPath,
+		*CwRsyncPath,
 		*(Settings.RSyncUsername),
 		*RemoteServerAddress,
 		*Path,

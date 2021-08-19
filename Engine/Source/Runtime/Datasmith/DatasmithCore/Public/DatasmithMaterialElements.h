@@ -5,10 +5,11 @@
 
 class IDatasmithMaterialExpression;
 
-class IDatasmithExpressionInput
+class IDatasmithExpressionInput : public IDatasmithElement
 {
 public:
-	virtual const TCHAR* GetInputName() const = 0;
+	UE_DEPRECATED(4.27, "IDatasmithExpressionInput now derive from IDatasmithElement, please use GetName() instead")
+	const TCHAR* GetInputName() const { return GetName(); }
 
 	virtual IDatasmithMaterialExpression* GetExpression() = 0;
 	virtual const IDatasmithMaterialExpression* GetExpression() const = 0;
@@ -18,47 +19,36 @@ public:
 	virtual void SetOutputIndex( int32 InOutputIndex ) = 0;
 };
 
-class IDatasmithExpressionOutput
+class IDatasmithExpressionOutput : public IDatasmithElement
 {
 public:
 	virtual ~IDatasmithExpressionOutput() = default;
 
-	virtual const TCHAR* GetOutputName() const = 0;
-	virtual void SetOutputName( const TCHAR* InOutputName ) = 0;
+	UE_DEPRECATED(4.27, "IDatasmithExpressionOutput now derive from IDatasmithElement, please use GetName() instead")
+	const TCHAR* GetOutputName() const { return GetName(); }
+	UE_DEPRECATED(4.27, "IDatasmithExpressionOutput now derive from IDatasmithElement, please use SetName() instead")
+	void SetOutputName( const TCHAR* InOutputName ) { SetName( InOutputName ); }
 };
 
-class IDatasmithExpressionParameter
-{
-public:
-	virtual ~IDatasmithExpressionParameter() = default;
-
-	virtual const TCHAR* GetGroupName() const = 0;
-	virtual void SetGroupName( const TCHAR* InGroupName ) = 0;
-};
-
-enum class EDatasmithMaterialExpressionType
-{
-	ConstantBool,
-	ConstantColor,
-	ConstantScalar,
-	FlattenNormal,
-	FunctionCall,
-	Generic,
-	Texture,
-	TextureCoordinate
-};
-
-class IDatasmithMaterialExpression
+/**
+ * Base class for representing an expression in the material graph of a IDatasmithUEPbrMaterial.
+ * Setting a name to the expression is optional but allows to automatically create material instances during the import, which is faster and more optimal.
+ */
+class IDatasmithMaterialExpression : public IDatasmithElement
 {
 public:
 	virtual ~IDatasmithMaterialExpression() = default;
 
-	/** The name of the expression. Used as parameter name for material instances. */
-	virtual const TCHAR* GetName() const = 0;
-	virtual void SetName( const TCHAR* InName ) = 0;
+	//Needed while we have the deprecated IsA() implementation to avoid declaration conflict.
+	using IDatasmithElement::IsA;
 
-	virtual EDatasmithMaterialExpressionType GetType() const = 0;
-	bool IsA( const EDatasmithMaterialExpressionType ExpressionType ) const { return ExpressionType == GetType(); }
+	UE_DEPRECATED(4.27, "Deprecated, please use GetExpressionType() instead")
+	EDatasmithMaterialExpressionType GetType() const { return GetExpressionType(); }
+	virtual EDatasmithMaterialExpressionType GetExpressionType() const = 0;
+	UE_DEPRECATED(4.27, "IDatasmithMaterialExpression now derive from IDatasmithElement, please use IsSubType() or GetExpressionType() instead")
+	bool IsA( const EDatasmithMaterialExpressionType ExpressionType ) const { return IsSubType(ExpressionType); }
+
+	virtual bool IsSubType( const EDatasmithMaterialExpressionType ExpressionType ) const = 0;
 
 	/** Connects the default output to an expression input */
 	virtual void ConnectExpression( IDatasmithExpressionInput& ExpressionInput ) = 0;
@@ -73,33 +63,45 @@ public:
 	/** The output index to use by default for this expression when connecting it to other inputs. */
 	virtual int32 GetDefaultOutputIndex() const = 0;
 	virtual void SetDefaultOutputIndex( int32 OutputIndex ) = 0;
+
+	/** Reset the expression to its default values, and disconnect input expressions */
+	virtual void ResetExpression() = 0;
+};
+
+class IDatasmithExpressionParameter : public IDatasmithMaterialExpression
+{
+public:
+	virtual ~IDatasmithExpressionParameter() = default;
+
+	virtual const TCHAR* GetGroupName() const = 0;
+	virtual void SetGroupName( const TCHAR* InGroupName ) = 0;
 };
 
 /**
  * Represents a UMaterialExpressionStaticBoolParameter
  */
-class IDatasmithMaterialExpressionBool : public IDatasmithMaterialExpression, public IDatasmithExpressionParameter
+class IDatasmithMaterialExpressionBool : public IDatasmithExpressionParameter
 {
 public:
 	virtual bool& GetBool() = 0;
 	virtual const bool& GetBool() const = 0;
 };
 
-class IDatasmithMaterialExpressionColor : public IDatasmithMaterialExpression, public IDatasmithExpressionParameter
+class IDatasmithMaterialExpressionColor : public IDatasmithExpressionParameter
 {
 public:
 	virtual FLinearColor& GetColor() = 0;
 	virtual const FLinearColor& GetColor() const = 0;
 };
 
-class IDatasmithMaterialExpressionScalar : public IDatasmithMaterialExpression, public IDatasmithExpressionParameter
+class IDatasmithMaterialExpressionScalar : public IDatasmithExpressionParameter
 {
 public:
 	virtual float& GetScalar() = 0;
 	virtual const float& GetScalar() const = 0;
 };
 
-class IDatasmithMaterialExpressionTexture : public IDatasmithMaterialExpression, public IDatasmithExpressionParameter
+class IDatasmithMaterialExpressionTexture : public IDatasmithExpressionParameter
 {
 public:
 	virtual const TCHAR* GetTexturePathName() const = 0;
@@ -131,13 +133,13 @@ public:
 	virtual void SetUTiling( float InUTiling ) = 0;
 
 	virtual float GetVTiling() const = 0;
-	virtual void SetVTiling( float InCoordinateIndex ) = 0;
+	virtual void SetVTiling( float InVTiling ) = 0;
 };
 
 class IDatasmithMaterialExpressionFlattenNormal : public IDatasmithMaterialExpression
 {
 public:
-	/** 
+	/**
 	 * Inputs
 	 */
 	virtual IDatasmithExpressionInput& GetNormal() = 0;
@@ -150,6 +152,32 @@ public:
 	 * Outputs:
 	 * - RGB
 	 */
+};
+
+// see UMaterialExpressionCustom
+class IDatasmithMaterialExpressionCustom : public IDatasmithMaterialExpression
+{
+public:
+	virtual void SetCode(const TCHAR* InCode) = 0;
+	virtual const TCHAR* GetCode() const = 0;
+
+	virtual void SetOutputType(EDatasmithShaderDataType InOutputType) = 0;
+	virtual EDatasmithShaderDataType GetOutputType() const = 0;
+
+	virtual void SetDescription(const TCHAR* InDescription) = 0;
+	virtual const TCHAR* GetDescription() const = 0;
+
+	virtual int32 GetIncludeFilePathCount() const = 0;
+	virtual void AddIncludeFilePath(const TCHAR* Path) = 0;
+	virtual const TCHAR* GetIncludeFilePath(int32 Index) const = 0;
+
+	virtual int32 GetAdditionalDefineCount() const = 0;
+	virtual void AddAdditionalDefine(const TCHAR* Define) = 0;
+	virtual const TCHAR* GetAdditionalDefine(int32 Index) const = 0;
+
+	virtual int32 GetArgumentNameCount() const = 0;
+	virtual void SetArgumentName(int32 ArgIndex, const TCHAR* ArgName) = 0;
+	virtual const TCHAR* GetArgumentName(int32 ArgIndex) const = 0;
 };
 
 class IDatasmithMaterialExpressionGeneric : public IDatasmithMaterialExpression
@@ -223,6 +251,9 @@ public:
 	{
 	}
 
+	/** Reset all expression to their default values and remove all connections */
+	virtual void ResetExpressionGraph( bool bRemoveAllExpressions ) = 0;
+
 	/** If a parent material is generated from this material, this will be its label. If none, the instance and the parent will have the same label. */
 	virtual void SetParentLabel( const TCHAR* InParentLabel ) = 0;
 	virtual const TCHAR* GetParentLabel() const = 0;
@@ -277,4 +308,10 @@ template<>
 inline IDatasmithMaterialExpressionTextureCoordinate* IDatasmithUEPbrMaterialElement::AddMaterialExpression< IDatasmithMaterialExpressionTextureCoordinate >()
 {
 	return static_cast< IDatasmithMaterialExpressionTextureCoordinate* >( AddMaterialExpression( EDatasmithMaterialExpressionType::TextureCoordinate ) );
+}
+
+template<>
+inline IDatasmithMaterialExpressionCustom* IDatasmithUEPbrMaterialElement::AddMaterialExpression< IDatasmithMaterialExpressionCustom >()
+{
+	return static_cast< IDatasmithMaterialExpressionCustom* >( AddMaterialExpression( EDatasmithMaterialExpressionType::Custom ) );
 }

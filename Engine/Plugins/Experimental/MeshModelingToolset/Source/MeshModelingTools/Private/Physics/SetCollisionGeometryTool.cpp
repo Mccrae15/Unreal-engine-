@@ -155,7 +155,7 @@ void USetCollisionGeometryTool::Shutdown(EToolShutdownType ShutdownType)
 		TUniquePtr<FPrimitiveComponentTarget>& CollisionTarget = ComponentTargets[ComponentTargets.Num() - 1];
 		UStaticMeshComponent* StaticMeshComponent = CastChecked<UStaticMeshComponent>(CollisionTarget->GetOwnerComponent());
 		UStaticMesh* StaticMesh = StaticMeshComponent->GetStaticMesh();
-		UBodySetup* BodySetup = StaticMesh->BodySetup;
+		UBodySetup* BodySetup = StaticMesh->GetBodySetup();
 
 		// mark the BodySetup for modification. Do we need to modify the UStaticMesh??
 		BodySetup->Modify();
@@ -176,7 +176,7 @@ void USetCollisionGeometryTool::Shutdown(EToolShutdownType ShutdownType)
 		StaticMesh->CreateNavCollision(/*bIsUpdate=*/true);
 
 		// update physics state on all components using this StaticMesh
-		for (FObjectIterator Iter(UStaticMeshComponent::StaticClass()); Iter; ++Iter)
+		for (FThreadSafeObjectIterator Iter(UStaticMeshComponent::StaticClass()); Iter; ++Iter)
 		{
 			UStaticMeshComponent* SMComponent = Cast<UStaticMeshComponent>(*Iter);
 			if (SMComponent->GetStaticMesh() == StaticMesh)

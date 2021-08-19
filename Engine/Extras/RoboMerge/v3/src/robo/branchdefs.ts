@@ -1,5 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+import { StreamSpecs } from '../common/perforce'
+
 const jsonlint: any = require('jsonlint')
 
 const RESERVED_BRANCH_NAMES = ['NONE', 'DEFAULT', 'IGNORE', 'DEADEND', ''];
@@ -16,10 +18,13 @@ export interface BotConfig {
 	visibility: string[] | string
 	slackChannel: string
 	reportToBuildHealth: boolean
-	maxFilesPerIntegration: number // otherwise auto pause
 	mirrorPath: string[]
-	alias: string // alias if we need to make name of bot in commands
+	alias: string // alias if we need to mask name of bot in commands
 	emailDomainWhitelist: string[]
+	badgeUrlOverride: string
+	branchNamesToIgnore: string[]
+
+	macros: { [name: string]: string[] }
 }
 
 export interface BranchBase {
@@ -28,7 +33,6 @@ export interface BranchBase {
 	rootPath: string
 	isDefaultBot: boolean
 	emailOnBlockage: boolean // if present, completely overrides BotConfig
-	maxFilesPerIntegration: number // otherwise auto pause
 
 	notify: string[]
 	flowsTo: string[]
@@ -53,25 +57,19 @@ export class IntegrationMethod {
 	}
 }
 
-// probably not right to extend BranchBase, because so much is optional
+export const DAYS_OF_THE_WEEK = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+type DayOfTheWeek = 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat'
 
-interface NodeOptionFields extends BranchBase {
-	disabled: boolean
-	integrationMethod: string
-	forceAll: boolean
-	visibility: string[] | string
-	blockAssetFlow: string[]
+export type IntegrationWindowPane = {
+	// if days not specified, daily
+	daysOfTheWeek?: DayOfTheWeek[]
+	startHourUTC: number
+	durationHours: number
+}
 
-	streamDepot: string
-	streamName: string
-	streamSubpath: string
-	workspace: (string | null)
-
-	// if set, still generate workspace but use this name
-	workspaceNameOverride: string
-	additionalSlackChannelForBlockages: string
-	ignoreBranchspecs: boolean
+export type CommonOptionFields = {
 	lastGoodCLPath: string | number
+	pauseCISUnlessAtGate: boolean
 
 	initialCL: number
 	forcePause: boolean
@@ -81,23 +79,40 @@ interface NodeOptionFields extends BranchBase {
 
 	excludeAuthors: string[] // if present, completely overrides BotConfig
 
-	p4MaxRowsOverride: number // use with care and check with p4 admins
+	// by default, specify when gate catch ups are allowed; can be inverted to disallow
+	integrationWindow: IntegrationWindowPane[]
+	invertIntegrationWindow: boolean
+}
+
+type NodeOptionFields = BranchBase & CommonOptionFields & {
+	disabled: boolean
+	integrationMethod: string
+	forceAll: boolean
+	visibility: string[] | string
+	blockAssetFlow: string[]
+	disallowDeadend: boolean
+
+	streamDepot: string
+	streamName: string
+	streamSubpath: string
+	workspace: (string | null)
+
+	graphNodeColor: string
+
+	// if set, still generate workspace but use this name
+	workspaceNameOverride: string
+	additionalSlackChannelForBlockages: string
+	ignoreBranchspecs: boolean
+
+	badgeUrlOverride: string
 }
 
 // will eventually have all properties listed on wiki
-type EdgeOptionFields = {
-	lastGoodCLPath: string | number
+type EdgeOptionFields = CommonOptionFields & {
 	additionalSlackChannel: string
-	initialCL: number
-	forcePause: boolean
-	p4MaxRowsOverride: number // use with care and check with p4 admins
 
-	disallowSkip: boolean
-	incognitoMode: boolean
 	terminal: boolean // changes go along terminal edges but no further
 	doHackyOkForGithubThing: boolean
-
-	excludeAuthors: string[] // if present, completely overrides bot and node configs
 }
 
 export type NodeOptions = Partial<NodeOptionFields>
@@ -124,11 +139,54 @@ export interface BranchGraphDefinition {
 // eventually, switch branch map to using a separate class defined here for the branch definitions
 
 
-// return branchGraph and errors?
+function validateCommonOptions(options: Partial<CommonOptionFields>) {
+	if (options.integrationWindow) {
+		for (const pane of options.integrationWindow) {
+			if (pane.daysOfTheWeek) {
+				for (let index = 0; index < pane.daysOfTheWeek.length; ++index) { 
+					const dayStr = pane.daysOfTheWeek[index]
+					const day = dayStr.slice(0, 3).toLowerCase()
+					if (DAYS_OF_THE_WEEK.indexOf(day) < 0) {
+						throw new Error(`Unknown day of the week ${dayStr}`)
+					}
+					pane.daysOfTheWeek[index] = day as DayOfTheWeek
+				}
+			}
+		}
+	}
+}
+
 
 interface ParseResult {
 	branchGraphDef: BranchGraphDefinition | null
 	config: BotConfig
+}
+
+export type StreamResult = {
+	depot: string
+	rootPath?: string
+	stream?: string
+}
+
+/** expects either rootPath or all the other optional arguments */
+export function calculateStream(nodeOrStreamName: string, rootPath?: string | null, depot?: string | null, streamSubpath?: string | null) {
+	if (!rootPath) {
+		if (!depot) {
+			throw new Error(`Missing rootPath and no streamDepot defined for branch ${nodeOrStreamName}.`)
+		}
+		const stream = `//${depot}/${nodeOrStreamName}`
+		return {depot, stream, rootPath: stream + (streamSubpath || '/...')}
+	}
+
+	if (!rootPath.startsWith('//') || !rootPath.endsWith('/...')) {
+		throw new Error(`Branch rootPath not in '//<something>/...'' format: ${rootPath}`)
+	}
+
+	const depotMatch = rootPath.match(new RegExp('//([^/]+)/'))
+	if (!depotMatch || !depotMatch[1]) {
+		throw new Error(`Cannot find depotname in ${rootPath}`)
+	}
+	return {depot: depotMatch[1]}
 }
 
 export class BranchDefs {
@@ -150,7 +208,7 @@ export class BranchDefs {
 		}
 	}
 
-	static parseAndValidate(outErrors: string[], branchSpecsText: string): ParseResult {
+	static parseAndValidate(outErrors: string[], branchSpecsText: string, allStreamSpecs: StreamSpecs): ParseResult {
 		const defaultConfigForWholeBot: BotConfig = {
 			defaultStreamDepot: null,
 			defaultIntegrationMethod: null,
@@ -163,10 +221,12 @@ export class BranchDefs {
 			visibility: ['fte'],
 			slackChannel: '',
 			reportToBuildHealth: false,
-			maxFilesPerIntegration: -1,
 			mirrorPath: [],
 			alias: '',
-			emailDomainWhitelist: []
+			emailDomainWhitelist: [],
+			branchNamesToIgnore: [],
+			macros: {},
+			badgeUrlOverride: ''
 		}
 
 		let branchGraph
@@ -180,14 +240,40 @@ export class BranchDefs {
 
 		// copy config values
 		for (let key of Object.keys(defaultConfigForWholeBot)) {
-			let value = (<any>branchGraph)[key]
-			if (value !== undefined)
-				(<any>defaultConfigForWholeBot)[key] = value
+			let value = (branchGraph as any)[key]
+			if (value !== undefined) {
+				if (key === 'macros') {
+					let macrosLower: {[name:string]: string[]} | null = {}
+					if (value === null && typeof value !== 'object') {
+						macrosLower = null
+					}
+					else {
+						const macrosObj = value as any
+						for (const name of Object.keys(macrosObj)) {
+							const lines = macrosObj[name]
+							if (!Array.isArray(lines)) {
+								macrosLower = null
+								break
+							}
+							macrosLower[name.toLowerCase()] = lines
+						}
+					}
+					if (!macrosLower) {
+						outErrors.push(`Invalid macro property: '${value}'`)
+						return {branchGraphDef: null, config: defaultConfigForWholeBot}
+					}
+					value = macrosLower
+				}
+				(defaultConfigForWholeBot as any)[key] = value
+			}
 		}
 
 		if (defaultConfigForWholeBot.defaultIntegrationMethod) {
 			BranchDefs.checkValidIntegrationMethod(outErrors, defaultConfigForWholeBot.defaultIntegrationMethod, 'config')
 		}
+
+		const namesToIgnore = defaultConfigForWholeBot.branchNamesToIgnore.map(s => s.toUpperCase())
+		defaultConfigForWholeBot.branchNamesToIgnore = namesToIgnore
 
 		const names = new Map<string, string>()
 
@@ -216,10 +302,29 @@ export class BranchDefs {
 			else {
 				names.set(upperName, upperName)
 			}
+
+			const streamResult = calculateStream(
+				def.streamName || def.name,
+				def.rootPath,
+				def.streamDepot || defaultConfigForWholeBot.defaultStreamDepot,
+				def.streamSubpath
+			)
+
+			if (streamResult.stream && !allStreamSpecs.has(streamResult.stream)) {
+				outErrors.push(`Stream ${streamResult.stream} not found`)
+			}
 		}
 
-		// Check for duplicate aliases
+		// Check for duplicate aliases (and that branches/aliases are not in the ignore list)
 		const addAlias = (upperBranchName: string, upperAlias: string) => {
+			if (namesToIgnore.indexOf(upperBranchName) >= 0) {
+				outErrors.push(upperBranchName + ' branch is in branchNamesToIgnore')
+			}
+
+			if (namesToIgnore.indexOf(upperAlias) >= 0) {
+				outErrors.push(upperAlias + ' alias is in branchNamesToIgnore')
+			}
+
 			if (!upperAlias) {
 				outErrors.push(`Empty alias for '${upperBranchName}'`)
 				return
@@ -256,6 +361,8 @@ export class BranchDefs {
 			if (def.integrationMethod) {
 				BranchDefs.checkValidIntegrationMethod(outErrors, def.integrationMethod!, def.name!)
 			}
+
+			validateCommonOptions(def)
 		}
 
 		// Check edge properties
@@ -267,6 +374,8 @@ export class BranchDefs {
 				if (!names.get(edge.to.toUpperCase())) {
 					outErrors.push('Unrecognised target node in edge property ' + edge.to)
 				}
+
+				validateCommonOptions(edge)
 			}
 		}
 
@@ -318,12 +427,14 @@ export class BranchDefs {
 				if (!names.has(spec.to.toUpperCase())) {
 					outErrors.push(`To-Branch ${spec.to} not found in branchspec ${spec.name}`)
 				}
-			}		
+			}
 		}
 
+		if (outErrors.length > 0) {
+			console.log(outErrors)
+			return {branchGraphDef: null, config: defaultConfigForWholeBot}
+		}
 
-		return {branchGraphDef: outErrors.length === 0 ? branchGraph : null, config: defaultConfigForWholeBot}
-
-		// not currently checking force flow loops
+		return {branchGraphDef: branchGraph, config: defaultConfigForWholeBot}
 	}
 }

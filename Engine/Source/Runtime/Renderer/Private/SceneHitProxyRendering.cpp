@@ -530,7 +530,7 @@ void FMobileSceneRenderer::RenderHitProxies(FRHICommandListImmediate& RHICmdList
 {
 	Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
 	
-	PrepareViewRectsForRendering();
+	PrepareViewRectsForRendering(RHICmdList);
 
 #if WITH_EDITOR
 	TRefCountPtr<IPooledRenderTarget> HitProxyRT;
@@ -570,7 +570,7 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRHICommandListImmediate& R
 {
 	Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
 
-	PrepareViewRectsForRendering();
+	PrepareViewRectsForRendering(RHICmdList);
 
 #if WITH_EDITOR
 	// HitProxyRT==0 should never happen but better we don't crash
@@ -642,6 +642,53 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRHICommandListImmediate& R
 
 #if WITH_EDITOR
 
+bool FHitProxyMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial* Material)
+{
+	const EBlendMode BlendMode = Material->GetBlendMode();
+	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *Material, OverrideSettings);
+
+	if (Material->WritesEveryPixel() && !Material->IsTwoSided() && !Material->MaterialModifiesMeshPosition_RenderThread())
+	{
+		// Default material doesn't handle masked, and doesn't have the correct bIsTwoSided setting.
+		MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+		check(MaterialRenderProxy);
+		Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+	}
+
+	check(Material && MaterialRenderProxy);
+
+	bool bAddTranslucentPrimitive = bAllowTranslucentPrimitivesInHitProxy;
+
+	// Check whether the primitive overrides the pass to force translucent hit proxies.
+	if (!bAddTranslucentPrimitive)
+	{
+		FHitProxyId HitProxyId = MeshBatch.BatchHitProxyId;
+
+		// Fallback to the primitive default hit proxy id if the mesh batch doesn't have one.
+		if (MeshBatch.BatchHitProxyId == FHitProxyId() && PrimitiveSceneProxy)
+		{
+			if (const FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy->GetPrimitiveSceneInfo())
+			{
+				HitProxyId = PrimitiveSceneInfo->DefaultDynamicHitProxyId;
+			}
+		}
+
+		if (const HHitProxy* HitProxy = GetHitProxyById(HitProxyId))
+		{
+			bAddTranslucentPrimitive = HitProxy->AlwaysAllowsTranslucentPrimitives();
+		}
+	}
+
+	bool bResult = true;
+	if (bAddTranslucentPrimitive || !IsTranslucentBlendMode(BlendMode))
+	{
+		bResult = Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, *MaterialRenderProxy, *Material, MeshFillMode, MeshCullMode);
+	}
+	return bResult;
+}
+
 void FHitProxyMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId)
 {
 	if (MeshBatch.BatchHitProxyId == FHitProxyId::InvisibleHitProxyId)
@@ -651,59 +698,24 @@ void FHitProxyMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, 
 
 	if (MeshBatch.bUseForMaterial && MeshBatch.bSelectable && Scene->RequiresHitProxies() && (!PrimitiveSceneProxy || PrimitiveSceneProxy->IsSelectable()))
 	{
-		// Determine the mesh's material and blend mode.
-		const FMaterialRenderProxy* MaterialRenderProxy = nullptr;
-		const FMaterial* Material = &MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, MaterialRenderProxy);
-		const EBlendMode BlendMode = Material->GetBlendMode();
-		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
-		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *Material, OverrideSettings);
-
-		if (Material->WritesEveryPixel() && !Material->IsTwoSided() && !Material->MaterialModifiesMeshPosition_RenderThread())
+		const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
+		while (MaterialRenderProxy)
 		{
-			// Default material doesn't handle masked, and doesn't have the correct bIsTwoSided setting.
-			MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-			check(MaterialRenderProxy);
-			Material = MaterialRenderProxy->GetMaterial(FeatureLevel);
-		}
-
-		if (!MaterialRenderProxy)
-		{
-			MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
-		}
-
-		check(Material && MaterialRenderProxy);
-
-		bool bAddTranslucentPrimitive = bAllowTranslucentPrimitivesInHitProxy;
-
-		// Check whether the primitive overrides the pass to force translucent hit proxies.
-		if (!bAddTranslucentPrimitive)
-		{
-			FHitProxyId HitProxyId = MeshBatch.BatchHitProxyId;
-
-			// Fallback to the primitive default hit proxy id if the mesh batch doesn't have one.
-			if (MeshBatch.BatchHitProxyId == FHitProxyId() && PrimitiveSceneProxy)
+			const FMaterial* Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+			if (Material && Material->GetRenderingThreadShaderMap())
 			{
-				if (const FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy->GetPrimitiveSceneInfo())
+				if (TryAddMeshBatch(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, MaterialRenderProxy, Material))
 				{
-					HitProxyId = PrimitiveSceneInfo->DefaultDynamicHitProxyId;
+					break;
 				}
 			}
 
-			if (const HHitProxy* HitProxy = GetHitProxyById(HitProxyId))
-			{
-				bAddTranslucentPrimitive = HitProxy->AlwaysAllowsTranslucentPrimitives();
-			}
-		}
-
-		if (bAddTranslucentPrimitive || !IsTranslucentBlendMode(BlendMode))
-		{
-			Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, *MaterialRenderProxy, *Material, MeshFillMode, MeshCullMode);
+			MaterialRenderProxy = MaterialRenderProxy->GetFallback(FeatureLevel);
 		}
 	}
 }
 
-void GetHitProxyPassShaders(
+bool GetHitProxyPassShaders(
 	const FMaterial& Material,
 	FVertexFactoryType* VertexFactoryType,
 	ERHIFeatureLevel::Type FeatureLevel,
@@ -718,17 +730,30 @@ void GetHitProxyPassShaders(
 		&& VertexFactoryType->SupportsTessellationShaders()
 		&& MaterialTessellationMode != MTM_NoTessellation;
 
+	FMaterialShaderTypes ShaderTypes;
 	if (bNeedsHSDS)
 	{
-		DomainShader = Material.GetShader<FHitProxyDS>(VertexFactoryType);
-		HullShader = Material.GetShader<FHitProxyHS>(VertexFactoryType);
+		ShaderTypes.AddShaderType<FHitProxyDS>();
+		ShaderTypes.AddShaderType<FHitProxyHS>();
 	}
 
-	VertexShader = Material.GetShader<FHitProxyVS>(VertexFactoryType);
-	PixelShader = Material.GetShader<FHitProxyPS>(VertexFactoryType);
+	ShaderTypes.AddShaderType<FHitProxyVS>();
+	ShaderTypes.AddShaderType<FHitProxyPS>();
+
+	FMaterialShaders Shaders;
+	if (!Material.TryGetShaders(ShaderTypes, VertexFactoryType, Shaders))
+	{
+		return false;
+	}
+
+	Shaders.TryGetVertexShader(VertexShader);
+	Shaders.TryGetPixelShader(PixelShader);
+	Shaders.TryGetHullShader(HullShader);
+	Shaders.TryGetDomainShader(DomainShader);
+	return true;
 }
 
-void FHitProxyMeshProcessor::Process(
+bool FHitProxyMeshProcessor::Process(
 	const FMeshBatch& MeshBatch,
 	uint64 BatchElementMask,
 	int32 StaticMeshId,
@@ -746,15 +771,17 @@ void FHitProxyMeshProcessor::Process(
 		FHitProxyDS,
 		FHitProxyPS> HitProxyPassShaders;
 
-	GetHitProxyPassShaders(
+	if (!GetHitProxyPassShaders(
 		MaterialResource,
 		VertexFactory->GetType(),
 		FeatureLevel,
 		HitProxyPassShaders.HullShader,
 		HitProxyPassShaders.DomainShader,
 		HitProxyPassShaders.VertexShader,
-		HitProxyPassShaders.PixelShader
-	);
+		HitProxyPassShaders.PixelShader))
+	{
+		return false;
+	}
 
 	FHitProxyShaderElementData ShaderElementData(MeshBatch.BatchHitProxyId);
 	ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, false);
@@ -774,6 +801,8 @@ void FHitProxyMeshProcessor::Process(
 		SortKey,
 		EMeshPassFeatures::Default,
 		ShaderElementData);
+
+	return true;
 }
 
 FHitProxyMeshProcessor::FHitProxyMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, bool InbAllowTranslucentPrimitivesInHitProxy, const FMeshPassProcessorRenderState& InRenderState, FMeshPassDrawListContext* InDrawListContext)
@@ -806,6 +835,24 @@ FRegisterPassProcessorCreateFunction RegisterHitProxyOpaqueOnlyPass(&CreateHitPr
 FRegisterPassProcessorCreateFunction RegisterMobileHitProxyPass(&CreateHitProxyPassProcessor, EShadingPath::Mobile, EMeshPass::HitProxy, EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView);
 FRegisterPassProcessorCreateFunction RegisterMobileHitProxyOpaqueOnlyPass(&CreateHitProxyOpaqueOnlyPassProcessor, EShadingPath::Mobile, EMeshPass::HitProxyOpaqueOnly, EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView);
 
+bool FEditorSelectionMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial* Material)
+{
+	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = CM_None;
+
+	if (Material->WritesEveryPixel() && !Material->IsTwoSided() && !Material->MaterialModifiesMeshPosition_RenderThread())
+	{
+		// Default material doesn't handle masked, and doesn't have the correct bIsTwoSided setting.
+		MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+		check(MaterialRenderProxy);
+		Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+	}
+
+	check(Material && MaterialRenderProxy);
+
+	return Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, *MaterialRenderProxy, *Material, MeshFillMode, MeshCullMode);
+}
 
 void FEditorSelectionMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId)
 {
@@ -815,34 +862,24 @@ void FEditorSelectionMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT Mesh
 		&& PrimitiveSceneProxy->WantsSelectionOutline() 
 		&& (PrimitiveSceneProxy->IsSelected() || PrimitiveSceneProxy->IsHovered()))
 	{
-		// Determine the mesh's material and blend mode.
-		const FMaterialRenderProxy* MaterialRenderProxy = nullptr;
-		const FMaterial* Material = &MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, MaterialRenderProxy);
-
-		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
-		const ERasterizerCullMode MeshCullMode = CM_None;
-
-		if (Material->WritesEveryPixel() && !Material->IsTwoSided() && !Material->MaterialModifiesMeshPosition_RenderThread())
+		const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
+		while (MaterialRenderProxy)
 		{
-			// Default material doesn't handle masked, and doesn't have the correct bIsTwoSided setting.
-			MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-			check(MaterialRenderProxy);
-			Material = MaterialRenderProxy->GetMaterial(FeatureLevel);
+			const FMaterial* Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+			if (Material && Material->GetRenderingThreadShaderMap())
+			{
+				if (TryAddMeshBatch(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, MaterialRenderProxy, Material))
+				{
+					break;
+				}
+			}
+
+			MaterialRenderProxy = MaterialRenderProxy->GetFallback(FeatureLevel);
 		}
-
-		if (!MaterialRenderProxy)
-		{
-			MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
-		}
-
-		check(Material && MaterialRenderProxy);
-
-		Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, *MaterialRenderProxy, *Material, MeshFillMode, MeshCullMode);
 	}
 }
 
-void FEditorSelectionMeshProcessor::Process(
+bool FEditorSelectionMeshProcessor::Process(
 	const FMeshBatch& MeshBatch,
 	uint64 BatchElementMask,
 	int32 StaticMeshId,
@@ -860,15 +897,17 @@ void FEditorSelectionMeshProcessor::Process(
 		FHitProxyDS,
 		FHitProxyPS> HitProxyPassShaders;
 
-	GetHitProxyPassShaders(
+	if (!GetHitProxyPassShaders(
 		MaterialResource,
 		VertexFactory->GetType(),
 		FeatureLevel,
 		HitProxyPassShaders.HullShader,
 		HitProxyPassShaders.DomainShader,
 		HitProxyPassShaders.VertexShader,
-		HitProxyPassShaders.PixelShader
-	);
+		HitProxyPassShaders.PixelShader))
+	{
+		return false;
+	}
 
 	const int32 StencilRef = GetStencilValue(ViewIfDynamicMeshCommand, PrimitiveSceneProxy);
 	PassDrawRenderState.SetStencilRef(StencilRef);
@@ -892,6 +931,8 @@ void FEditorSelectionMeshProcessor::Process(
 		SortKey,
 		EMeshPassFeatures::Default,
 		ShaderElementData);
+
+	return true;
 }
 
 int32 FEditorSelectionMeshProcessor::GetStencilValue(const FSceneView* View, const FPrimitiveSceneProxy* PrimitiveSceneProxy)

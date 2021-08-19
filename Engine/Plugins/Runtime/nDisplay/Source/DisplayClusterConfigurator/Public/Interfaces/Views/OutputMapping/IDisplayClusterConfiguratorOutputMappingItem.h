@@ -13,7 +13,8 @@ class IDisplayClusterConfiguratorOutputMappingItem
 	: public IDisplayClusterConfiguratorItem
 {
 public:
-	virtual const FString& GetNodeName() const = 0;
+	virtual ~IDisplayClusterConfiguratorOutputMappingItem() = default;
 
-	virtual TSharedPtr<IDisplayClusterConfiguratorOutputMappingSlot> GetSlot() const = 0;
+public:
+	virtual const FString& GetNodeName() const = 0;
 };

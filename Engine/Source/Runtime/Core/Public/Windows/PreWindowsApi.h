@@ -1,5 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+// #TODO: redirect to platform-agnostic version for the time being. Eventually this will become an error
+#include "HAL/Platform.h"
+#if !PLATFORM_WINDOWS && !PLATFORM_HOLOLENS
+	#include "Microsoft/PreWindowsApi.h"
+#else
+
 // Disable the warning that the pack size is changed in this header.
 #ifdef __clang__
 	#pragma clang diagnostic push
@@ -27,3 +33,5 @@ PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
 
 // Disable all normal third party headers
 THIRD_PARTY_INCLUDES_START
+
+#endif //PLATFORM_*

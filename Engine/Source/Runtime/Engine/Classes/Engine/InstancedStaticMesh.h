@@ -353,6 +353,7 @@ struct FPerInstanceRenderData
 {
 	// Should be always constructed on main thread
 	FPerInstanceRenderData(FStaticMeshInstanceData& Other, ERHIFeatureLevel::Type InFeaureLevel, bool InRequireCPUAccess);
+	FPerInstanceRenderData(FStaticMeshInstanceData& Other, ERHIFeatureLevel::Type InFeaureLevel, bool InRequireCPUAccess, FBox InBounds, bool bTrack);
 	~FPerInstanceRenderData();
 
 	/**
@@ -375,6 +376,26 @@ struct FPerInstanceRenderData
 	/** Instance buffer */
 	FStaticMeshInstanceBuffer			InstanceBuffer;
 	TSharedPtr<FStaticMeshInstanceData, ESPMode::ThreadSafe> InstanceBuffer_GameThread;
+
+	/** Get data for culling ray tracing instances */
+	const TArray<FVector4>& GetPerInstanceBounds();
+	/** Get cached CPU-friendly instance transforms */
+	const TArray<FMatrix>& GetPerInstanceTransforms();
+
+private:
+	/**
+	 * Called to update the PerInstanceBounds/PerInstanceTransforms arrays whenever the instance array is modified
+	 */
+	void UpdateBoundsTransforms_Concurrent();
+	void UpdateBoundsTransforms();
+	void EnsureInstanceDataUpdated();
+
+	TArray<FVector4> PerInstanceBounds;
+	TArray<FMatrix> PerInstanceTransforms;
+	FGraphEventRef UpdateBoundsTask;
+	const FBox InstanceLocalBounds;
+	const bool bTrackBounds;
+	bool bBoundsTransformsDirty;
 };
 
 
@@ -389,7 +410,7 @@ public:
 	FInstancedStaticMeshRenderData(UInstancedStaticMeshComponent* InComponent, ERHIFeatureLevel::Type InFeatureLevel)
 	  : Component(InComponent)
 	  , PerInstanceRenderData(InComponent->PerInstanceRenderData)
-	  , LODModels(Component->GetStaticMesh()->RenderData->LODResources)
+	  , LODModels(Component->GetStaticMesh()->GetRenderData()->LODResources)
 	  , FeatureLevel(InFeatureLevel)
 	{
 		check(PerInstanceRenderData.IsValid());
@@ -466,13 +487,12 @@ public:
 #if WITH_EDITOR
 	,	bHasSelectedInstances(InComponent->SelectedInstances.Num() > 0)
 #endif
+#if RHI_RAYTRACING
+	,	CachedRayTracingLOD(-1)
+#endif
 	{
 		bVFRequiresPrimitiveUniformBuffer = true;
 		SetupProxy(InComponent);
-
-#if RHI_RAYTRACING
-		SetupRayTracingCullClusters();
-#endif
 	}
 
 	~FInstancedStaticMeshSceneProxy()
@@ -500,6 +520,8 @@ public:
 		return Result;
 	}
 
+	bool bAnySegmentUsesWorldPositionOffset = false;
+
 #if RHI_RAYTRACING
 	virtual bool IsRayTracingStaticRelevant() const override
 	{
@@ -507,7 +529,8 @@ public:
 	}
 
 	virtual void GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) final override;
-	void SetupRayTracingCullClusters();
+
+	void SetupRayTracingDynamicInstances(int32 NumDynamicInstances, int32 LOD);
 
 #endif
 
@@ -567,23 +590,15 @@ protected:
 	FInstancingUserData UserData_DeselectedInstances;
 
 #if RHI_RAYTRACING
-	
-	/* Precomputed bounding spheres for culling */
-	struct FCullNode
+	struct FRayTracingDynamicData
 	{
-		FVector Center;
-		float Radius;
-		uint32 Instance;
+		FRayTracingGeometry DynamicGeometry;
+		FRWBuffer DynamicGeometryVertexBuffer;
 	};
 
-	struct FRayTracingCullCluster
-	{
-		FVector BoundsMin;
-		FVector BoundsMax;
-		TArray<FCullNode> Nodes;
-	};
+	TArray<FRayTracingDynamicData> RayTracingDynamicData;
 
-	TArray<FRayTracingCullCluster> RayTracingCullClusters;
+	int32 CachedRayTracingLOD;
 #endif
 
 	/** Common path for the Get*MeshElement functions */

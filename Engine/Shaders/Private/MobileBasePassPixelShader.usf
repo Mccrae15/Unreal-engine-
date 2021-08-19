@@ -22,7 +22,22 @@
 #define PreIntegratedGFSampler	MobileBasePass.PreIntegratedGFSampler
 #endif
 
-#if (MATERIALBLENDING_MASKED || MATERIALBLENDING_SOLID) && ENABLE_AMBIENT_OCCLUSION
+#define APPLY_AO 0
+#define APPLY_DISTANCE_FIELD 0
+
+#if (MATERIALBLENDING_MASKED || MATERIALBLENDING_SOLID) 
+	#if ENABLE_AMBIENT_OCCLUSION && !MATERIAL_SHADINGMODEL_UNLIT
+		#undef APPLY_AO
+		#define APPLY_AO 1
+	#endif
+
+	#if ENABLE_DISTANCE_FIELD
+		#undef APPLY_DISTANCE_FIELD
+		#define APPLY_DISTANCE_FIELD 1
+	#endif
+#endif
+
+#if APPLY_AO
 #define AmbientOcclusionTexture			MobileBasePass.AmbientOcclusionTexture
 #define AmbientOcclusionSampler			MobileBasePass.AmbientOcclusionSampler
 #define AmbientOcclusionStaticFraction	MobileBasePass.AmbientOcclusionStaticFraction
@@ -73,10 +88,11 @@ int NumDynamicPointLights;
 
 #define FULLY_ROUGH (MATERIAL_FULLY_ROUGH || MOBILE_QL_FORCE_FULLY_ROUGH)
 #define NONMETAL (MATERIAL_NONMETAL || MOBILE_QL_FORCE_NONMETAL)
-#define HQ_REFLECTIONS (MATERIAL_HQ_FORWARD_REFLECTIONS && !MOBILE_QL_FORCE_LQ_REFLECTIONS)
+#define HQ_REFLECTIONS (MATERIAL_HQ_FORWARD_REFLECTION_CAPTURES && !MOBILE_QL_FORCE_LQ_REFLECTIONS)
 #define FORCE_VERTEX_NORMAL (MOBILE_QL_DISABLE_MATERIAL_NORMAL)
 #define SUPPORT_SPOTLIGHTS_SHADOW (MATERIALBLENDING_SOLID || MATERIALBLENDING_MASKED) && PROJECT_MOBILE_ENABLE_MOVABLE_SPOTLIGHTS_SHADOW
 #define DEFERRED_SHADING_PATH (MOBILE_DEFERRED_SHADING && ((MATERIALBLENDING_SOLID || MATERIALBLENDING_MASKED) && !MATERIAL_SHADINGMODEL_SINGLELAYERWATER))
+#define USE_SCENE_DEPTH_AUX (DEFERRED_SHADING_PATH && METAL_PROFILE)
 
 #define ALLOW_CUBE_REFLECTIONS HQ_REFLECTIONS
 
@@ -228,6 +244,12 @@ void GatherSpecularIBL(FMaterialPixelParameters MaterialParameters
 	half3 ProjectedCaptureVector = MaterialParameters.ReflectionVector;
 
 #if HQ_REFLECTIONS
+
+	if (ReflectionPositionsAndRadii[ReflectionIndex].w == 0.0f)
+	{
+		return;
+	}
+	
 	half DistanceAlpha = 0.0;
 
 	half3 CaptureVector = MaterialParameters.AbsoluteWorldPosition - ReflectionPositionsAndRadii[ReflectionIndex].xyz;
@@ -363,6 +385,19 @@ half3 FrameBufferBlendOp(half4 Source)
 #endif
 }
 
+#ifndef MOBILE_USE_CSM_BRANCH
+#define MOBILE_USE_CSM_BRANCH 0
+#endif
+
+bool UseCSM()
+{
+#if MOBILE_USE_CSM_BRANCH
+	return MobileBasePass.UseCSM != 0;
+#else
+	return true;
+#endif
+}
+
 void ApplyPixelDepthOffsetForMobileBasePass(inout FMaterialPixelParameters MaterialParameters, FPixelMaterialInputs PixelMaterialInputs, out float OutDepth)
 {
     float PixelDepthOffset = ApplyPixelDepthOffsetToMaterialParameters(MaterialParameters, PixelMaterialInputs, OutDepth);
@@ -461,7 +496,7 @@ inout half3 Color)
 	#define PIXELSHADER_EARLYDEPTHSTENCIL 	
 #endif
 
-half ComputeIndirect(FVertexFactoryInterpolantsVSToPS Interpolants, float3 DiffuseDir, FMobileShadingModelContext ShadingModelContext, out half IndirectIrradiance, out half3 Color)
+half ComputeIndirect(VTPageTableResult LightmapVTPageTableResult, FVertexFactoryInterpolantsVSToPS Interpolants, float3 DiffuseDir, FMobileShadingModelContext ShadingModelContext, out half IndirectIrradiance, out half3 Color)
 {
 	//To keep IndirectLightingCache conherence with PC, initialize the IndirectIrradiance to zero.
 	IndirectIrradiance = 0;
@@ -473,7 +508,7 @@ half ComputeIndirect(FVertexFactoryInterpolantsVSToPS Interpolants, float3 Diffu
 	uint LightmapDataIndex;
 	GetLightMapCoordinates(Interpolants, LightmapUV0, LightmapUV1, LightmapDataIndex);
 
-	half4 LightmapColor = GetLightMapColorLQ(LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir);
+	half4 LightmapColor = GetLightMapColorLQ(LightmapVTPageTableResult, LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir);
 	Color += LightmapColor.rgb * ShadingModelContext.DiffuseColor * View.IndirectLightingColorScale;
 	IndirectIrradiance = LightmapColor.a;
 #elif CACHED_POINT_INDIRECT_LIGHTING
@@ -525,10 +560,9 @@ void Main(
 	, out half4 OutGBufferA	: SV_Target1
 	, out half4 OutGBufferB	: SV_Target2
 	, out half4 OutGBufferC	: SV_Target3
+#endif
+#if USE_SCENE_DEPTH_AUX
 	, out float OutSceneDepthAux : SV_Target4
-	// MALI supports only up to 4 input attachements (GBufferA,GBufferB,GBufferC + SceneDepth)
-	// will have to change GBuffer format to fit GBufferD into this limit
-	//, out half4 OutGBufferD	: SV_Target5
 #endif
 #if OUTPUT_PIXEL_DEPTH_OFFSET
     , out float OutDepth : SV_Depth
@@ -592,12 +626,11 @@ void Main(
 	GBuffer.ShadingModelID = GetMaterialShadingModel(PixelMaterialInputs);
 	half MaterialAO = GetMaterialAmbientOcclusion(PixelMaterialInputs);
 
-#if (MATERIALBLENDING_MASKED || MATERIALBLENDING_SOLID) && ENABLE_AMBIENT_OCCLUSION && !MATERIAL_SHADINGMODEL_UNLIT
-
+#if APPLY_AO
+	
 	half4 GatheredAmbientOcclusion = Texture2DSample(AmbientOcclusionTexture, AmbientOcclusionSampler, SvPositionToBufferUV(SvPosition));
-	half DynamicAmbientOcclusion = lerp(1.0f, GatheredAmbientOcclusion.r, AmbientOcclusionStaticFraction);
 
-	MaterialAO *= DynamicAmbientOcclusion;
+	MaterialAO *= GatheredAmbientOcclusion.r;
 #endif
 
 	GBuffer.GBufferAO = MaterialAO;
@@ -654,10 +687,29 @@ void Main(
 	DiffuseDir = L;
 	ShadingModelContext.DiffuseColor = 2 * PI * HairShading(GBuffer, L, V, N, 1, TransmittanceData, 0, 0.2, uint2(0, 0));
 #endif
+
+	VTPageTableResult LightmapVTPageTableResult = (VTPageTableResult)0.0f;
+#if LIGHTMAP_VT_ENABLED
+	{
+		float2 LightmapUV0, LightmapUV1;
+		uint LightmapDataIndex;
+		GetLightMapCoordinates(Interpolants, LightmapUV0, LightmapUV1, LightmapDataIndex);
+		LightmapVTPageTableResult = LightmapGetVTSampleInfo(LightmapUV0, LightmapDataIndex, SvPosition.xy);
+	}
+#endif
+
+#if LIGHTMAP_VT_ENABLED
+	// This must occur after CalcMaterialParameters(), which is required to initialize the VT feedback mechanism
+	// Lightmap request is always the first VT sample in the shader
+	StoreVirtualTextureFeedback(MaterialParameters.VirtualTextureFeedback, 0, LightmapVTPageTableResult.PackedRequest);
+#endif
+
 	half IndirectIrradiance;
 	half3 IndirectColor;
-	ComputeIndirect(Interpolants, DiffuseDir, ShadingModelContext, IndirectIrradiance, IndirectColor);
+	ComputeIndirect(LightmapVTPageTableResult, Interpolants, DiffuseDir, ShadingModelContext, IndirectIrradiance, IndirectColor);
 	Color += IndirectColor;
+
+	half Shadow = GetPrimaryPrecomputedShadowMask(LightmapVTPageTableResult, Interpolants).r;
 
 #if DEFERRED_SHADING_PATH
 	float4 OutGBufferD;
@@ -666,37 +718,42 @@ void Main(
 	float4 OutGBufferVelocity = 0;
 
 	GBuffer.IndirectIrradiance = IndirectIrradiance;
-	GBuffer.PrecomputedShadowFactors.r = GetPrimaryPrecomputedShadowMask(Interpolants).r;
+	GBuffer.PrecomputedShadowFactors.r = Shadow;
 
 	EncodeGBuffer(GBuffer, OutGBufferA, OutGBufferB, OutGBufferC, OutGBufferD, OutGBufferE, OutGBufferF, OutGBufferVelocity);
-	OutSceneDepthAux = SvPosition.z;
 #else
 
 #if !MATERIAL_SHADINGMODEL_UNLIT
 
 #if ENABLE_SKY_LIGHT
-		half3 SkyDiffuseLighting = GetSkySHDiffuseSimple(MaterialParameters.WorldNormal);
-		half3 DiffuseLookup = SkyDiffuseLighting * ResolvedView.SkyLightColor.rgb;
-		IndirectIrradiance += Luminance(DiffuseLookup);
+	half3 SkyDiffuseLighting = GetSkySHDiffuseSimple(MaterialParameters.WorldNormal);
+	half3 DiffuseLookup = SkyDiffuseLighting * ResolvedView.SkyLightColor.rgb;
+	IndirectIrradiance += Luminance(DiffuseLookup);
 #endif
 			
 	Color *= MaterialAO;
 	IndirectIrradiance *= MaterialAO;
 
-	// Shadow
-	half Shadow = GetPrimaryPrecomputedShadowMask(Interpolants).r;
+	float  ShadowPositionZ = 0;
 #if DIRECTIONAL_LIGHT_CSM && !MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 	// Cascaded Shadow Map
-	if(MobileBasePass.UseCSM)
+	if (UseCSM())
 	{
-		half ShadowMap = MobileDirectionalLightCSM(MaterialParameters.ScreenPosition.xy, MaterialParameters.ScreenPosition.w);
-	#if MOVABLE_DIRECTIONAL_LIGHT
-		Shadow = ShadowMap;
-	#else
+		half ShadowMap = MobileDirectionalLightCSM(MaterialParameters.ScreenPosition.xy, MaterialParameters.ScreenPosition.w, ShadowPositionZ);
+	#if ALLOW_STATIC_LIGHTING
 		Shadow = min(ShadowMap, Shadow);
+	#else
+		Shadow = ShadowMap;
 	#endif
 	}
 #endif /* DIRECTIONAL_LIGHT_CSM */
+
+#if APPLY_DISTANCE_FIELD
+	if (ShadowPositionZ == 0)
+	{
+		Shadow = Texture2DSample(MobileBasePass.ScreenSpaceShadowMaskTexture, MobileBasePass.ScreenSpaceShadowMaskSampler, SvPositionToBufferUV(SvPosition)).x;
+	}
+#endif
 
 	half NoL = max(0, dot(MaterialParameters.WorldNormal, MobileDirectionalLight.DirectionalLightDirectionAndShadowTransition.xyz));
 	half3 H = normalize(MaterialParameters.CameraVector + MobileDirectionalLight.DirectionalLightDirectionAndShadowTransition.xyz);
@@ -731,8 +788,7 @@ void Main(
 		#if FORWARDSHADING_USE_HQ_ENV_BRDF
 			half2 AB = PreIntegratedGF.SampleLevel(PreIntegratedGFSampler, float2(ShadingModelContext.NoV, GBuffer.Roughness), 0).rg;
 		#else
-			half3 Fc = (ShadingModelContext.SpecularColor - ShadingModelContext.SpecPreEnvBrdf) * rcp(saturate(50 * ShadingModelContext.SpecPreEnvBrdf.g) - ShadingModelContext.SpecPreEnvBrdf);
-			half2 AB = half2(1 - Fc.x, Fc.x);
+			half2 AB = EnvBRDFApproxLazarov(GBuffer.Roughness, ShadingModelContext.NoV);
 		#endif
 		Color += SpecularIBL * LayerAttenuation * (ShadingModelContext.SpecPreEnvBrdf * AB.x + AB.y * saturate(50 * ShadingModelContext.SpecPreEnvBrdf.g) * (1 - ShadingModelContext.ClearCoat));
 
@@ -748,18 +804,21 @@ void Main(
 	// Local lights
 #if MAX_DYNAMIC_POINT_LIGHTS > 0 && !MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 
-	#if SUPPORT_SPOTLIGHTS_SHADOW
-		FPCFSamplerSettings Settings;
-		Settings.ShadowDepthTexture = DynamicSpotLightShadowTexture;
-		Settings.ShadowDepthTextureSampler = DynamicSpotLightShadowSampler;
-		Settings.ShadowBufferSize = DynamicSpotLightShadowBufferSize;
-		Settings.bSubsurface = false;
-		Settings.bTreatMaxDepthUnshadowed = false;
-		Settings.DensityMulConstant = 0;
-		Settings.ProjectionDepthBiasParameters = 0;
-	#endif
+		if(NumDynamicPointLights > 0)
+		{
 
-		AccumulateLightingOfDynamicPointLight(MaterialParameters, 
+			#if SUPPORT_SPOTLIGHTS_SHADOW
+				FPCFSamplerSettings Settings;
+				Settings.ShadowDepthTexture = DynamicSpotLightShadowTexture;
+				Settings.ShadowDepthTextureSampler = DynamicSpotLightShadowSampler;
+				Settings.ShadowBufferSize = DynamicSpotLightShadowBufferSize;
+				Settings.bSubsurface = false;
+				Settings.bTreatMaxDepthUnshadowed = false;
+				Settings.DensityMulConstant = 0;
+				Settings.ProjectionDepthBiasParameters = 0;
+			#endif
+
+			AccumulateLightingOfDynamicPointLight(MaterialParameters, 
 												ShadingModelContext,
 												GBuffer,
 												MobileMovablePointLight0.LightPositionAndInvRadius, 
@@ -773,57 +832,58 @@ void Main(
 												MobileMovablePointLight0.SpotLightShadowWorldToShadowMatrix,
 												#endif
 												Color);
-
-		if (NumDynamicPointLights > 1)
-		{
-			AccumulateLightingOfDynamicPointLight(MaterialParameters, 
-													ShadingModelContext,
-													GBuffer,
-													MobileMovablePointLight1.LightPositionAndInvRadius, 
-													MobileMovablePointLight1.LightColorAndFalloffExponent, 
-													MobileMovablePointLight1.SpotLightDirectionAndSpecularScale, 
-													MobileMovablePointLight1.SpotLightAnglesAndSoftTransitionScaleAndLightShadowType, 
-													#if SUPPORT_SPOTLIGHTS_SHADOW
-													Settings,
-													MobileMovablePointLight1.SpotLightShadowSharpenAndShadowFadeFraction,
-													MobileMovablePointLight1.SpotLightShadowmapMinMax,
-													MobileMovablePointLight1.SpotLightShadowWorldToShadowMatrix,
-													#endif
-													Color);
-
-			if (NumDynamicPointLights > 2)
+		
+			if (MAX_DYNAMIC_POINT_LIGHTS > 1 && NumDynamicPointLights > 1)
 			{
 				AccumulateLightingOfDynamicPointLight(MaterialParameters, 
 														ShadingModelContext,
 														GBuffer,
-														MobileMovablePointLight2.LightPositionAndInvRadius, 
-														MobileMovablePointLight2.LightColorAndFalloffExponent, 
-														MobileMovablePointLight2.SpotLightDirectionAndSpecularScale, 
-														MobileMovablePointLight2.SpotLightAnglesAndSoftTransitionScaleAndLightShadowType, 
+														MobileMovablePointLight1.LightPositionAndInvRadius, 
+														MobileMovablePointLight1.LightColorAndFalloffExponent, 
+														MobileMovablePointLight1.SpotLightDirectionAndSpecularScale, 
+														MobileMovablePointLight1.SpotLightAnglesAndSoftTransitionScaleAndLightShadowType, 
 														#if SUPPORT_SPOTLIGHTS_SHADOW
 														Settings,
-														MobileMovablePointLight2.SpotLightShadowSharpenAndShadowFadeFraction,
-														MobileMovablePointLight2.SpotLightShadowmapMinMax,
-														MobileMovablePointLight2.SpotLightShadowWorldToShadowMatrix,
+														MobileMovablePointLight1.SpotLightShadowSharpenAndShadowFadeFraction,
+														MobileMovablePointLight1.SpotLightShadowmapMinMax,
+														MobileMovablePointLight1.SpotLightShadowWorldToShadowMatrix,
 														#endif
 														Color);
 
-				if (NumDynamicPointLights > 3)
+				if (MAX_DYNAMIC_POINT_LIGHTS > 2 && NumDynamicPointLights > 2)
 				{
 					AccumulateLightingOfDynamicPointLight(MaterialParameters, 
 															ShadingModelContext,
 															GBuffer,
-															MobileMovablePointLight3.LightPositionAndInvRadius, 
-															MobileMovablePointLight3.LightColorAndFalloffExponent, 
-															MobileMovablePointLight3.SpotLightDirectionAndSpecularScale, 
-															MobileMovablePointLight3.SpotLightAnglesAndSoftTransitionScaleAndLightShadowType, 
+															MobileMovablePointLight2.LightPositionAndInvRadius, 
+															MobileMovablePointLight2.LightColorAndFalloffExponent, 
+															MobileMovablePointLight2.SpotLightDirectionAndSpecularScale, 
+															MobileMovablePointLight2.SpotLightAnglesAndSoftTransitionScaleAndLightShadowType, 
 															#if SUPPORT_SPOTLIGHTS_SHADOW
 															Settings,
-															MobileMovablePointLight3.SpotLightShadowSharpenAndShadowFadeFraction,
-															MobileMovablePointLight3.SpotLightShadowmapMinMax,
-															MobileMovablePointLight3.SpotLightShadowWorldToShadowMatrix,
+															MobileMovablePointLight2.SpotLightShadowSharpenAndShadowFadeFraction,
+															MobileMovablePointLight2.SpotLightShadowmapMinMax,
+															MobileMovablePointLight2.SpotLightShadowWorldToShadowMatrix,
 															#endif
 															Color);
+
+					if (MAX_DYNAMIC_POINT_LIGHTS > 3 && NumDynamicPointLights > 3)
+					{
+						AccumulateLightingOfDynamicPointLight(MaterialParameters, 
+																ShadingModelContext,
+																GBuffer,
+																MobileMovablePointLight3.LightPositionAndInvRadius, 
+																MobileMovablePointLight3.LightColorAndFalloffExponent, 
+																MobileMovablePointLight3.SpotLightDirectionAndSpecularScale, 
+																MobileMovablePointLight3.SpotLightAnglesAndSoftTransitionScaleAndLightShadowType, 
+																#if SUPPORT_SPOTLIGHTS_SHADOW
+																Settings,
+																MobileMovablePointLight3.SpotLightShadowSharpenAndShadowFadeFraction,
+																MobileMovablePointLight3.SpotLightShadowmapMinMax,
+																MobileMovablePointLight3.SpotLightShadowWorldToShadowMatrix,
+																#endif
+																Color);
+					}
 				}
 			}
 		}
@@ -934,6 +994,10 @@ void Main(
 		// We also half that range to also make sure we have room for other additive elements such as bloom, clouds or particle visual effects.
 		OutColor.rgb = min(OutColor.rgb, Max10BitsFloat.xxx * 0.5f);
 	#endif
+
+#if USE_SCENE_DEPTH_AUX
+	OutSceneDepthAux = SvPosition.z;
+#endif
 
 #if USE_EDITOR_COMPOSITING && (MOBILE_EMULATION)
 	// Editor primitive depth testing

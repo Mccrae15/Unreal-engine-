@@ -5,6 +5,7 @@
 #include "InGamePerformanceTracker.h"
 #include "RenderCommandFence.h"
 #include "NiagaraPlatformSet.h"
+#include "NiagaraPerfBaseline.h"
 #include "NiagaraEffectType.generated.h"
 
 #define DEBUG_SCALABILITY_STATE (!UE_BUILD_SHIPPING)
@@ -65,6 +66,9 @@ struct FNiagaraSystemScalabilitySettings
 	/** Controls whether visibility culling is enabled. */
 	UPROPERTY(EditAnywhere, Category = "Scalability", meta = (InlineEditConditionToggle))
 	uint32 bCullByMaxTimeWithoutRender : 1;
+	/** Controls whether global budget based culling is enabled. */
+	UPROPERTY(EditAnywhere, Category = "Scalability", meta = (InlineEditConditionToggle))
+	uint32 bCullByGlobalBudget : 1;
 
 	/** Effects of this type are culled beyond this distance. */
 	UPROPERTY(EditAnywhere, Category = "Scalability", meta = (EditCondition = "bCullByDistance"))
@@ -93,6 +97,10 @@ struct FNiagaraSystemScalabilitySettings
 	/** Effects will be culled if they go more than this length of time without being rendered. */
 	UPROPERTY(EditAnywhere, Category = "Scalability", meta = (EditCondition = "bCullByMaxTimeWithoutRender"))
 	float MaxTimeWithoutRender;
+
+	/** Effects will be culled if the global budget usage exceeds this fraction. A global budget usage of 1.0 means current global FX workload has reached it's max budget. Budgets are set by CVars under FX.Budget... */
+	UPROPERTY(EditAnywhere, Category = "Scalability", meta = (EditCondition = "bCullByGlobalBudget"))
+	float MaxGlobalBudgetUsage;
 	
 	FNiagaraSystemScalabilitySettings();
 
@@ -128,6 +136,9 @@ struct FNiagaraSystemScalabilityOverride : public FNiagaraSystemScalabilitySetti
 	/** Controls whether we override the visibility culling settings. */
 	UPROPERTY(EditAnywhere, Category = "Override")
 	uint32 bOverrideTimeSinceRendererSettings : 1;
+	/** Controls whether we override the global budget culling settings. */
+	UPROPERTY(EditAnywhere, Category = "Override")
+	uint32 bOverrideGlobalBudgetCullingSettings : 1;
 };
 
 /** Container struct for an array of system scalability overrides. Enables details customization and data validation. */
@@ -211,7 +222,7 @@ class NIAGARA_API UNiagaraSignificanceHandler : public UObject
 	GENERATED_BODY()
 
 public:
-	virtual void CalculateSignificance(TArray<UNiagaraComponent*>& Components, TArray<FNiagaraScalabilityState>& OutState)PURE_VIRTUAL(CalculateSignificance, );
+	virtual void CalculateSignificance(TArray<UNiagaraComponent*>& Components, TArray<FNiagaraScalabilityState>& OutState, TArray<int32>& OutIndices)PURE_VIRTUAL(CalculateSignificance, );
 };
 
 /** Significance is determined by the system's distance to the nearest camera. Closer systems are more significant. */
@@ -221,7 +232,7 @@ class NIAGARA_API UNiagaraSignificanceHandlerDistance : public UNiagaraSignifica
 	GENERATED_BODY()
 
 public:
-	virtual void CalculateSignificance(TArray<UNiagaraComponent*>& Components, TArray<FNiagaraScalabilityState>& OutState) override;
+	virtual void CalculateSignificance(TArray<UNiagaraComponent*>& Components, TArray<FNiagaraScalabilityState>& OutState, TArray<int32>& OutIndices) override;
 };
 
 /** Significance is determined by the system's age. Newer systems are more significant. */
@@ -231,13 +242,13 @@ class NIAGARA_API UNiagaraSignificanceHandlerAge : public UNiagaraSignificanceHa
 	GENERATED_BODY()
 
 public:
-	virtual void CalculateSignificance(TArray<UNiagaraComponent*>& Components, TArray<FNiagaraScalabilityState>& OutState) override;
+	virtual void CalculateSignificance(TArray<UNiagaraComponent*>& Components, TArray<FNiagaraScalabilityState>& OutState, TArray<int32>& OutIndices) override;
 };
 
 //////////////////////////////////////////////////////////////////////////
 
 /** Contains settings and working data shared among many NiagaraSystems that share some commonality of type. For example ImpactFX vs EnvironmentalFX. */
-UCLASS()
+UCLASS(config = Niagara, perObjectConfig)
 class NIAGARA_API UNiagaraEffectType : public UObject
 {
 	GENERATED_UCLASS_BODY()
@@ -274,9 +285,6 @@ class NIAGARA_API UNiagaraEffectType : public UObject
 	UPROPERTY(EditAnywhere, Category = "Scalability")
 	FNiagaraEmitterScalabilitySettingsArray EmitterScalabilitySettings;
 
-	FORCEINLINE int32* GetCycleCounter(bool bGameThread, bool bConcurrent);
-	void ProcessLastFrameCycleCounts();
-
 	//TODO: Dynamic budgetting from perf data.
 	//void ApplyDynamicBudget(float InDynamicBudget_GT, float InDynamicBudget_GT_CNC, float InDynamicBudget_RT);
 
@@ -288,51 +296,51 @@ class NIAGARA_API UNiagaraEffectType : public UObject
 
 	UNiagaraSignificanceHandler* GetSignificanceHandler()const { return SignificanceHandler; }
 
-	float GetAverageFrameTime_GT() { return AvgTimeMS_GT; }
-	float GetAverageFrameTime_GT_CNC() { return AvgTimeMS_GT_CNC; }
-	float GetAverageFrameTime_RT() { return AvgTimeMS_RT; }
-
 	/** Total number of instances across all systems for this effect type. */
 	int32 NumInstances;
 
 	/** Marks that there have been new systems added for this effect type since it's last scalability manager update. Will force a manager update. */
 	uint32 bNewSystemsSinceLastScalabilityUpdate : 1;
 
+#if NIAGARA_PERF_BASELINES
+	UNiagaraBaselineController* GetPerfBaselineController() { return PerformanceBaselineController; }
+	FNiagaraPerfBaselineStats& GetPerfBaselineStats(){return PerfBaselineStats;}
+	FORCEINLINE bool IsPerfBaselineValid(){ return PerfBaselineVersion == CurrentPerfBaselineVersion; }
+	void UpdatePerfBaselineStats(FNiagaraPerfBaselineStats& NewBaselineStats);
+
+	void InvalidatePerfBaseline();
+
+	void SpawnBaselineActor(UWorld* World);
+#endif
+
 private:
 
-	float AvgTimeMS_GT;
-	float AvgTimeMS_GT_CNC;
-	float AvgTimeMS_RT;
+	/** Controls generation of performance baseline data for this effect type. */
+	UPROPERTY(EditAnywhere, Category="Performance", Instanced)
+	UNiagaraBaselineController* PerformanceBaselineController;
 
-	//TODO: Budgets from runtime perf.
-	//The result of runtime perf calcs and dynamic budget is a bias to the minimum significance required for FX of ths type.
-	//float MinSignificanceFromPerf;
+	/**
+	Performance data gathered from the Baseline System. 
+	These give artists a good idea of the perf to aim for in their own FX.
+	*/
+	UPROPERTY(config)
+	FNiagaraPerfBaselineStats PerfBaselineStats;
 
-	FInGameCycleHistory CycleHistory_GT;
-	FInGameCycleHistory CycleHistory_GT_CNC;
-	FInGameCycleHistory CycleHistory_RT;
+	//Version guid at the time these baseline stats were generated.
+	//Allows us to invalidate perf baseline results if there are significant performance optimizations
+	UPROPERTY(config)
+	FGuid PerfBaselineVersion;
 
-	//Number of frames since we last sampled perf. We need not sample runtime perf every frame to get usable data.
-	int32 FramesSincePerfSampled;
-	bool bSampleRunTimePerfThisFrame;
+#if NIAGARA_PERF_BASELINES
+	/** The current version for perf baselines. Regenerate this if there are significant performance improvements that would invalidate existing baseline data. */
+	static const FGuid CurrentPerfBaselineVersion;
 
-	/** Fence used to guarantee that the RT is finished using our cycle counters in the case we're gathering RT cycle counts. */
-	FRenderCommandFence ReleaseFence;
+	DECLARE_DELEGATE_OneParam(FGeneratePerfBaselines, TArray<UNiagaraEffectType*>&/**BaselinesToGenerate*/);
+
+	/** Delegate allowing us to call into editor code to generate performance baselines. */
+	static FGeneratePerfBaselines GeneratePerfBaselinesDelegate;
+public:
+	static FGeneratePerfBaselines& OnGeneratePerfBaselines(){ return GeneratePerfBaselinesDelegate; }
+	static void GeneratePerfBaselines();
+#endif
 };
-
-FORCEINLINE int32* UNiagaraEffectType::GetCycleCounter(bool bGameThread, bool bConcurrent)
-{
-	if (bSampleRunTimePerfThisFrame)
-	{
-		if (bGameThread)
-		{
-			return bConcurrent ? &CycleHistory_GT_CNC.CurrFrameCycles : &CycleHistory_GT.CurrFrameCycles;
-		}
-		else
-		{
-			//Just use the one for RT. Can split later if we'd like. We currently don't have any RT task work anyway.s
-			return &CycleHistory_RT.CurrFrameCycles;
-		}
-	}
-	return nullptr;
-}

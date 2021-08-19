@@ -118,13 +118,13 @@ namespace RuntimeVirtualTexture
 		}
 
 		template <typename TRHICmdList>
-		void SetParameters(TRHICmdList& RHICmdList, FSceneView const& View, FMaterialRenderProxy const& MaterialProxy)
+		void SetParameters(TRHICmdList& RHICmdList, FSceneView const& View, FMaterialRenderProxy const& MaterialProxy, FMaterial const& Material)
 		{
 			FMeshMaterialShader::SetParameters(
 				RHICmdList,
 				RHICmdList.GetBoundPixelShader(),
 				&MaterialProxy,
-				*MaterialProxy.GetMaterial(View.FeatureLevel),
+				Material,
 				View,
 				View.ViewUniformBuffer,
 				ESceneTextureSetupMode::All);
@@ -378,7 +378,7 @@ namespace RuntimeVirtualTexture
 				const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
 				const FMaterial& Material = MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, FallbackMaterialRenderProxyPtr);
 				const FMaterialRenderProxy& MaterialRenderProxy = FallbackMaterialRenderProxyPtr ? *FallbackMaterialRenderProxyPtr : *MeshBatch.MaterialRenderProxy;
-				const uint8 OutputAttributeMask = Material.GetRuntimeVirtualTextureOutputAttibuteMask_RenderThread();
+				const uint8 OutputAttributeMask = FallbackMaterialRenderProxyPtr ? 0xff : Material.GetRuntimeVirtualTextureOutputAttibuteMask_RenderThread();
 
 				if (OutputAttributeMask != 0)
 				{
@@ -493,7 +493,7 @@ namespace RuntimeVirtualTexture
 				if (StaticMeshRelevance.bRenderToVirtualTexture && StaticMeshRelevance.LODIndex == LodIndex && StaticMeshRelevance.RuntimeVirtualTextureMaterialType == (uint32)MaterialType)
 				{
 					bool bCachedDraw = false;
-					if (StaticMeshRelevance.bSupportsCachingMeshDrawCommands)
+					if (StaticMeshRelevance.bSupportsCachingMeshDrawCommands && !PrimitiveSceneInfo->NeedsUpdateStaticMeshes())
 					{
 						// Use cached draw command
 						const int32 StaticMeshCommandInfoIndex = StaticMeshRelevance.GetStaticMeshCommandInfoIndex(EMeshPass::VirtualTexture);

@@ -19,7 +19,7 @@ struct ENGINE_API FTextureLODGroup
 	FTextureLODGroup()
 		: Group(TEXTUREGROUP_World)
 		, MinLODMipCount(0)
-		, MaxLODMipCount(12)
+		, MaxLODMipCount(32)
 		, LODBias(0)
 		, LODBias_Smaller(-1)
 		, LODBias_Smallest(-1)
@@ -31,15 +31,17 @@ struct ENGINE_API FTextureLODGroup
 		, MaxLODSize_Smallest(-1)
 		, OptionalLODBias(0)
 		, OptionalMaxLODSize(4096)
-		, OptionalMaxLODMipCount(12)
+		, OptionalMaxLODMipCount(32)
 		, MinMagFilter(NAME_Aniso)
 		, MipFilter(NAME_Point)
 		, MipLoadOptions(ETextureMipLoadOptions::AllMips)
+		, HighPriorityLoad(false)
 		, DuplicateNonOptionalMips(false)
 		, Downscale(1.0)
 		, DownscaleOptions(ETextureDownscaleOptions::SimpleAverage)
 		, VirtualTextureTileCountBias(0)
 		, VirtualTextureTileSizeBias(0)
+		, LossyCompressionAmount(TLCA_Default)
 	{
 		SetupGroup();
 	}
@@ -106,6 +108,10 @@ struct ENGINE_API FTextureLODGroup
 	UPROPERTY()
 	ETextureMipLoadOptions MipLoadOptions;
 
+	/** Wether those assets should be loaded with higher load order and higher IO priority. Allows ProjectXX texture groups to behave as character textures. */
+	UPROPERTY()
+	bool HighPriorityLoad;
+
 	UPROPERTY()
 	bool DuplicateNonOptionalMips;
 
@@ -120,6 +126,9 @@ struct ENGINE_API FTextureLODGroup
 
 	UPROPERTY()
 	int32 VirtualTextureTileSizeBias;
+	
+	UPROPERTY()
+	TEnumAsByte<enum ETextureLossyCompressionAmount> LossyCompressionAmount;
 
 	void SetupGroup();
 };

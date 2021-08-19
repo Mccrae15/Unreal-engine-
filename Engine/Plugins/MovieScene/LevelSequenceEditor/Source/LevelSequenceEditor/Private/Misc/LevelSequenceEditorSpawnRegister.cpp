@@ -72,6 +72,9 @@ UObject* FLevelSequenceEditorSpawnRegister::SpawnObject(FMovieSceneSpawnable& Sp
 	
 	if (AActor* NewActor = Cast<AActor>(NewObject))
 	{
+		// Mark as replay rewindable so it persists while a replay is going on in PIE.
+		NewActor->bReplayRewindable = true;
+
 		// Add an entry to the tracked objects map to keep track of this object (so that it can be saved when modified)
 		TrackedObjects.Add(NewActor, FTrackedObjectState(TemplateID, Spawnable.GetGuid()));
 
@@ -179,13 +182,13 @@ void FLevelSequenceEditorSpawnRegister::SaveDefaultSpawnableStateImpl(FMovieScen
 		{
 			if (Component)
 			{
-				Player.RestorePreAnimatedState(*Component, RestorePredicate);
+				Player.PreAnimatedState.RestorePreAnimatedState(*Component, RestorePredicate);
 			}
 		}
 	}
 
 	// Restore state on the object itself
-	Player.RestorePreAnimatedState(*SpawnedObject, RestorePredicate);
+	Player.PreAnimatedState.RestorePreAnimatedState(*SpawnedObject, RestorePredicate);
 
 	// Copy the template
 	Spawnable.CopyObjectTemplate(*SpawnedObject, *Sequence);
@@ -356,7 +359,9 @@ bool FLevelSequenceEditorSpawnRegister::CanConvertSpawnableToPossessable(FMovieS
 {
 	for (TSharedPtr<IMovieSceneObjectSpawner> MovieSceneObjectSpawner : MovieSceneObjectSpawners)
 	{
-		if (Spawnable.GetObjectTemplate()->IsA(MovieSceneObjectSpawner->GetSupportedTemplateType()))
+		UObject* ObjectTemplate = Spawnable.GetObjectTemplate();
+
+		if (ObjectTemplate && ObjectTemplate->IsA(MovieSceneObjectSpawner->GetSupportedTemplateType()))
 		{
 			return MovieSceneObjectSpawner->CanConvertSpawnableToPossessable(Spawnable);
 		}

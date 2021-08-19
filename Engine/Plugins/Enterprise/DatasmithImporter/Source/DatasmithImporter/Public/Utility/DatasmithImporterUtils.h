@@ -8,10 +8,11 @@
 
 class ADatasmithSceneActor;
 class IDatasmithScene;
+class IDatasmithUEPbrMaterialElement;
 class UDatasmithScene;
-class UWorld;
-class UPackage;
 class UFunction;
+class UPackage;
+class UWorld;
 
 DECLARE_LOG_CATEGORY_EXTERN( LogDatasmithImport, Log, All );
 
@@ -23,6 +24,8 @@ public:
 		CS_CanCreate,
 		CS_HasRedirector,
 		CS_ClassMismatch,
+		CS_NameTooLong, // asset paths are store in FName, which have an internal limitation.
+		CS_NameTooShort,
 	};
 
 		/** Loads an IDatasmithScene from a UDatasmithScene */
@@ -83,6 +86,15 @@ public:
 	 * @param LayerNames	The name of the layers to be added
 	 */
 	static void AddUniqueLayersToWorld( UWorld* World, const TSet< FName >& LayerNames );
+
+	/**
+	 * Try to compute a char budget for asset names, including FNames constraints, OS constraints,
+	 * parent package, and user defined limitation.
+	 *
+	 * @param ParentPackage destination of the asset (Package path consume a part of the budget)
+	 * @return An estimation of the budget for asset names
+	 */
+	static int32 GetAssetNameMaxCharCount(const UPackage* ParentPackage);
 
 	/**
 	 * @param Package			Package to create the asset in
@@ -151,13 +163,17 @@ public:
 	 */
 	static void FillSceneElement( TSharedPtr< IDatasmithScene >& SceneElement, const TArray<AActor*>& RootActors );
 
+
+	using FFunctionAndMaterialsThatUseIt = TPair< TSharedPtr< IDatasmithUEPbrMaterialElement >, TArray< TSharedPtr< IDatasmithUEPbrMaterialElement > > >;
+
 	/**
 	 * Finds all materials that are referenced by other materials in the scene and returns a list ordered
 	 * by dependencies, making sure that materials referencing other materials in the list will come after.
+	 * The list also include the direct parents (materials or functions) that are using the functions.
 	 *
 	 * @param SceneElement		DatasmithScene holding the materials.
 	 */
-	static TArray< TSharedPtr< IDatasmithBaseMaterialElement > > GetOrderedListOfMaterialsReferencedByMaterials( TSharedPtr< IDatasmithScene >& SceneElement );
+	static TArray< FFunctionAndMaterialsThatUseIt > GetOrderedListOfMaterialsReferencedByMaterials(TSharedPtr< IDatasmithScene >& SceneElement);
 
 	class FDatasmithMaterialImportIterator
 	{
@@ -288,7 +304,7 @@ struct FDatasmithFindAssetTypeHelper< UMaterialFunction >
 	{
 		return SceneAsset ? &SceneAsset->MaterialFunctions : nullptr;
 	}
-	
+
 	static const TSharedRef<IDatasmithBaseMaterialElement>* GetImportedElementByName( const FDatasmithAssetsImportContext& AssetsContext, const TCHAR* ObjectPathName )
 	{
 		return AssetsContext.GetParentContext().ImportedMaterialFunctionsByName.Find(ObjectPathName);

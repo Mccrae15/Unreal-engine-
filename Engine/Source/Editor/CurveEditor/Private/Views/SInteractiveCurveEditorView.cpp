@@ -25,6 +25,7 @@
 #include "CurveEditorHelpers.h"
 #include "CurveEditor.h"
 #include "ITimeSlider.h"
+#include "Math/Box.h"
 
 namespace CurveViewConstants
 {
@@ -492,16 +493,17 @@ void SInteractiveCurveEditorView::Tick(const FGeometry& AllottedGeometry, const 
 	GetCurveDrawParams(CachedDrawParams);
 }
 
-void SInteractiveCurveEditorView::GetPointsWithinWidgetRange(const FSlateRect& WidgetRectangle, TArray<FCurvePointHandle>* OutPoints) const
+bool SInteractiveCurveEditorView::GetPointsWithinWidgetRange(const FSlateRect& WidgetRectangle, TArray<FCurvePointHandle>* OutPoints) const
 {
 	TSharedPtr<FCurveEditor> CurveEditor = WeakCurveEditor.Pin();
 	if (!CurveEditor)
 	{
-		return;
+		return false;
 	}
 
 	// Iterate through all of our points and see which points the marquee overlaps. Both of these coordinate systems
 	// are in screen space pixels.
+	bool bFound = false;
 	for (const FCurveDrawParams& DrawParams : CachedDrawParams)
 	{
 		for (int32 PointIndex = 0; PointIndex < DrawParams.Points.Num(); PointIndex++)
@@ -514,9 +516,53 @@ void SInteractiveCurveEditorView::GetPointsWithinWidgetRange(const FSlateRect& W
 			if (FSlateRect::DoRectanglesIntersect(PointRect, WidgetRectangle))
 			{
 				OutPoints->Add(FCurvePointHandle(DrawParams.GetID(), Point.Type, Point.KeyHandle));
+				bFound = true;
 			}
 		}
 	}
+
+	return bFound;
+}
+
+bool SInteractiveCurveEditorView::GetCurveWithinWidgetRange(const FSlateRect& WidgetRectangle, TArray<FCurvePointHandle>* OutPoints) const
+{
+	TSharedPtr<FCurveEditor> CurveEditor = WeakCurveEditor.Pin();
+	if (!CurveEditor)
+	{
+		return false;
+	}
+
+	FBox WidgetRectangleBox(FVector(WidgetRectangle.Left, WidgetRectangle.Top, 0), FVector(WidgetRectangle.Right, WidgetRectangle.Bottom, 0));
+
+	// Iterate through all of our interpolating points and terminates if one overlaps the marquee. Both of these coordinate systems
+	// are in screen space pixels.
+	bool bFound = false;
+	for (const FCurveDrawParams& DrawParams : CachedDrawParams)
+	{
+		for (int32 InterpolatingPointIndex = 1; InterpolatingPointIndex < DrawParams.InterpolatingPoints.Num(); InterpolatingPointIndex++)
+		{
+			FVector2D InterpolatingPointPrev = DrawParams.InterpolatingPoints[InterpolatingPointIndex-1];
+			FVector2D InterpolatingPointNext = DrawParams.InterpolatingPoints[InterpolatingPointIndex];
+			FVector Start(InterpolatingPointPrev.X, InterpolatingPointPrev.Y, 0);
+			FVector End(InterpolatingPointNext.X, InterpolatingPointNext.Y, 0);
+			FVector StartToEnd = End - Start;
+
+			if (FMath::LineBoxIntersection(WidgetRectangleBox, Start, End, StartToEnd))
+			{
+				for (int32 PointIndex = 0; PointIndex < DrawParams.Points.Num(); PointIndex++)
+				{
+					const FCurvePointInfo& Point = DrawParams.Points[PointIndex];
+
+					OutPoints->Add(FCurvePointHandle(DrawParams.GetID(), Point.Type, Point.KeyHandle));
+				}
+
+				bFound = true;
+				break;
+			}
+		}
+	}
+
+	return false;
 }
 
 void SInteractiveCurveEditorView::UpdateCurveProximities(FVector2D MousePixel)
@@ -819,7 +865,24 @@ FReply SInteractiveCurveEditorView::OnMouseButtonDown(const FGeometry& MyGeometr
 				}
 			}
 
-			TUniquePtr<ICurveEditorKeyDragOperation> KeyDrag = CreateKeyDrag(CurveEditor->GetSelection().GetSelectionType());
+			// If there are any tangent handles selected, prefer to drag those instead of keys
+			ECurvePointType PointType = ECurvePointType::Key;
+			if (!NewPoint.IsSet())
+			{
+				for (const TTuple<FCurveModelID, FKeyHandleSet>& Pair : CurveEditor->GetSelection().GetAll())
+				{
+					for (FKeyHandle Handle : Pair.Value.AsArray())
+					{
+						if (Pair.Value.Contains(Handle, ECurvePointType::ArriveTangent) || Pair.Value.Contains(Handle, ECurvePointType::LeaveTangent))
+						{
+							PointType = ECurvePointType::ArriveTangent;
+							break;
+						}
+					}
+				}
+			}
+
+			TUniquePtr<ICurveEditorKeyDragOperation> KeyDrag = CreateKeyDrag(PointType);
 
 			KeyDrag->Initialize(CurveEditor.Get(), NewPoint);
 
@@ -847,8 +910,9 @@ FReply SInteractiveCurveEditorView::OnMouseButtonDown(const FGeometry& MyGeometr
 		}
 	}
 
-	bool bShiftPressed = MouseEvent.IsShiftDown();
-	bool bCtrlPressed = MouseEvent.IsControlDown();
+	const bool bIsShiftDown = MouseEvent.IsShiftDown();
+	const bool bIsAltDown = MouseEvent.IsAltDown();
+	const bool bIsControlDown = MouseEvent.IsControlDown();
 
 	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
@@ -860,21 +924,101 @@ FReply SInteractiveCurveEditorView::OnMouseButtonDown(const FGeometry& MyGeometr
 			{
 				if (!CurveModel->IsReadOnly())
 				{
-					if (bShiftPressed)
+					if (bIsShiftDown)
 					{
 						CurveEditor->GetSelection().Add(MouseDownPoint.GetValue());
 					}
-					else if (bCtrlPressed)
+					else if (bIsAltDown)
+					{
+						CurveEditor->GetSelection().Remove(MouseDownPoint.GetValue());
+					}
+					else if (bIsControlDown)
 					{
 						CurveEditor->GetSelection().Toggle(MouseDownPoint.GetValue());
 					}
 					else
 					{
-						if (CurveEditor->GetSelection().Contains(MouseDownPoint->CurveID, MouseDownPoint->KeyHandle))
+						const bool bKeySelected = CurveEditor->GetSelection().Contains(MouseDownPoint->CurveID, MouseDownPoint->KeyHandle, ECurvePointType::Key);
+						const bool bLeaveTangentSelected = CurveEditor->GetSelection().Contains(MouseDownPoint->CurveID, MouseDownPoint->KeyHandle, ECurvePointType::LeaveTangent);
+						const bool bArriveTangentSelected = CurveEditor->GetSelection().Contains(MouseDownPoint->CurveID, MouseDownPoint->KeyHandle, ECurvePointType::ArriveTangent);
+
+						if (bKeySelected || bLeaveTangentSelected || bArriveTangentSelected)
 						{
-							CurveEditor->GetSelection().ChangeSelectionPointType(MouseDownPoint->PointType);
+							// If the picked key handle is already selected in any way, select all of the same point type for the selected points
+							if (MouseDownPoint->PointType == ECurvePointType::LeaveTangent)
+							{
+								TArray<FCurvePointHandle> CurvePointHandles;
+								for (const TTuple<FCurveModelID, FKeyHandleSet>& Pair : CurveEditor->GetSelection().GetAll())
+								{
+									for (FKeyHandle Handle : Pair.Value.AsArray())
+									{
+										// If this isn't the opposite of the clicked on LeaveTangent, select the LeaveTangent so it can be moved as well
+										if (Pair.Value.PointType(Handle) != ECurvePointType::ArriveTangent)
+										{
+											FCurvePointHandle CurvePointHandle(Pair.Key, MouseDownPoint->PointType, Handle);
+											CurvePointHandles.Add(CurvePointHandle);
+										}
+									}
+								}
+
+								if (!bLeaveTangentSelected)
+								{
+									CurveEditor->GetSelection().Clear();
+								}
+								for (FCurvePointHandle CurvePointHandle : CurvePointHandles)
+								{
+									CurveEditor->GetSelection().Add(CurvePointHandle);
+								}
+								CurveEditor->GetSelection().Add(MouseDownPoint.GetValue());
+							}
+							else if (MouseDownPoint->PointType == ECurvePointType::ArriveTangent)
+							{
+								TArray<FCurvePointHandle> CurvePointHandles;
+								for (const TTuple<FCurveModelID, FKeyHandleSet>& Pair : CurveEditor->GetSelection().GetAll())
+								{
+									for (FKeyHandle Handle : Pair.Value.AsArray())
+									{
+										// If this isn't the opposite of the clicked on ArriveTangent, select the ArriveTangent so it can be moved as well
+										if (Pair.Value.PointType(Handle) != ECurvePointType::LeaveTangent)
+										{
+											FCurvePointHandle CurvePointHandle(Pair.Key, MouseDownPoint->PointType, Handle);
+											CurvePointHandles.Add(CurvePointHandle);
+										}
+									}
+								}
+
+								if (!bArriveTangentSelected)
+								{
+									CurveEditor->GetSelection().Clear();
+								}
+								for (FCurvePointHandle CurvePointHandle : CurvePointHandles)
+								{
+									CurveEditor->GetSelection().Add(CurvePointHandle);
+								}
+								CurveEditor->GetSelection().Add(MouseDownPoint.GetValue());
+							}
+							else if (MouseDownPoint->PointType == ECurvePointType::Key)
+							{
+								TArray<FCurvePointHandle> CurvePointHandles;
+								for (const TTuple<FCurveModelID, FKeyHandleSet>& Pair : CurveEditor->GetSelection().GetAll())
+								{
+									for (FKeyHandle Handle : Pair.Value.AsArray())
+									{
+										FCurvePointHandle CurvePointHandle(Pair.Key, MouseDownPoint->PointType, Handle);
+										CurvePointHandles.Add(CurvePointHandle);
+									}
+								}
+
+								CurveEditor->GetSelection().Clear();
+								for (FCurvePointHandle CurvePointHandle : CurvePointHandles)
+								{
+									CurveEditor->GetSelection().Add(CurvePointHandle);
+								}
+								CurveEditor->GetSelection().Add(MouseDownPoint.GetValue());
+							}
 						}
-						else
+						// If this isn't already selected, treat this as a new selection (clear selection)
+						else 
 						{
 							CurveEditor->GetSelection().Clear();
 							CurveEditor->GetSelection().Add(MouseDownPoint.GetValue());
@@ -906,6 +1050,7 @@ FReply SInteractiveCurveEditorView::OnMouseButtonUp(const FGeometry& MyGeometry,
 		return FReply::Unhandled();
 	}
 
+	const bool bDragOperationWasSet = DragOperation.IsSet();
 	FVector2D MousePosition = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
 	if (DragOperation.IsSet())
 	{
@@ -921,11 +1066,16 @@ FReply SInteractiveCurveEditorView::OnMouseButtonUp(const FGeometry& MyGeometry,
 
 	DragOperation.Reset();
 
-	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	// Select the curve on mouse release if no key or tangent was clicked on
+	if (!bDragOperationWasSet && MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
+		const bool bIsShiftDown = MouseEvent.IsShiftDown();
+		const bool bIsAltDown = MouseEvent.IsAltDown();
+		const bool bIsControlDown = MouseEvent.IsControlDown();
+
 		// Curve Selection Testing.
 		TOptional<FCurveModelID> HitCurve = GetHoveredCurve();
-		if (!HitPoint(MousePosition).IsSet() && HitCurve.IsSet() && !MouseEvent.IsAltDown())
+		if (!HitPoint(MousePosition).IsSet() && HitCurve.IsSet())
 		{
 			FCurveModel* CurveModel = CurveEditor->FindCurve(HitCurve.GetValue());
 
@@ -934,17 +1084,20 @@ FReply SInteractiveCurveEditorView::OnMouseButtonUp(const FGeometry& MyGeometry,
 			CurveModel->GetKeys(*CurveEditor, TNumericLimits<double>::Lowest(), TNumericLimits<double>::Max(), TNumericLimits<double>::Lowest(), TNumericLimits<double>::Max(), KeyHandles);
 
 			// Add or remove all keys from the curve.
-			if (MouseEvent.IsShiftDown())
+			if (bIsShiftDown)
 			{
 				CurveEditor->GetSelection().Add(HitCurve.GetValue(), ECurvePointType::Key, KeyHandles);
 			}
-			else if (MouseEvent.IsControlDown())
+			else if (bIsAltDown)
+			{
+				CurveEditor->GetSelection().Remove(HitCurve.GetValue(), ECurvePointType::Key, KeyHandles);
+			}
+			else if (bIsControlDown)
 			{
 				CurveEditor->GetSelection().Toggle(HitCurve.GetValue(), ECurvePointType::Key, KeyHandles);
 			}
 			else
 			{
-				CurveEditor->GetSelection().ChangeSelectionPointType(ECurvePointType::Key);
 				CurveEditor->GetSelection().Clear();
 				CurveEditor->GetSelection().Add(HitCurve.GetValue(), ECurvePointType::Key, KeyHandles);
 			}
@@ -1058,6 +1211,7 @@ void SInteractiveCurveEditorView::RebindContextualActions(FVector2D InMousePosit
 	TSharedPtr<FUICommandList> CommandList = CurveEditorPanel->GetCommands();
 
 	CommandList->UnmapAction(FCurveEditorCommands::Get().AddKeyHovered);
+	CommandList->UnmapAction(FCurveEditorCommands::Get().PasteKeysHovered);
 	CommandList->UnmapAction(FCurveEditorCommands::Get().AddKeyToAllCurves);
 
 	CommandList->UnmapAction(FCurveEditorCommands::Get().BufferVisibleCurves);
@@ -1071,6 +1225,7 @@ void SInteractiveCurveEditorView::RebindContextualActions(FVector2D InMousePosit
 		HoveredCurveSet.Add(HoveredCurve.GetValue());
 
 		CommandList->MapAction(FCurveEditorCommands::Get().AddKeyHovered, FExecuteAction::CreateSP(this, &SInteractiveCurveEditorView::AddKeyAtMousePosition, HoveredCurveSet));
+		CommandList->MapAction(FCurveEditorCommands::Get().PasteKeysHovered, FExecuteAction::CreateSP(this, &SInteractiveCurveEditorView::PasteKeys, HoveredCurveSet));
 
 		// Buffer the curve they have highlighted instead of all of them.
 		CommandList->MapAction(FCurveEditorCommands::Get().BufferVisibleCurves, FExecuteAction::CreateSP(this, &SInteractiveCurveEditorView::BufferCurve, HoveredCurve.GetValue()));
@@ -1275,6 +1430,17 @@ void SInteractiveCurveEditorView::AddKeyAtTime(const TSet<FCurveModelID>& ToCurv
 	{
 		Transaction.Cancel();
 	}
+}
+
+void SInteractiveCurveEditorView::PasteKeys(TSet<FCurveModelID> ToCurves)
+{
+	TSharedPtr<FCurveEditor> CurveEditor = WeakCurveEditor.Pin();
+	if (!CurveEditor.IsValid())
+	{
+		return;
+	}
+
+	CurveEditor->PasteKeys(ToCurves);
 }
 
 void SInteractiveCurveEditorView::OnCurveEditorToolChanged(FCurveEditorToolID InToolId)

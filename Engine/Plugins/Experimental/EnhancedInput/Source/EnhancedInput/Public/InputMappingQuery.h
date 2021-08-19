@@ -16,6 +16,9 @@ enum class EMappingQueryResult : uint8
 	// Query failed because the input context being queried against is not part of the active context list.
 	Error_InputContextNotInActiveContexts,
 
+	// Query failed because the action being queried against is None/null
+	Error_InvalidAction,
+
 	// Mapping cannot be applied due to blocking issues. Check OutIssues for details.
 	NotMappable,
 
@@ -24,7 +27,7 @@ enum class EMappingQueryResult : uint8
 };
 
 // Mapping issues arising from a QueryMapKeyIn... call
-UENUM(BlueprintType, meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
+UENUM(BlueprintType, meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true", ScriptName = "MappingQueryIssueFlag"))
 enum class EMappingQueryIssue : uint8
 {
 	// Mapping will not affect any existing mappings and is safe to apply.

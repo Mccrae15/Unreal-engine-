@@ -9,6 +9,9 @@
 #include "GameFramework/Actor.h"
 #include "ActorSequenceComponent.h"
 #include "Engine/LevelScriptActor.h"
+#include "Tracks/MovieSceneAudioTrack.h"
+#include "Tracks/MovieSceneEventTrack.h"
+#include "Tracks/MovieSceneMaterialParameterCollectionTrack.h"
 
 IMPLEMENT_MODULE(FDefaultModuleImpl, ActorSequence);
 
@@ -165,7 +168,7 @@ void UActorSequence::UnbindPossessableObjects(const FGuid& ObjectId)
 	ObjectReferences.RemoveBinding(ObjectId);
 }
 
-UObject* UActorSequence::CreateDirectorInstance(IMovieScenePlayer& Player)
+UObject* UActorSequence::CreateDirectorInstance(IMovieScenePlayer& Player, FMovieSceneSequenceID SequenceID)
 {
 	AActor* Actor = CastChecked<AActor>(Player.GetPlaybackContext(), ECastCheckedType::NullAllowed);
 	if (!Actor)
@@ -208,4 +211,18 @@ FText UActorSequence::GetDisplayName() const
 
 	return UMovieSceneSequence::GetDisplayName();
 }
+
+
+ETrackSupport UActorSequence::IsTrackSupported(TSubclassOf<class UMovieSceneTrack> InTrackClass) const
+{
+	if (InTrackClass == UMovieSceneAudioTrack::StaticClass() ||
+		InTrackClass == UMovieSceneEventTrack::StaticClass() ||
+		InTrackClass == UMovieSceneMaterialParameterCollectionTrack::StaticClass())
+	{
+		return ETrackSupport::Supported;
+	}
+
+	return Super::IsTrackSupported(InTrackClass);
+}
+
 #endif

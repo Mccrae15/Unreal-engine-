@@ -37,6 +37,7 @@ public:
 	//~ UNiagaraStackEntry interface
 	virtual bool GetIsEnabled() const override;
 	virtual bool GetShouldShowInStack() const override;
+	virtual UObject* GetDisplayedObject() const override;
 
 protected:
 	virtual void FinalizeInternal() override;
@@ -67,4 +68,5 @@ private:
 	TArray<FRegisteredClassCustomization> RegisteredClassCustomizations;
 	TArray<FRegisteredPropertyCustomization> RegisteredPropertyCustomizations;
 	TSharedPtr<IPropertyRowGenerator> PropertyRowGenerator;
+	bool bIsRefresingDataInterfaceErrors;
 };

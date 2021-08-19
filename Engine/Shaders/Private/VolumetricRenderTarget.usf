@@ -66,6 +66,7 @@ float2 SafeSamplePreviousFrameVolumetricDepthTexture(float2 UV)
 
 float4 DstVolumetricTextureSizeAndInvSize;
 int2 CurrentTracingPixelOffset;
+int2 ViewViewRectMin;
 int VolumetricRenderTargetMode;
 int DownSampleFactor;
 
@@ -113,9 +114,9 @@ void ReconstructVolumetricRenderTargetPS(
 #if PERMUTATION_HISTORY_AVAILABLE
 
 	int2 IntPixelPos = int2(PixelPos);
-	int2 IntPixelPosDownsample = IntPixelPos / DownSampleFactor;
-	const int XSub = (IntPixelPosDownsample.x * DownSampleFactor) == int(IntPixelPos.x) ? 0 : 1;
-	const int YSub = (IntPixelPosDownsample.y * DownSampleFactor) == int(IntPixelPos.y) ? 0 : 1;
+	int2 IntPixelPosDownsample = IntPixelPos / (DownSampleFactor);
+	const int XSub = int(IntPixelPos.x) - (IntPixelPosDownsample.x * DownSampleFactor);
+	const int YSub = int(IntPixelPos.y) - (IntPixelPosDownsample.y * DownSampleFactor);
 
 	const bool bUseNewSample = (XSub == CurrentTracingPixelOffset.x) && (YSub == CurrentTracingPixelOffset.y);
 	float4 RGBA = 0.0f;
@@ -206,7 +207,7 @@ void ReconstructVolumetricRenderTargetPS(
 				int2 NeightboorsOffset[8] = { int2(1,0), int2(1,1), int2(0,1), int2(-1,1), int2(-1,0), int2(-1,-1), int2(0,-1), int2(1,-1)};
 
 
-				const float ReconstructDepthZ = HalfResDepthTexture.Load(int3(SVPos.xy, 0)).r; // TODO split screen offset?
+				const float ReconstructDepthZ = HalfResDepthTexture.Load(int3(SVPos.xy + ViewViewRectMin, 0)).r;
 				const float3 WorldPosition = SvPositionToWorld(float4(CenterSample, ReconstructDepthZ, 1.0));
 				const float PixelDistanceFromViewKm = length(WorldPosition - View.WorldCameraOrigin) * (1.0f / 100000.0f); // centimeter to kilometer
 
@@ -225,15 +226,16 @@ void ReconstructVolumetricRenderTargetPS(
 						{
 							ClosestDepth = NeighboorsClosestDepth;
 							float4 NeighboorsRGBA = SafeLoadTracingVolumetricTexture(CenterSample + NeightboorsOffset[i]);
-							RGBA   = NeighboorsRGBA;
+							RGBA = NeighboorsRGBA;// +float4(0, 1, 0, 0);
 							Depths = NeighboorsDepths;
 						} 
 					}
-					if (abs(PixelDistanceFromViewKm - NewDepths.y) < ClosestDepth)
-					{
-						RGBA = NewRGBA;
-						Depths = NewDepths;
-					}
+					// After more testing, the code below looked unecessary
+					//if (abs(PixelDistanceFromViewKm - NewDepths.y) < ClosestDepth)
+					//{
+					//	RGBA = NewRGBA;
+					//	Depths = NewDepths;
+					//}
 					//RGBA += float4(0, 0.1 0, 0);
 				}
 				else //if(ReconstructDepthZ < 0.000001f)
@@ -268,6 +270,12 @@ void ReconstructVolumetricRenderTargetPS(
 					}
 #endif
 				}
+
+				if (!(all(IsFinite(RGBA)) && all(IsFinite(Depths))))
+				{
+					RGBA = float4(0.0f, 0.0f, 0.0f, 1.0f);
+					Depths = float2(1000.0f, 1000.0f);
+				}
 			}
 		}
 		else
@@ -295,6 +303,8 @@ void ReconstructVolumetricRenderTargetPS(
 
 
 #ifdef SHADER_COMPOSE_VOLUMETRICRT
+
+#include "SceneTexturesCommon.ush"
 
 SamplerState LinearTextureSampler;
 
@@ -330,42 +340,14 @@ float4 VolumetricTextureSizeAndInvSize;
 float UvOffsetScale;
 float2 FullResolutionToVolumetricBufferResolutionScale;
 
-#define DynamicResToFullResolutionCoord (View.ViewSizeAndInvSize.xy * View.BufferSizeAndInvSize.zw)
-
-void Sample(
-	float2 CurVolumeResPixelCoord,
-	float2 FullResPixelOffset,
-	in float4 SVPos,
-	in float PixelFrontDepthFromViewKm,
-	in float CenterSampleFrontDepthKm,
-	inout float ValidSampleCount, 
-	inout float4 DataAcc)
-{
-	uint2 LoadCoord = clamp(CurVolumeResPixelCoord + FullResPixelOffset, float2(0.0f,0.0f), VolumetricTextureSizeAndInvSize.xy-1.0f);
-	float CloudFrontDepthKm = SafeLoadVolumetricDepthTexture(LoadCoord).x;
-
-	float  SampleDeviceZ = SampleDeviceZFromSceneTextures((CurVolumeResPixelCoord + FullResPixelOffset) * VolumetricTextureSizeAndInvSize.zw * DynamicResToFullResolutionCoord);
-	float3 SampleScreenWorldPositionApprox = float4(SvPositionToWorld(float4(SVPos.xy, SampleDeviceZ, 1.0)), 1.0).xyz;
-	float  SampleDistanceFromViewKmApprox = length(View.WorldCameraOrigin - SampleScreenWorldPositionApprox) * (1.0f / 100000.0f);
-
-	if (   (CloudFrontDepthKm <= PixelFrontDepthFromViewKm )					// If  the cloud sample "front depth" is in front of the center pixel depth (Could do soft fade?)
-		&& (CloudFrontDepthKm <= SampleDistanceFromViewKmApprox)				// and the cloud sample "front depth" is in front of the sample pixel depth
-	 //	&& (abs(CenterSampleFrontDepthKm - CloudFrontDepthKm) < 100.0f)			// and if the sample is close to the center tap depth then we can merge them
-		)
-	{
-		ValidSampleCount += 1.0f;
-		DataAcc += SafeLoadVolumetricTexture(LoadCoord);
-	}
-}
-
-
 void ComposeVolumetricRTOverScenePS(
 	in float4 SVPos : SV_POSITION,
 	out float4 OutputRt0 : SV_Target0)
 {
-	float2 CurResPixelCoord = SVPos.xy;// -ResolvedView.ViewRectMin.xy;
+	float2 CurResPixelCoord = SVPos.xy;
 	float2 ScreenUV = CurResPixelCoord * View.BufferSizeAndInvSize.zw;
-	float2 VolumeUV = FullResolutionToVolumetricBufferResolutionScale.x * (ScreenUV * View.BufferSizeAndInvSize.xy * VolumetricTextureSizeAndInvSize.zw);
+	float2 ScreenUVNoOffset = (CurResPixelCoord - View.ViewRectMin.xy) * View.BufferSizeAndInvSize.zw;
+	float2 VolumeUV = FullResolutionToVolumetricBufferResolutionScale.x * (ScreenUVNoOffset * View.BufferSizeAndInvSize.xy * VolumetricTextureSizeAndInvSize.zw);
 
 
 	//Make the offset be independent of aspect ratio, resolution scale, downsampling
@@ -429,7 +411,7 @@ void ComposeVolumetricRTOverScenePS(
 
 	float3 ScreenWorldPosition = float4(SvPositionToWorld(float4(SVPos.xy, ClipPosition.z, 1.0)), 1.0).xyz;
 #else
-	float PixelDeviceZ = SceneDepthTexture.Load(uint3(SVPos.xy, 0)).r;
+	float PixelDeviceZ = SceneTexturesStruct.SceneDepthTexture.Load(uint3(SVPos.xy, 0)).r;
 	float3 ScreenWorldPosition = float4(SvPositionToWorld(float4(SVPos.xy, PixelDeviceZ, 1.0)), 1.0).xyz;
 #endif 
 
@@ -441,7 +423,7 @@ void ComposeVolumetricRTOverScenePS(
 #if PERMUTATION_RENDER_CAMERA_UNDERWATER
 	// Now check that we are compositing a pixel that is not "water" to avoid applying clouds twice (they are already composited with the behind water layer scene).
 	// We also lack depth information behind the water surface now so the composition would be wrong anyway.
-	float WaterTestPixelLinearDepth = WaterLinearDepthTexture.SampleLevel(LinearTextureSampler, VolumeUV, 0).r * UseWaterLinearDepthTexture;
+	float WaterTestPixelLinearDepth = WaterLinearDepthTexture.SampleLevel(LinearTextureSampler, ScreenUV, 0).r * UseWaterLinearDepthTexture;
 	if (WaterTestPixelLinearDepth > PixelDistanceFromView)
 	{
 		// This pixel contains water, so skip it because clouds have already been composited in the "behind water scene color".
@@ -519,7 +501,7 @@ void ComposeVolumetricRTOverScenePS(
 #elif PERMUTATION_UPSAMPLINGMODE==4
 	// Bilateral upsampling
 
-	int2 PixelPos = SVPos.xy;
+	int2 PixelPos = SVPos.xy - View.ViewRectMin.xy;
 	int2 VolumeCoordUInt = PixelPos  / int(FullResolutionToVolumetricBufferResolutionScale.y);
 	int OffsetX = (VolumeCoordUInt.x * int(FullResolutionToVolumetricBufferResolutionScale.y)) == PixelPos.x ? -1 : 1;
 	int OffsetY = (VolumeCoordUInt.y * int(FullResolutionToVolumetricBufferResolutionScale.y)) == PixelPos.y ? -1 : 1;
@@ -598,26 +580,31 @@ void ComposeVolumetricRTOverScenePS(
 
 #endif
 
+	// We only want to run the special "cloud over water" code path on actual water pixels, otherwise depth threshold can cause visual issues.
+	FScreenSpaceData ScreenSpaceData = GetScreenSpaceData(ScreenUV);
+	const bool bIsWaterPixel = ScreenSpaceData.GBuffer.ShadingModelID == SHADINGMODELID_SINGLELAYERWATER;
+
 	uint2 VolumeCoord0 = max(0, int2(VolumeCoordUInt) + int2(0, 0));
 	uint2 VolumeCoord1 = max(0, int2(VolumeCoordUInt) + int2(OffsetX, 0));
 	uint2 VolumeCoord2 = max(0, int2(VolumeCoordUInt) + int2(OffsetX, OffsetY));
 	uint2 VolumeCoord3 = max(0, int2(VolumeCoordUInt) + int2(0, OffsetY));
 
-	float4 VolumeRGBT0 = SafeLoadVolumetricTexture(VolumeCoord0);
 	float2 VolumeFrontDepth0 = SafeLoadVolumetricDepthTexture(VolumeCoord0);
-	float4 VolumeRGBT1 = SafeLoadVolumetricTexture(VolumeCoord1);
 	float2 VolumeFrontDepth1 = SafeLoadVolumetricDepthTexture(VolumeCoord1);
-	float4 VolumeRGBT2 = SafeLoadVolumetricTexture(VolumeCoord2);
 	float2 VolumeFrontDepth2 = SafeLoadVolumetricDepthTexture(VolumeCoord2);
-	float4 VolumeRGBT3 = SafeLoadVolumetricTexture(VolumeCoord3);
 	float2 VolumeFrontDepth3 = SafeLoadVolumetricDepthTexture(VolumeCoord3);
 
-	PixelDistanceFromViewKm = min(PixelDistanceFromViewKm, max(max(VolumeFrontDepth0.y, VolumeFrontDepth1.y),max(VolumeFrontDepth2.y, VolumeFrontDepth3.y))); // clamp to the maximum of the read depth to avoid no depth matching
-	float4 depth4Diff;
-	depth4Diff.x = PixelDistanceFromViewKm - VolumeFrontDepth0.y;
-	depth4Diff.y = PixelDistanceFromViewKm - VolumeFrontDepth1.y;
-	depth4Diff.z = PixelDistanceFromViewKm - VolumeFrontDepth2.y;
-	depth4Diff.w = PixelDistanceFromViewKm - VolumeFrontDepth3.y;
+	// Check that cloud medium sample are in front of the surface we are upsampling over water to make sure we will have valid sample.
+	// This is especially needed when upsampling cloud over water surface where depth is not matching the depth for which clouds have been traced for.
+	// If samples are behind, we assume clouds should not be visible (it will be a harsh transition for now)
+	const bool bAllCloudSamplesInFrontOfWater = all(float4(VolumeFrontDepth0.x, VolumeFrontDepth1.x, VolumeFrontDepth2.x, VolumeFrontDepth3.x) < PixelDistanceFromViewKm);
+	const bool bAnyCloudSamplesInFrontOfWater = any(float4(VolumeFrontDepth0.x, VolumeFrontDepth1.x, VolumeFrontDepth2.x, VolumeFrontDepth3.x) < PixelDistanceFromViewKm);
+
+	// clamp to the maximum of the read depth to avoid no depth matching
+	PixelDistanceFromViewKm = min(PixelDistanceFromViewKm, max(max(VolumeFrontDepth0.y, VolumeFrontDepth1.y),max(VolumeFrontDepth2.y, VolumeFrontDepth3.y)));
+
+	float4 Depth4 = float4(VolumeFrontDepth0.y, VolumeFrontDepth1.y, VolumeFrontDepth2.y, VolumeFrontDepth3.y);
+	float4 depth4Diff = PixelDistanceFromViewKm - Depth4;
 	depth4Diff = abs(depth4Diff);
 	float MaxDepth4Diff = max(max(depth4Diff.x, depth4Diff.y), max(depth4Diff.z, depth4Diff.w));
 
@@ -625,69 +612,118 @@ void ComposeVolumetricRTOverScenePS(
 	float4 DataAcc = 0;
 
 	const float weightMultiplier = 10000.0f;
-	float4 weights = 1.0f / (depth4Diff * weightMultiplier + 1.0f);
-	const float weightsSum = dot(weights, float4(1.0f, 1.0f, 1.0f, 1.0f));
 	const float ThresholdToBilinear = PixelDistanceFromViewKm * 0.1;
+
 	if (MaxDepth4Diff > ThresholdToBilinear)
 	{
-		// Depth discontinuities edges
-		weights/= weightsSum;
+		float4 VolumeRGBT0 = SafeLoadVolumetricTexture(VolumeCoord0);
+		float4 VolumeRGBT1 = SafeLoadVolumetricTexture(VolumeCoord1);
+		float4 VolumeRGBT2 = SafeLoadVolumetricTexture(VolumeCoord2);
+		float4 VolumeRGBT3 = SafeLoadVolumetricTexture(VolumeCoord3);
 
-		ValidSampleCount = weightsSum > 0.0f ? 1.0 : 0.0f;
-		DataAcc = weights.x * VolumeRGBT0 + weights.y * VolumeRGBT1 + weights.z * VolumeRGBT2 + weights.w * VolumeRGBT3;
-		//DataAcc += float4(0.1, 0, 0, 0); 
+		if (bIsWaterPixel)
+		{
+			// Only do the following is the pixel is water
+			const float ConsideredFarWaterDistanceKm = 1.0f;				// We only apply the fix for pixel that are further than 1km
+			const float NotRenderedPixelDistanceKm = 500.0f;				// We assume pixel have a depth greater than that such distant depth pixel
+			if (any(Depth4 > NotRenderedPixelDistanceKm)					// Some pixels have non rendered pixel...
+				&& !all(Depth4 > NotRenderedPixelDistanceKm)				// ...but not all (in this case we want to fall back to bilinear filtering).
+				&& PixelDistanceFromViewKm > ConsideredFarWaterDistanceKm)	// Only treat this way pixel that are far enough to not mix up close object with far water.
+			{
+				// This is a special case / hack added for to fix some visual issues encoutnered with water as of today.
+				// Water is render after checker boarded minmax depth is taken for cloud rendering (because clouds also needs to be rendered within the water pass).
+				// As such, the reconstructure fails a taking a matching color for a matching depth (cloud depth = 1000km but water is closer, less than 2 kilometers).
+				// This does not handle all the cases but fixes current issues with the water system.
+				// ==> this code can be removed when we automatically fix up edges of objects to have sharp silhouette under strong conflicting motion.
+				const float AcceptanceOffsetKm = 0.001f;
+				if (VolumeFrontDepth0.y > (PixelDistanceFromViewKm - AcceptanceOffsetKm))
+				{
+					DataAcc += VolumeRGBT0;
+					ValidSampleCount++;
+				}
+				if (VolumeFrontDepth1.y > (PixelDistanceFromViewKm - AcceptanceOffsetKm))
+				{
+					DataAcc += VolumeRGBT1;
+					ValidSampleCount++;
+				}
+				if (VolumeFrontDepth2.y > (PixelDistanceFromViewKm - AcceptanceOffsetKm))
+				{
+					DataAcc += VolumeRGBT2;
+					ValidSampleCount++;
+				}
+				if (VolumeFrontDepth3.y > (PixelDistanceFromViewKm - AcceptanceOffsetKm))
+				{
+					DataAcc += VolumeRGBT3;
+					ValidSampleCount++;
+				}
+				//DataAcc = float4(0.0, 0.0, 1.0, 0); 
+			}
+		}
+
+		if(!bIsWaterPixel || bIsWaterPixel && ValidSampleCount == 0 && bAnyCloudSamplesInFrontOfWater)
+		{
+			// Depth discontinuities edges
+			float4 weights = 1.0f / (depth4Diff * weightMultiplier + 1.0f);
+			const float weightsSum = dot(weights, float4(1.0f, 1.0f, 1.0f, 1.0f));
+			weights /= weightsSum;
+
+			ValidSampleCount = weightsSum > 0.0f ? 1.0 : 0.0f;
+			DataAcc = weights.x * VolumeRGBT0 + weights.y * VolumeRGBT1 + weights.z * VolumeRGBT2 + weights.w * VolumeRGBT3;
+			//DataAcc = float4(1.0, 0, 0, 0); 
+		}
 	}
 	else
 	{
 		// Now do a bilinear sample to have a soft look region without depth edges.
 		ValidSampleCount = 1.0;
 		DataAcc = SafeSampleVolumetricTexture((float2(VolumeCoord0) + 0.25 + (float2(OffsetX, OffsetY) * 0.5 + 0.5) * 0.5) * VolumetricTextureSizeAndInvSize.zw);
-		//DataAcc += float4(0, 0.1, 0, 0);
+		//DataAcc = float4(0, 1.0, 0, 0);
+	}
 
-		if (UvOffsetScale>0.0)
+
+	if (UvOffsetScale > 0.0 && !bIsWaterPixel) // we are going to fetch far sample so let's skip water pixel because depth cannot be trusted and used in this case.
+	{
+		// Add some jittered samples to hide upsampling and noise through TAA filtering
+		// We use only Offset0 to save ALU and go faster. Variation across pixels is enough noise for taa to soften it out.
+		float4 VolumeRGBT0 = SafeSampleVolumetricTexture(VolumeUV + Offset0);
+		float4 VolumeRGBT1 = SafeSampleVolumetricTexture(VolumeUV - Offset0);
+		float4 VolumeRGBT2 = SafeSampleVolumetricTexture(VolumeUV + float2(Offset0.y, -Offset0.x));
+		float4 VolumeRGBT3 = SafeSampleVolumetricTexture(VolumeUV - float2(Offset0.y, -Offset0.x));
+
+		// Resolve the OutputRt0 from DataAcc to know what we want to blend into for the bilaterial upsampling based on a=transmittance.
+		// Why using transmittance? Because it cause less artefact than depth for far away pixels and 
+		// pixel with similar transmittance or more likely to be a good choice to mix together to produce noise (that is our assumption here)
+		OutputRt0 = float4(0.0f, 0.0f, 0.0f, 1.0f);
+		if (ValidSampleCount > 0.0f)
 		{
-			// Add some jittered samples to hide upsampling and noise through TAA filtering
-#if 0
-			VolumeRGBT0 = SafeLoadVolumetricTexture((VolumeUV + Offset0) * VolumetricTextureSizeAndInvSize.xy);
-			VolumeFrontDepth0 = SafeLoadVolumetricDepthTexture((VolumeUV + Offset0) * VolumetricTextureSizeAndInvSize.xy);
-			VolumeRGBT1 = SafeLoadVolumetricTexture((VolumeUV + Offset1) * VolumetricTextureSizeAndInvSize.xy);
-			VolumeFrontDepth1 = SafeLoadVolumetricDepthTexture((VolumeUV + Offset1) * VolumetricTextureSizeAndInvSize.xy);
-			VolumeRGBT2 = SafeLoadVolumetricTexture((VolumeUV + Offset2) * VolumetricTextureSizeAndInvSize.xy);
-			VolumeFrontDepth2 = SafeLoadVolumetricDepthTexture((VolumeUV + Offset2) * VolumetricTextureSizeAndInvSize.xy);
-			VolumeRGBT3 = SafeLoadVolumetricTexture((VolumeUV + Offset2) * VolumetricTextureSizeAndInvSize.xy);
-			VolumeFrontDepth3 = SafeLoadVolumetricDepthTexture((VolumeUV + Offset2) * VolumetricTextureSizeAndInvSize.xy);
-#else
-			float4 VolumeRGBT0 = SafeSampleVolumetricTexture(VolumeUV + Offset0);
-			float2 VolumeFrontDepth0 = SafeSampleVolumetricDepthTexture(VolumeUV + Offset0);
-			float4 VolumeRGBT1 = SafeSampleVolumetricTexture(VolumeUV + Offset1);
-			float2 VolumeFrontDepth1 = SafeSampleVolumetricDepthTexture(VolumeUV + Offset1);
-			float4 VolumeRGBT2 = SafeSampleVolumetricTexture(VolumeUV + Offset2);
-			float2 VolumeFrontDepth2 = SafeSampleVolumetricDepthTexture(VolumeUV + Offset2);
-			float4 VolumeRGBT3 = SafeSampleVolumetricTexture(VolumeUV + Offset3);
-			float2 VolumeFrontDepth3 = SafeSampleVolumetricDepthTexture(VolumeUV + Offset3);
-#endif
+			OutputRt0 = DataAcc / ValidSampleCount;
+		}
 
-			PixelDistanceFromViewKm = min(PixelDistanceFromViewKm, max(max(VolumeFrontDepth0.y, VolumeFrontDepth1.y), max(VolumeFrontDepth2.y, VolumeFrontDepth3.y))); // clamp to the maximum of the read depth to avoid no depth matching
-			float4 depth4Diff;
-			depth4Diff.x = PixelDistanceFromViewKm - VolumeFrontDepth0.y;
-			depth4Diff.y = PixelDistanceFromViewKm - VolumeFrontDepth1.y;
-			depth4Diff.z = PixelDistanceFromViewKm - VolumeFrontDepth2.y;
-			depth4Diff.w = PixelDistanceFromViewKm - VolumeFrontDepth3.y;
-			depth4Diff = abs(depth4Diff);
-			float MaxDepth4Diff = max(max(depth4Diff.x, depth4Diff.y), max(depth4Diff.z, depth4Diff.w));
-			float4 weights = 1.0f / (depth4Diff * weightMultiplier + 1.0f);
-			const float weightsSum = dot(weights, float4(1.0f, 1.0f, 1.0f, 1.0f));
-			const float ThresholdToBilinear = PixelDistanceFromViewKm * 0.1;
-			if (MaxDepth4Diff < ThresholdToBilinear && weightsSum>0)
-			{
-				weights /= weightsSum;
-				ValidSampleCount += 1;
-				DataAcc += weights.x * VolumeRGBT0 + weights.y * VolumeRGBT1 + weights.z * VolumeRGBT2 + weights.w * VolumeRGBT3;
-				//	DataAcc += float4(0, 0, 0.1, 0);
-			}
+		// Now continue to accumulate in DataAcc
+		const float Extinction = 5.0;
+		{
+			const float weight = exp(-Extinction * abs(VolumeRGBT0.a - OutputRt0.a));
+			ValidSampleCount += weight;
+			DataAcc += VolumeRGBT0 * weight;
+		}
+		{
+			const float weight = exp(-Extinction * abs(VolumeRGBT1.a - OutputRt0.a));
+			ValidSampleCount += weight;
+			DataAcc += VolumeRGBT1 * weight;
+		}
+		{
+			const float weight = exp(-Extinction * abs(VolumeRGBT2.a - OutputRt0.a));
+			ValidSampleCount += weight;
+			DataAcc += VolumeRGBT2 * weight;
+		}
+		{
+			const float weight = exp(-Extinction * abs(VolumeRGBT3.a - OutputRt0.a));
+			ValidSampleCount += weight;
+			DataAcc += VolumeRGBT3 * weight;
 		}
 	}
 
+	OutputRt0 = float4(0, 0, 0, 1);
 	if (ValidSampleCount > 0.0f)
 	{
 		OutputRt0 = DataAcc / ValidSampleCount;

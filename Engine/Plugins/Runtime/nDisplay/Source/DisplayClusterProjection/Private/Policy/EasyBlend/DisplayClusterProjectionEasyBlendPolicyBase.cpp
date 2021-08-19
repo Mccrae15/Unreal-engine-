@@ -12,9 +12,11 @@
 
 #include "Components/DisplayClusterScreenComponent.h"
 
+#include "Render/Viewport/IDisplayClusterViewport.h"
+#include "Render/Viewport/IDisplayClusterViewportProxy.h"
 
-FDisplayClusterProjectionEasyBlendPolicyBase::FDisplayClusterProjectionEasyBlendPolicyBase(const FString& ViewportId, const TMap<FString, FString>& Parameters)
-	: FDisplayClusterProjectionPolicyBase(ViewportId, Parameters)
+FDisplayClusterProjectionEasyBlendPolicyBase::FDisplayClusterProjectionEasyBlendPolicyBase(const FString& ProjectionPolicyId, const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy)
+	: FDisplayClusterProjectionPolicyBase(ProjectionPolicyId, InConfigurationProjectionPolicy)
 {
 }
 
@@ -22,31 +24,37 @@ FDisplayClusterProjectionEasyBlendPolicyBase::FDisplayClusterProjectionEasyBlend
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterProjectionPolicy
 //////////////////////////////////////////////////////////////////////////////////////////////
-void FDisplayClusterProjectionEasyBlendPolicyBase::StartScene(UWorld* World)
+bool FDisplayClusterProjectionEasyBlendPolicyBase::HandleStartScene(class IDisplayClusterViewport* InViewport)
 {
 	check(IsInGameThread());
+
+	if (!IsEasyBlendRenderingEnabled())
+	{
+		if (!bEasyBlendInitializeOnce)
+		{
+			UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("An error occurred during EasyBlend initialization : current UE render device not supported"));
+			bEasyBlendInitializeOnce = true;
+		}
+
+		return false;
+	}
+
+	if (bInitializeOnce)
+	{
+		return false;
+	}
+
+	bInitializeOnce = true;
 
 	// The game side of the nDisplay has been initialized by the nDisplay Game Manager already
 	// so we can extend it by our projection related functionality/components/etc.
 
 	// Find origin component if it exists
-	InitializeOriginComponent(OriginCompId);
-}
-
-void FDisplayClusterProjectionEasyBlendPolicyBase::EndScene()
-{
-	check(IsInGameThread());
-
-	ReleaseOriginComponent();
-}
-
-bool FDisplayClusterProjectionEasyBlendPolicyBase::HandleAddViewport(const FIntPoint& ViewportSize, const uint32 ViewsAmount)
-{
-	check(IsInGameThread())
+	InitializeOriginComponent(InViewport, OriginCompId);
 
 	// Read easyblend config data from nDisplay config file
 	FString FilePath;
-	if (!ReadConfigData(GetViewportId(), FilePath, OriginCompId, EasyBlendScale))
+	if (!ReadConfigData(InViewport->GetId(), FilePath, OriginCompId, EasyBlendScale))
 	{
 		UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("Couldn't read EasyBlend configuration from the config file"));
 		return false;
@@ -59,8 +67,10 @@ bool FDisplayClusterProjectionEasyBlendPolicyBase::HandleAddViewport(const FIntP
 		return false;
 	}
 
+	const uint32 MaxViewsAmmount = 2;
+
 	// Create and store nDisplay-to-EasyBlend viewport adapter
-	ViewAdapter = CreateViewAdapter(FDisplayClusterProjectionEasyBlendViewAdapterBase::FInitParams{ ViewportSize, ViewsAmount });
+	ViewAdapter = CreateViewAdapter(FDisplayClusterProjectionEasyBlendViewAdapterBase::FInitParams{ MaxViewsAmmount });
 	if (!ViewAdapter || !ViewAdapter->Initialize(FullPath))
 	{
 		UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("An error occurred during EasyBlend viewport adapter initialization"));
@@ -68,22 +78,35 @@ bool FDisplayClusterProjectionEasyBlendPolicyBase::HandleAddViewport(const FIntP
 	}
 
 	UE_LOG(LogDisplayClusterProjectionEasyBlend, Log, TEXT("An EasyBlend viewport adapter has been initialized"));
-
 	return true;
 }
 
-void FDisplayClusterProjectionEasyBlendPolicyBase::HandleRemoveViewport()
+void FDisplayClusterProjectionEasyBlendPolicyBase::HandleEndScene(class IDisplayClusterViewport* InViewport)
 {
 	check(IsInGameThread());
 
-	UE_LOG(LogDisplayClusterProjectionEasyBlend, Log, TEXT("Removing viewport '%s'"), *GetViewportId());
+	ReleaseOriginComponent();
 }
 
-bool FDisplayClusterProjectionEasyBlendPolicyBase::CalculateView(const uint32 ViewIdx, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
+void FDisplayClusterProjectionEasyBlendPolicyBase::ApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const IDisplayClusterViewportProxy* InViewportProxy)
+{
+	check(IsInRenderingThread());
+
+	if (ViewAdapter.IsValid() && IsEasyBlendRenderingEnabled())
+	{
+		if (!ViewAdapter->ApplyWarpBlend_RenderThread(RHICmdList, InViewportProxy))
+		{
+			// Warpbled failed, just copy unwarped rtt for frame output
+			InViewportProxy->ResolveResources(RHICmdList, EDisplayClusterViewportResourceType::InputShaderResource, InViewportProxy->GetOutputResourceType());
+		}
+	}
+}
+
+bool FDisplayClusterProjectionEasyBlendPolicyBase::CalculateView(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
 {
 	check(IsInGameThread());
 
-	if (!ViewAdapter.IsValid())
+	if (!ViewAdapter.IsValid() || !IsEasyBlendRenderingEnabled())
 	{
 		return false;
 	}
@@ -105,9 +128,9 @@ bool FDisplayClusterProjectionEasyBlendPolicyBase::CalculateView(const uint32 Vi
 
 	// Forward data to the RHI dependend EasyBlend implementation
 	FRotator OriginSpaceViewRotation = FRotator::ZeroRotator;
-	if (!ViewAdapter->CalculateView(ViewIdx, OriginSpaceViewLocation, OriginSpaceViewRotation, ViewOffset, WorldScale, NCP, FCP))
+	if (!ViewAdapter->CalculateView(InViewport, InContextNum, OriginSpaceViewLocation, OriginSpaceViewRotation, ViewOffset, WorldScale, NCP, FCP))
 	{
-		UE_LOG(LogDisplayClusterProjectionEasyBlend, Warning, TEXT("Couldn't compute view info for <%s> viewport"), *GetViewportId());
+		UE_LOG(LogDisplayClusterProjectionEasyBlend, Warning, TEXT("Couldn't compute view info for <%s> viewport"), *InViewport->GetId());
 		return false;
 	}
 
@@ -117,32 +140,17 @@ bool FDisplayClusterProjectionEasyBlendPolicyBase::CalculateView(const uint32 Vi
 	return true;
 }
 
-bool FDisplayClusterProjectionEasyBlendPolicyBase::GetProjectionMatrix(const uint32 ViewIdx, FMatrix& OutPrjMatrix)
+bool FDisplayClusterProjectionEasyBlendPolicyBase::GetProjectionMatrix(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FMatrix& OutPrjMatrix)
 {
 	check(IsInGameThread());
 
-	if (!ViewAdapter.IsValid())
+	if (!ViewAdapter.IsValid() || !IsEasyBlendRenderingEnabled())
 	{
 		return false;
 	}
 
 	// Pass request to the adapter
-	return ViewAdapter->GetProjectionMatrix(ViewIdx, OutPrjMatrix);
-}
-
-bool FDisplayClusterProjectionEasyBlendPolicyBase::IsWarpBlendSupported()
-{
-	return true;
-}
-
-void FDisplayClusterProjectionEasyBlendPolicyBase::ApplyWarpBlend_RenderThread(const uint32 ViewIdx, FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, const FIntRect& ViewportRect)
-{
-	check(IsInRenderingThread());
-
-	if (ViewAdapter.IsValid())
-	{
-		ViewAdapter->ApplyWarpBlend_RenderThread(ViewIdx, RHICmdList, SrcTexture, ViewportRect);
-	}
+	return ViewAdapter->GetProjectionMatrix(InViewport, InContextNum, OutPrjMatrix);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -157,7 +165,7 @@ bool FDisplayClusterProjectionEasyBlendPolicyBase::ReadConfigData(const FString&
 	}
 	else
 	{
-		UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("Viewport <%s>: Projection parameter '%s' not found"), DisplayClusterProjectionStrings::cfg::easyblend::File);
+		UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("Viewport <%s>: Projection parameter '%s' not found"), *InViewportId, DisplayClusterProjectionStrings::cfg::easyblend::File);
 		return false;
 	}
 	

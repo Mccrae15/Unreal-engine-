@@ -127,20 +127,20 @@ class ENGINE_API UDirectionalLightComponent : public ULightComponent
 	 * Angle subtended by light source in degrees (also known as angular diameter).
 	 * Defaults to 0.5357 which is the angle for our sun.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, meta=(UIMin = "0", UIMax = "5"), DisplayName = "Source Angle")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category=Light, meta=(UIMin = "0", UIMax = "5"), DisplayName = "Source Angle")
 	float LightSourceAngle;
 
 	/** 
 	 * Angle subtended by soft light source in degrees.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, meta=(UIMin = "0", UIMax = "5"), DisplayName = "Source Soft Angle")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category=Light, meta=(UIMin = "0", UIMax = "5"), DisplayName = "Source Soft Angle")
 	float LightSourceSoftAngle;
 
 	/**
 	 * Shadow source angle factor, relative to the light source angle.
 	 * Defaults to 1.0 to coincide with light source angle.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = RayTracing, meta = (UIMin = "0", UIMax = "5"), DisplayName = "Shadow Source Angle Factor")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = RayTracing, meta = (UIMin = "0", UIMax = "5"), DisplayName = "Shadow Source Angle Factor")
 	float ShadowSourceAngleFactor;
 
 	/** Determines how far shadows can be cast, in world units.  Larger values increase the shadowing cost. */
@@ -166,7 +166,7 @@ class ENGINE_API UDirectionalLightComponent : public ULightComponent
 	FLinearColor AtmosphereSunDiskColorScale;
 
 	/**
-	 * Whether to apply atmosphere transmittance per pixel on opaque meshes, instead of using the light global transmittance.
+	 * Whether to apply atmosphere transmittance per pixel on opaque meshes, instead of using the light global transmittance. Note: VolumetricCloud per pixel transmittance option is selectable on the VolumetricCloud component itself.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = AtmosphereAndCloud, AdvancedDisplay)
 	uint32 bPerPixelAtmosphereTransmittance : 1;
@@ -236,7 +236,7 @@ class ENGINE_API UDirectionalLightComponent : public ULightComponent
 	/**
 	* Whether the light should cast modulated shadows from dynamic objects (mobile only).  Also requires Cast Shadows to be set to True.
 	**/
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, AdvancedDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, AdvancedDisplay, meta = (EditCondition = "Mobility == EComponentMobility::Stationary"))
 	uint32 bCastModulatedShadows : 1;
 
 	/**

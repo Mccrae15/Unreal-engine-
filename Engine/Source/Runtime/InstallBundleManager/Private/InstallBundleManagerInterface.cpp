@@ -3,28 +3,27 @@
 #include "InstallBundleManagerInterface.h"
 #include "InstallBundleManagerModule.h"
 
-FInstallBundleCompleteMultiDelegate IInstallBundleManager::InstallBundleUpdatedDelegate;
 FInstallBundleCompleteMultiDelegate IInstallBundleManager::InstallBundleCompleteDelegate;
 
 FInstallBundlePausedMultiDelegate IInstallBundleManager::PausedBundleDelegate;
 
 FInstallBundleReleasedMultiDelegate IInstallBundleManager::ReleasedDelegate;
-FInstallBundleReleasedMultiDelegate IInstallBundleManager::RemovedDelegate;
 
 FInstallBundleManagerOnPatchCheckComplete IInstallBundleManager::PatchCheckCompleteDelegate;
 
-IInstallBundleManager* IInstallBundleManager::GetPlatformInstallBundleManager()
+TSharedPtr<IInstallBundleManager> IInstallBundleManager::GetPlatformInstallBundleManager()
 {
-	static IInstallBundleManager* Manager = nullptr;
+	static IInstallBundleManagerModule* Module = nullptr;
 	static bool bCheckedIni = false;
 
-	if (Manager)
-		return Manager;
+	if (Module)
+	{
+		return Module->GetInstallBundleManager();
+	}
 
 	if (!bCheckedIni && !GEngineIni.IsEmpty())
 	{
 		FString ModuleName;
-		IInstallBundleManagerModule* Module = nullptr;
 #if WITH_EDITOR
 		GConfig->GetString(TEXT("InstallBundleManager"), TEXT("EditorModuleName"), ModuleName, GEngineIni);
 #else
@@ -34,21 +33,22 @@ IInstallBundleManager* IInstallBundleManager::GetPlatformInstallBundleManager()
 		if (FModuleManager::Get().ModuleExists(*ModuleName))
 		{
 			Module = FModuleManager::LoadModulePtr<IInstallBundleManagerModule>(*ModuleName);
-			if (Module)
-			{
-				Manager = Module->GetInstallBundleManager();
-			}
 		}
 
 		bCheckedIni = true;
 	}
 
-	return Manager;
+	if (Module)
+	{
+		return Module->GetInstallBundleManager();
+	}
+
+	return {};
 }
 
-TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> IInstallBundleManager::RequestUpdateContent(FName BundleName, EInstallBundleRequestFlags Flags)
+TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> IInstallBundleManager::RequestUpdateContent(FName BundleName, EInstallBundleRequestFlags Flags, ELogVerbosity::Type LogVerbosityOverride /*= ELogVerbosity::NoLogging*/)
 {
-	return RequestUpdateContent(MakeArrayView(&BundleName, 1), Flags);
+	return RequestUpdateContent(MakeArrayView(&BundleName, 1), Flags, LogVerbosityOverride);
 }
 
 void IInstallBundleManager::GetContentState(FName BundleName, EInstallBundleGetContentStateFlags Flags, bool bAddDependencies, FInstallBundleGetContentStateDelegate Callback, FName RequestTag /*= NAME_None*/)
@@ -66,9 +66,9 @@ TValueOrError<FInstallBundleCombinedInstallState, EInstallBundleResult> IInstall
 	return GetInstallStateSynchronous(MakeArrayView(&BundleName, 1), bAddDependencies);
 }
 
-TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> IInstallBundleManager::RequestReleaseContent(FName ReleaseName, EInstallBundleReleaseRequestFlags Flags, TArrayView<const FName> KeepNames /*= TArrayView<const FName>()*/)
+TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> IInstallBundleManager::RequestReleaseContent(FName ReleaseName, EInstallBundleReleaseRequestFlags Flags, TArrayView<const FName> KeepNames /*= TArrayView<const FName>()*/, ELogVerbosity::Type LogVerbosityOverride /*= ELogVerbosity::NoLogging*/)
 {
-	return RequestReleaseContent(MakeArrayView(&ReleaseName, 1), Flags, KeepNames);
+	return RequestReleaseContent(MakeArrayView(&ReleaseName, 1), Flags, KeepNames, LogVerbosityOverride);
 }
 
 void IInstallBundleManager::RequestRemoveContentOnNextInit(FName RemoveName, TArrayView<const FName> KeepNames /*= TArrayView<const FName>()*/)
@@ -81,9 +81,9 @@ void IInstallBundleManager::CancelRequestRemoveContentOnNextInit(FName BundleNam
 	CancelRequestRemoveContentOnNextInit(MakeArrayView(&BundleName, 1));
 }
 
-void IInstallBundleManager::CancelUpdateContent(FName BundleName, EInstallBundleCancelFlags Flags)
+void IInstallBundleManager::CancelUpdateContent(FName BundleName)
 {
-	CancelUpdateContent(MakeArrayView(&BundleName, 1), Flags);
+	CancelUpdateContent(MakeArrayView(&BundleName, 1));
 }
 
 void IInstallBundleManager::PauseUpdateContent(FName BundleName)

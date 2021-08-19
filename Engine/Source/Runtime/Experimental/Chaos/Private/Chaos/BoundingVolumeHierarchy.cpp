@@ -9,11 +9,14 @@ using namespace Chaos;
 
 namespace Chaos
 {
-	float BoundsThicknessMultiplier = 1.f;	//should not be based on bounds, should be based on distance
-	FAutoConsoleVariableRef CVarBoundsThicknessMultiplier(TEXT("p.BoundsThicknessMultiplier"), BoundsThicknessMultiplier, TEXT(""));
-
-	float MinBoundsThickness = 0.1f;
-	FAutoConsoleVariableRef CVarMinBoundsThickness(TEXT("p.MinBoundsThickness"), MinBoundsThickness, TEXT(""));
+	// Bounds expansion (for speculative contact creation) is limited by this factor multiplied by the objects size.
+	// This prevents objects that are moving large distances in one frame from having bounds which overlap too many objects. 
+	// We only detect collisions at the final position anyway (when CCD is disabled) so having a bounds which is much larger 
+	// than the object doesn't help much. E.g., if an object moves more than its size per frame it will encounter tunneling 
+	// problems when colliding against zero-thickness surfaces such as tri meshes, regardless of the bounds size.
+	// NOTE: This is only used by objects that have CCD disabled.
+	FRealSingle Chaos_Bounds_MaxInflationScale = 2.f;
+	FAutoConsoleVariableRef CVarBoundsMaxInflatiuonScale(TEXT("p.Chaos.MaxInflationScale"), Chaos_Bounds_MaxInflationScale, TEXT("A limit on the bounds used to detect collisions when CCD is disabled. The bounds limit is this scale multiplied by the object's max dimension"));
 }
 
 template<class OBJECT_ARRAY, class LEAF_TYPE, class T, int d>
@@ -242,7 +245,7 @@ bool IntersectsHelper(const TAABB<T, d>& WorldSpaceBox, const TSpatialRay<T, d>&
 	const FBox VolumeBox(WorldSpaceBox.Min(), WorldSpaceBox.Max());
 	FVector Hit;
 	FVector Normal;
-	float Time;
+	FRealSingle Time;
 	return FMath::LineExtentBoxIntersection(VolumeBox, Ray.Start, Ray.End, FVector::ZeroVector, Hit, Normal, Time);
 
 	//return WorldSpaceBox.FindClosestIntersection(Ray.Start, Ray.End, 0).Second;
@@ -682,10 +685,11 @@ void TBoundingVolumeHierarchy<OBJECT_ARRAY, LEAF_TYPE, T, d>::Serialize(FArchive
 }
 }
 
-//template class CHAOS_API Chaos::TBoundingVolume<int32, float, 3>;
-template class Chaos::TBoundingVolumeHierarchy<TArray<Chaos::TSphere<float, 3>*>, TArray<int32>, float, 3>;
-template class Chaos::TBoundingVolumeHierarchy<Chaos::TPBDRigidParticles<float, 3>, TArray<int32>, float, 3>;
-template class Chaos::TBoundingVolumeHierarchy<Chaos::TParticles<float, 3>, TArray<int32>, float, 3>;
-template class Chaos::TBoundingVolumeHierarchy<Chaos::TGeometryParticles<float, 3>, TArray<int32>, float, 3>;
-template class Chaos::TBoundingVolumeHierarchy<Chaos::TPBDRigidParticles<float, 3>, TBoundingVolume<TPBDRigidParticleHandle<float,3>*, float, 3>, float, 3>;
-template class Chaos::TBoundingVolumeHierarchy<Chaos::TGeometryParticles<float, 3>, TBoundingVolume<TGeometryParticleHandle<float,3>*, float, 3>, float, 3>;
+//template class CHAOS_API Chaos::TBoundingVolume<int32, FReal, 3>;
+template class Chaos::TBoundingVolumeHierarchy<TArray<Chaos::TSphere<FReal, 3>*>, TArray<int32>, FReal, 3>;
+template class Chaos::TBoundingVolumeHierarchy<Chaos::TPBDRigidParticles<FReal, 3>, TArray<int32>, FReal, 3>;
+template class Chaos::TBoundingVolumeHierarchy<Chaos::FParticles, TArray<int32>, FReal, 3>;
+template class Chaos::TBoundingVolumeHierarchy<Chaos::TGeometryParticles<FReal, 3>, TArray<int32>, FReal, 3>;
+template class Chaos::TBoundingVolumeHierarchy<Chaos::TPBDRigidParticles<FReal, 3>, TBoundingVolume<TPBDRigidParticleHandle<FReal,3>*, FReal, 3>, FReal, 3>;
+template class Chaos::TBoundingVolumeHierarchy<Chaos::TGeometryParticles<FReal, 3>, TBoundingVolume<TGeometryParticleHandle<FReal,3>*, FReal, 3>, FReal, 3>;
+template class Chaos::TBoundingVolumeHierarchy<TArray<TUniquePtr<Chaos::FImplicitObject>>, TArray<int32>, FReal, 3>;

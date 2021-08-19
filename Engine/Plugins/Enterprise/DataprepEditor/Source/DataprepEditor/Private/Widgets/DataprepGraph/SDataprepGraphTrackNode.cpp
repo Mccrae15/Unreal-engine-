@@ -13,6 +13,7 @@
 #include "Widgets/DataprepGraph/SDataprepGraphEditor.h"
 #include "Widgets/DataprepWidgets.h"
 
+#include "DragAndDrop/AssetDragDropOp.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
 #include "GenericPlatform/ICursor.h"
@@ -238,7 +239,7 @@ public:
 		return Size + FVector2D(0.f, NodeTopPadding);
 	}
 
-	void OnActionsOrderChanged(const TArray<TSharedPtr<SDataprepGraphActionNode>>& InActionNodes);
+	void OnActionsOrderChanged(const TArray<TSharedPtr<SDataprepGraphBaseActionNode>>& InActionNodes);
 
 	void CreateHelperWidgets();
 
@@ -292,7 +293,7 @@ float SDataprepGraphTrackWidget::InterSlotSpacing = 16.f;
 float SDataprepGraphTrackWidget::TrackDesiredHeight = 40.f;
 float SDataprepGraphTrackWidget::LineTopPadding = 10.f;
 float SDataprepGraphTrackWidget::NodeTopOffset = 25.f;
-float SDataprepGraphTrackWidget::TrackSlotTopOffset = -15.f;
+float SDataprepGraphTrackWidget::TrackSlotTopOffset = -11.f;
 
 void SDataprepGraphTrackNode::Construct(const FArguments& InArgs, UDataprepGraphRecipeNode* InNode)
 {
@@ -342,37 +343,79 @@ void SDataprepGraphTrackNode::UpdateGraphNode()
 
 		const int32 ActionsCount = DataprepAsset->GetActionCount();
 		ActionNodes.Empty(ActionsCount);
-		ActionNodes.SetNum(ActionsCount);
 		EdGraphActionNodes.Reset(ActionsCount);
 
-		for(int32 Index = 0; Index < ActionsCount; ++Index)
+		for(int32 NodeIndex = 0, ActionIndex = 0; ActionIndex < ActionsCount; ++NodeIndex, ++ActionIndex)
 		{
-			if(UDataprepActionAsset* ActionAsset = DataprepAsset->GetAction(Index))
+			if(UDataprepActionAsset* ActionAsset = DataprepAsset->GetAction(ActionIndex))
 			{
-				EdGraphActionNodes.Emplace(NewObject<UDataprepGraphActionNode>( EdGraph, UDataprepGraphActionNode::StaticClass(), NAME_None, RF_Transactional ));
-				UDataprepGraphActionNode* NewActionNode = EdGraphActionNodes.Last().Get();
+				UEdGraphNode* NewNode = nullptr;
+				
+				UDataprepActionAppearance* Appearance = ActionAsset->GetAppearance();
 
-				NewActionNode->CreateNewGuid();
-				NewActionNode->PostPlacedNewNode();
-
-				NewActionNode->NodePosX = 0;
-				NewActionNode->NodePosY = 0;
-
-				NewActionNode->Initialize(ActionAsset, Index);
-
-				// #ueent_wip: Widget is created twice :-(
-				TSharedPtr<SGraphNode> ActionGraphNode;
-				if ( FGraphNodeFactory* GraphNodeFactor = NodeFactory.Get() )
+				if (Appearance->GroupId != INDEX_NONE)
 				{
-					ActionGraphNode = GraphNodeFactor->CreateNodeWidget( NewActionNode );
+					const int32 CurrentGroupId = Appearance->GroupId;
+
+					TArray<UDataprepActionAsset*> CurrentGroup;
+
+					for(; ActionIndex < ActionsCount; ++ActionIndex)
+					{
+						if(UDataprepActionAsset* Action = DataprepAsset->GetAction(ActionIndex))
+						{
+							if(CurrentGroupId == Action->GetAppearance()->GroupId)
+							{
+								CurrentGroup.Add(Action);
+							}
+							else
+							{
+								--ActionIndex;
+								break;
+							}
+						}
+					}
+
+					UDataprepGraphActionGroupNode* NewGroupNode = NewObject<UDataprepGraphActionGroupNode>(EdGraph, UDataprepGraphActionGroupNode::StaticClass(), NAME_None, RF_Transactional);
+					NewGroupNode->CreateNewGuid();
+					NewGroupNode->PostPlacedNewNode();
+					NewGroupNode->NodePosX = 0;
+					NewGroupNode->NodePosY = 0;
+
+					NewGroupNode->Initialize(DataprepAssetPtr, CurrentGroup, NodeIndex);
+
+					NewNode = NewGroupNode;
 				}
 				else
 				{
-					ActionGraphNode = FNodeFactory::CreateNodeWidget( NewActionNode );
+					UDataprepGraphActionNode* NewActionNode = NewObject<UDataprepGraphActionNode>( EdGraph, UDataprepGraphActionNode::StaticClass(), NAME_None, RF_Transactional );
+					NewActionNode->CreateNewGuid();
+					NewActionNode->PostPlacedNewNode();
+					NewActionNode->NodePosX = 0;
+					NewActionNode->NodePosY = 0;
+
+					NewActionNode->Initialize(DataprepAssetPtr, ActionAsset, NodeIndex);
+
+					NewNode = NewActionNode;
 				}
 
-				TSharedPtr< SDataprepGraphActionNode > ActionWidgetPtr = StaticCastSharedPtr<SDataprepGraphActionNode>( ActionGraphNode );
-				if(SDataprepGraphActionNode* ActionWidget = ActionWidgetPtr.Get())
+				TSharedPtr<SGraphNode> ActionGraphNode;
+				if (NewNode)
+				{
+					EdGraphActionNodes.Emplace(NewNode);
+
+					// #ueent_wip: Widget is created twice :-(
+					if ( FGraphNodeFactory* GraphNodeFactor = NodeFactory.Get() )
+					{
+						ActionGraphNode = GraphNodeFactor->CreateNodeWidget( NewNode );
+					}
+					else
+					{
+						ActionGraphNode = FNodeFactory::CreateNodeWidget( NewNode );
+					}
+				}
+
+				TSharedPtr< SDataprepGraphBaseActionNode > ActionWidgetPtr = StaticCastSharedPtr<SDataprepGraphBaseActionNode>( ActionGraphNode );
+				if(SDataprepGraphBaseActionNode* ActionWidget = ActionWidgetPtr.Get())
 				{
 					if(GraphPanelPtr.IsValid())
 					{
@@ -383,7 +426,7 @@ void SDataprepGraphTrackNode::UpdateGraphNode()
 
 					ActionWidget->SetParentTrackNode(ParentTrackNodePtr);
 
-					ActionNodes[Index] = ActionWidgetPtr;
+					ActionNodes.Add(StaticCastSharedPtr<SDataprepGraphBaseActionNode>( ActionGraphNode ));
 				}
 			}
 		}
@@ -426,36 +469,73 @@ void SDataprepGraphTrackNode::OnActionsOrderChanged()
 		return;
 	}
 
-	TMap<UDataprepActionAsset*, TSharedPtr< SDataprepGraphActionNode >> WidgetByAsset;
+	TMap<UDataprepActionAsset*, TSharedPtr< SDataprepGraphBaseActionNode >> WidgetByAsset;
 
-	for(TSharedPtr< SDataprepGraphActionNode >& ActionWidgetPtr : ActionNodes)
+	for(TSharedPtr< SDataprepGraphBaseActionNode >& ActionWidgetPtr : ActionNodes)
 	{
-
-		if( SDataprepGraphActionNode* ActionWidget = ActionWidgetPtr.Get() )
+		if( SDataprepGraphBaseActionNode* ActionWidget = ActionWidgetPtr.Get() )
 		{
-			ensure(Cast<UDataprepGraphActionNode>(ActionWidgetPtr->GetNodeObj()) != nullptr);
-			WidgetByAsset.Emplace(Cast<UDataprepGraphActionNode>(ActionWidgetPtr->GetNodeObj())->GetDataprepActionAsset(), ActionWidgetPtr);
-		}
-	}
-
-	for(int32 Index = 0; Index < DataprepAssetPtr->GetActionCount(); ++Index)
-	{
-		if(UDataprepActionAsset* ActionAsset = DataprepAssetPtr->GetAction(Index))
-		{
-			TSharedPtr< SDataprepGraphActionNode >* ActionWidgetPtr = WidgetByAsset.Find(ActionAsset);
-			if(ActionWidgetPtr != nullptr)
+			if (ActionWidget->IsActionGroup())
 			{
-				UDataprepGraphActionNode* ActionNode = Cast<UDataprepGraphActionNode>((*ActionWidgetPtr)->GetNodeObj());
-				ensure(ActionNode != nullptr);
-
-				ActionNode->Initialize( ActionAsset, Index);
-				(*ActionWidgetPtr)->UpdateExecutionOrder();
+				SDataprepGraphActionGroupNode* GroupNode = static_cast<SDataprepGraphActionGroupNode*>(ActionWidget);
+				for (int32 ActionIndex = 0; ActionIndex < GroupNode->GetNumActions(); ++ActionIndex)
+				{
+					WidgetByAsset.Emplace(GroupNode->GetAction(ActionIndex), ActionWidgetPtr);
+				}
+			}
+			else
+			{
+				WidgetByAsset.Emplace(ActionWidgetPtr->GetDataprepAction(), ActionWidgetPtr);
 			}
 		}
 	}
 
+	for(int32 NodeIndex = 0, ActionIndex = 0; ActionIndex < DataprepAssetPtr->GetActionCount(); ++NodeIndex, ++ActionIndex)
+	{
+		if(UDataprepActionAsset* ActionAsset = DataprepAssetPtr->GetAction(ActionIndex))
+		{
+			TSharedPtr< SDataprepGraphBaseActionNode >* ActionWidgetPtr = WidgetByAsset.Find(ActionAsset);
+
+			UDataprepActionAppearance* Appearance = ActionAsset->GetAppearance();
+
+			if (Appearance->GroupId != INDEX_NONE)
+			{
+				const int32 CurrentGroupId = Appearance->GroupId;
+				TArray<UDataprepActionAsset*> CurrentGroup;
+
+				for(; ActionIndex < DataprepAssetPtr->GetActionCount(); ++ActionIndex)
+				{
+					if(UDataprepActionAsset* Action = DataprepAssetPtr->GetAction(ActionIndex))
+					{
+						if(CurrentGroupId == Action->GetAppearance()->GroupId)
+						{
+							CurrentGroup.Add(Action);
+						}
+						else
+						{
+							--ActionIndex;
+							break;
+						}
+					}
+				}
+
+				UDataprepGraphActionGroupNode* ActionNode = Cast<UDataprepGraphActionGroupNode>((*ActionWidgetPtr)->GetNodeObj());
+				ensure(ActionNode != nullptr);
+				ActionNode->Initialize( DataprepAssetPtr, CurrentGroup, NodeIndex );
+			}
+			else
+			{
+				UDataprepGraphActionNode* ActionNode = Cast<UDataprepGraphActionNode>((*ActionWidgetPtr)->GetNodeObj());
+				ensure(ActionNode != nullptr);
+				ActionNode->Initialize( DataprepAssetPtr, ActionAsset, NodeIndex);
+			}
+
+			(*ActionWidgetPtr)->UpdateExecutionOrder();
+		}
+	}
+
 	// Reorder array according to new execution order
-	ActionNodes.Sort([](const TSharedPtr<SDataprepGraphActionNode> A, const TSharedPtr<SDataprepGraphActionNode> B) { return A->GetExecutionOrder() < B->GetExecutionOrder(); });
+	ActionNodes.Sort([](const TSharedPtr<SDataprepGraphBaseActionNode> A, const TSharedPtr<SDataprepGraphBaseActionNode> B) { return A->GetExecutionOrder() < B->GetExecutionOrder(); });
 
 	// Rearrange actions nodes along track
 	TrackWidgetPtr->OnActionsOrderChanged(ActionNodes);
@@ -483,10 +563,10 @@ bool SDataprepGraphTrackNode::RefreshLayout()
 	return false;
 }
 
-void SDataprepGraphTrackNode::MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter)
+void SDataprepGraphTrackNode::MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty)
 {
 	// Block track node to specific position
-	SGraphNode::MoveTo( TrackAnchor, NodeFilter);
+	SGraphNode::MoveTo( TrackAnchor, NodeFilter, bMarkDirty);
 }
 
 const FSlateBrush* SDataprepGraphTrackNode::GetShadowBrush(bool bSelected) const
@@ -520,6 +600,12 @@ FReply SDataprepGraphTrackNode::OnDrop(const FGeometry& MyGeometry, const FDragD
 
 FReply SDataprepGraphTrackNode::OnDragOver(const FGeometry & MyGeometry, const FDragDropEvent& DragDropEvent)
 {
+	TSharedPtr<FAssetDragDropOp> AssetOp = DragDropEvent.GetOperationAs<FAssetDragDropOp>();
+	if (AssetOp.IsValid())
+	{
+		return FReply::Handled();
+	}
+
 	TSharedPtr<FDataprepDragDropOp> DragActionNodeOp = DragDropEvent.GetOperationAs<FDataprepDragDropOp>();
 	if(DragActionNodeOp.IsValid())
 	{
@@ -563,7 +649,7 @@ void SDataprepGraphTrackNode::SetOwner(const TSharedRef<SGraphPanel>& OwnerPanel
 
 	SGraphNode::SetOwner(OwnerPanel);
 
-	for(TSharedPtr<SDataprepGraphActionNode>& ActionNodePtr : ActionNodes)
+	for(TSharedPtr<SDataprepGraphBaseActionNode>& ActionNodePtr : ActionNodes)
 	{
 		if (ActionNodePtr.IsValid())
 		{
@@ -616,7 +702,7 @@ FSlateRect SDataprepGraphTrackNode::Update()
 	return WorkingArea;
 }
 
-void SDataprepGraphTrackNode::OnStartNodeDrag(const TSharedRef<SDataprepGraphActionNode>& ActionNode)
+void SDataprepGraphTrackNode::OnStartNodeDrag(const TSharedRef<SDataprepGraphBaseActionNode>& ActionNode)
 {
 	bNodeDragging = true;
 	bSkipNextDragUpdate = false;
@@ -662,12 +748,11 @@ void SDataprepGraphTrackNode::OnEndNodeDrag(bool bDoDrop)
 
 	GraphPanel->Invalidate(EInvalidateWidgetReason::Layout);
 
-
 	FVector2D NewScreenSpacePosition;
-	int32 DraggedIndex;
-	int32 DroppedIndex;
+	int32 DraggedNodeIndex;
+	int32 DroppedNodeIndex;
 
-	TrackWidgetPtr->OnEndNodeDrag(NewScreenSpacePosition, DraggedIndex, DroppedIndex);
+	TrackWidgetPtr->OnEndNodeDrag(NewScreenSpacePosition, DraggedNodeIndex, DroppedNodeIndex);
 
 	FSlateApplication::Get().GetPlatformCursor()->SetType(EMouseCursor::Default);
 	FSlateApplication::Get().SetCursorPos( NewScreenSpacePosition );
@@ -676,26 +761,69 @@ void SDataprepGraphTrackNode::OnEndNodeDrag(bool bDoDrop)
 	{
 		if(UDataprepAsset* DataprepAsset = GetDataprepAsset())
 		{
+			TSharedPtr<SDataprepGraphBaseActionNode> DraggedNode = ActionNodes[DraggedNodeIndex];
 			FModifierKeysState ModifierKeyState = FSlateApplication::Get().GetModifierKeys();
-			const bool bCopyRequested = ModifierKeyState.IsControlDown() || ModifierKeyState.IsCommandDown();
+			const bool bCopyRequested = (ModifierKeyState.IsControlDown() || ModifierKeyState.IsCommandDown()) && !DraggedNode->IsActionGroup();
 
 			FScopedTransaction Transaction( bCopyRequested ? LOCTEXT("DataprepGraphTrackNode_OnDropCopy", "Add/Insert action") : LOCTEXT("OnDropMove", "Move action") );
 			bool bTransactionSuccessful = false;
 
-			if(bCopyRequested)
+			if (!DraggedNode->IsActionGroup())
 			{
-				if(DroppedIndex >= DataprepAsset->GetActionCount())
+				if(bCopyRequested)
 				{
-					bTransactionSuccessful = DataprepAsset->AddAction(DataprepAsset->GetAction(DraggedIndex)) != INDEX_NONE;
+					if(DroppedNodeIndex >= DataprepAsset->GetActionCount())
+					{
+						bTransactionSuccessful = DataprepAsset->AddAction(DraggedNode->GetDataprepAction()) != INDEX_NONE;
+					}
+					else
+					{
+						const int32 NewActionIndex = GetActionIndex(DroppedNodeIndex);
+						bTransactionSuccessful = DataprepAsset->InsertAction(DraggedNode->GetDataprepAction(), NewActionIndex);
+					}
+				}
+				else if( DroppedNodeIndex != DraggedNodeIndex)
+				{
+					const int32 DraggedActionIndex = GetActionIndex(DraggedNodeIndex);
+
+					int32 DroppedActionIndex = DraggedActionIndex;
+					if (DroppedNodeIndex > DraggedNodeIndex)
+					{
+						for (int32 NodeIndex = DraggedNodeIndex + 1; NodeIndex <= DroppedNodeIndex; ++NodeIndex)
+						{
+							DroppedActionIndex += GetNumActions(NodeIndex);
+						}
+					}
+					else
+					{
+						DroppedActionIndex = GetActionIndex(DroppedNodeIndex);
+					}
+					
+					bTransactionSuccessful = DataprepAsset->MoveAction(DraggedActionIndex, DroppedActionIndex);
 				}
 				else
 				{
-					bTransactionSuccessful = DataprepAsset->InsertAction(DataprepAsset->GetAction(DraggedIndex), DroppedIndex);
+					RefreshLayout();
 				}
 			}
-			else if( DroppedIndex != DraggedIndex)
+			else if( DroppedNodeIndex != DraggedNodeIndex )
 			{
-				bTransactionSuccessful = DataprepAsset->MoveAction(DraggedIndex, DroppedIndex);
+				// We are moving a group node: move all of its actions
+				const int32 FirstDraggedActionIndex = GetActionIndex(DraggedNodeIndex);
+				const int32 FirstDroppedActionIndex = GetActionIndex(DroppedNodeIndex);
+				const int32 NumActions = GetNumActions(DraggedNodeIndex);
+				int32 Offset;
+				
+				if (FirstDroppedActionIndex < FirstDraggedActionIndex)
+				{
+					Offset = FirstDroppedActionIndex - FirstDraggedActionIndex;
+				}
+				else
+				{
+					Offset = FirstDroppedActionIndex - (FirstDraggedActionIndex + NumActions - 1);
+				}
+
+				bTransactionSuccessful = DataprepAsset->MoveActions(FirstDraggedActionIndex, NumActions, Offset);
 			}
 			else
 			{
@@ -714,7 +842,7 @@ void SDataprepGraphTrackNode::OnEndNodeDrag(bool bDoDrop)
 	}
 }
 
-bool SDataprepGraphTrackNode::OnNodeDragged( TSharedPtr<SDataprepGraphActionNode>& ActionNodePtr, const FVector2D& DragScreenSpacePosition, const FVector2D& InScreenSpaceDelta)
+bool SDataprepGraphTrackNode::OnNodeDragged( TSharedPtr<SDataprepGraphBaseActionNode>& ActionNodePtr, const FVector2D& DragScreenSpacePosition, const FVector2D& InScreenSpaceDelta)
 {
 	ensure(bNodeDragging);
 	ensure(ActionNodePtr.IsValid());
@@ -802,7 +930,7 @@ bool SDataprepGraphTrackNode::OnNodeDragged( TSharedPtr<SDataprepGraphActionNode
 	const FVector2D TrackSize = TrackWidgetPtr->GetWorkingSize() * ZoomAmount;
 	float PanAmount = 0.f;
 
-	DragCallback LocalComputePanAmount = [&](const FVector2D& SlotRange, float Delta) -> float
+	DragCallback LocalComputePanAmount = [this, GraphPanel, ZoomAmount, TrackSize, PanelSize, DragTrackPosition, &TrackGeometry, &PanAmount](const FVector2D& SlotRange, float Delta) -> float
 	{
 		if(TrackSize.X > PanelSize.X)
 		{
@@ -929,38 +1057,45 @@ void SDataprepGraphTrackNode::RequestRename(const UEdGraphNode* Node)
 {
 	if(SGraphPanel* GraphPanel = OwnerGraphPanelPtr.Pin().Get())
 	{
+		int32 NodeIndex = INDEX_NONE;
+		
 		if(const UDataprepGraphActionNode* ActionEdNode = Cast<UDataprepGraphActionNode>(Node))
 		{
-			int32 ActionIndex = ActionEdNode->GetExecutionOrder();
-			if(ActionNodes.IsValidIndex(ActionIndex))
+			NodeIndex = ActionEdNode->GetExecutionOrder();
+		}
+		else if (const UDataprepGraphActionGroupNode* ActionGroupEdNode = Cast<UDataprepGraphActionGroupNode>(Node))
+		{
+			NodeIndex = ActionGroupEdNode->GetExecutionOrder();
+		}
+
+		if(ActionNodes.IsValidIndex(NodeIndex))
+		{
+			TSharedPtr<SDataprepGraphBaseActionNode>& ActionNode = ActionNodes[NodeIndex];
+
+			if(ActionNode.IsValid() && !GraphPanel->HasMouseCapture())
 			{
-				TSharedPtr<SDataprepGraphActionNode>& ActionNode = ActionNodes[ActionIndex];
+				FSlateRect TitleRect = ActionNode->GetTitleRect();
+				const FVector2D TopLeft = FVector2D( TitleRect.Left, TitleRect.Top );
+				const FVector2D BottomRight = FVector2D( TitleRect.Right, TitleRect.Bottom );
 
-				if(ActionNode.IsValid() && !GraphPanel->HasMouseCapture())
+				bool bTitleVisible = GraphPanel->IsRectVisible( TopLeft, BottomRight );
+				if( !bTitleVisible )
 				{
-					FSlateRect TitleRect = ActionNode->GetTitleRect();
-					const FVector2D TopLeft = FVector2D( TitleRect.Left, TitleRect.Top );
-					const FVector2D BottomRight = FVector2D( TitleRect.Right, TitleRect.Bottom );
+					bTitleVisible = GraphPanel->JumpToRect( TopLeft, BottomRight );
+				}
 
-					bool bTitleVisible = GraphPanel->IsRectVisible( TopLeft, BottomRight );
-					if( !bTitleVisible )
-					{
-						bTitleVisible = GraphPanel->JumpToRect( TopLeft, BottomRight );
-					}
-
-					if( bTitleVisible )
-					{
-						ActionNode->RequestRename();
-						//GraphPanel->JumpToNode(Node, false, true);
-						ActionNode->ApplyRename();
-					}
+				if( bTitleVisible )
+				{
+					ActionNode->RequestRename();
+					//GraphPanel->JumpToNode(Node, false, true);
+					ActionNode->ApplyRename();
 				}
 			}
 		}
 	}
 }
 
-void SDataprepGraphTrackNode::UpdateProxyNode(TSharedRef<SDataprepGraphActionNode> ActioNodePtr, const FVector2D& ScreenSpacePosition)
+void SDataprepGraphTrackNode::UpdateProxyNode(TSharedRef<SDataprepGraphBaseActionNode> ActioNodePtr, const FVector2D& ScreenSpacePosition)
 {
 	if(SGraphPanel* GraphPanel = OwnerGraphPanelPtr.Pin().Get())
 	{
@@ -968,6 +1103,41 @@ void SDataprepGraphTrackNode::UpdateProxyNode(TSharedRef<SDataprepGraphActionNod
 		FVector2D GraphPosition = PanelPosition / GraphPanel->GetZoomAmount() + GraphPanel->GetViewOffset();
 		ActioNodePtr->UpdateProxyNode(GraphPosition);
 	}
+}
+
+int32 SDataprepGraphTrackNode::GetActionIndex(int32 InNodeIndex) const
+{
+	int32 ActionIndex = 0;
+
+	for (int32 NodeIndex = 0; NodeIndex < InNodeIndex; ++NodeIndex)
+	{
+		ActionIndex += GetNumActions(NodeIndex);
+	}
+
+	return ActionIndex;
+}
+
+int32 SDataprepGraphTrackNode::GetNumActions(int32 InNodeIndex) const
+{
+	if (InNodeIndex >= ActionNodes.Num())
+	{
+		return 0;
+	}
+
+	TSharedPtr<SDataprepGraphBaseActionNode> NodePtr = ActionNodes[InNodeIndex];
+	if (SDataprepGraphBaseActionNode* Node = NodePtr.Get())
+	{
+		if (Node->IsActionGroup())
+		{
+			return static_cast<SDataprepGraphActionGroupNode*>(Node)->GetNumActions();
+		}
+		else
+		{
+			return Node->GetDataprepAction() != nullptr ? 1 : 0;
+		}
+	}
+
+	return 0;
 }
 
 void SDataprepGraphTrackWidget::Construct(const FArguments& InArgs, TSharedPtr<SDataprepGraphTrackNode> InTrackNode)
@@ -1032,7 +1202,7 @@ void SDataprepGraphTrackWidget::Construct(const FArguments& InArgs, TSharedPtr<S
 	const float TrackSlotTopPadding = LineTopPadding + TrackSlotTopOffset;
 
 	UDataprepAsset* DataprepAsset = InTrackNode->GetDataprepAsset();
-	SlotCount = DataprepAsset ? DataprepAsset->GetActionCount() : 0;
+	SlotCount = DataprepAsset ? InTrackNode->ActionNodes.Num() : 0;
 
 	DropSlots.Reserve(SlotCount + 2);
 	ActionSlots.Reserve(SlotCount + 1);
@@ -1042,7 +1212,7 @@ void SDataprepGraphTrackWidget::Construct(const FArguments& InArgs, TSharedPtr<S
 	float LeftOffset = 0.f;
 	if(DataprepAsset)
 	{
-		TArray<TSharedPtr<SDataprepGraphActionNode>>& InActionNodes = InTrackNode->ActionNodes;
+		TArray<TSharedPtr<SDataprepGraphBaseActionNode>>& InActionNodes = InTrackNode->ActionNodes;
 
 		for(int32 Index = 0; Index < SlotCount; ++Index)
 		{
@@ -1203,8 +1373,8 @@ void SDataprepGraphTrackWidget::CreateHelperWidgets()
 		.Padding(0.f)
 		[
 			SNew(SBox)
-			.WidthOverride(32.f)
-			.HeightOverride(32.f)
+			.WidthOverride(22.f)
+			.HeightOverride(22.f)
 		]
 		+SOverlay::Slot()
 		.VAlign(VAlign_Fill)
@@ -1223,8 +1393,8 @@ void SDataprepGraphTrackWidget::CreateHelperWidgets()
 		.Padding(0.f)
 		[
 			SNew(SBox)
-			.WidthOverride(32.f)
-			.HeightOverride(32.f)
+			.WidthOverride(22.f)
+			.HeightOverride(22.f)
 		]
 		+SOverlay::Slot()
 		.VAlign(VAlign_Fill)
@@ -1258,7 +1428,7 @@ int32 SDataprepGraphTrackWidget::GetHoveredActionNode(float LeftCorner, float Wi
 	return SlotCount - 1;
 }
 
-void SDataprepGraphTrackWidget::OnActionsOrderChanged(const TArray<TSharedPtr<SDataprepGraphActionNode>>& InActionNodes)
+void SDataprepGraphTrackWidget::OnActionsOrderChanged(const TArray<TSharedPtr<SDataprepGraphBaseActionNode>>& InActionNodes)
 {
 	ensure(InActionNodes.Num() == ActionNodes.Num());
 
@@ -1285,7 +1455,7 @@ void SDataprepGraphTrackWidget::RefreshLayout()
 		// Update action's proxy node registered to graph panel
 		const FVector2D LocalNodePosition(DropSlotOffset.Left + InterSlotSpacing, NodeTopPadding);
 		const FVector2D AbsoluteNodePosition = GetTickSpaceGeometry().LocalToAbsolute(LocalNodePosition);
-		TrackNodePtr.Pin()->UpdateProxyNode(StaticCastSharedRef<SDataprepGraphActionNode>(ActionNodes[Index]), AbsoluteNodePosition);
+		TrackNodePtr.Pin()->UpdateProxyNode(StaticCastSharedRef<SDataprepGraphBaseActionNode>(ActionNodes[Index]), AbsoluteNodePosition);
 
 		const FVector2D Size = UpdateActionSlot(DropSlotOffset, Index, ActionNodes[Index]);
 
@@ -1307,7 +1477,7 @@ void SDataprepGraphTrackWidget::RefreshLayout()
 	ActionSlots[SlotCount]->OffsetAttr.Set( FMargin(DropSlotOffset.Left, NodeTopPadding, 0., 0.));
 	ActionSlots[SlotCount]->AttachWidget(SNullWidget::NullWidget);
 
-	TrackSlots[SlotCount]->OffsetAttr.Set( FMargin(DropSlotOffset.Left + SDataprepGraphActionNode::DefaultWidth * 0.5f - 16.f, LineTopPadding + TrackSlotTopOffset, 32, 32));
+	TrackSlots[SlotCount]->OffsetAttr.Set( FMargin(DropSlotOffset.Left + SDataprepGraphActionNode::DefaultWidth * 0.5f - 11.f, LineTopPadding + TrackSlotTopOffset, 22, 22));
 	TrackSlots[SlotCount]->AttachWidget(SNullWidget::NullWidget);
 
 	WorkingSize.X = DropSlotOffset.Left + SDataprepGraphActionNode::DefaultWidth + InterSlotSpacing;
@@ -1444,8 +1614,10 @@ void SDataprepGraphTrackWidget::OnStartNodeDrag(int32 InIndexDragged)
 	// AbscissaRange.Y will be properly update in the call to OnControlKeyDown
 	AbscissaRange.Y = AbscissaRange.X;
 
+	TSharedPtr<SDataprepGraphBaseActionNode> ActionNode = StaticCastSharedRef<SDataprepGraphBaseActionNode>(ActionNodes[IndexDragged]);
+
 	const FModifierKeysState ModifierKeyState = FSlateApplication::Get().GetModifierKeys();
-	bIsCopying = !(ModifierKeyState.IsControlDown() || ModifierKeyState.IsCommandDown());
+	bIsCopying = !((ModifierKeyState.IsControlDown() || ModifierKeyState.IsCommandDown()) && !ActionNode->IsActionGroup());
 
 	FVector2D NewScreenSpacePosition;
 	OnControlKeyDown(!bIsCopying, NewScreenSpacePosition);
@@ -1486,7 +1658,7 @@ void SDataprepGraphTrackWidget::OnNodeDragged(float DragDelta, DragCallback Comp
 
 		if(NodeNewAbscissa != DragSlotOffset.Left)
 		{
-			TSharedPtr<SDataprepGraphActionNode> DraggedActionNode = StaticCastSharedRef<SDataprepGraphActionNode>(DragSlot->GetWidget());
+			TSharedPtr<SDataprepGraphBaseActionNode> DraggedActionNode = StaticCastSharedRef<SDataprepGraphBaseActionNode>(DragSlot->GetWidget());
 			ensure(DraggedActionNode.IsValid());
 
 			// Add offset from current position to related GraphNode
@@ -1518,7 +1690,7 @@ void SDataprepGraphTrackWidget::OnEndNodeDrag(FVector2D& OutScreenSpacePosition,
 	OutDraggedIndex = IndexDragged;
 	OutDroppedIndex = IndexHovered;
 
-	TSharedPtr<SDataprepGraphActionNode> ActionNode = StaticCastSharedRef<SDataprepGraphActionNode>(DragSlot->GetWidget());
+	TSharedPtr<SDataprepGraphBaseActionNode> ActionNode = StaticCastSharedRef<SDataprepGraphBaseActionNode>(DragSlot->GetWidget());
 	ensure(ActionNode.IsValid());
 
 	// Reset all  members used during the drag

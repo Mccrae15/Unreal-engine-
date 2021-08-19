@@ -3,24 +3,26 @@
 #include "SDMXFixturePatcher.h"
 
 #include "DMXEditor.h"
-#include "DMXEditorTabs.h"
+#include "DMXEditorTabNames.h"
 #include "DMXFixturePatchSharedData.h"
 #include "DMXFixturePatchNode.h"
 #include "SDMXPatchedUniverse.h"
 #include "DragDrop/DMXEntityDragDropOp.h"
 #include "DragDrop/DMXEntityFixturePatchDragDropOp.h"
+#include "IO/DMXPortManager.h"
 #include "Library/DMXEntityFixturePatch.h"
 #include "Library/DMXLibrary.h"
-#include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SNullWidget.h"
 
 #include "EditorStyleSet.h"
 #include "ScopedTransaction.h"
 #include "SlateOptMacros.h"
+#include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
-#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SSeparator.h"
+
 
 #define LOCTEXT_NAMESPACE "SDMXFixturePatcher"
 
@@ -146,11 +148,11 @@ void SDMXFixturePatcher::Construct(const FArguments& InArgs)
 
 		TArray<UDMXEntityFixturePatch*> Patches = Library->GetEntitiesTypeCast<UDMXEntityFixturePatch>();
 		UDMXEntityFixturePatch** ExistingPatchPtr = Patches.FindByPredicate([&](UDMXEntityFixturePatch* Patch) {
-			return Patch->UniverseID == SharedData->GetSelectedUniverse();
+			return Patch->GetUniverseID() == SharedData->GetSelectedUniverse();
 			});
 		if (!ExistingPatchPtr && Patches.Num() > 0)
 		{
-			SharedData->SelectUniverse(Patches[0]->UniverseID);
+			SharedData->SelectUniverse(Patches[0]->GetUniverseID());
 		}		
 
 		// Bind to tabs being switched
@@ -168,22 +170,22 @@ END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 void SDMXFixturePatcher::NotifyPropertyChanged(const FPropertyChangedEvent& PropertyChangedEvent)
 {
-	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, UniverseID) ||
-		PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, ManualStartingAddress))
+	if (PropertyChangedEvent.GetPropertyName() == UDMXEntityFixturePatch::GetUniverseIDPropertyNameChecked() ||
+		PropertyChangedEvent.GetPropertyName() == UDMXEntityFixturePatch::GetManualStartingAddressPropertyNameChecked())
 	{
 		if (IsUniverseSelectionEnabled() && PropertyChangedEvent.GetNumObjectsBeingEdited() == 1)
 		{
 			const UDMXEntityFixturePatch* FixturePatch = Cast<UDMXEntityFixturePatch>(PropertyChangedEvent.GetObjectBeingEdited(0));
 			check(FixturePatch);
 
-			SelectUniverse(FixturePatch->UniverseID);
+			SelectUniverse(FixturePatch->GetUniverseID());
 		}
-
+		
 		RefreshFromProperties();
 	}
-	else if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, bAutoAssignAddress) ||
+	else if (PropertyChangedEvent.GetPropertyName() == UDMXEntityFixturePatch::GetAutoAssignAddressPropertyNameChecked() ||
 		PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, EditorColor) ||
-		PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, ActiveMode))
+		PropertyChangedEvent.GetPropertyName() == UDMXEntityFixturePatch::GetActiveModePropertyNameChecked())
 	{
 		RefreshFromProperties();
 	}
@@ -232,7 +234,7 @@ void SDMXFixturePatcher::SelectUniverseThatContainsSelectedPatches()
 		const int32 PatchInSelectedUniverseIndex = SelectedFixturePatches.IndexOfByPredicate([SelectedUniverseID](TWeakObjectPtr<UDMXEntityFixturePatch> Patch) {
 			return 
 				Patch.IsValid() && 
-				Patch->UniverseID == SelectedUniverseID;
+				Patch->GetUniverseID() == SelectedUniverseID;
 			});
 		
 		const bool bIsAnySelectedPatchInSelectedUniverse = PatchInSelectedUniverseIndex != INDEX_NONE;
@@ -241,9 +243,9 @@ void SDMXFixturePatcher::SelectUniverseThatContainsSelectedPatches()
 			// Select arbitrary valid universe in selection
 			for(TWeakObjectPtr<UDMXEntityFixturePatch> SelectedPatch : SelectedFixturePatches)
 			{
-				if(SelectedPatch->UniverseID >= 0)
+				if(SelectedPatch->GetUniverseID() >= 0)
 				{
-					SharedData->SelectUniverse(SelectedPatch->UniverseID);
+					SharedData->SelectUniverse(SelectedPatch->GetUniverseID());
 				}
 				break;
 			}
@@ -254,7 +256,7 @@ void SDMXFixturePatcher::SelectUniverseThatContainsSelectedPatches()
 void SDMXFixturePatcher::OnActiveTabChanged(TSharedPtr<SDockTab> PreviouslyActive, TSharedPtr<SDockTab> NewlyActivated)
 {
 	if (!NewlyActivated.IsValid() ||
-		NewlyActivated->GetLayoutIdentifier().TabType == FDMXEditorTabs::DMXFixturePatchEditorTabId)
+		NewlyActivated->GetLayoutIdentifier().TabType == FDMXEditorTabNames::DMXFixturePatchEditor)
 	{
 		RefreshFromLibrary();
 	}
@@ -265,7 +267,6 @@ void SDMXFixturePatcher::OnEntitiesUpdated(UDMXLibrary* DMXLibrary)
 	check(DMXLibrary == GetDMXLibrary());
 	RefreshFromLibrary();
 }
-
 
 void SDMXFixturePatcher::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
@@ -337,8 +338,8 @@ void SDMXFixturePatcher::OnDragEnterChannel(int32 UniverseID, int32 ChannelID, c
 				{
 					const bool bIsHoveredChannelInFrontOfPatch = [UniverseID, NewStartingChannel, FixturePatch]()
 					{
-						bool bUniverseInFront = UniverseID < FixturePatch->UniverseID;
-						bool ChannelInFront = UniverseID == FixturePatch->UniverseID && NewStartingChannel < FixturePatch->GetStartingChannel();
+						bool bUniverseInFront = UniverseID < FixturePatch->GetUniverseID();
+						bool ChannelInFront = UniverseID == FixturePatch->GetUniverseID() && NewStartingChannel < FixturePatch->GetStartingChannel();
 
 						return bUniverseInFront || ChannelInFront;
 					}();
@@ -428,7 +429,7 @@ TSharedPtr<FDMXFixturePatchNode> SDMXFixturePatcher::GetDraggedNode(const TArray
 			}
 
 			// Remove auto assign to let drag drop set it
-			if (FixturePatch->bAutoAssignAddress)
+			if (FixturePatch->IsAutoAssignAddress())
 			{
 				DisableAutoAssignAdress(FixturePatch);
 			}
@@ -634,7 +635,7 @@ void SDMXFixturePatcher::ShowAllPatchedUniverses(bool bForceReconstructWidget)
 
 		// Sort by universe ID
 		FixturePatches.Sort([](const UDMXEntityFixturePatch& Patch, const UDMXEntityFixturePatch& Other) {
-			return Patch.UniverseID < Other.UniverseID;
+			return Patch.GetUniverseID() < Other.GetUniverseID();
 			});
 
 		// Create widgets for all universe with patches		
@@ -643,14 +644,14 @@ void SDMXFixturePatcher::ShowAllPatchedUniverses(bool bForceReconstructWidget)
 			check(Patch);
 
 			// Ignore patches that are not residing in a universe
-			if (Patch->UniverseID < 0)
+			if (Patch->GetUniverseID() < 0)
 			{
 				continue;
 			}
 
-			if (!PatchedUniversesByID.Contains(Patch->UniverseID))
+			if (!PatchedUniversesByID.Contains(Patch->GetUniverseID()))
 			{
-				AddUniverse(Patch->UniverseID);
+				AddUniverse(Patch->GetUniverseID());
 			}
 		}
 
@@ -749,53 +750,23 @@ bool SDMXFixturePatcher::IsUniverseSelectionEnabled() const
 	return false;
 }
 
-bool SDMXFixturePatcher::HasAnyControllers() const
+bool SDMXFixturePatcher::HasAnyPorts() const
 {
 	UDMXLibrary* Library = GetDMXLibrary();
 	if (Library)
 	{
-		TArray<UDMXEntityController*> Controllers = Library->GetEntitiesTypeCast<UDMXEntityController>();
-		if (Controllers.Num() > 0)
-		{
-			return true;
-		}
+		const bool bHasAnyPorts =  Library->GetInputPorts().Num() > 0 || Library->GetOutputPorts().Num() > 0;
+
+		return bHasAnyPorts;
 	}
 	return false;
 }
 
-bool SDMXFixturePatcher::AreUniversesInControllersRange() const
-{
-	UDMXLibrary* Library = GetDMXLibrary();
-	if (Library)
-	{
-		TArray<UDMXEntityController*> Controllers = Library->GetEntitiesTypeCast<UDMXEntityController>();
-		
-		TArray<int32> UniverseIDs;
-		PatchedUniversesByID.GetKeys(UniverseIDs);
-
-		for (int32 UniverseID : UniverseIDs)
-		{
-			int32 IdxControllerInRange =
-				Controllers.IndexOfByPredicate([UniverseID](UDMXEntityController* Controller) {
-					return
-						UniverseID >= Controller->UniverseLocalStart &&
-						UniverseID <= Controller->UniverseLocalEnd;
-					});
-
-			if (IdxControllerInRange == INDEX_NONE)
-			{
-				return false;
-			}
-		}
-	}
-	return true;
-}
-
 FText SDMXFixturePatcher::GetTooltipText() const
 {
-	if (!HasAnyControllers())
+	if (!HasAnyPorts())
 	{
-		return LOCTEXT("NoControllers", "No controllers available. Please create one in the 'Controllers' tab.");
+		return LOCTEXT("NoPorts", "No ports available. Please create add Ports to the DMX Library.");
 	}
 
 	return FText::GetEmpty();
@@ -827,7 +798,7 @@ void SDMXFixturePatcher::DisableAutoAssignAdress(TWeakObjectPtr<UDMXEntityFixtur
 
 		FixturePatch->Modify();
 
-		FixturePatch->bAutoAssignAddress = false;
+		FixturePatch->SetAutoAssignAddressUnsafe(false);
 	}
 }
 

@@ -5,6 +5,8 @@
 #include "UnrealUSDWrapper.h"
 #include "USDConversionUtils.h"
 #include "USDErrorUtils.h"
+#include "USDLayerUtils.h"
+#include "USDLog.h"
 #include "USDStageActor.h"
 #include "USDStageImportContext.h"
 #include "USDStageImporterModule.h"
@@ -32,8 +34,26 @@
 
 #endif // #if USE_USD_SDK
 
-
 #define LOCTEXT_NAMESPACE "UsdStageViewModel"
+
+#if USE_USD_SDK
+namespace UsdViewModelImpl
+{
+	/**
+	 * Saves the UE-state session layer for the given stage.
+	 * We use this instead of pxr::UsdStage::SaveSessionLayers because that function
+	 * will emit a warning about the main session layer not being saved every time it is used
+	 */
+	void SaveUEStateLayer( const UE::FUsdStage& UsdStage )
+	{
+		const bool bCreateIfNeeded = false;
+		if ( UE::FSdfLayer UEStateLayer = UsdUtils::GetUEPersistentStateSublayer( UsdStage, bCreateIfNeeded ) )
+		{
+			UEStateLayer.Export( *UEStateLayer.GetRealPath() );
+		}
+	}
+}
+#endif // #if USE_USD_SDK
 
 void FUsdStageViewModel::NewStage( const TCHAR* FilePath )
 {
@@ -42,11 +62,23 @@ void FUsdStageViewModel::NewStage( const TCHAR* FilePath )
 		FText::FromString( FilePath )
 	));
 
-	UE::FUsdStage UsdStage = UnrealUSDWrapper::NewStage( FilePath );
-
+	UE::FUsdStage UsdStage = FilePath ? UnrealUSDWrapper::NewStage( FilePath ) : UnrealUSDWrapper::NewStage();
 	if ( !UsdStage )
 	{
 		return;
+	}
+
+	// If we pass in nullptr, we'll create an in-memory stage, and so the "RootLayer" path we'll send down to the
+	// stage actor will be a magic path that is guaranteed to never exist in a filesystem due to invalid characters.
+	// The stage actor will interpret that, and try to load the stage from the stage cache
+	FString StagePath = FilePath;
+	if ( FilePath == nullptr )
+	{
+		UE::FSdfLayer Layer = UsdStage.GetRootLayer();
+		if ( Layer )
+		{
+			StagePath = FString( UnrealIdentifiers::IdentifierPrefix ) + Layer.GetIdentifier();
+		}
 	}
 
 #if USE_USD_SDK
@@ -62,7 +94,7 @@ void FUsdStageViewModel::NewStage( const TCHAR* FilePath )
 	}
 #endif // #if USE_USD_SDK
 
-	OpenStage( FilePath );
+	OpenStage( *StagePath );
 }
 
 void FUsdStageViewModel::OpenStage( const TCHAR* FilePath )
@@ -73,11 +105,15 @@ void FUsdStageViewModel::OpenStage( const TCHAR* FilePath )
 		UsdStageActor = &UsdStageModule.GetUsdStageActor( GWorld );
 	}
 
-	UsdStageActor->Modify();
-
-	UsdStageActor->RootLayer.FilePath = FilePath;
-	FPropertyChangedEvent RootLayerPropertyChangedEvent( FindFieldChecked< FProperty >( UsdStageActor->GetClass(), FName("RootLayer") ) );
-	UsdStageActor->PostEditChangeProperty( RootLayerPropertyChangedEvent );
+	if ( AUsdStageActor* StageActor = UsdStageActor.Get() )
+	{
+		StageActor->Modify();
+		StageActor->SetRootLayer( FilePath );
+	}
+	else
+	{
+		UE_LOG(LogUsd, Error, TEXT("Failed to find a AUsdStageActor that could open stage '%s'!"), FilePath);
+	}
 }
 
 void FUsdStageViewModel::ReloadStage()
@@ -88,7 +124,8 @@ void FUsdStageViewModel::ReloadStage()
 	}
 
 #if USE_USD_SDK
-	pxr::UsdStageRefPtr UsdStage = pxr::UsdStageRefPtr( UsdStageActor->GetUsdStage() );
+	UE::FUsdStage Stage = UsdStageActor->GetOrLoadUsdStage();
+	pxr::UsdStageRefPtr UsdStage = pxr::UsdStageRefPtr( Stage );
 
 	if ( UsdStage )
 	{
@@ -98,7 +135,13 @@ void FUsdStageViewModel::ReloadStage()
 			const std::vector<pxr::SdfLayerHandle>& HandleVec = UsdStage->GetUsedLayers();
 
 			const bool bForce = true;
-			pxr::SdfLayer::ReloadLayers( {HandleVec.begin(), HandleVec.end()}, bForce );
+			pxr::SdfLayer::ReloadLayers( { HandleVec.begin(), HandleVec.end() }, bForce );
+
+			// When reloading our UEState layer is closed but there is nothing on the root layer
+			// that would automatically pull the UEState session layer and cause it to be reloaded, so we need to try
+			// to load it back again
+			const bool bCreateIfNeeded = false;
+			UsdUtils::GetUEPersistentStateSublayer( Stage, bCreateIfNeeded );
 		}
 
 		if ( UsdUtils::ShowErrorsAndStopMonitoring() )
@@ -130,17 +173,48 @@ void FUsdStageViewModel::SaveStage()
 #if USE_USD_SDK
 	if ( UsdStageActor.IsValid() )
 	{
-		UE::FUsdStage UsdStage = UsdStageActor->GetUsdStage();
-
-		if ( UsdStage )
+		if ( UE::FUsdStage UsdStage = UsdStageActor->GetOrLoadUsdStage() )
 		{
 			FScopedUsdAllocs UsdAllocs;
 
 			UsdUtils::StartMonitoringErrors();
 
 			pxr::UsdStageRefPtr( UsdStage )->Save();
+			UsdViewModelImpl::SaveUEStateLayer( UsdStage );
 
 			UsdUtils::ShowErrorsAndStopMonitoring(LOCTEXT("USDSaveError", "Failed to save current USD Stage!\nCheck the Output Log for details."));
+		}
+	}
+#endif // #if USE_USD_SDK
+}
+
+void FUsdStageViewModel::SaveStageAs( const TCHAR* FilePath )
+{
+#if USE_USD_SDK
+	FScopedTransaction Transaction( FText::Format(
+		LOCTEXT( "SaveAsTransaction", "Saved USD stage as '{0}'" ),
+		FText::FromString( FilePath )
+	) );
+
+	if ( UsdStageActor.IsValid() )
+	{
+		if ( UE::FUsdStage UsdStage = UsdStageActor->GetOrLoadUsdStage() )
+		{
+			UsdUtils::StartMonitoringErrors();
+
+			if ( UE::FSdfLayer RootLayer = UsdStage.GetRootLayer() )
+			{
+				if ( pxr::SdfLayerRefPtr( RootLayer )->Export( TCHAR_TO_ANSI( FilePath ) ) )
+				{
+					FScopedUnrealAllocs UEAllocs;
+
+					OpenStage( FilePath );
+
+					UsdViewModelImpl::SaveUEStateLayer( UsdStage );
+				}
+			}
+
+			UsdUtils::ShowErrorsAndStopMonitoring( LOCTEXT( "USDSaveAsError", "Failed to SaveAs current USD Stage!\nCheck the Output Log for details." ) );
 		}
 	}
 #endif // #if USE_USD_SDK
@@ -155,8 +229,7 @@ void FUsdStageViewModel::ImportStage()
 		return;
 	}
 
-	const UE::FUsdStage UsdStage = StageActor->GetUsdStage();
-
+	const UE::FUsdStage UsdStage = StageActor->GetOrLoadUsdStage();
 	if ( !UsdStage )
 	{
 		return;
@@ -168,8 +241,10 @@ void FUsdStageViewModel::ImportStage()
 
 		// Preload some settings according to USDStage options. These will overwrite whatever is loaded from config
 		ImportContext.ImportOptions->PurposesToImport = StageActor->PurposesToLoad;
+		ImportContext.ImportOptions->RenderContextToImport = StageActor->RenderContext;
 		ImportContext.ImportOptions->ImportTime = StageActor->GetTime();
-		ImportContext.ImportOptions->MetersPerUnit = UsdUtils::GetUsdStageMetersPerUnit( UsdStage );
+		ImportContext.ImportOptions->StageOptions.MetersPerUnit = UsdUtils::GetUsdStageMetersPerUnit( UsdStage );
+		ImportContext.ImportOptions->StageOptions.UpAxis = UsdUtils::GetUsdStageUpAxisAsEnum( UsdStage );
 		ImportContext.bReadFromStageCache = true; // So that we import whatever the user has open right now, even if the file has changes
 
 		const FString RootPath = UsdStage.GetRootLayer().GetRealPath();
@@ -182,8 +257,8 @@ void FUsdStageViewModel::ImportStage()
 
 			// Let the importer reuse our assets, but force it to spawn new actors and components always
 			// This allows a different setting for asset/component collapsing, and doesn't require modifying the PrimTwins
-			ImportContext.AssetsCache = StageActor->GetAssetsCache();
-			ImportContext.PrimPathsToAssets = StageActor->GetPrimPathsToAssets();
+			ImportContext.AssetCache = StageActor->GetAssetCache();
+			ImportContext.MaterialToPrimvarToUVIndex = StageActor->GetMaterialToPrimvarToUVIndex();
 
 			UUsdStageImporter* USDImporter = IUsdStageImporterModule::Get().GetImporter();
 			USDImporter->ImportFromFile(ImportContext);

@@ -5,6 +5,7 @@
 #include "EntitySystem/MovieSceneEntitySystemTask.h"
 #include "EntitySystem/MovieSceneMasterInstantiatorSystem.h"
 #include "EntitySystem/MovieSceneSpawnablesSystem.h"
+#include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "MovieSceneTracksComponentTypes.h"
 #include "MovieSceneExecutionToken.h"
 #include "IMovieScenePlayer.h"
@@ -133,7 +134,7 @@ struct FLevelStreamingPreAnimatedToken : IMovieScenePreAnimatedToken
 	{
 	}
 
-	virtual void RestoreState(UObject& Object, IMovieScenePlayer& Player) override
+	virtual void RestoreState(UObject& Object, const UE::MovieScene::FRestoreStateParams& Params) override
 	{
 		ULevelStreaming* LevelStreaming = CastChecked<ULevelStreaming>(&Object);
 		SetLevelVisibility(*LevelStreaming, bVisible);
@@ -435,26 +436,20 @@ void UMovieSceneLevelVisibilitySystem::OnRun(FSystemTaskPrerequisites& InPrerequ
 	FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
 
 	auto ApplyLevelVisibilities = [this, BuiltInComponents](
-		const FEntityAllocation* Allocation,
-		FReadEntityIDs EntityIDAccessor,
-		TRead<FInstanceHandle> InstanceHandleAccessor,
-		TRead<FLevelVisibilityComponentData> LevelVisibilityAccessor,
-		TReadOptional<int16> HBiasAccessor)
+		FEntityAllocationIteratorItem AllocationItem,
+		TRead<FMovieSceneEntityID> EntityIDs,
+		TRead<FInstanceHandle> InstanceHandles,
+		TRead<FLevelVisibilityComponentData> LevelVisibilityData,
+		TReadOptional<int16> OptHBiases)
 	{
-		const bool bHasNeedsLink = Allocation->HasComponent(BuiltInComponents->Tags.NeedsLink);
-		const bool bHasNeedsUnlink = Allocation->HasComponent(BuiltInComponents->Tags.NeedsUnlink);
-		const bool bHasHBias = Allocation->HasComponent(BuiltInComponents->HierarchicalBias);
+		const FComponentMask& AllocationType = AllocationItem.GetAllocationType();
+		const bool bHasNeedsLink = AllocationType.Contains(BuiltInComponents->Tags.NeedsLink);
+		const bool bHasNeedsUnlink = AllocationType.Contains(BuiltInComponents->Tags.NeedsUnlink);
 
-		const FMovieSceneEntityID* EntityIDs = EntityIDAccessor.Resolve(Allocation);
-		const FInstanceHandle* InstanceHandles = InstanceHandleAccessor.Resolve(Allocation);
-		const FLevelVisibilityComponentData* LevelVisibilityData = LevelVisibilityAccessor.Resolve(Allocation);
-		const int16* HBiases = HBiasAccessor.Resolve(Allocation);
-
-		for (int32 Index = 0; Index < Allocation->Num(); ++Index)
+		for (int32 Index = 0; Index < AllocationItem.GetAllocation()->Num(); ++Index)
 		{
 			const FMovieSceneEntityID EntityID = EntityIDs[Index];
 			const UMovieSceneLevelVisibilitySection* Section = LevelVisibilityData[Index].Section;
-			const int16 HBias = (bHasHBias ? HBiases[Index] : 0);
 
 			if (!ensure(Section))
 			{
@@ -466,6 +461,7 @@ void UMovieSceneLevelVisibilitySystem::OnRun(FSystemTaskPrerequisites& InPrerequ
 
 			if (bHasNeedsLink)
 			{
+				const int16 HBias = (OptHBiases ? OptHBiases[Index] : 0);
 				SharedData.AssignLevelVisibilityOverrides(InstanceHandles[Index], LevelNames, Visibility, HBias, EntityID);
 			}
 			if (bHasNeedsUnlink)
@@ -485,15 +481,11 @@ void UMovieSceneLevelVisibilitySystem::OnRun(FSystemTaskPrerequisites& InPrerequ
 	SharedData.Flush(Linker);
 }
 
-void UMovieSceneLevelVisibilitySystem::SavePreAnimatedState(UE::MovieScene::FSystemTaskPrerequisites& InPrerequisites, UE::MovieScene::FSystemSubsequentTasks& Subsequents)
+void UMovieSceneLevelVisibilitySystem::SavePreAnimatedState(const FPreAnimationParameters& InParameters)
 {
 }
 
-void UMovieSceneLevelVisibilitySystem::SaveGlobalPreAnimatedState(UE::MovieScene::FSystemTaskPrerequisites& InPrerequisites, UE::MovieScene::FSystemSubsequentTasks& Subsequents)
-{
-}
-
-void UMovieSceneLevelVisibilitySystem::RestorePreAnimatedState(UE::MovieScene::FSystemTaskPrerequisites& InPrerequisites, UE::MovieScene::FSystemSubsequentTasks& Subsequents)
+void UMovieSceneLevelVisibilitySystem::RestorePreAnimatedState(const FPreAnimationParameters& InParameters)
 {
 	SharedData.RestoreLevels(Linker);
 }

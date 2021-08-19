@@ -11,7 +11,15 @@ class IPropertyHandle;
 class UMovieSceneSequence;
 class FDragDropOperation;
 class ISequencer;
-struct FMovieSceneObjectBindingID;
+
+namespace UE
+{
+namespace MovieScene
+{
+	struct FFixedObjectBindingID;
+}
+}
+
 
 
 class MOVIESCENETOOLS_API FMovieSceneObjectBindingIDCustomization
@@ -39,6 +47,8 @@ private:
 	virtual void SetCurrentValue(const FMovieSceneObjectBindingID& InBindingId) override;
 
 	virtual FMovieSceneObjectBindingID GetCurrentValue() const override;
+
+	virtual bool HasMultipleValues() const override;
 
 	FReply OnDrop(TSharedPtr<FDragDropOperation> InOperation);
 

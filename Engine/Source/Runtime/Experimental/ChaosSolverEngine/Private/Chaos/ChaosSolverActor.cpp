@@ -11,6 +11,7 @@
 #include "Chaos/ChaosGameplayEventDispatcher.h"
 #include "Chaos/Framework/DebugSubstep.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 
 //DEFINE_LOG_CATEGORY_STATIC(AFA_Log, NoLogging, All);
 
@@ -29,12 +30,7 @@ public:
 		: ConsoleCommands()
 	{
 		// Register console command
-		ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
-			TEXT("p.Chaos.Solver.List"),
-			TEXT("List all registered solvers. The solver name can then be used by the p.Chaos.Solver.Pause or p.Chaos.Solver.Substep commands."),
-			FConsoleCommandDelegate::CreateRaw(this, &FChaosSolverActorConsoleObjects::List),
-			ECVF_Cheat));
-
+		
 		ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
 			TEXT("p.Chaos.Solver.Pause"),
 			TEXT("Debug pause the specified solver."),
@@ -66,17 +62,6 @@ public:
 	void RemoveSolver(const FString& Name) { SolverActors.Remove(Name); }
 
 private:
-	void List()
-	{
-		for (auto SolverActor: SolverActors)
-		{
-			const Chaos::FPhysicsSolver* const Solver = SolverActor.Value->GetSolver();
-			if (Solver)
-			{
-				UE_LOG(LogChaosDebug, Display, TEXT("%s (%d objects)"), *SolverActor.Key, Solver->GetNumPhysicsProxies());
-			}
-		}
-	}
 
 	void Pause(const TArray<FString>& Args)
 	{
@@ -206,7 +191,7 @@ AChaosSolverActor::AChaosSolverActor(const FObjectInitializer& ObjectInitializer
 	, ChaosDebugSubstepControl()
 	, PhysScene(nullptr)
 	, Solver(nullptr)
-	, FloorParticle(nullptr)
+	, Proxy(nullptr)
 {
 	if(!HasAnyFlags(RF_ClassDefaultObject))
 	{
@@ -318,10 +303,10 @@ void AChaosSolverActor::EndPlay(const EEndPlayReason::Type ReasonEnd)
 		return;
 	}
 
-	if(FloorParticle)
+	if(Proxy)
 	{
-		Solver->UnregisterObject(FloorParticle.Get());
-		FloorParticle = nullptr;
+		Solver->UnregisterObject(Proxy);
+		Proxy = nullptr;
 	}
 
 	Solver->EnqueueCommandImmediate([InSolver=Solver]()
@@ -413,15 +398,15 @@ void AChaosSolverActor::MakeFloor()
 {
 	if(bHasFloor)
 	{
-		FloorParticle = Chaos::TGeometryParticle<float, 3>::CreateParticle();
-		FloorParticle->SetGeometry(TUniquePtr<Chaos::TPlane<float, 3>>(new Chaos::TPlane<float, 3>(FVector(0), FVector(0, 0, 1))));
-		FloorParticle->SetObjectState(Chaos::EObjectStateType::Static);
-		FloorParticle->SetX(Chaos::TVector<float, 3>(0.f, 0.f, FloorHeight));
+		TUniquePtr<Chaos::FGeometryParticle> FloorParticle = Chaos::FGeometryParticle::CreateParticle();
+		FloorParticle->SetGeometry(TUniquePtr<Chaos::TPlane<Chaos::FReal, 3>>(new Chaos::TPlane<Chaos::FReal, 3>(FVector(0), FVector(0, 0, 1))));
+		FloorParticle->SetX(Chaos::FVec3(0.f, 0.f, FloorHeight));
 		FCollisionFilterData FilterData;
 		FilterData.Word1 = 0xFFFF;
 		FilterData.Word3 = 0xFFFF;
 		FloorParticle->SetShapeSimData(0, FilterData);
-		Solver->RegisterObject(FloorParticle.Get());
+		Proxy = FSingleParticlePhysicsProxy::Create(MoveTemp(FloorParticle));
+		Solver->RegisterObject(Proxy);
 	}
 }
 
@@ -460,19 +445,19 @@ void AChaosSolverActor::PostEditChangeProperty(struct FPropertyChangedEvent& Pro
 		}
 		else if(PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(AChaosSolverActor, bHasFloor))
 		{
-			if(FloorParticle)
+			if(Proxy)
 			{
-				Solver->UnregisterObject(FloorParticle.Get());
-				FloorParticle = nullptr;
+				Solver->UnregisterObject(Proxy);
+				Proxy = nullptr;
 			}
 
 			MakeFloor();
 		}
 		else if(PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(AChaosSolverActor, FloorHeight))
 		{
-			if(FloorParticle)
+			if(Proxy)
 			{
-				FloorParticle->SetX(FVector(0.0f, 0.0f, FloorHeight));
+				Proxy->GetGameThreadAPI().SetX(FVector(0.0f, 0.0f, FloorHeight));
 			}
 		}
 	}

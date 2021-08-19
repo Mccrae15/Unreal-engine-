@@ -281,8 +281,8 @@ namespace Generator
 				continue;
 
 			// only for single-valued parameters, we can meaningfully set any annotations
-			check(CurrentParameter[0].ConnectionType == EConnectionType::Expression);
-			UMaterialExpression* ParameterExpression = GetParameterExpression(CurrentParameter[0].ExpressionData.Expression);
+			check(CurrentParameter[0].GetConnectionType() == EConnectionType::Expression);
+			UMaterialExpression* ParameterExpression = GetParameterExpression(CurrentParameter[0].GetExpressionAndMaybeUse());
 
 			mi::base::Handle<const mi::neuraylib::IAnnotation_block> AnnotationBlock(
 			    AnnotationList->get_annotation_block(CurrentMDLMaterial->get_parameter_name(ParameterIndex)));
@@ -313,7 +313,7 @@ namespace Generator
 	{
 		const mi::Size Index = MDLExpression.get_index();
 		check(Index < Parameters.Num());
-		Parameters[Index].IsUsed = true;
+		Parameters[Index].SetIsUsed();
 		return Parameters[Index];
 	}
 
@@ -385,18 +385,22 @@ namespace Generator
 			{
 				auto Handle = mi::base::make_handle(Value.get_interface<const mi::neuraylib::IValue_texture>());
 				const mi::base::Handle<const mi::neuraylib::ITexture> MDLTexture(Transaction.access<mi::neuraylib::ITexture>(Handle->get_value()));
-				if (!MDLTexture)
-					return;
 
-				Common::FTextureProperty Property;
-				Property.Path    = Mdl::Util::GetTextureFileName(MDLTexture.get());
-				float Gamma      = MDLTexture->get_effective_gamma();
-				Property.bIsSRGB = Gamma != 1.0;
-				if (!FPaths::GetExtension(Property.Path).IsEmpty())
+				UTexture2D* Texture = nullptr;
+
+				if (MDLTexture)
 				{
-					UTexture2D* Texture = TextureFactory->CreateTexture(CurrentMaterial->GetOuter(), Property, CurrentMaterial->GetFlags(), &LogMessages);
-					Parameter.Add(NewMaterialExpressionTextureObjectParameter(CurrentMaterial, Name, Texture));
+					Common::FTextureProperty Property;
+					Property.Path    = Mdl::Util::GetTextureFileName(MDLTexture.get());
+					float Gamma      = MDLTexture->get_effective_gamma();
+					Property.bIsSRGB = Gamma != 1.0;
+					if (!FPaths::GetExtension(Property.Path).IsEmpty())
+					{
+						Texture = TextureFactory->CreateTexture(CurrentMaterial->GetOuter(), Property, CurrentMaterial->GetFlags(), &LogMessages);
+					}
 				}
+
+				Parameter.Add(NewMaterialExpressionTextureObjectParameter(CurrentMaterial, Name, Texture));
 			}
 			break;
 			case mi::neuraylib::IValue::VK_LIGHT_PROFILE:
@@ -426,19 +430,18 @@ namespace Generator
 		FBaseExpressionFactory::Cleanup();
 	}
 
-	void FParameterExpressionFactory::Tidy()
+	void FParameterExpressionFactory::CleanupMaterialExpressions()
 	{
 		for (FMaterialExpressionConnectionList& Parameter : Parameters)
 		{
-			if (!Parameter.IsUsed)
+			if (!Parameter.IsUsed())
 			{
 				for (FMaterialExpressionConnection& Connection : Parameter.Connections)
 				{
-					if (Connection.ConnectionType == EConnectionType::Expression)
+					if (Connection.GetConnectionType() == EConnectionType::Expression)
 					{
-						//CurrentMaterial->Expressions.Remove(Connection.ExpressionData.Expression);
-						//Connection->ExpressionData->Expression->BeginDestroy();
-						//Connection->ExpressionData->Expression = nullptr;
+						CurrentMaterial->Expressions.Remove(Connection.GetExpressionUnused());
+						Connection.DestroyExpression();
 					}
 				}
 			}

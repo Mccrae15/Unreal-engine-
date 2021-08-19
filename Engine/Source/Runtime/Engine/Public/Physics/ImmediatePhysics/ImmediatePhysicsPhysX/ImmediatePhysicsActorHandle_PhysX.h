@@ -100,6 +100,11 @@ namespace ImmediatePhysics_PhysX
 			OwningSimulation.AddForce(ActorDataIndex, Force);
 		}
 
+		void AddTorque(const FVector& Torque)
+		{
+			// Not supported right now
+		}
+
 		void AddRadialForce(const FVector& Origin, float Strength, float Radius, ERadialImpulseFalloff Falloff, EForceType ForceType)
 		{
 			OwningSimulation.AddRadialForce(ActorDataIndex, Origin, Strength, Radius, Falloff, ForceType);
@@ -175,6 +180,23 @@ namespace ImmediatePhysics_PhysX
 		FVector GetInverseInertia() const
 		{
 			return P2UVector(OwningSimulation.GetLowLevelBody(ActorDataIndex).invInertia);
+		}
+
+		/** Get the mass value */
+		float GetMass() const
+		{
+			float Mass = GetInverseMass();
+			return (Mass != 0.0) ? 1.0 / Mass : 0.0;
+		}
+
+		/** Get the inertia vector */
+		FVector GetInertia() const
+		{
+			FVector Inertia = GetInverseInertia();
+			Inertia.X = (Inertia.X != 0.0) ? 1.0 / Inertia.X : 0.0;
+			Inertia.Y = (Inertia.Y != 0.0) ? 1.0 / Inertia.Y : 0.0;
+			Inertia.Z = (Inertia.Z != 0.0) ? 1.0 / Inertia.Z : 0.0;
+			return Inertia;
 		}
 
 		/** Set the max depenetration velocity*/

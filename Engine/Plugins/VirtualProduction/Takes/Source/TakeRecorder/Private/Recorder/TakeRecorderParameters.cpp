@@ -1,14 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Recorder/TakeRecorderParameters.h"
+#include "Recorder/TakeRecorder.h"
 
 FTakeRecorderUserParameters::FTakeRecorderUserParameters()
 	: bMaximizeViewport(false)
 	, CountdownSeconds(0.f)
 	, EngineTimeDilation(1.f)
+	, bStopAtPlaybackEnd(false)
 	, bRemoveRedundantTracks(true)
 	, ReduceKeysTolerance(KINDA_SMALL_NUMBER)
 	, bSaveRecordedAssets(false)
+	, bAutoLock(true)
 	, bAutoSerialize(false)
 {
 	// Defaults for all user parameter structures
@@ -21,7 +24,9 @@ FTakeRecorderProjectParameters::FTakeRecorderProjectParameters()
 	, bRecordTimecode(false)
 	, bRecordSourcesIntoSubSequences(false)
 	, bRecordToPossessable(false)
+	, bShowNotifications(true)
 {}
 
-FTakeRecorderParameters::FTakeRecorderParameters()
+FTakeRecorderParameters::FTakeRecorderParameters() 
+	: TakeRecorderMode(ETakeRecorderMode::RecordNewSequence)
 {}

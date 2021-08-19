@@ -82,7 +82,7 @@ public:
 
 		if (FoundItem->Num() > WhichIdx && WhichIdx >= 0)
 		{
-			return (*FoundItem)[WhichIdx]->AsShared();
+			return StaticCastSharedRef<ViewModelType>((*FoundItem)[WhichIdx]->AsShared());
 		}
 		else
 		{
@@ -102,6 +102,22 @@ public:
 			return OutViewModels.Num() > 0;
 		}
 		return false;
+	}
+
+	static void GetAllViewModels(TArray<TSharedRef<ViewModelType>>& OutViewModels)
+	{
+		TArray<TArray<ViewModelType*>> ObjectsToViewModelsValues;
+		ObjectsToViewModels.GenerateValueArray(ObjectsToViewModelsValues);
+		for (const TArray<ViewModelType*>& ViewModelsByObject : ObjectsToViewModelsValues)
+		{
+			for (ViewModelType* ViewModel : ViewModelsByObject)
+			{
+				if (ViewModel != nullptr)
+				{
+					OutViewModels.Add(ViewModel->AsShared());
+				}
+			}
+		}
 	}
 
 	/** Called by a module manager to ensure that all known references have been cleared out before module shutdown.*/

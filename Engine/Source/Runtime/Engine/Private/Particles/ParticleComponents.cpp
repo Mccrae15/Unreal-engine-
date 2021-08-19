@@ -467,7 +467,7 @@ void UParticleLODLevel::UpdateModuleLists()
 			UParticleSpriteEmitter* SpriteEmitter = Cast<UParticleSpriteEmitter>(GetOuter());
 			if (SpriteEmitter && (MeshTD->bOverrideMaterial == false))
 			{
-				FStaticMeshSection& Section = MeshTD->Mesh->RenderData->LODResources[0].Sections[0];
+				FStaticMeshSection& Section = MeshTD->Mesh->GetRenderData()->LODResources[0].Sections[0];
 				UMaterialInterface* Material = MeshTD->Mesh->GetMaterial(Section.MaterialIndex);
 				if (Material)
 				{
@@ -3983,7 +3983,7 @@ void UParticleSystemComponent::SendRenderDynamicData_Concurrent()
 	SCOPE_CYCLE_COUNTER(STAT_ParticleSystemComponent_SendRenderDynamicData_Concurrent);
 	SCOPE_CYCLE_COUNTER(STAT_ParticlesOverview_GT_CNC);
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Effects);
-	PARTICLE_PERF_STAT_CYCLES(Template, EndOfFrame);
+	PARTICLE_PERF_STAT_CYCLES_GT(FParticlePerfStatsContext(GetWorld(), Template, this), EndOfFrame);
 
 	ForceAsyncWorkCompletion(ENSURE_AND_STALL, false, true);
 	Super::SendRenderDynamicData_Concurrent();
@@ -5044,8 +5044,8 @@ void UParticleSystemComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 		SetComponentTickEnabled(false);
 		return;
 	}
-	PARTICLE_PERF_STAT_CYCLES(Template, TickGameThread);
-	PARTICLE_PERF_STAT_INSTANCE_COUNT(Template, 1);
+
+	PARTICLE_PERF_STAT_CYCLES_WITH_COUNT_GT(FParticlePerfStatsContext(GetWorld(), Template, this), TickGameThread, 1);
 
 	checkf(!IsTickManaged() || !PrimaryComponentTick.IsTickFunctionEnabled(), TEXT("PSC has enabled tick funciton and is also ticking via the tick manager.\nTemplate:%s\nPSC: %s\nParent:%s")
 	, *Template->GetFullName(), *GetFullName(), GetAttachParent() ? *GetAttachParent()->GetFullName() : TEXT("nullptr"));
@@ -5301,7 +5301,7 @@ void UParticleSystemComponent::ComputeTickComponent_Concurrent()
 	SCOPE_CYCLE_COUNTER(STAT_ParticleComputeTickTime);
 	FScopeCycleCounterUObject AdditionalScope(AdditionalStatObject(), GET_STATID(STAT_ParticleComputeTickTime));
 	SCOPE_CYCLE_COUNTER(STAT_ParticlesOverview_GT_CNC);
-	PARTICLE_PERF_STAT_CYCLES(Template, TickConcurrent);
+	PARTICLE_PERF_STAT_CYCLES_GT(FParticlePerfStatsContext(GetWorld(), Template, this), TickConcurrent);
 
 	// Tick Subemitters.
 	int32 EmitterIndex;
@@ -5377,7 +5377,7 @@ void UParticleSystemComponent::FinalizeTickComponent()
 
 	SCOPE_CYCLE_COUNTER(STAT_ParticleFinalizeTickTime);
 	SCOPE_CYCLE_COUNTER(STAT_ParticlesOverview_GT);
-	PARTICLE_PERF_STAT_CYCLES(Template, Finalize);
+	PARTICLE_PERF_STAT_CYCLES_GT(FParticlePerfStatsContext(GetWorld(), Template, this), Finalize);
 
 	if(bAsyncDataCopyIsValid)
 	{
@@ -5872,10 +5872,6 @@ void UParticleSystemComponent::SetTemplate(class UParticleSystem* NewTemplate)
 			Instance->CurrentLODLevelIndex = 0;
 		}
 	}
-	if (SceneProxy)
-	{
-		static_cast<FParticleSystemSceneProxy*>(SceneProxy)->MarkVertexFactoriesDirty();
-	}
 
 	if (ShouldBeTickManaged())
 	{
@@ -6318,6 +6314,11 @@ void UParticleSystemComponent::Deactivate()
 			}
 		}		
 	}
+}
+
+void UParticleSystemComponent::DeactivateImmediate()
+{
+	Complete();
 }
 
 void UParticleSystemComponent::ApplyWorldOffset(const FVector& InOffset, bool bWorldShift)
@@ -7562,7 +7563,7 @@ void UParticleLODLevel::GetUsedMaterials(TArray<UMaterialInterface*>& OutMateria
 
 		if (MeshTypeData && MeshTypeData->Mesh)
 		{
-			const FStaticMeshLODResources& LODModel = MeshTypeData->Mesh->RenderData->LODResources[0];
+			const FStaticMeshLODResources& LODModel = MeshTypeData->Mesh->GetRenderData()->LODResources[0];
 
 			// Gather the materials applied to the LOD.
 			for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)

@@ -20,6 +20,8 @@ namespace PixelStreamingProtocol
 		AverageBitrateRequest = 3,
 		StartStreaming = 4,
 		StopStreaming = 5,
+		LatencyTest = 6,
+		RequestInitialSettings = 7,
 
 		/**********************************************************************/
 
@@ -60,13 +62,38 @@ namespace PixelStreamingProtocol
 	};
 
 	//! Messages that can be sent to the webrtc players
-	// must be kept in sync with app.js `ToClientMessageType`
 	enum class EToPlayerMsg : uint8 {
-		QualityControlOwnership, 
-		Response, 
-		Command, 
-		FreezeFrame, 
-		UnfreezeFrame,
-		VideoEncoderAvgQP // average Quantisation Parameter value of Video Encoder, roughly depicts video encoding quality
+		QualityControlOwnership = 0,
+		Response = 1,
+		Command = 2,
+		FreezeFrame = 3,
+		UnfreezeFrame = 4,
+		VideoEncoderAvgQP = 5, // average Quantisation Parameter value of Video Encoder, roughly depicts video encoding quality
+		LatencyTest = 6,
+		InitialSettings = 7
 	};
+
+	template<typename T>
+	static const T& ParseBuffer(const uint8*& Data, uint32& Size)
+	{
+		checkf(sizeof(T) <= Size, TEXT("%d - %d"), sizeof(T), Size);
+		const T& Value = *reinterpret_cast<const T*>(Data);
+		Data += sizeof(T);
+		Size -= sizeof(T);
+		return Value;
+	}
+
+	static FString ParseString(const uint8*& Data, uint32& Size)
+	{
+		uint16 StrLen = ParseBuffer<uint16>(Data, Size);
+		checkf(StrLen * sizeof(TCHAR) <= Size, TEXT("%d - %d"), StrLen, Size);
+		FString Res;
+		Res.GetCharArray().SetNumUninitialized(StrLen + 1);
+		FMemory::Memcpy(Res.GetCharArray().GetData(), Data, StrLen * sizeof(TCHAR));
+		Res.GetCharArray()[StrLen] = '\0';
+		Data += StrLen * sizeof(TCHAR);
+		Size -= StrLen * sizeof(TCHAR);
+		return Res;
+	}
+
 };

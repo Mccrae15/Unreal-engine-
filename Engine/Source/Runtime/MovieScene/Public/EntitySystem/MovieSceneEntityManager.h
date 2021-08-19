@@ -15,7 +15,6 @@
 #include "EntitySystem/MovieSceneEntityFactoryTypes.h"
 #include "EntitySystem/MovieSceneComponentTypeHandler.h"
 #include "EntitySystem/MovieSceneComponentTypeInfo.h"
-#include "EntitySystem/MovieSceneComponentPtr.h"
 #include "Algo/AnyOf.h"
 #include "Algo/AllOf.h"
 
@@ -400,19 +399,19 @@ public:
 	 * @return A scoped component ptr that points directly to the entity's component, or nullptr if it does not exist
 	 */
 	template<typename T>
-	TComponentPtr<const T> ReadComponent(FMovieSceneEntityID Entity, TComponentTypeID<T> ComponentTypeID) const
+	TComponentLock<TReadOptional<T>> ReadComponent(FMovieSceneEntityID Entity, TComponentTypeID<T> ComponentTypeID) const
 	{
 		check(Entity);
 
 		if (!ComponentTypeID)
 		{
-			return TComponentPtr<const T>();
+			return TComponentLock<TReadOptional<T>>();
 		}
 
 		FEntityLocation Location = EntityLocations[Entity.AsIndex()];
 		if (!Location.IsValid())
 		{
-			return TComponentPtr<const T>();
+			return TComponentLock<TReadOptional<T>>();
 		}
 
 		FEntityAllocation* Allocation = EntityAllocations[Location.GetAllocationIndex()];
@@ -422,11 +421,11 @@ public:
 		{
 			if (Header.ComponentType == ComponentTypeID)
 			{
-				return TComponentPtr<const T>(Header, ComponentOffset, SystemSerialNumber);
+				return TComponentLock<TReadOptional<T>>(&Header, ComponentOffset);
 			}
 		}
 
-		return TComponentPtr<const T>();
+		return TComponentLock<TReadOptional<T>>();
 	}
 
 
@@ -441,7 +440,7 @@ public:
 	template<typename T>
 	T ReadComponentChecked(FMovieSceneEntityID Entity, TComponentTypeID<T> ComponentTypeID) const
 	{
-		TComponentPtr<const T> Value = ReadComponent(Entity, ComponentTypeID);
+		TComponentLock<TReadOptional<T>> Value = ReadComponent(Entity, ComponentTypeID);
 		check(Value);
 		return *Value;
 	}
@@ -456,19 +455,19 @@ public:
 	 * @return A scoped component ptr that points directly to the entity's component, or nullptr if it does not exist
 	 */
 	template<typename T>
-	TComponentPtr<T> WriteComponent(FMovieSceneEntityID Entity, TComponentTypeID<T> ComponentTypeID)
+	TComponentLock<TWriteOptional<T>> WriteComponent(FMovieSceneEntityID Entity, TComponentTypeID<T> ComponentTypeID)
 	{
 		check(Entity);
 
 		if (!ComponentTypeID)
 		{
-			return TComponentPtr<T>();
+			return TComponentLock<TWriteOptional<T>>();
 		}
 
 		FEntityLocation Location = EntityLocations[Entity.AsIndex()];
 		if (!Location.IsValid())
 		{
-			return TComponentPtr<T>();
+			return TComponentLock<TWriteOptional<T>>();
 		}
 
 		FEntityAllocation* Allocation = EntityAllocations[Location.GetAllocationIndex()];
@@ -478,11 +477,11 @@ public:
 		{
 			if (Header.ComponentType == ComponentTypeID)
 			{
-				return TComponentPtr<T>(Header, ComponentOffset, SystemSerialNumber);
+				return TComponentLock<TWriteOptional<T>>(Header, FEntityAllocationWriteContext(*this), ComponentOffset);
 			}
 		}
 
-		return TComponentPtr<T>();
+		return TComponentLock<TWriteOptional<T>>();
 	}
 
 
@@ -497,7 +496,7 @@ public:
 	template<typename T, typename ValueType>
 	void WriteComponentChecked(FMovieSceneEntityID Entity, TComponentTypeID<T> ComponentTypeID, ValueType&& Value) const
 	{
-		TComponentPtr<T> ComponentPtr = WriteComponent(Entity, ComponentTypeID);
+		TComponentLock<TWriteOptional<T>> ComponentPtr = WriteComponent(Entity, ComponentTypeID);
 		check(ComponentPtr);
 		*ComponentPtr = Forward<ValueType>(Value);
 	}
@@ -735,6 +734,26 @@ public:
 	}
 
 	/**
+	 * Retrieve the entity filter that should be used for any entity iteration. Can be used to constrain all iterations to specific types
+	 */
+	const FEntityComponentFilter& GetGlobalIterationFilter() const
+	{
+		return GlobalIterationFilter;
+	}
+
+	/**
+	 * Modify the entity filter that should be used for any entity iteration.
+	 * @note: Care should be take to reset this back to its original state when done,
+	 *        as leaving this populated during the instantiation phase can result in 
+	 *        undefined results.
+	 */
+	FEntityComponentFilter& ModifyGlobalIterationFilter()
+	{
+		ensureMsgf(!IsLockedDown() && IterationCount == 0, TEXT("Manipulating the global iteration filter while locked down or iterating is not recommended"));
+		return GlobalIterationFilter;
+	}
+
+	/**
 	 * Increment the current serial number for systems observing this manager. Should be called after any system is run
 	 */
 	void IncrementSystemSerial()
@@ -839,6 +858,7 @@ private:
 	void CheckInvariants();
 
 	friend struct FEntityAllocationIterator;
+	friend struct FEntityAllocationIteratorItem;
 	friend struct FEntityAllocationIteratorProxy;
 
 	friend FFreeEntityOperation;
@@ -918,6 +938,7 @@ private:
 	TMap<FMovieSceneEntityID, uint32> EntityGenerationMap;
 
 	FComponentMask AccumulatedMask;
+	FEntityComponentFilter GlobalIterationFilter;
 
 	FComponentRegistry* ComponentRegistry;
 

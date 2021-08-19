@@ -33,6 +33,13 @@ namespace Electra
 			MP4Playlist,
 			MP4StreamReader,
 			LicenseKey,
+			DASHMPDReader,
+			DASHMPDParser,
+			DASHMPDBuilder,
+			DASHManifest,
+			DASHFMP4Reader,
+			EntityCache,
+			DRM,
 			LastEntry = 255
 		};
 
@@ -80,6 +87,20 @@ namespace Electra
 					return TEXT("MP4 reader");
 				case EFacility::LicenseKey:
 					return TEXT("License key");
+				case EFacility::DASHMPDReader:
+					return TEXT("DASH MPD reader");
+				case EFacility::DASHMPDParser:
+					return TEXT("DASH MPD parser");
+				case EFacility::DASHMPDBuilder:
+					return TEXT("DASH MPD builder");
+				case EFacility::DASHManifest:
+					return TEXT("DASH manifest");
+				case EFacility::DASHFMP4Reader:
+					return TEXT("DASH fmp4 reader");
+				case EFacility::EntityCache:
+					return TEXT("Entity cache");
+				case EFacility::DRM:
+					return TEXT("DRM");
 			}
 			return TEXT("???");
 		}

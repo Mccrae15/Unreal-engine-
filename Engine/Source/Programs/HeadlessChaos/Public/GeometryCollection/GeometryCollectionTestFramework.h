@@ -6,9 +6,9 @@
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollectionProxyData.h"
 #include "PhysicsProxy/PhysicsProxies.h"
-#include "Chaos/EvolutionTraits.h"
 #include "Chaos/PBDRigidsEvolutionFwd.h"
 #include "Chaos/Defines.h"
+#include "PhysicsInterfaceDeclaresCore.h"
 
 namespace GeometryCollectionTest
 {
@@ -38,14 +38,13 @@ namespace GeometryCollectionTest
 		template<class AS_T> const AS_T* As() const { return AS_T::StaticType() == Type ? static_cast<const AS_T*>(this) : nullptr; }
 	};
 
-	template <typename Traits>
-	struct TGeometryCollectionWrapper : public WrapperBase
+	struct FGeometryCollectionWrapper : public WrapperBase
 	{
-		TGeometryCollectionWrapper() : WrapperBase(WrapperType::GeometryCollection) {}
-		TGeometryCollectionWrapper(
+		FGeometryCollectionWrapper() : WrapperBase(WrapperType::GeometryCollection) {}
+		FGeometryCollectionWrapper(
 			TSharedPtr<FGeometryCollection> RestCollectionIn,
 			TSharedPtr<FGeometryDynamicCollection> DynamicCollectionIn,
-			TGeometryCollectionPhysicsProxy<Traits>* PhysObjectIn)
+			FGeometryCollectionPhysicsProxy* PhysObjectIn)
 			: WrapperBase(WrapperType::GeometryCollection)
 			, RestCollection(RestCollectionIn)
 			, DynamicCollection(DynamicCollectionIn)
@@ -53,20 +52,20 @@ namespace GeometryCollectionTest
 		static WrapperType StaticType() { return WrapperType::GeometryCollection; }
 		TSharedPtr<FGeometryCollection> RestCollection;
 		TSharedPtr<FGeometryDynamicCollection> DynamicCollection;
-		TGeometryCollectionPhysicsProxy<Traits>* PhysObject;
+		FGeometryCollectionPhysicsProxy* PhysObject;
 	};
 
 	struct RigidBodyWrapper : public WrapperBase
 	{
 		RigidBodyWrapper(
 			TSharedPtr<Chaos::FChaosPhysicsMaterial> PhysicalMaterialIn,
-			TGeometryParticle<float, 3>* ParticleIn)
+			FPhysicsActorHandle ParticleIn)
 			: WrapperBase(WrapperType::RigidBody)
 			, PhysicalMaterial(PhysicalMaterialIn)
 			, Particle(ParticleIn) {}
 		static WrapperType StaticType() { return WrapperType::RigidBody; }
 		TSharedPtr<Chaos::FChaosPhysicsMaterial> PhysicalMaterial;
-		TGeometryParticle<float, 3>* Particle;
+		FPhysicsActorHandle Particle;
 	};
 
 
@@ -80,7 +79,7 @@ namespace GeometryCollectionTest
 		FVector InitialLinearVelocity = FVector::ZeroVector;
 		EObjectStateTypeEnum DynamicState = EObjectStateTypeEnum::Chaos_Object_Dynamic;
 		bool Simulating = true;
-		float Mass = 1.0;
+		FReal Mass = 1.0;
 		bool bMassAsDensity = false;
 		ECollisionTypeEnum CollisionType = ECollisionTypeEnum::Chaos_Surface_Volumetric;
 		ESimplicialType SimplicialType = ESimplicialType::Chaos_Simplicial_Sphere;
@@ -91,8 +90,8 @@ namespace GeometryCollectionTest
 		FTransform GeomTransform = FTransform::Identity;
 		TSharedPtr<FGeometryCollection> RestCollection = nullptr;
 		int32 MaxClusterLevel = 100;
-		TArray<float> DamageThreshold = { 1000.0f };
-		Chaos::FClusterCreationParameters<float>::EConnectionMethod ClusterConnectionMethod = Chaos::FClusterCreationParameters<float>::EConnectionMethod::PointImplicit;
+		TArray<FReal> DamageThreshold = { 1000.0 };
+		Chaos::FClusterCreationParameters::EConnectionMethod ClusterConnectionMethod = Chaos::FClusterCreationParameters::EConnectionMethod::PointImplicit;
 		bool RemoveOnFractureEnabled = false;
 		int32 CollisionGroup = 0;
 		int32 MinLevelSetResolution = 5;
@@ -111,36 +110,31 @@ namespace GeometryCollectionTest
 	template <GeometryType>
 	struct TNewSimulationObject
 	{
-		template<typename Traits>
 		static WrapperBase* Init(const CreationParameters Params = CreationParameters());
 	};
 
 	struct FrameworkParameters
 	{
 		FrameworkParameters() : Dt(1/60.) {}
-		FrameworkParameters(float dt) : Dt(Dt) {}
-		float Dt;
+		FrameworkParameters(FReal dt) : Dt(Dt) {}
+		FReal Dt;
 		Chaos::EThreadingMode ThreadingMode = Chaos::EThreadingMode::SingleThread;
 	};
 
-	template<typename Traits>
-	class TFramework
+	class FFramework
 	{
 	public:
 
-		TFramework(FrameworkParameters Properties = FrameworkParameters());
-		virtual ~TFramework();
+		FFramework(FrameworkParameters Properties = FrameworkParameters());
+		virtual ~FFramework();
 
 		void AddSimulationObject(WrapperBase* Object);
 		void Initialize();
 		void Advance();
 		FReal Dt;
 		FChaosSolversModule* Module = FChaosSolversModule::GetModule();
-		Chaos::TPBDRigidsSolver<Traits>* Solver;
+		Chaos::FPBDRigidsSolver* Solver;
 		TArray< WrapperBase* > PhysicsObjects;
 	};
 
-#define EVOLUTION_TRAIT(Trait) extern template class CHAOS_TEMPLATE_API TFramework<Trait>;
-#include "Chaos/EvolutionTraits.inl"
-#undef EVOLUTION_TRAIT
 }

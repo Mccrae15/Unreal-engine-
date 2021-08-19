@@ -129,9 +129,9 @@ namespace Chaos
 			return FMath::Sqrt(Variance);
 		}
 
-		inline static PMatrix<float, 3, 3> CrossProductMatrix(const TVector<float, 3>& V)
+		inline static FMatrix33 CrossProductMatrix(const FVec3& V)
 		{
-			return PMatrix<float, 3, 3>(
+			return FMatrix33(
 			    0, -V.Z, V.Y,
 			    V.Z, 0, -V.X,
 			    -V.Y, V.X, 0);
@@ -141,13 +141,13 @@ namespace Chaos
 		 * Multiple two matrices: C = L.R
 		 * @note This is the mathematically expected operator. FMatrix operator* calculates C = R.Transpose(L), so this is not equivalent to that.
 		 */
-		inline PMatrix<float, 3, 3> Multiply(const PMatrix<float, 3, 3>& L, const PMatrix<float, 3, 3>& R)
+		inline FMatrix33 Multiply(const FMatrix33& L, const FMatrix33& R)
 		{
 			// @todo(ccaulfield): optimize: simd
 
 			// We want L.R (FMatrix operator* actually calculates R.(L)T; i.e., Right is on the left, and the Left is transposed on the right.)
 			// NOTE: PMatrix constructor takes values in column order
-			return PMatrix<float, 3, 3>(
+			return FMatrix33(
 				L.M[0][0] * R.M[0][0] + L.M[1][0] * R.M[0][1] + L.M[2][0] * R.M[0][2],	// x00
 				L.M[0][0] * R.M[1][0] + L.M[1][0] * R.M[1][1] + L.M[2][0] * R.M[1][2],	// x01
 				L.M[0][0] * R.M[2][0] + L.M[1][0] * R.M[2][1] + L.M[2][0] * R.M[2][2],	// x02
@@ -162,13 +162,13 @@ namespace Chaos
 				);
 		}
 
-		inline PMatrix<float, 4, 4> Multiply(const PMatrix<float, 4, 4>& L, const PMatrix<float, 4, 4>& R)
+		inline FMatrix44 Multiply(const FMatrix44& L, const FMatrix44& R)
 		{
 			// @todo(ccaulfield): optimize: simd
 
 			// We want L.R (FMatrix operator* actually calculates R.(L)T; i.e., Right is on the left, and the Left is transposed on the right.)
 			// NOTE: PMatrix constructor takes values in column order
-			return PMatrix<float, 4, 4>(
+			return FMatrix44(
 				L.M[0][0] * R.M[0][0] + L.M[1][0] * R.M[0][1] + L.M[2][0] * R.M[0][2] + L.M[3][0] * R.M[0][3],	// x00
 				L.M[0][0] * R.M[1][0] + L.M[1][0] * R.M[1][1] + L.M[2][0] * R.M[1][2] + L.M[3][0] * R.M[1][3],	// x01
 				L.M[0][0] * R.M[2][0] + L.M[1][0] * R.M[2][1] + L.M[2][0] * R.M[2][2] + L.M[3][0] * R.M[2][3],	// x02
@@ -191,14 +191,14 @@ namespace Chaos
 				);
 		}
 
-		inline PMatrix<float, 3, 3> MultiplyAB(const PMatrix<float, 3, 3>& LIn, const PMatrix<float, 3, 3>& RIn)
+		inline FMatrix33 MultiplyAB(const FMatrix33& LIn, const FMatrix33& RIn)
 		{
 			return Multiply(LIn, RIn);
 		}
 
-		inline PMatrix<float, 3, 3> MultiplyABt(const PMatrix<float, 3, 3>& L, const PMatrix<float, 3, 3>& R)
+		inline FMatrix33 MultiplyABt(const FMatrix33& L, const FMatrix33& R)
 		{
-			return PMatrix<float, 3, 3>(
+			return FMatrix33(
 				L.M[0][0] * R.M[0][0] + L.M[1][0] * R.M[1][0] + L.M[2][0] * R.M[2][0],	// x00
 				L.M[0][0] * R.M[0][1] + L.M[1][0] * R.M[1][1] + L.M[2][0] * R.M[2][1],	// x01
 				L.M[0][0] * R.M[0][2] + L.M[1][0] * R.M[1][2] + L.M[2][0] * R.M[2][2],	// x02
@@ -213,9 +213,9 @@ namespace Chaos
 				);
 		}
 
-		inline PMatrix<float, 3, 3> MultiplyAtB(const PMatrix<float, 3, 3>& L, const PMatrix<float, 3, 3>& R)
+		inline FMatrix33 MultiplyAtB(const FMatrix33& L, const FMatrix33& R)
 		{
-			return PMatrix<float, 3, 3>(
+			return FMatrix33(
 				L.M[0][0] * R.M[0][0] + L.M[0][1] * R.M[0][1] + L.M[0][2] * R.M[0][2],	// x00
 				L.M[0][0] * R.M[1][0] + L.M[0][1] * R.M[1][1] + L.M[0][2] * R.M[1][2],	// x01
 				L.M[0][0] * R.M[2][0] + L.M[0][1] * R.M[2][1] + L.M[0][2] * R.M[2][2],	// x02
@@ -235,23 +235,23 @@ namespace Chaos
 		 * Multiple a vector by a matrix: C = L.R
 		 * If L is a rotation matrix, then this will return R rotated by that rotation.
 		 */
-		inline TVector<float, 3> Multiply(const PMatrix<float, 3, 3>& LIn, const TVector<float, 3>& R)
+		inline FVec3 Multiply(const FMatrix33& LIn, const FVec3& R)
 		{
 			// @todo(ccaulfield): optimize: remove transposes and use simd etc
-			PMatrix<float, 3, 3> L = LIn.GetTransposed();
+			FMatrix33 L = LIn.GetTransposed();
 
-			return TVector<float, 3>(
+			return FVec3(
 			    L.M[0][0] * R.X + L.M[0][1] * R.Y + L.M[0][2] * R.Z,
 			    L.M[1][0] * R.X + L.M[1][1] * R.Y + L.M[1][2] * R.Z,
 			    L.M[2][0] * R.X + L.M[2][1] * R.Y + L.M[2][2] * R.Z);
 		}
 
-		inline TVector<float, 4> Multiply(const PMatrix<float, 4, 4>& LIn, const TVector<float, 4>& R)
+		inline FVec4 Multiply(const FMatrix44& LIn, const FVec4& R)
 		{
 			// @todo(ccaulfield): optimize: remove transposes and use simd etc
-			PMatrix<float, 4, 4> L = LIn.GetTransposed();
+			FMatrix44 L = LIn.GetTransposed();
 
-			return TVector<float, 4>(
+			return FVec4(
 				L.M[0][0] * R.X + L.M[0][1] * R.Y + L.M[0][2] * R.Z + L.M[0][3] * R.W,
 				L.M[1][0] * R.X + L.M[1][1] * R.Y + L.M[1][2] * R.Z + L.M[1][3] * R.W,
 				L.M[2][0] * R.X + L.M[2][1] * R.Y + L.M[2][2] * R.Z + L.M[2][3] * R.W,
@@ -262,13 +262,9 @@ namespace Chaos
 		/**
 		 * Concatenate two transforms. This returns a transform that logically applies R then L.
 		 */
-		template<class T, int d>
-		TRigidTransform<T, d> Multiply(const TRigidTransform<T, d> L, const TRigidTransform<T, d>& R);
-
-		template<>
-		inline TRigidTransform<float, 3> Multiply(const TRigidTransform<float, 3> L, const TRigidTransform<float, 3>& R)
+		inline FRigidTransform3 Multiply(const FRigidTransform3 L, const FRigidTransform3& R)
 		{
-			return TRigidTransform<float, 3>(L.GetTranslation() + L.GetRotation().RotateVector(R.GetTranslation()), L.GetRotation() * R.GetRotation());
+			return FRigidTransform3(L.GetTranslation() + L.GetRotation().RotateVector(R.GetTranslation()), L.GetRotation() * R.GetRotation());
 		}
 
 		/**
@@ -290,7 +286,7 @@ namespace Chaos
 		 * Calculate the matrix that maps a constraint position error to constraint position and rotation corrections.
 		 */
 		template<class T>
-		PMatrix<T, 3, 3> ComputeJointFactorMatrix(const TVector<T, 3>& V, const PMatrix<T, 3, 3>& M, const T& Im)
+		PMatrix<T, 3, 3> ComputeJointFactorMatrix(const TVec3<T>& V, const PMatrix<T, 3, 3>& M, const T& Im)
 		{
 			// Rigid objects rotational contribution to the impulse.
 			// Vx*M*VxT+Im
@@ -309,7 +305,7 @@ namespace Chaos
 		 * used to calculate exact intersection locations
 		 */
 		template<typename T>
-		bool IntersectLineSegments2D(const TVector<T, 2>& InStartA, const TVector<T, 2>& InEndA, const TVector<T, 2>& InStartB, const TVector<T, 2>& InEndB, T& OutTA, T& OutTB)
+		bool IntersectLineSegments2D(const TVec2<T>& InStartA, const TVec2<T>& InEndA, const TVec2<T>& InStartB, const TVec2<T>& InEndB, T& OutTA, T& OutTB)
 		{
 			// Each line can be described as p0 + t(p1 - p0) = P. Set equal to each other and solve for t0 and t1
 			OutTA = OutTB = 0;
@@ -482,6 +478,68 @@ namespace Chaos
 			}
 			return V;
 		}
+
+		// For implementation notes, see "Realtime Collision Detection", Christer Ericson, 2005
+		inline void NearestPointsOnLineSegments(
+			const FVec3& P1, const FVec3& Q1,
+			const FVec3& P2, const FVec3& Q2,
+			FReal& S, FReal& T,
+			FVec3& C1, FVec3& C2,
+			const FReal Epsilon = 1.e-4f)
+		{
+			const FReal EpsilonSq = Epsilon * Epsilon;
+			const FVec3 D1 = Q1 - P1;
+			const FVec3 D2 = Q2 - P2;
+			const FVec3 R = P1 - P2;
+			const FReal A = FVec3::DotProduct(D1, D1);
+			const FReal B = FVec3::DotProduct(D1, D2);
+			const FReal C = FVec3::DotProduct(D1, R);
+			const FReal E = FVec3::DotProduct(D2, D2);
+			const FReal F = FVec3::DotProduct(D2, R);
+
+			S = 0.0f;
+			T = 0.0f;
+
+			if ((A <= EpsilonSq) && (B <= EpsilonSq))
+			{
+				// Both segments are points
+			}
+			else if (A <= Epsilon)
+			{
+				// First segment (only) is a point
+				T = FMath::Clamp(F / E, 0.0f, 1.0f);
+			}
+			else if (E <= Epsilon)
+			{
+				// Second segment (only) is a point
+				S = FMath::Clamp(-C / A, 0.0f, 1.0f);
+			}
+			else
+			{
+				// Non-degenrate case - we have two lines
+				const FReal Denom = A * E - B * B;
+				if (Denom != 0.0f)
+				{
+					S = FMath::Clamp((B * F - C * E) / Denom, 0.0f, 1.0f);
+				}
+				T = (B * S + F) / E;
+
+				if (T < 0.0f)
+				{
+					S = FMath::Clamp(-C / A, 0.0f, 1.0f);
+					T = 0.0f;
+				}
+				else if (T > 1.0f)
+				{
+					S = FMath::Clamp((B - C) / A, 0.0f, 1.0f);
+					T = 1.0f;
+				}
+			}
+
+			C1 = P1 + S * D1;
+			C2 = P2 + T * D2;
+		}
+
 
 	} // namespace Utilities
 } // namespace Chaos

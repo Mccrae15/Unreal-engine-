@@ -4,11 +4,10 @@
 
 namespace Chaos
 {
-	template <typename Traits>
-	void TEventManager<Traits>::Reset()
+	void FEventManager::Reset()
 	{
 		ContainerLock.WriteLock();
-		for (TEventContainerBasePtr<Traits> Container : EventContainers)
+		for (FEventContainerBasePtr Container : EventContainers)
 		{
 			delete Container;
 			Container = nullptr;
@@ -17,9 +16,9 @@ namespace Chaos
 		ContainerLock.WriteUnlock();
 	}
 
-	template <typename Traits>
-	void TEventManager<Traits>::UnregisterEvent(const FEventID& EventID)
+	void FEventManager::UnregisterEvent(const EEventType& EventType)
 	{
+		const FEventID EventID = (FEventID)EventType;
 		ContainerLock.WriteLock();
 		if (EventID < EventContainers.Num())
 		{
@@ -29,20 +28,19 @@ namespace Chaos
 		ContainerLock.WriteUnlock();
 	}
 
-	template <typename Traits>
-	void TEventManager<Traits>::UnregisterHandler(const FEventID& EventID, const void* InHandler)
+	void FEventManager::UnregisterHandler(const EEventType& EventType, const void* InHandler)
 	{
+		const FEventID EventID = (FEventID)EventType;
 		ContainerLock.WriteLock();
 		checkf(EventID < EventContainers.Num(), TEXT("Unregistering event Handler for an event ID that does not exist"));
 		EventContainers[EventID]->UnregisterHandler(InHandler);
 		ContainerLock.WriteUnlock();
 	}
 
-	template <typename Traits>
-	void TEventManager<Traits>::FillProducerData(const Chaos::TPBDRigidsSolver<Traits>* Solver)
+	void FEventManager::FillProducerData(const Chaos::FPBDRigidsSolver* Solver)
 	{
 		ContainerLock.ReadLock();
-		for (TEventContainerBasePtr<Traits> EventContainer : EventContainers)
+		for (FEventContainerBasePtr EventContainer : EventContainers)
 		{
 			if (EventContainer)
 			{
@@ -52,8 +50,7 @@ namespace Chaos
 		ContainerLock.ReadUnlock();
 	}
 
-	template <typename Traits>
-	void TEventManager<Traits>::FlipBuffersIfRequired()
+	void FEventManager::FlipBuffersIfRequired()
 	{
 		if (BufferMode == EMultiBufferMode::Double)
 		{
@@ -61,7 +58,7 @@ namespace Chaos
 		}
 
 		ContainerLock.ReadLock();
-		for (TEventContainerBasePtr<Traits> EventContainer : EventContainers)
+		for (FEventContainerBasePtr EventContainer : EventContainers)
 		{
 			if (EventContainer)
 			{
@@ -76,8 +73,7 @@ namespace Chaos
 		}
 	}
 
-	template <typename Traits>
-	void TEventManager<Traits>::DispatchEvents()
+	void FEventManager::DispatchEvents()
 	{
 		if (BufferMode == EMultiBufferMode::Double)
 		{
@@ -85,7 +81,7 @@ namespace Chaos
 		}
 
 		ContainerLock.ReadLock();
-		for (TEventContainerBasePtr<Traits> EventContainer : EventContainers)
+		for (FEventContainerBasePtr EventContainer : EventContainers)
 		{
 			if (EventContainer)
 			{
@@ -101,8 +97,7 @@ namespace Chaos
 
 	}
 
-	template <typename Traits>
-	void TEventManager<Traits>::InternalRegisterInjector(const FEventID& EventID, const TEventContainerBasePtr<Traits>& Container)
+	void FEventManager::InternalRegisterInjector(const FEventID& EventID, const FEventContainerBasePtr& Container)
 	{
 		if (EventID > EventContainers.Num())
 		{
@@ -115,20 +110,14 @@ namespace Chaos
 		EventContainers.EmplaceAt(EventID, Container);
 	}
 
-	template <typename Traits>
-	int32 TEventManager<Traits>::EncodeCollisionIndex(int32 ActualCollisionIndex, bool bSwapOrder)
+	int32 FEventManager::EncodeCollisionIndex(int32 ActualCollisionIndex, bool bSwapOrder)
 	{
 		return bSwapOrder ? (ActualCollisionIndex | (1 << 31)) : ActualCollisionIndex;
 	}
 
-	template <typename Traits>
-	int32 TEventManager<Traits>::DecodeCollisionIndex(int32 EncodedCollisionIdx, bool& bSwapOrder)
+	int32 FEventManager::DecodeCollisionIndex(int32 EncodedCollisionIdx, bool& bSwapOrder)
 	{
 		bSwapOrder = EncodedCollisionIdx & (1 << 31);
 		return EncodedCollisionIdx & ~(1 << 31);
 	}
-
-#define EVOLUTION_TRAIT(Trait) template class CHAOS_API TEventManager<Trait>;
-#include "Chaos/EvolutionTraits.inl"
-#undef EVOLUTION_TRAIT
 }

@@ -259,13 +259,13 @@ namespace DatasmithSceneElementUtil
 		{
 			FString FileName = FilePaths[FileIndex];
 			// This Label is expected to be on the corresponding top-level actor in the combined PlmXml scene
-			// should be possible to replace with Name instead, since we control how the PlmXml is created and how PlmXml ids are set 
+			// should be possible to replace with Name instead, since we control how the PlmXml is created and how PlmXml ids are set
 			FString ActorLabel = FDatasmithUtils::SanitizeObjectName(FPaths::GetBaseFilename(FileName));
 			ActorLabelInPlmXmlToFileIndex.Add(ActorLabel, FileIndex);
 			FileNameToFileIndex.Add(FileName, FileIndex);
 		}
 
-		// Translate all files as part of PlmXml scene, making use of multiprocessing translation of CAD files(this is done in TranslateScene for PlmXml with help of DatasmithDispatcher) 
+		// Translate all files as part of PlmXml scene, making use of multiprocessing translation of CAD files(this is done in TranslateScene for PlmXml with help of DatasmithDispatcher)
 		FString TempDir = FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("DatasmithBlueprintLibraryTemp"));
 		if (!IFileManager::Get().DirectoryExists(*TempDir))
 		{
@@ -906,7 +906,7 @@ void UDatasmithStaticMeshBlueprintLibrary::SetupStaticLighting(const TArray< UOb
 
 					if (GeneratedLightmapChannel < Lightmass::MAX_TEXCOORDS)
 					{
-						StaticMesh->LightMapCoordinateIndex = GeneratedLightmapChannel;
+						StaticMesh->SetLightMapCoordinateIndex(GeneratedLightmapChannel);
 					}
 					else
 					{
@@ -914,10 +914,10 @@ void UDatasmithStaticMeshBlueprintLibrary::SetupStaticLighting(const TArray< UOb
 						break;
 					}
 				}
-				else if (StaticMesh->LightMapCoordinateIndex > MaxBiggestUVChannel && bDidChangeSettings)
+				else if (StaticMesh->GetLightMapCoordinateIndex() > MaxBiggestUVChannel && bDidChangeSettings)
 				{
 					// If we are not generating the lightmap anymore make sure we are selecting a valid lightmap index.
-					StaticMesh->LightMapCoordinateIndex = MaxBiggestUVChannel;
+					StaticMesh->SetLightMapCoordinateIndex(MaxBiggestUVChannel);
 				}
 			}
 		}
@@ -969,7 +969,7 @@ void UDatasmithStaticMeshBlueprintLibrary::ComputeLightmapResolution(const TMap<
 					StaticMesh->Modify();
 				}
 
-				StaticMesh->LightMapResolution = LightMapResolution;
+				StaticMesh->SetLightMapResolution(LightMapResolution);
 
 				if(bApplyChanges)
 				{
@@ -1054,11 +1054,11 @@ int32 UDatasmithStaticMeshBlueprintLibrary::ComputeLightmapResolution(UStaticMes
 		return 0;
 	}
 
-	const FRawStaticIndexBuffer& IndexBuffer = StaticMesh->RenderData->LODResources[0].IndexBuffer;
-	const FPositionVertexBuffer& PositionBuffer = StaticMesh->RenderData->LODResources[0].VertexBuffers.PositionVertexBuffer;
-	const FStaticMeshVertexBuffer& VertexBuffer = StaticMesh->RenderData->LODResources[0].VertexBuffers.StaticMeshVertexBuffer;
+	const FRawStaticIndexBuffer& IndexBuffer = StaticMesh->GetRenderData()->LODResources[0].IndexBuffer;
+	const FPositionVertexBuffer& PositionBuffer = StaticMesh->GetRenderData()->LODResources[0].VertexBuffers.PositionVertexBuffer;
+	const FStaticMeshVertexBuffer& VertexBuffer = StaticMesh->GetRenderData()->LODResources[0].VertexBuffers.StaticMeshVertexBuffer;
 
-	if (VertexBuffer.GetNumTexCoords() <= (uint32)StaticMesh->LightMapCoordinateIndex)
+	if (VertexBuffer.GetNumTexCoords() <= (uint32)StaticMesh->GetLightMapCoordinateIndex())
 	{
 		return 0;
 	}
@@ -1075,7 +1075,7 @@ int32 UDatasmithStaticMeshBlueprintLibrary::ComputeLightmapResolution(UStaticMes
 		{
 			uint32 VertexIndex = IndexBuffer.GetIndex(TriangleIndex * 3 + CornerIndex);
 			VertexPosition[CornerIndex] = PositionBuffer.VertexPosition(VertexIndex);
-			LightmapUVs[CornerIndex] = VertexBuffer.GetVertexUV(VertexIndex, StaticMesh->LightMapCoordinateIndex);
+			LightmapUVs[CornerIndex] = VertexBuffer.GetVertexUV(VertexIndex, StaticMesh->GetLightMapCoordinateIndex());
 		}
 
 		const float PolygonArea = DatasmithStaticMeshBlueprintLibraryUtil::ParallelogramArea(VertexPosition[0], VertexPosition[1], VertexPosition[2]);
@@ -1109,28 +1109,13 @@ int32 UDatasmithStaticMeshBlueprintLibrary::ComputeLightmapResolution(UStaticMes
 }
 
 FDatasmithImportFactoryCreateFileResult::FDatasmithImportFactoryCreateFileResult()
-	: ImportedBlueprint(nullptr)
-	, bImportSucceed(false)
+	: bImportSucceed(false)
 	, Scene(nullptr)
 {}
 
 void FDatasmithImportFactoryCreateFileResult::FillFromImportContext(const FDatasmithImportContext& ImportContext)
 {
-	switch (ImportContext.Options->HierarchyHandling)
-	{
-	case EDatasmithImportHierarchy::UseMultipleActors:
-		ImportedActors.Append(ImportContext.GetImportedActors());
-		break;
-	case EDatasmithImportHierarchy::UseSingleActor:
-		ImportedActors.Append(ImportContext.ActorsContext.FinalSceneActors.Array());
-		break;
-	case EDatasmithImportHierarchy::UseOneBlueprint:
-		ImportedBlueprint = ImportContext.RootBlueprint;
-		break;
-	default:
-		check(false);
-		break;
-	}
+	ImportedActors.Append(ImportContext.GetImportedActors());
 
 	ImportedMeshes.Reserve(ImportContext.ImportedStaticMeshes.Num());
 	for ( const TPair< TSharedRef< IDatasmithMeshElement >, UStaticMesh* >& MeshPair : ImportContext.ImportedStaticMeshes )

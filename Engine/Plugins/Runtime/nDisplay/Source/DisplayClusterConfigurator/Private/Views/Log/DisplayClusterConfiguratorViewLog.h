@@ -5,17 +5,22 @@
 #include "Interfaces/Views/Log/IDisplayClusterConfiguratorViewLog.h"
 
 class SDisplayClusterConfiguratorViewLog;
-class FDisplayClusterConfiguratorToolkit;
+class FDisplayClusterConfiguratorBlueprintEditor;
 class SWidget;
 
+/**
+ * Custom display cluster logging. TODO: Currently not used anywhere in favor of compiler results logging.
+ * Leaving in for now because cluster logging options may be needed in the future.
+ */
 class FDisplayClusterConfiguratorViewLog
 	: public IDisplayClusterConfiguratorViewLog
 {
 public:
-	FDisplayClusterConfiguratorViewLog(const TSharedRef<FDisplayClusterConfiguratorToolkit>& InToolkit);
+	FDisplayClusterConfiguratorViewLog(const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit);
 
 	//~ Begin IDisplayClusterConfiguratorView Interface
-	TSharedRef<SWidget> CreateWidget() override;
+	virtual TSharedRef<SWidget> CreateWidget() override;
+	virtual TSharedRef<SWidget> GetWidget() override;
 	//~ End IDisplayClusterConfiguratorView Interface
 
 	//~ Begin IDisplayClusterConfiguratorViewLog Interface
@@ -27,7 +32,7 @@ public:
 private:
 	TSharedPtr<SDisplayClusterConfiguratorViewLog> ViewLog;
 
-	TWeakPtr<FDisplayClusterConfiguratorToolkit> ToolkitPtr;
+	TWeakPtr<FDisplayClusterConfiguratorBlueprintEditor> ToolkitPtr;
 
 	TSharedPtr<IMessageLogListing> MessageLogListing;
 

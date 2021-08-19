@@ -27,6 +27,7 @@ class ISceneViewExtension;
 class FSceneViewFamily;
 class FVolumetricFogViewResources;
 class FIESLightProfileResource;
+class ISpatialUpscaler;
 class ITemporalUpscaler;
 struct FExposureBufferData;
 
@@ -751,6 +752,8 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(FMatrix, WorldToVirtualTexture) \
 	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4, XRPassthroughCameraUVs, [2]) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, VirtualTextureFeedbackStride) \
+	VIEW_UNIFORM_BUFFER_MEMBER(uint32, VirtualTextureFeedbackJitterOffset) \
+	VIEW_UNIFORM_BUFFER_MEMBER(uint32, VirtualTextureFeedbackSampleOffset) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, RuntimeVirtualTextureMipLevel) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector2D, RuntimeVirtualTexturePackHeight) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4, RuntimeVirtualTextureDebugParams) \
@@ -760,6 +763,15 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, EnableSkyLight) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, HairRenderInfoBits) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, HairComponents) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector, PhysicsFieldClipmapCenter) \
+	VIEW_UNIFORM_BUFFER_MEMBER(float, PhysicsFieldClipmapDistance) \
+	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldClipmapResolution) \
+	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldClipmapExponent) \
+	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldClipmapCount) \
+	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldTargetCount) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(int, PhysicsFieldVectorTargets, [MAX_PHYSICS_FIELD_TARGETS]) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(int, PhysicsFieldScalarTargets, [MAX_PHYSICS_FIELD_TARGETS]) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(int, PhysicsFieldIntegerTargets, [MAX_PHYSICS_FIELD_TARGETS]) \
 
 #define VIEW_UNIFORM_BUFFER_MEMBER(type, identifier) \
 	SHADER_PARAMETER(type, identifier)
@@ -824,6 +836,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	SHADER_PARAMETER_SAMPLER(SamplerState, SharedPointClampedSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SharedBilinearWrappedSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SharedBilinearClampedSampler)
+	SHADER_PARAMETER_SAMPLER(SamplerState, SharedBilinearAnisoClampedSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SharedTrilinearWrappedSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SharedTrilinearClampedSampler)
 	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedBRDF)
@@ -841,7 +854,6 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	SHADER_PARAMETER_SAMPLER(SamplerState, DistantSkyLightLutTextureSampler)
 	SHADER_PARAMETER_TEXTURE(Texture3D, CameraAerialPerspectiveVolume)
 	SHADER_PARAMETER_SAMPLER(SamplerState, CameraAerialPerspectiveVolumeSampler)
-
 	SHADER_PARAMETER_TEXTURE(Texture3D, HairScatteringLUTTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, HairScatteringLUTSampler)
 
@@ -850,6 +862,8 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 
 	SHADER_PARAMETER_UAV(RWBuffer<uint>, VTFeedbackBuffer)
 	SHADER_PARAMETER_UAV(RWTexture2D<uint>, QuadOverdraw)
+
+	SHADER_PARAMETER_SRV(Buffer<float>, PhysicsFieldClipmapBuffer)
 
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
@@ -928,6 +942,10 @@ public:
 	FVector		BaseHmdLocation;
 	float		WorldToMetersScale;
 	TOptional<FTransform> PreviousViewTransform;
+
+	/** View Pose corresponding to BaseHmdOrientation / BaseHmdLocation */
+	FVector		BaseHmdViewLocation;
+	FRotator	BaseHmdViewRotation;
 
 	// normally the same as ViewMatrices unless "r.Shadow.FreezeCamera" is activated
 	FViewMatrices ShadowViewMatrices;
@@ -1088,6 +1106,9 @@ public:
 	 */
 	bool bForceCameraVisibilityReset;
 
+	/** True if we should force the path tracer to reset its internal accumulation state */
+	bool bForcePathTracerReset;
+
 	/** Global clipping plane being applied to the scene, or all 0's if disabled.  This is used when rendering the planar reflection pass. */
 	FPlane GlobalClippingPlane;
 
@@ -1112,6 +1133,13 @@ public:
 	 *  This value is FVector4(0,0,1,1) unless overridden.
 	 */
 	FVector4 LensPrincipalPointOffsetScale;
+
+	/** Whether to enable motion blur caused by camera movements */
+	TOptional<bool> bCameraMotionBlur;
+
+	/** Matrix overrides PrevViewToClip in the view uniform buffer.
+		Used for replacing motion blur caused by the current camera movements with a custom transform.*/
+	TOptional<FMatrix> ClipToPrevClipOverride;
 
 #if WITH_EDITOR
 	/** The set of (the first 64) groups' visibility info for this view */
@@ -1420,21 +1448,31 @@ struct FSceneViewScreenPercentageConfig
 };
 
 
-/*
- * Game thread and render thread interface that takes care of a FSceneViewFamily's screen percentage.
- *
- * The renderer reserves the right to delete and replace the view family's screen percentage interface
- * for testing purposes with the r.Test.OverrideScreenPercentageInterface CVar.
+/**
+ * Generic plugin extension that have a lifetime of the FSceneViewFamily
  */
-class ENGINE_API ISceneViewFamilyScreenPercentage
+class ENGINE_API ISceneViewFamilyExtention
 {
 protected:
 	/** 
 	 * Called by the destructor of the view family.
 	 * Can be called on game or rendering thread.
 	 */
-	virtual ~ISceneViewFamilyScreenPercentage() {};
+	virtual ~ISceneViewFamilyExtention() {};
 
+	friend class FSceneViewFamily;
+};
+
+
+/*
+ * Game thread and render thread interface that takes care of a FSceneViewFamily's screen percentage.
+ *
+ * The renderer reserves the right to delete and replace the view family's screen percentage interface
+ * for testing purposes with the r.Test.OverrideScreenPercentageInterface CVar.
+ */
+class ENGINE_API ISceneViewFamilyScreenPercentage : ISceneViewFamilyExtention
+{
+protected:
 	/** 
 	 * Method to know the maximum value that can be set in FSceneViewScreenPercentageConfig::ResolutionFraction.
 	 * Can be called on game or rendering thread. This should return >= 1 if screen percentage show flag is disabled.
@@ -1612,6 +1650,9 @@ public:
 	/** if true then each view is not rendered using the same GPUMask. */
 	bool bMultiGPUForkAndJoin;
 
+	/** Whether this view is rendered in BeginRenderingViewFamily() immediately after another render. */
+	bool bIsRenderedImmediatelyAfterAnotherViewFamily = false;
+
 	/** 
 	 * Which component of the scene rendering should be output to the final render target.
 	 * If SCS_FinalColorLDR this indicates do nothing.
@@ -1640,8 +1681,11 @@ public:
 	/** Editor setting to allow designers to override the automatic expose. 0:Automatic, following indices: -4 .. +4 */
 	FExposureSettings ExposureSettings;
 
-    /** Extensions that can modify view parameters on the render thread. */
-    TArray<TSharedRef<class ISceneViewExtension, ESPMode::ThreadSafe> > ViewExtensions;
+	/** Enable LateLatching mechanism for this viewFamily */
+	bool bLateLatchingEnabled;
+
+	/** Extensions that can modify view parameters on the render thread. */
+	TArray<TSharedRef<class ISceneViewExtension, ESPMode::ThreadSafe> > ViewExtensions;
 
 	// for r.DisplayInternals (allows for easy passing down data from main to render thread)
 	FDisplayInternalsData DisplayInternalsData;
@@ -1755,6 +1799,8 @@ public:
 	{
 		check(ScreenPercentageInterface == nullptr);
 		check(TemporalUpscalerInterface == nullptr);
+		check(PrimarySpatialUpscalerInterface == nullptr);
+		check(SecondarySpatialUpscalerInterface == nullptr);
 	}
 
 
@@ -1770,11 +1816,37 @@ public:
 		return TemporalUpscalerInterface;
 	}
 
+	FORCEINLINE void SetPrimarySpatialUpscalerInterface(ISpatialUpscaler* InSpatialUpscalerInterface)
+	{
+		check(InSpatialUpscalerInterface);
+		checkf(PrimarySpatialUpscalerInterface == nullptr, TEXT("View family already had a primary spatial upscaler assigned."));
+		PrimarySpatialUpscalerInterface = InSpatialUpscalerInterface;
+	}
+
+	FORCEINLINE const ISpatialUpscaler* GetPrimarySpatialUpscalerInterface() const
+	{
+		return PrimarySpatialUpscalerInterface;
+	}
+
+	FORCEINLINE void SetSecondarySpatialUpscalerInterface(ISpatialUpscaler* InSpatialUpscalerInterface)
+	{
+		check(InSpatialUpscalerInterface);
+		checkf(SecondarySpatialUpscalerInterface == nullptr, TEXT("View family already had a secondary spatial upscaler assigned."));
+		SecondarySpatialUpscalerInterface = InSpatialUpscalerInterface;
+	}
+
+	FORCEINLINE const ISpatialUpscaler* GetSecondarySpatialUpscalerInterface() const
+	{
+		return SecondarySpatialUpscalerInterface;
+	}
+
 private:
 	/** Interface to handle screen percentage of the views of the family. */
 	ISceneViewFamilyScreenPercentage* ScreenPercentageInterface;
 
 	const ITemporalUpscaler* TemporalUpscalerInterface;
+	ISpatialUpscaler* PrimarySpatialUpscalerInterface;
+	ISpatialUpscaler* SecondarySpatialUpscalerInterface;
 
 	// Only FSceneRenderer can copy a view family.
 	FSceneViewFamily(const FSceneViewFamily&) = default;

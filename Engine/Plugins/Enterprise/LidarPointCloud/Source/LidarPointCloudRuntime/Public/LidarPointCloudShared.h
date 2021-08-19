@@ -3,7 +3,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Serialization/BulkData.h"
 #include "LidarPointCloudShared.generated.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogLidarPointCloud, Log, All);
@@ -18,13 +17,13 @@ USTRUCT(noexport)
 struct FDoubleVector
 {
 	UPROPERTY()
-	double X;
+	double X = 0.0;
 
 	UPROPERTY()
-	double Y;
+	double Y = 0.0;
 
 	UPROPERTY()
-	double Z;
+	double Z = 0.0;
 };
 #endif
 
@@ -285,20 +284,28 @@ public:
 
 #pragma pack(push)
 #pragma pack(1)
+/** 3D vector represented using only a single byte per component */
 USTRUCT(BlueprintType)
 struct LIDARPOINTCLOUDRUNTIME_API FLidarPointCloudNormal
 {
 	GENERATED_BODY()
 
 public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lidar Point Normal")
 	uint8 X;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lidar Point Normal")
 	uint8 Y;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lidar Point Normal")
 	uint8 Z;
 
 public:
 	FLidarPointCloudNormal() { Reset(); }
 	FLidarPointCloudNormal(const FVector& Normal) { SetFromVector(Normal); }
 	FLidarPointCloudNormal(const float& X, const float& Y, const float& Z) { SetFromFloats(X, Y, Z); }
+
+	bool operator==(const FLidarPointCloudNormal& Other) const { return X == Other.X && Y == Other.Y && Z == Other.Z; }
 
 	FORCEINLINE bool IsValid() const { return X != 127 || Y != 127 || Z != 127; }
 
@@ -385,6 +392,12 @@ public:
 	{
 		Color = FLinearColor(R, G, B, A).ToFColor(false);
 	}
+	FLidarPointCloudPoint(const float& X, const float& Y, const float& Z, const float& R, const float& G, const float& B, const float& A, const float& NX, const float& NY, const float& NZ)
+		: FLidarPointCloudPoint(X, Y, Z)
+	{
+		Color = FLinearColor(R, G, B, A).ToFColor(false);
+		Normal.SetFromFloats(NX, NY, NZ);
+	}
 	FLidarPointCloudPoint(const FVector& Location) : FLidarPointCloudPoint(Location.X, Location.Y, Location.Z) {}
 	FLidarPointCloudPoint(const FVector& Location, const float& R, const float& G, const float& B, const float& A = 1.0f)
 		: FLidarPointCloudPoint(Location)
@@ -409,9 +422,18 @@ public:
 		this->bVisible = bVisible;
 		this->ClassificationID = ClassificationID;
 	}
-	FLidarPointCloudPoint(const FLidarPointCloudPoint& Other)
-		: FLidarPointCloudPoint(Other.Location, Other.Color, Other.bVisible, Other.ClassificationID)
+	FLidarPointCloudPoint(const FVector& Location, const FColor& Color, const bool& bVisible, const uint8& ClassificationID, const FLidarPointCloudNormal& Normal)
+		: FLidarPointCloudPoint(Location)
 	{
+		this->Color = Color;
+		this->bVisible = bVisible;
+		this->ClassificationID = ClassificationID;
+		this->Normal = Normal;
+	}
+	FLidarPointCloudPoint(const FLidarPointCloudPoint& Other)
+		: FLidarPointCloudPoint()
+	{
+		CopyFrom(Other);
 	}
 	FLidarPointCloudPoint(const FLidarPointCloudPoint_Legacy& Other)
 		: FLidarPointCloudPoint(Other.Location, Other.Color, Other.bVisible, Other.ClassificationID)
@@ -422,6 +444,7 @@ public:
 	{
 		Location = Other.Location;
 		Color = Other.Color;
+		Normal = Other.Normal;
 		bVisible = Other.bVisible;
 		ClassificationID = Other.ClassificationID;
 	}
@@ -431,7 +454,7 @@ public:
 		return FLidarPointCloudPoint(Transform.TransformPosition(Location), Color, bVisible, ClassificationID);
 	}
 
-	bool operator==(const FLidarPointCloudPoint& P) const { return Location == P.Location && Color == P.Color && bVisible == P.bVisible && ClassificationID == P.ClassificationID; }
+	bool operator==(const FLidarPointCloudPoint& P) const { return Location == P.Location && Color == P.Color && bVisible == P.bVisible && ClassificationID == P.ClassificationID && Normal == P.Normal; }
 
 	friend class FLidarPointCloudOctree;
 #if WITH_EDITOR
@@ -439,86 +462,6 @@ public:
 #endif
 };
 #pragma pack(pop)
-
-struct FLidarPointCloudBulkData : public FUntypedBulkData
-{
-private:
-	int32 ElementSize;
-	FLidarPointCloudPoint* DataPtr;
-	TAtomic<bool> bHasData;
-
-public:
-	FLidarPointCloudBulkData()
-		: ElementSize(sizeof(FLidarPointCloudPoint))
-		, DataPtr(nullptr)
-		, bHasData(false)
-	{
-	}
-
-	virtual int32 GetElementSize() const override
-	{
-		return ElementSize;
-	}
-	
-	virtual void SerializeElement(FArchive& Ar, void* Data, int64 ElementIndex) override
-	{
-		Ar.Serialize((FLidarPointCloudPoint*)Data + ElementIndex, sizeof(FLidarPointCloudPoint));
-	}
-	
-	virtual bool RequiresSingleElementSerialization(FArchive& Ar) override
-	{
-		return false;
-	}
-
-	/** Serves as a workaround for UnloadBulkData being editor-only */
-	void ReleaseData()
-	{
-		if (bHasData)
-		{
-			bHasData = false;
-			void* Temp = nullptr;
-			GetCopy(&Temp);
-			FMemory::Free(Temp);
-		}
-	}
-
-	FORCEINLINE FLidarPointCloudPoint* GetData() const
-	{
-		MakeSureDataIsLoaded();
-		return DataPtr;
-	}
-
-	void CopyToArray(TArray<FLidarPointCloudPoint>& Array)
-	{
-		Array.AddUninitialized(GetElementCount());
-		FMemory::Memcpy(Array.GetData(), GetData(), sizeof(FLidarPointCloudPoint) * Array.Num());
-	}
-
-	void CopyFromArray(TArray<FLidarPointCloudPoint>& Array)
-	{
-		Lock(LOCK_READ_WRITE);
-		DataPtr = (FLidarPointCloudPoint*)Realloc(Array.Num());
-		FMemory::Memcpy(DataPtr, Array.GetData(), Array.Num() * sizeof(FLidarPointCloudPoint));
-		bHasData = true;
-		Unlock();
-	}
-
-	void CustomSerialize(FArchive& Ar, UObject* Owner);
-
-	FORCEINLINE bool HasData() const { return bHasData; }
-
-private:
-	void MakeSureDataIsLoaded() const
-	{
-		if (!bHasData)
-		{
-			FLidarPointCloudBulkData* mutable_this = const_cast<FLidarPointCloudBulkData*>(this);
-			mutable_this->DataPtr = (FLidarPointCloudPoint*)LockReadOnly();
-			mutable_this->bHasData = true;
-			Unlock();
-		}
-	}
-};
 
 /** Used in blueprint latent function execution */
 UENUM(BlueprintType)
@@ -529,8 +472,38 @@ enum class ELidarPointCloudAsyncMode : uint8
 	Progress
 };
 
+UENUM(BlueprintType)
+enum class ELidarPointCloudScalingMethod : uint8
+{
+	/**
+	 * Points are scaled based on the estimated density of their containing node.
+	 * Recommended for assets with high variance of point densities, but may produce less fine detail overall.
+	 * Default method in 4.25 and 4.26
+	 */
+	PerNode,
+
+	/**
+	 * Similar to PerNode, but the density is calculated adaptively based on the current view.
+	 * Produces good amount of fine detail while being generally resistant to density variance.
+	 */
+	PerNodeAdaptive,
+
+	/**
+	 * Points are scaled based on their individual calculated depth.
+	 * Capable of resolving the highest amount of fine detail, but is the most susceptible to 
+	 * density changes across the dataset, and may result in patches of varying point sizes.
+	 */
+	PerPoint,
+
+	/**
+	 * Sprites will be rendered using screen-space scaling method.
+	 * In that mode, Point Size property will work as Screen Percentage.
+	 */
+	FixedScreenSize
+};
+
 /** Used to help track multiple buffer allocations */
-class FLidarPointCloudDataBuffer
+class LIDARPOINTCLOUDRUNTIME_API FLidarPointCloudDataBuffer
 {
 public:
 	FLidarPointCloudDataBuffer() : bInUse(false), PendingSize(0) {}
@@ -566,10 +539,11 @@ private:
 };
 
 /** Used to help track multiple buffer allocations */
-class FLidarPointCloudDataBufferManager
+class LIDARPOINTCLOUDRUNTIME_API FLidarPointCloudDataBufferManager
 {
 public:
-	FLidarPointCloudDataBufferManager(const int32& BufferSize);
+	/** If MaxNumberOfBuffers is 0, no limit is applied */
+	FLidarPointCloudDataBufferManager(const int32& BufferSize, const int32& MaxNumberOfBuffers = 0);
 	~FLidarPointCloudDataBufferManager();
 	FLidarPointCloudDataBufferManager(const FLidarPointCloudDataBufferManager&) = delete;
 	FLidarPointCloudDataBufferManager(FLidarPointCloudDataBufferManager&&) = delete;
@@ -582,12 +556,14 @@ public:
 
 private:
 	int32 BufferSize;
+	int32 MaxNumberOfBuffers;
+	int32 NumBuffersCreated;
 	TList<FLidarPointCloudDataBuffer> Head;
 	TList<FLidarPointCloudDataBuffer>* Tail;
 };
 
 /** Used for Raycasting */
-struct FLidarPointCloudRay
+struct LIDARPOINTCLOUDRUNTIME_API FLidarPointCloudRay
 {
 public:
 	FVector Origin;
@@ -601,6 +577,11 @@ public:
 	FLidarPointCloudRay(const FVector& Origin, const FVector& Direction) : Origin(Origin)
 	{
 		SetDirection(Direction);
+	}
+
+	static FORCEINLINE FLidarPointCloudRay FromLocations(const FVector& Origin, const FVector& Destination)
+	{
+		return FLidarPointCloudRay(Origin, (Destination - Origin).GetSafeNormal());
 	}
 
 	FLidarPointCloudRay& TransformBy(const FTransform& Transform)
@@ -676,6 +657,94 @@ public:
 
 		return d2 <= RadiusSq;
 	}
+};
+
+UENUM(BlueprintType)
+enum class ELidarClippingVolumeMode : uint8
+{
+	/** This will clip all points inside the volume */
+	ClipInside,
+	/** This will clip all points outside of the volume */
+	ClipOutside,
+};
+
+/** Used to pass clipping information for async processing, to avoid accessing UObjects in non-GT */
+struct FLidarPointCloudClippingVolumeParams
+{
+	ELidarClippingVolumeMode Mode;
+	int32 Priority;
+	FBox Bounds;
+	FMatrix PackedShaderData;
+
+	FORCEINLINE bool operator<(const FLidarPointCloudClippingVolumeParams& O) const
+	{
+		return (Priority < O.Priority) || (Priority == O.Priority && Mode > O.Mode);
+	}
+
+	FLidarPointCloudClippingVolumeParams(const class ALidarClippingVolume* ClippingVolume);
+};
+
+UENUM(BlueprintType)
+enum class ELidarPointCloudColorationMode : uint8
+{
+	/** Uses color tint only */
+	None,
+	/** Uses imported RGB / Intensity data */
+	Data,
+	/** The cloud's color will be overridden with elevation-based color */
+	Elevation,
+	/** The cloud's color will be overridden with relative position-based color */
+	Position,
+	/** Uses Classification ID of the point along with the component's Classification Colors property to sample the color */
+	Classification
+};
+
+UENUM(BlueprintType)
+enum class ELidarPointCloudSpriteShape : uint8
+{
+	Square,
+	Circle,
+};
+
+/** Convenience struct to group all component's rendering params into one */
+struct FLidarPointCloudComponentRenderParams
+{
+	int32 MinDepth;
+	int32 MaxDepth;
+
+	float BoundsScale;
+	FVector BoundsSize;
+	FVector LocationOffset;
+	float ComponentScale;
+
+	float PointSize;
+	float PointSizeBias;
+	float GapFillingStrength;
+	
+	bool bOwnedByEditor;
+	bool bDrawNodeBounds;
+	bool bUseScreenSizeScaling;
+	bool bShouldRenderFacingNormals;
+	bool bUseFrustumCulling;
+
+	ELidarPointCloudColorationMode ColorSource;
+	ELidarPointCloudSpriteShape PointShape;
+	ELidarPointCloudScalingMethod ScalingMethod;
+
+	FVector4 Saturation;
+	FVector4 Contrast;
+	FVector4 Gamma;
+	FVector4 Offset;
+	FVector ColorTint;
+	float IntensityInfluence;
+
+	TMap<int32, FLinearColor> ClassificationColors;
+	FLinearColor ElevationColorBottom;
+	FLinearColor ElevationColorTop;
+
+	class UMaterialInterface* Material = nullptr;
+
+	void UpdateFromComponent(class ULidarPointCloudComponent* Component);
 };
 
 struct FBenchmarkTimer

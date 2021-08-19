@@ -11,8 +11,7 @@
 class IDisplayClusterRenderSyncPolicy
 {
 public:
-	virtual ~IDisplayClusterRenderSyncPolicy() = 0
-	{ }
+	virtual ~IDisplayClusterRenderSyncPolicy() = default;
 
 public:
 
@@ -24,4 +23,9 @@ public:
 	* @return - true if we a caller needs to present frame by his own
 	*/
 	virtual bool SynchronizeClusterRendering(int32& InOutSyncInterval) = 0;
+
+	/**
+	 * Returns the name of the sync policy
+	 */
+	virtual FName GetName() const = 0;
 };

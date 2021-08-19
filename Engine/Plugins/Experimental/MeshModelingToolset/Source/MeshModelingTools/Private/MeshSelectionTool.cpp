@@ -21,14 +21,6 @@
 
 #define LOCTEXT_NAMESPACE "UMeshSelectionTool"
 
-/**
- * 4.26 HOTFIX: this is used to keep dynamically-created Material Instances that we pass to USimpleDynamicMeshComponent
- * from being Garbage Collected. USimpleDynamicMeshComponent stores raw UMaterialInterface* pointers, instead of proper UProperty
- * pointers, which cannot be fixed in a Hotfix.
- */
-#include "MeshModelingToolsObjectKeepaliveFix.h"
-static FModelingModeObjectsKeepaliveHelper MeshSelectionToolObjectKeepalive;
-
 /*
  * ToolBuilder
  */
@@ -74,8 +66,6 @@ void UMeshSelectionTool::Setup()
 {
 	UDynamicMeshBrushTool::Setup();
 
-	MeshSelectionToolObjectKeepalive.Enable();
-
 	// hide strength and falloff
 	BrushProperties->bShowStrength = BrushProperties->bShowFalloff = false;
 	BrushProperties->RestoreProperties(this);
@@ -106,7 +96,6 @@ void UMeshSelectionTool::Setup()
 	UMaterialInterface* SelectionMaterial = ToolSetupUtil::GetSelectionMaterial(FLinearColor(0.9f, 0.1f, 0.1f), GetToolManager());
 	if (SelectionMaterial != nullptr)
 	{
-		MeshSelectionToolObjectKeepalive.AddKeepaliveObject(SelectionMaterial);
 		PreviewMesh->SetSecondaryRenderMaterial(SelectionMaterial);
 	}
 
@@ -186,8 +175,6 @@ void UMeshSelectionTool::OnShutdown(EToolShutdownType ShutdownType)
 			Spawned->Destroy();
 		}
 	}
-
-	MeshSelectionToolObjectKeepalive.Disable();
 }
 
 
@@ -629,9 +616,7 @@ void UMeshSelectionTool::UpdateVisualization(bool bSelectionModified)
 	{
 		if (SelectionProps->FaceColorMode != EMeshFacesColorMode::None)
 		{
-			UMaterialInterface* OverrideMaterial = ToolSetupUtil::GetSelectionMaterial(GetToolManager());
-			MeshSelectionToolObjectKeepalive.AddKeepaliveObject(OverrideMaterial);
-			PreviewMesh->SetOverrideRenderMaterial(OverrideMaterial);
+			PreviewMesh->SetOverrideRenderMaterial(ToolSetupUtil::GetSelectionMaterial(GetToolManager()));
 			PreviewMesh->SetTriangleColorFunction([this](const FDynamicMesh3* Mesh, int TriangleID)
 			{
 				return GetCurrentFaceColor(Mesh, TriangleID);

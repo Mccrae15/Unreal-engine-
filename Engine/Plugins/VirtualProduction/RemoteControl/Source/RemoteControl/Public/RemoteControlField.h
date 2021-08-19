@@ -2,150 +2,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RemoteControlEntity.h"
+#include "RemoteControlFieldPath.h"
+#include "RemoteControlProtocolBinding.h"
 #include "RemoteControlField.generated.h"
 
-
-/** Small container for the resolved data of a remote control field segment */
-struct REMOTECONTROL_API FRCFieldResolvedData
-{
-	/** Type of that segment owner */
-	UStruct* Struct = nullptr;
-
-	/** Container address of this segment */
-	void* ContainerAddress = nullptr;
-	
-	/** Resolved field for this segment */
-	FProperty* Field = nullptr;
-};
-
-/** RemoteControl Path segment holding a property layer */
-USTRUCT()
-struct REMOTECONTROL_API FRCFieldPathSegment
-{
-	GENERATED_BODY()
-
-public:
-	FRCFieldPathSegment() = default;
-
-	/** Builds a segment from a name. */
-	FRCFieldPathSegment(FStringView SegmentName);
-
-	/** Returns true if a Field was found for a given owner */
-	bool IsResolved() const;
-
-	/** 
-	 * Converts this segment to a string 
-	 * FieldName, FieldName[Index]
-	 * If bDuplicateContainer is asked, format will be different if its indexed
-	 * FieldName.FieldName[Index]  -> This is to bridge for PathToProperty 
-	 */
-	FString ToString(bool bDuplicateContainer = false) const;
-
-
-private:
-	
-	/** Reset resolved pointers */
-	void ClearResolvedData();
-
-public:
-
-	/** Name of the segment */
-	UPROPERTY()
-	FName Name;
-
-	/** Container index if any. */
-	UPROPERTY()
-	int32 ArrayIndex = INDEX_NONE;
-	
-	/** Resolved Data of the segment */
-	FRCFieldResolvedData ResolvedData;
-};
-
-
-/**
- * Holds a path information to a field
- * Have facilities to resolve for a given owner
- */
- USTRUCT()
-struct REMOTECONTROL_API FRCFieldPathInfo
-{
-	GENERATED_BODY()
-
-public:
-	FRCFieldPathInfo() = default;
-
-	/** 
-	 * Builds a path info from a string of format with '.' delimiters
-	 * Optionally can reduce duplicates when dealing with containers
-	 * If true -> Struct.ArrayName.ArrayName[2].Member will collapse to Struct.ArrayName[2].Member
-	 * This is when being used with PathToProperty
-	 */
-	FRCFieldPathInfo(const FString& PathInfo, bool bSkipDuplicates = false);
-
-public:
-
-	/** Go through each segment and finds the property associated + container address for a given UObject owner */
-	bool Resolve(UObject* Owner);
-
-	/** Returns true if last segment was resolved */
-	bool IsResolved() const;
-
-	/** Returns true if the hash of the string corresponds to the string we were built with */
-	bool IsEqual(FStringView OtherPath) const;
-
-	/** Returns true if hash of both PathInfo matches */
-	bool IsEqual(const FRCFieldPathInfo& OtherPath) const;
-
-	/** 
-	 * Converts this PathInfo to a string
-	 * Walks the full path by default
-	 * If EndSegment is not none, will stop at the desired segment 
-	 */
-	FString ToString(int32 EndSegment = INDEX_NONE) const;
-
-	/**
-	 * Converts this PathInfo to a string of PathToProperty format
-	 * Struct.ArrayName.ArrayName[Index]
-	 * If EndSegment is not none, will stop at the desired segment
-	 */
-	FString ToPathPropertyString(int32 EndSegment = INDEX_NONE) const;
-
-	/** Returns the number of segment in this path */
-	int32 GetSegmentCount() const { return Segments.Num(); }
-
-	/** Gets a segment from this path */
-	const FRCFieldPathSegment& GetFieldSegment(int32 Index) const;
-
-	/** 
-	 * Returns the resolved data of the last segment
-	 * If last segment is not resolved, data won't be valid
-	 */
-	FRCFieldResolvedData GetResolvedData() const;
-
-	/** Returns last segment's name */
-	FName GetFieldName() const;
-
-	/** Builds a property change event from all the segments */
-	FPropertyChangedEvent ToPropertyChangedEvent(EPropertyChangeType::Type InChangeType = EPropertyChangeType::Unspecified) const;
-
-	/** Builds an EditPropertyChain from the segments */
-	void ToEditPropertyChain(FEditPropertyChain& OutPropertyChain) const;
-
-private:
-
-	/** Recursively resolves all segment until the final one */
-	bool ResolveInternalRecursive(UStruct* OwnerType, void* ContainerAddress, int32 SegmentIndex);
-
-public:
-
-	/** List of segments to point to a given field */
-	UPROPERTY()
-	TArray<FRCFieldPathSegment> Segments;
-
-	/** Hash created from the string we were built from to quickly compare to paths */
-	UPROPERTY()
-	uint32 PathHash = 0;
-};
+class IRemoteControlPropertyHandle;
 
 /**
  * The type of the exposed field.
@@ -162,7 +24,7 @@ enum class EExposedFieldType : uint8
  * Represents a property or function that has been exposed to remote control.
  */
 USTRUCT(BlueprintType)
-struct REMOTECONTROL_API FRemoteControlField
+struct REMOTECONTROL_API FRemoteControlField : public FRemoteControlEntity
 {
 	GENERATED_BODY()
 
@@ -173,36 +35,29 @@ struct REMOTECONTROL_API FRemoteControlField
 	 * @param SectionObjects The top level objects of the section.
 	 * @return The list of UObjects that own the exposed field.
 	 */
+	UE_DEPRECATED(4.27, "Please use GetBoundObjects.")
 	TArray<UObject*> ResolveFieldOwners(const TArray<UObject*>& SectionObjects) const;
 
-	bool operator==(const FRemoteControlField& InField) const;
-	bool operator==(FGuid InFieldId) const;
-	friend uint32 GetTypeHash(const FRemoteControlField& InField);
+	//~ Begin FRemoteControlEntity interface
+	virtual void BindObject(UObject* InObjectToBind) override;
+	virtual bool CanBindObject(const UObject* InObjectToBind) const override;
+	//~ End FRemoteControlEntity interface
+
+	/**	Returns whether the field is only available in editor. */
+	bool IsEditorOnly() const { return bIsEditorOnly; }
 
 public:
 	/**
 	 * The field's type.
 	 */
-	UPROPERTY()
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "RemoteControlEntity")
 	EExposedFieldType FieldType = EExposedFieldType::Invalid;
 
 	/**
 	 * The exposed field's name.
 	 */
-	UPROPERTY()
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "RemoteControlEntity")
 	FName FieldName;
-
-	/**
-	 * This RemoteControlField's display name.
-	 */
-	UPROPERTY()
-	FName Label;
-
-	/** 
-	 * Unique identifier for this field.
-	 */
-	UPROPERTY()
-	FGuid Id;
 
 	/**
 	 * Path information pointing to this field
@@ -210,20 +65,44 @@ public:
 	UPROPERTY()
 	FRCFieldPathInfo FieldPathInfo;
 
-	/**
-	 * Component hierarchy of this field starting after the actor owner
-	 */
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	TArray<FString> ComponentHierarchy;
+	TArray<FString> ComponentHierarchy_DEPRECATED;
+
+#endif
 
 	/**
-	 * Metadata for this field.
+	 * Stores the bound protocols for this exposed field
+	 * It could store any types of the implemented protocols such as DMX, OSC, MIDI, etc
+	 * The map holds protocol bindings stores the protocol mapping and protocol-specific mapping
 	 */
 	UPROPERTY()
-	TMap<FString, FString> Metadata;
+	TSet<FRemoteControlProtocolBinding> ProtocolBindings;
+	
+protected:
+	/**
+	 * The class of the object that can have this field.
+	 */
+	UPROPERTY()
+	FSoftClassPath OwnerClass;
+
+	/** Whether the field is only available in editor. */
+	UPROPERTY()
+	bool bIsEditorOnly = false;
 
 protected:
-	FRemoteControlField(EExposedFieldType InType, FName InLabel, FRCFieldPathInfo FieldPathInfo, TArray<FString> InComponentHierarchy);
+	FRemoteControlField(URemoteControlPreset* InPreset, EExposedFieldType InType, FName InLabel, FRCFieldPathInfo InFieldPathInfo, const TArray<URemoteControlBinding*> InBindings);
+	void PostSerialize(const FArchive& Ar);
+	
+private:
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Resolve the field's owners using the section's top level objects and the deprecated component hierarchy.
+	 * @param SectionObjects The top level objects of the section.
+	 * @return The list of UObjects that own the exposed field.
+	 */
+	TArray<UObject*> ResolveFieldOwnersUsingComponentHierarchy(const TArray<UObject*>& SectionObjects) const;
+#endif
 };
 
 /**
@@ -232,43 +111,162 @@ protected:
 USTRUCT(BlueprintType)
 struct REMOTECONTROL_API FRemoteControlProperty : public FRemoteControlField
 {
+public:
 	GENERATED_BODY()
 
 	FRemoteControlProperty() = default;
+
+	UE_DEPRECATED(4.27, "This constructor is deprecated. Use the other constructor.")
 	FRemoteControlProperty(FName InLabel, FRCFieldPathInfo FieldPathInfo, TArray<FString> InComponentHierarchy);
+
+	FRemoteControlProperty(URemoteControlPreset* InPreset, FName InLabel, FRCFieldPathInfo InFieldPathInfo, const TArray<URemoteControlBinding*>& InBindings);
+
+	//~ Begin FRemoteControlEntity interface
+	virtual uint32 GetUnderlyingEntityIdentifier() const override;
+	virtual UClass* GetSupportedBindingClass() const override;
+	virtual bool IsBound() const override;
+	//~ End FRemoteControlEntity interface
+
+	/**
+	 * Get the underlying property.
+	 * @return The exposed property or nullptr if it couldn't be resolved.
+	 * @note This field's binding must be valid to get the property.
+	 */
+	FProperty* GetProperty() const;
+
+	/**
+	 * Get the property handle with ability set and get property value directly.
+	 * @return The property handle for exposed property.
+	 */
+	TSharedPtr<IRemoteControlPropertyHandle> GetPropertyHandle() const;
+
+	/**
+	 * Enable the edit condition for the underlying property on the owner objects.
+	 */
+	void EnableEditCondition();
+	
+	/** Returns whether the property is editable in a packaged build. */
+	bool IsEditableInPackaged() const;
+
+	bool Serialize(FArchive& Ar);
+	void PostSerialize(const FArchive& Ar);
+	
+public:
+	/** Key for the metadata's Min entry. */
+	static FName MetadataKey_Min;
+	/** Key for the metadata's Max entry. */
+	static FName MetadataKey_Max;
+	
+private:
+	/** Assign the default metadata for this exposed property. (ie. Min, Max...) */
+	void InitializeMetadata();
+
+private:
+	/** Whether the property is blueprint read only. */
+	UPROPERTY()
+	bool bIsEditableInPackaged = false;
+
+#if WITH_EDITOR
+	/** Cached edit condition path used to enable the exposed property's edit condition. */
+	FRCFieldPathInfo CachedEditConditionPath;
+#endif
+	
 };
 
 /**
  * Represents a function exposed to remote control.
  */
-USTRUCT(BlueprintType)	
+USTRUCT(BlueprintType)
 struct REMOTECONTROL_API FRemoteControlFunction : public FRemoteControlField
 {
 	GENERATED_BODY()
 
 	FRemoteControlFunction() = default;
 
+	UE_DEPRECATED(4.27, "This constructor is deprecated. Use the other constructor.")
 	FRemoteControlFunction(FName InLabel, FRCFieldPathInfo FieldPathInfo, UFunction* InFunction);
-	 
+
+	FRemoteControlFunction(URemoteControlPreset* InPreset, FName InLabel, FRCFieldPathInfo InFieldPathInfo, UFunction* InFunction, const TArray<URemoteControlBinding*>& InBindings);
+
+	//~ Begin FRemoteControlEntity interface
+	virtual uint32 GetUnderlyingEntityIdentifier() const override;
+	virtual UClass* GetSupportedBindingClass() const override;
+	virtual bool IsBound() const override;
+	//~ End FRemoteControlEntity interface
+
+	/** Returns whether the function is callable in a packaged build. */
+	bool IsCallableInPackaged() const { return bIsCallableInPackaged; }
+
+	/** Returns the underlying exposed function. */
+	UFunction* GetFunction() const;
+
+#if WITH_EDITOR
+	/**
+	 * Recreates the function arguments but tries to preserve old values when possible.
+	 * Useful for updating function arguments after a blueprint recompile.
+	 */
+	void RegenerateArguments();
+#endif
+
+	friend FArchive& operator<<(FArchive& Ar, FRemoteControlFunction& RCFunction);
+	bool Serialize(FArchive& Ar);
+	void PostSerialize(const FArchive& Ar);
+	
+public:
 	/**
 	 * The exposed function.
 	 */
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	UFunction* Function = nullptr;
+	mutable UFunction* Function_DEPRECATED = nullptr;
+#endif
 
 	/**
 	 * The function arguments.
 	 */
 	TSharedPtr<class FStructOnScope> FunctionArguments;
 
-	friend FArchive& operator<<(FArchive& Ar, FRemoteControlFunction& RCFunction);
-	bool Serialize(FArchive& Ar);
+private:
+	/** Parse function metadata to get the function's default parameters */
+	void AssignDefaultFunctionArguments();
+
+#if WITH_EDITOR
+	/** Hash function arguments using their type and size. */
+	static uint32 HashFunctionArguments(UFunction* InFunction);
+#endif
+
+private:
+	/** Whether the function is callable in a packaged build. */
+	UPROPERTY()
+	bool bIsCallableInPackaged = false;
+	
+	/** The exposed function. */
+	UPROPERTY()
+	FSoftObjectPath FunctionPath;
+
+	/** Cached resolved underlying function used to avoid doing a findobject while serializing. */
+	mutable TWeakObjectPtr<UFunction> CachedFunction;
+
+#if WITH_EDITORONLY_DATA
+	/** Hash of the underlying function arguments used to check if it has changed after a recompile. */
+	uint32 CachedFunctionArgsHash = 0;
+#endif
 };
 
 template<> struct TStructOpsTypeTraits<FRemoteControlFunction> : public TStructOpsTypeTraitsBase2<FRemoteControlFunction>
 {
 	enum
 	{
-		WithSerializer = true
+		WithSerializer = true,
+		WithPostSerialize = true
+	};
+};
+
+template<> struct TStructOpsTypeTraits<FRemoteControlProperty> : public TStructOpsTypeTraitsBase2<FRemoteControlProperty>
+{
+	enum
+	{
+		WithSerializer = true,
+		WithPostSerialize = true
 	};
 };

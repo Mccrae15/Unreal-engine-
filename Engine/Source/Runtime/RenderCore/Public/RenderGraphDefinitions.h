@@ -116,7 +116,7 @@ enum class ERDGTextureFlags : uint8
 	MultiFrame = 1 << 0,
 
 	/** Prevents metadata decompression on this texture. */
-	MaintainCompression = 1 << 1,
+	MaintainCompression = 1 << 1
 };
 ENUM_CLASS_FLAGS(ERDGTextureFlags);
 
@@ -489,6 +489,8 @@ const TRDGHandle<ObjectType, IndexType> TRDGHandle<ObjectType, IndexType>::Null;
 /** FORWARD DECLARATIONS */
 
 struct FRDGTextureDesc;
+
+class FRDGBlackboard;
 
 class FRDGPassFlagsScopeGuard;
 class FRDGAsyncComputeBudgetScopeGuard;

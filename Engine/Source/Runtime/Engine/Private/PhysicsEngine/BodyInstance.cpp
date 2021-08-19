@@ -44,6 +44,7 @@
 
 #if WITH_CHAOS
 #include "Chaos/ParticleHandle.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #endif // WITH_CHAOS
 
 #if PHYSICS_INTERFACE_PHYSX
@@ -1400,24 +1401,25 @@ void FInitBodiesHelperBase::InitBodies()
 						ActorHandles.Add(ActorHandle);
 
 #if WITH_CHAOS
-							const int32 NumShapes = FPhysicsInterface::GetNumShapes(ActorHandle);
+						Chaos::FRigidBodyHandle_External& Body_External = ActorHandle->GetGameThreadAPI();
+						const int32 NumShapes = FPhysicsInterface::GetNumShapes(ActorHandle);
 
-							// If this shape shouldn't collide in the sim we disable it here until we support
-							// a separation of unions for these shapes
-							if(BI->GetCollisionEnabled() == ECollisionEnabled::QueryOnly || BI->GetCollisionEnabled() == ECollisionEnabled::NoCollision)
+						// If this shape shouldn't collide in the sim we disable it here until we support
+						// a separation of unions for these shapes
+						if(BI->GetCollisionEnabled() == ECollisionEnabled::QueryOnly || BI->GetCollisionEnabled() == ECollisionEnabled::NoCollision)
+						{
+							for(int32 ShapeIndex = 0; ShapeIndex < NumShapes; ++ShapeIndex)
 							{
-								for(int32 ShapeIndex = 0; ShapeIndex < NumShapes; ++ShapeIndex)
-								{
-									ActorHandle->SetShapeSimCollisionEnabled(ShapeIndex, false);
-								}
+								Body_External.SetShapeSimCollisionEnabled(ShapeIndex, false);
 							}
-							if (BI->BodySetup.IsValid())
+						}
+						if (BI->BodySetup.IsValid())
+						{
+							for (int32 ShapeIndex = 0; ShapeIndex < NumShapes; ++ShapeIndex)
 							{
-								for (int32 ShapeIndex = 0; ShapeIndex < NumShapes; ++ShapeIndex)
-								{
-									ActorHandle->SetShapeCollisionTraceType(ShapeIndex, ChaosInterface::ConvertCollisionTraceFlag(BI->BodySetup->CollisionTraceFlag)) ;
-								}
+								Body_External.SetShapeCollisionTraceType(ShapeIndex, ChaosInterface::ConvertCollisionTraceFlag(BI->BodySetup->CollisionTraceFlag)) ;
 							}
+						}
 
 #endif
 /*
@@ -1441,7 +1443,7 @@ void FInitBodiesHelperBase::InitBodies()
 					if (FPhysicsInterface::IsValid(ActorHandle))
 					{
 
-						PhysScene->AddToComponentMaps(BI->OwnerComponent.Get(), ActorHandle->GetProxy());
+						PhysScene->AddToComponentMaps(BI->OwnerComponent.Get(), ActorHandle);
 					}
 					if (BI->bNotifyRigidBodyCollision)
 					{
@@ -1575,7 +1577,7 @@ void FBodyInstance::TermBody(bool bNeverDeferRelease)
 		{
 			if (FPhysicsInterface::IsValid(ActorHandle))
 			{
-				PhysScene->RemoveFromComponentMaps(ActorHandle->GetProxy());
+				PhysScene->RemoveFromComponentMaps(ActorHandle);
 			}
 			if (bNotifyRigidBodyCollision)
 			{
@@ -2020,7 +2022,7 @@ bool FBodyInstance::UpdateBodyScale(const FVector& InScale3D, bool bForceUpdate)
 						break;
 					}
 
-					const TCapsule<FReal> * CapsuleGeometry = static_cast<const TCapsule<FReal>*>(&ImplicitObject);
+					const FCapsule * CapsuleGeometry = static_cast<const FCapsule*>(&ImplicitObject);
 
 
 					const FReal InitialHeight = SphylElem->Radius * 2.0f + SphylElem->Length;
@@ -2034,13 +2036,13 @@ bool FBodyInstance::UpdateBodyScale(const FVector& InScale3D, bool bForceUpdate)
 
 					// TODO: For Transformed implicit, do not bake this in. Set Transform instead.
 					FVec3 Center = RelativeTM.TransformPosition(SphylElem->Center) * AdjustedScale3D;
-					const FVec3 Axis = SphylElem->Rotation.RotateVector(Chaos::TVector<float, 3>(0, 0, 1));
+					const FVec3 Axis = SphylElem->Rotation.RotateVector(Chaos::FVec3(0, 0, 1));
 
 					const FVec3 X1 = Center - HalfLength * Axis;
 					const FVec3 X2 = Center + HalfLength * Axis;
 
 
-					TUniquePtr<TCapsule<FReal>> NewCapsule =  MakeUnique<TCapsule<FReal>>(X1, X2, Radius);
+					TUniquePtr<FCapsule> NewCapsule =  MakeUnique<FCapsule>(X1, X2, Radius);
 					NewGeometry.Emplace(MoveTemp(NewCapsule));
 
 					bSuccess = true;
@@ -2157,7 +2159,7 @@ bool FBodyInstance::UpdateBodyScale(const FVector& InScale3D, bool bForceUpdate)
 		// Only follow through with update if all shapes succeeded.
 		if (CHAOS_ENSURE(NewGeometry.Num() == Shapes.Num()))
 		{
-			ActorHandle->SetGeometry(MakeUnique<Chaos::FImplicitObjectUnion>(MoveTemp(NewGeometry)));
+			ActorHandle->GetGameThreadAPI().SetGeometry(MakeUnique<Chaos::FImplicitObjectUnion>(MoveTemp(NewGeometry)));
 		}
 		else
 		{
@@ -3090,7 +3092,7 @@ void FBodyInstance::UpdateMassProperties()
 				}
 
 #if WITH_CHAOS
-				Chaos::TMassProperties<float, 3> TotalMassProperties;
+				Chaos::FMassProperties TotalMassProperties;
 #elif PHYSICS_INTERFACE_PHYSX
 				PxMassProperties TotalMassProperties;
 #endif
@@ -3102,7 +3104,8 @@ void FBodyInstance::UpdateMassProperties()
 						FTransform RelTM;
 					};
 
-					//If we have welded children we must compute the mass properties of each individual body first and then combine them all together
+					// If we have welded children we must compute the mass properties of each individual body first and then combine them 
+					// all together because each welded body may have different density etc
 					TMap<FBodyInstance*, FWeldedBatch> BodyToShapes;
 
 					for (const FPhysicsShapeHandle& Shape : Shapes) //sort all welded children by their original bodies
@@ -3133,19 +3136,28 @@ void FBodyInstance::UpdateMassProperties()
 					}
 
 #if WITH_CHAOS
-					TArray<Chaos::TMassProperties<float, 3>> SubMassProperties;
+					TArray<Chaos::FMassProperties> SubMassProperties;
 					for (auto BodyShapesItr : BodyToShapes)
 					{
 						const FBodyInstance* OwningBI = BodyShapesItr.Key;
 						const FWeldedBatch& WeldedBatch = BodyShapesItr.Value;
-						FTransform MassModifierTransform = WeldedBatch.RelTM;
-						MassModifierTransform.SetScale3D(MassModifierTransform.GetScale3D() * Scale3D);	//Ensure that any scaling that is done on the component is passed into the mass frame modifiers
 
-						Chaos::TMassProperties<float, 3> BodyMassProperties = BodyUtils::ComputeMassProperties(OwningBI, WeldedBatch.Shapes, MassModifierTransform);
+						// The component scale is already built into the geometry, but if the user has set up a CoM
+						// modifier, it will need to be transformed by the component scale and the welded child's relative transform.
+						FTransform MassModifierTransform = WeldedBatch.RelTM;
+						MassModifierTransform.SetScale3D(MassModifierTransform.GetScale3D() * Scale3D);
+
+						Chaos::FMassProperties BodyMassProperties = BodyUtils::ComputeMassProperties(OwningBI, WeldedBatch.Shapes, MassModifierTransform);
 						SubMassProperties.Add(BodyMassProperties);
 					}
 
-					TotalMassProperties = Chaos::Combine(SubMassProperties);
+					// Combine all the child inertias
+					// NOTE: These leaves the inertia in diagonal form with a rotation of mass
+					if (SubMassProperties.Num() > 0)
+					{
+						TotalMassProperties = Chaos::Combine(SubMassProperties);
+					}
+
 #elif PHYSICS_INTERFACE_PHYSX
 					TArray<PxMassProperties> SubMassProperties;
 					TArray<PxTransform> MassTMs;
@@ -3167,27 +3179,35 @@ void FBodyInstance::UpdateMassProperties()
 				else
 				{
 					// If we have no shapes that affect mass we cannot compute the mass properties in a meaningful way.
-					if (Shapes.Num())
+					if (Shapes.Num() > 0)
 					{
-						//No children welded so just get this body's mass properties
-						FTransform MassModifierTransform(FQuat::Identity, FVector(0.f, 0.f, 0.f), Scale3D);	//Ensure that any scaling that is done on the component is passed into the mass frame modifiers
+						// The component scale is already built into the geometry, but if the user has set up a CoM
+						// modifier, it will need to be transformed by the component scale.
+						FTransform MassModifierTransform(FQuat::Identity, FVector(0.f, 0.f, 0.f), Scale3D);
 						TotalMassProperties = BodyUtils::ComputeMassProperties(this, Shapes, MassModifierTransform);
+
+#if WITH_CHAOS
+						// @todo(chaos): this is starting to get messy - we should probably just split off the PhysX implementation now
+						// Make the inertia diagonal and calculate the rotation of mass
+						TotalMassProperties.RotationOfMass = Chaos::TransformToLocalSpace(TotalMassProperties.InertiaTensor);
+#endif
 					}
 				}
 
 				// #PHYS2 Refactor out PxMassProperties (Our own impl?)
 #if WITH_CHAOS
+				// Note: We expect the inertia to be diagonal at this point
 				// Only set mass properties if inertia tensor is valid. TODO Remove this once we track down cause of empty tensors.
+				// (This can happen if all shapes have bContributeToMass set to false which gives an empty Shapes array. There may be other ways).
 				const float InertiaTensorTrace = (TotalMassProperties.InertiaTensor.M[0][0] + TotalMassProperties.InertiaTensor.M[1][1] + TotalMassProperties.InertiaTensor.M[2][2]) / 3;
 				if (CHAOS_ENSURE(InertiaTensorTrace > SMALL_NUMBER))
 				{
-					const Chaos::TRotation<float, 3> Rotation = Chaos::TransformToLocalSpace(TotalMassProperties.InertiaTensor);
 					const FVector MassSpaceInertiaTensor(TotalMassProperties.InertiaTensor.M[0][0], TotalMassProperties.InertiaTensor.M[1][1], TotalMassProperties.InertiaTensor.M[2][2]);
 					FPhysicsInterface::SetMassSpaceInertiaTensor_AssumesLocked(Actor, MassSpaceInertiaTensor);
 
 					FPhysicsInterface::SetMass_AssumesLocked(Actor, TotalMassProperties.Mass);
 
-					FTransform Com(Rotation, TotalMassProperties.CenterOfMass);
+					FTransform Com(TotalMassProperties.RotationOfMass, TotalMassProperties.CenterOfMass);
 					FPhysicsInterface::SetComLocalPose_AssumesLocked(Actor, Com);
 				}
 #else
@@ -3419,6 +3439,19 @@ void FBodyInstance::ClearForces(bool bAllowSubstepping)
 	});
 }
 
+void FBodyInstance::SetOneWayInteraction(bool InOneWayInteraction /*= true*/)
+{
+#if WITH_CHAOS
+	FPhysicsCommand::ExecuteWrite(ActorHandle, [&](const FPhysicsActorHandle& Actor)
+		{
+			if (FPhysicsInterface::IsRigidBody(Actor) && !IsRigidBodyKinematic_AssumesLocked(Actor))
+			{
+				FPhysicsInterface::SetOneWayInteraction_AssumesLocked(Actor, InOneWayInteraction);
+			}
+		});
+#endif
+}
+
 void FBodyInstance::AddTorqueInRadians(const FVector& Torque, bool bAllowSubstepping, bool bAccelChange)
 {
 	FPhysicsCommand::ExecuteWrite(ActorHandle, [&](const FPhysicsActorHandle& Actor)
@@ -3499,6 +3532,36 @@ void FBodyInstance::AddImpulseAtPosition(const FVector& Impulse, const FVector& 
 
 void FBodyInstance::SetInstanceNotifyRBCollision(bool bNewNotifyCollision)
 {
+
+	if (bNewNotifyCollision == bNotifyRigidBodyCollision)
+	{
+		// don't update if we've already set it
+		return;
+	}
+	
+#if WITH_CHAOS
+	// make sure to register the component for collision events 
+	if (UPrimitiveComponent* PrimComp = OwnerComponent.Get())
+	{
+		if (UWorld* World = PrimComp->GetWorld())
+		{
+			if (FPhysScene_Chaos* PhysScene = World->GetPhysicsScene())
+			{
+				if (bNewNotifyCollision)
+				{
+					// add to the list
+					PhysScene->RegisterForCollisionEvents(PrimComp);
+				}
+				else
+				{
+					PhysScene->UnRegisterForCollisionEvents(PrimComp);
+				}
+			}
+		}
+	}
+#endif // WITH_CHAOS	
+
+
 	bNotifyRigidBodyCollision = bNewNotifyCollision;
 	UpdatePhysicsFilterData();
 }

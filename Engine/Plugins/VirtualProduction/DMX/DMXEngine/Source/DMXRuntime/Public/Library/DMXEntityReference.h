@@ -43,7 +43,7 @@ public:
 	FDMXEntityReference(UDMXEntity* InEntity);
 
 	/** Set the Entity and DMX Library this struct represents */
-	void SetEntity(const UDMXEntity* NewEntity);
+	void SetEntity(UDMXEntity* NewEntity);
 
 	/** Get the Entity referenced by this struct or nullptr if none was set. */
 	UDMXEntity* GetEntity() const;
@@ -89,6 +89,9 @@ private:
 	/** The entity's unique ID */
 	UPROPERTY(EditAnywhere, Category = "DMX") // Without EditAnywhere here the value is not saved on components in a Level
 	FGuid EntityId;
+
+	/** Cached value this entity stands for, to speed up access instead of looking it up from the library array */
+	mutable TWeakObjectPtr<UDMXEntity> CachedEntity;
 };
 
 /**

@@ -48,7 +48,7 @@ void FClothingSimulationContextCommon::Fill(const USkeletalMeshComponent* InComp
 	FillTeleportMode(InComponent, InDeltaSeconds, InMaxPhysicsDelta);
 	FillMaxDistanceScale(InComponent);
 
-	PredictedLod = InComponent->PredictedLODLevel;
+	PredictedLod = InComponent->GetPredictedLODLevel();
 }
 
 void FClothingSimulationContextCommon::FillBoneTransforms(const USkeletalMeshComponent* InComponent)
@@ -65,7 +65,7 @@ void FClothingSimulationContextCommon::FillBoneTransforms(const USkeletalMeshCom
 			if (SkeletalMesh)
 			{
 				// This case indicates an invalid master pose component (e.g. no skeletal mesh)
-				NumBones = SkeletalMesh->RefSkeleton.GetNum();
+				NumBones = SkeletalMesh->GetRefSkeleton().GetNum();
 
 				BoneTransforms.Empty(NumBones);
 				BoneTransforms.AddDefaulted(NumBones);
@@ -92,12 +92,12 @@ void FClothingSimulationContextCommon::FillBoneTransforms(const USkeletalMeshCom
 
 				if (!bFoundMaster && SkeletalMesh)
 				{
-					const int32 ParentIndex = SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
+					const int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
 
 					BoneTransforms[BoneIndex] =
 						BoneTransforms.IsValidIndex(ParentIndex) && ParentIndex < BoneIndex ?
-						BoneTransforms[ParentIndex] * SkeletalMesh->RefSkeleton.GetRefBonePose()[BoneIndex] :
-						SkeletalMesh->RefSkeleton.GetRefBonePose()[BoneIndex];
+						BoneTransforms[ParentIndex] * SkeletalMesh->GetRefSkeleton().GetRefBonePose()[BoneIndex] :
+						SkeletalMesh->GetRefSkeleton().GetRefBonePose()[BoneIndex];
 				}
 			}
 		}
@@ -111,7 +111,7 @@ void FClothingSimulationContextCommon::FillBoneTransforms(const USkeletalMeshCom
 void FClothingSimulationContextCommon::FillRefToLocals(const USkeletalMeshComponent* InComponent)
 {
 	RefToLocals.Reset();
-	InComponent->GetCurrentRefToLocalMatrices(RefToLocals, InComponent->PredictedLODLevel);
+	InComponent->GetCurrentRefToLocalMatrices(RefToLocals, InComponent->GetPredictedLODLevel());
 }
 
 void FClothingSimulationContextCommon::FillComponentToWorld(const USkeletalMeshComponent* InComponent)

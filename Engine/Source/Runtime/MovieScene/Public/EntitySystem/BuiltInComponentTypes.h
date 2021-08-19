@@ -4,65 +4,29 @@
 
 #include "EntitySystem/MovieSceneEntityManager.h"
 #include "UObject/GCObjectScopeGuard.h"
+#include "EntitySystem/MovieSceneBlenderSystemTypes.h"
 #include "EntitySystem/MovieSceneEntityIDs.h"
 #include "EntitySystem/MovieSceneSequenceInstanceHandle.h"
 #include "Evaluation/Blending/MovieSceneBlendType.h"
+#include "Evaluation/IMovieSceneEvaluationHook.h"
 #include "Templates/SubclassOf.h"
 
 #include "EntitySystem/MovieScenePropertyRegistry.h"
-#include "EntitySystem/MovieScenePropertySystemTypes.h"
+#include "EntitySystem/MovieSceneInitialValueCache.h"
 
 #include "BuiltInComponentTypes.generated.h"
 
 enum class EMovieSceneBlendType : uint8;
+struct FMovieSceneByteChannel;
+struct FMovieSceneIntegerChannel;
 struct FMovieSceneFloatChannel;
+struct FMovieScenePropertyBinding;
+
 class UMovieSceneSection;
 class UMovieSceneTrackInstance;
 class UMovieSceneBlenderSystem;
 class FTrackInstancePropertyBindings;
 
-
-/**
- * Source property binding information for an entity on a moviescene timeline
- * Comprises a leaf property name and a path and a cached boolean signifying whether the binding is allowed to perform a fast class-wise property lookup
- */
-USTRUCT()
-struct FMovieScenePropertyBinding
-{
-	GENERATED_BODY()
-
-	FMovieScenePropertyBinding()
-		: bCanUseClassLookup(false)
-	{}
-
-	FMovieScenePropertyBinding(FName InPropertyName, const FString& InPropertyPath)
-		: PropertyName(InPropertyName), PropertyPath(*InPropertyPath)
-	{
-		bCanUseClassLookup = !(InPropertyPath.Contains(TEXT(".")) || InPropertyPath.Contains(TEXT("/")) || InPropertyPath.Contains(TEXT("\\")) || InPropertyPath.Contains(TEXT("[")));
-	}
-
-	friend bool operator==(FMovieScenePropertyBinding A, FMovieScenePropertyBinding B)
-	{
-		return A.PropertyName == B.PropertyName && A.PropertyPath == B.PropertyPath;
-	}
-
-	bool CanUseClassLookup() const
-	{
-		return bCanUseClassLookup;
-	}
-
-	/** Leaf name of the property to animate */
-	UPROPERTY()
-	FName PropertyName;
-
-	/** Full path to the property from the object including struct and array indirection */
-	UPROPERTY()
-	FName PropertyPath;
-
-	/** True if this property can be considered for fast property offset resolution(ie the property address is _always_ a constant offset from the obejct ptr), false otherwise */
-	UPROPERTY()
-	bool bCanUseClassLookup;
-};
 
 /**
  * Easing component data.
@@ -86,12 +50,26 @@ struct FMovieSceneTrackInstanceComponent
 	GENERATED_BODY()
 
 	UPROPERTY()
-	UMovieSceneSection* Owner;
+	UMovieSceneSection* Owner = nullptr;
 
 	UPROPERTY()
 	TSubclassOf<UMovieSceneTrackInstance> TrackInstanceClass;
 };
 
+
+/**
+ * A component that defines a hook for direct evaluation
+ */
+USTRUCT()
+struct FMovieSceneEvaluationHookComponent
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TScriptInterface<IMovieSceneEvaluationHook> Interface;
+
+	FGuid ObjectBindingID;
+};
 
 
 USTRUCT()
@@ -112,9 +90,40 @@ namespace UE
 namespace MovieScene
 {
 
+/**
+ * The component data for evaluating a byte channel
+ */
+struct FSourceByteChannel
+{
+	FSourceByteChannel()
+		: Source(nullptr)
+	{}
+
+	FSourceByteChannel(const FMovieSceneByteChannel* InSource)
+		: Source(InSource)
+	{}
+
+	const FMovieSceneByteChannel* Source;
+};
 
 /**
- * A component that defines a type for a track instance
+ * The component data for evaluating an integer channel
+ */
+struct FSourceIntegerChannel
+{
+	FSourceIntegerChannel()
+		: Source(nullptr)
+	{}
+
+	FSourceIntegerChannel(const FMovieSceneIntegerChannel* InSource)
+		: Source(InSource)
+	{}
+
+	const FMovieSceneIntegerChannel* Source;
+};
+
+/**
+ * The component data for evaluating a float channel
  */
 struct FSourceFloatChannel
 {
@@ -133,6 +142,11 @@ struct FSourceFloatChannel
 struct FSourceFloatChannelFlags
 {
 	bool bNeedsEvaluate = true;
+};
+
+struct FEvaluationHookFlags
+{
+	bool bHasBegun = false;
 };
 
 /**
@@ -154,16 +168,19 @@ public:
 
 	TComponentTypeID<FInstanceHandle>     InstanceHandle;
 
+	TComponentTypeID<FInstanceHandle>     RootInstanceHandle;
+
 	TComponentTypeID<FFrameTime>          EvalTime;
 
 public:
 
-	TComponentTypeID<uint16>              BlendChannelInput;
+	TComponentTypeID<FMovieSceneBlendChannelID> BlendChannelInput;
+
+	TComponentTypeID<FMovieSceneBlendChannelID> BlendChannelOutput;
 
 	TComponentTypeID<int16>               HierarchicalBias;
 
-	TComponentTypeID<uint16>              BlendChannelOutput;
-
+	TComponentTypeID<FInitialValueIndex>  InitialValueIndex;
 public:
 
 	// An FMovieScenePropertyBinding structure
@@ -179,6 +196,24 @@ public:
 	TComponentTypeID<FGuid> SpawnableBinding;
 
 public:
+
+	// A boolean repesenting the output of a bool property track or channel
+	TComponentTypeID<bool> BoolResult;
+
+	// An FMovieSceneByteChannel
+	TComponentTypeID<FSourceByteChannel> ByteChannel;
+
+	// A byte representing the output of a byte or enum track or channel
+	TComponentTypeID<uint8> ByteResult;
+
+	// An FMovieSceneIntegerChannel
+	TComponentTypeID<FSourceIntegerChannel> IntegerChannel;
+
+	// An integer representing the output of an integer track or channel
+	TComponentTypeID<int32> IntegerResult;
+
+	// An integer representing the base value for the integer channel for the purposes of "additive from base" blending.
+	TComponentTypeID<int32> BaseInteger;
 
 	// An FMovieSceneFloatChannel considered to be at index N within the source structure (ie 0 = Location.X, Vector.X, Color.R; 1 = Location.Y, Vector.Y, Color.G)
 	TComponentTypeID<FSourceFloatChannel> FloatChannel[9];
@@ -223,6 +258,11 @@ public:
 	// An FTrackInstanceInputComponent that defines an input for a track instance
 	TComponentTypeID<FTrackInstanceInputComponent> TrackInstanceInput;
 
+	// An FMovieSceneEvaluationHookComponent that defines a stateless hook interface that doesn't need any overlap handling (track instances should be preferred there)
+	TComponentTypeID<FMovieSceneEvaluationHookComponent> EvaluationHook;
+
+	TComponentTypeID<FEvaluationHookFlags> EvaluationHookFlags;
+
 public:
 
 	// 
@@ -248,7 +288,6 @@ public:
 		FComponentTypeID NeedsUnlink;
 
 		FComponentTypeID MigratedFromFastPath;
-		FComponentTypeID CachePreAnimatedValue;
 
 		FComponentTypeID ImportedEntity;
 		FComponentTypeID Master;
@@ -289,17 +328,6 @@ public:
 private:
 	FBuiltInComponentTypes();
 };
-
-
-
-#if UE_MOVIESCENE_ENTITY_DEBUG
-
-	template<> struct TComponentDebugType<FMovieScenePropertyBinding>
-	{
-		static const EComponentDebugType Type = EComponentDebugType::Property;
-	};
-
-#endif // UE_MOVIESCENE_ENTITY_DEBUG
 
 
 } // namespace MovieScene

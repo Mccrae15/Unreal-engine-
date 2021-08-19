@@ -1,16 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraActions.h"
+#include "NiagaraNodeParameterMapBase.h"
 #include "NiagaraNodeParameterMapGet.h"
 #include "NiagaraNodeParameterMapSet.h"
 #include "EdGraphSchema_Niagara.h"
+#include "NiagaraNodeStaticSwitch.h"
+#include "NiagaraScriptVariable.h"
 #include "Widgets/SWidget.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Layout/WidgetPath.h"
 #include "ScopedTransaction.h"
+#include "Classes/EditorStyleSettings.h"
 #include "ViewModels/NiagaraParameterPanelViewModel.h"
+#include "Misc/MessageDialog.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraActions"
 
@@ -33,9 +38,104 @@ TOptional<FNiagaraVariable> FNiagaraMenuAction::GetParameterVariable() const
 	return ParameterVariable;
 }
 
-void FNiagaraMenuAction::SetParamterVariable(const FNiagaraVariable& InParameterVariable)
+void FNiagaraMenuAction::SetParameterVariable(const FNiagaraVariable& InParameterVariable)
 {
 	ParameterVariable = InParameterVariable;
+}
+
+void FNiagaraMenuActionCollector::AddAction(TSharedPtr<FNiagaraMenuAction> Action, int32 SortOrder, const FString& Category)
+{
+	Actions.Add({Action, SortOrder, Category});
+}
+
+void FNiagaraMenuActionCollector::AddAllActionsTo(FGraphActionListBuilderBase& ActionBuilder)
+{
+	Actions.Sort([](const FCollectedAction& Lhs, const FCollectedAction& Rhs)
+	{
+		// First check configured sort order
+		if (Lhs.SortOrder != Rhs.SortOrder)
+		{
+			return Lhs.SortOrder < Rhs.SortOrder;
+		}
+
+		// Then check the defined category (and subcategory)
+		const FText CategoryA = Lhs.Action->GetCategory();
+		const FText CategoryB = Rhs.Action->GetCategory();
+		int32 CategoryCompare = CategoryA.CompareTo(CategoryB);
+		if (CategoryCompare != 0)
+		{
+			return CategoryCompare < 0;
+		}
+
+		// Then compare the actual variable names
+		FNiagaraParameterHandle HandleA(FName(Lhs.Action->GetMenuDescription().ToString()));
+		FNiagaraParameterHandle HandleB(FName(Rhs.Action->GetMenuDescription().ToString()));
+
+		const TArray<FName> NamesA = HandleA.GetHandleParts();
+		const TArray<FName> NamesB = HandleB.GetHandleParts();
+		if (NamesA.Num() == NamesB.Num())
+		{
+			for (int i = 0; i < NamesA.Num(); i++)
+			{
+				if (NamesA[i] != NamesB[i])
+				{
+					return NamesA[i].LexicalLess(NamesB[i]);
+				}
+			}
+		}
+		return NamesA.Num() < NamesB.Num();
+	});
+	
+	for (const FCollectedAction& Entry : Actions)
+	{
+		ActionBuilder.AddAction(Entry.Action, Entry.Category);
+	}
+}
+
+FNiagaraMenuAction_Base::FNiagaraMenuAction_Base(FText InDisplayName, ENiagaraMenuSections InSection,
+                                                 TArray<FString> InNodeCategories, FText InToolTip, FText InKeywords, float InIntrinsicWeightMultiplier)
+{
+	DisplayName = InDisplayName;
+	Section = InSection;
+	Categories = InNodeCategories;
+	ToolTip = InToolTip;
+	Keywords = InKeywords;
+	SearchWeightMultiplier = InIntrinsicWeightMultiplier;
+
+	UpdateFullSearchText();
+}
+
+void FNiagaraMenuAction_Base::UpdateFullSearchText()
+{
+	FullSearchString.Reset();
+	
+	TArray<FString> KeywordsArray;
+	Keywords.ToString().ParseIntoArray(KeywordsArray, TEXT(" "), true);
+
+	TArray<FString> TooltipArray;
+	ToolTip.ToString().ParseIntoArray(TooltipArray, TEXT(" "), true);
+
+	for (FString& Entry : KeywordsArray)
+	{
+		Entry.ToLowerInline();
+		FullSearchString += Entry;
+	}
+
+	FullSearchString.Append(LINE_TERMINATOR);
+
+	for (FString& Entry : TooltipArray)
+	{
+		Entry.ToLowerInline();
+		FullSearchString += Entry;
+	}
+
+	FullSearchString.Append(LINE_TERMINATOR);
+
+	for (FString Entry : Categories)
+	{
+		Entry.ToLowerInline();
+		FullSearchString += Entry;
+	}
 }
 
 /************************************************************************/
@@ -44,30 +144,57 @@ void FNiagaraMenuAction::SetParamterVariable(const FNiagaraVariable& InParameter
 FNiagaraParameterAction::FNiagaraParameterAction(const FNiagaraVariable& InParameter,
 	const TArray<FNiagaraGraphParameterReferenceCollection>& InReferenceCollection,
 	FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping, FText InKeywords,
-	TSharedPtr<TArray<FName>> ParameterWithNamespaceModifierRenamePending, 
+	TSharedPtr<TArray<FName>> ParametersWithNamespaceModifierRenamePending, 
 	int32 InSectionID)
 	: FEdGraphSchemaAction(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGrouping, MoveTemp(InKeywords), InSectionID)
+	, ScriptVar(nullptr)
 	, Parameter(InParameter)
 	, ReferenceCollection(InReferenceCollection)
 	, bIsExternallyReferenced(false)
-	, ParameterWithNamespaceModifierRenamePendingWeak(ParameterWithNamespaceModifierRenamePending)
+	, ParametersWithNamespaceModifierRenamePendingWeak(ParametersWithNamespaceModifierRenamePending)
 {
 }
 
 FNiagaraParameterAction::FNiagaraParameterAction(const FNiagaraVariable& InParameter,
 	FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping, FText InKeywords,
-	TSharedPtr<TArray<FName>> ParameterWithNamespaceModifierRenamePending, 
+	TSharedPtr<TArray<FName>> ParametersWithNamespaceModifierRenamePending, 
 	int32 InSectionID)
 	: FEdGraphSchemaAction(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGrouping, MoveTemp(InKeywords), InSectionID)
+	, ScriptVar(nullptr)
 	, Parameter(InParameter)
 	, bIsExternallyReferenced(false)
-	, ParameterWithNamespaceModifierRenamePendingWeak(ParameterWithNamespaceModifierRenamePending)
+	, ParametersWithNamespaceModifierRenamePendingWeak(ParametersWithNamespaceModifierRenamePending)
 {
+}
+
+FNiagaraParameterAction::FNiagaraParameterAction(const UNiagaraScriptVariable* InScriptVar,
+	FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping, FText InKeywords,
+	int32 InSectionID)
+	: FEdGraphSchemaAction(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGrouping, MoveTemp(InKeywords), InSectionID)
+	, ScriptVar(InScriptVar)
+	, Parameter(InScriptVar ? InScriptVar->Variable : FNiagaraVariable())
+	, bIsExternallyReferenced(false)
+{
+}
+
+const UNiagaraScriptVariable* FNiagaraParameterAction::GetScriptVar() const
+{
+	return ScriptVar;
+}
+
+const FNiagaraVariable& FNiagaraParameterAction::GetParameter() const
+{
+	return ScriptVar ? ScriptVar->Variable : Parameter;
+}
+
+TArray<FNiagaraGraphParameterReferenceCollection>& FNiagaraParameterAction::GetReferenceCollection()
+{
+	return ReferenceCollection;
 }
 
 bool FNiagaraParameterAction::GetIsNamespaceModifierRenamePending() const
 {
-	TSharedPtr<TArray<FName>> ParameterNamesWithNamespaceModifierRenamePending = ParameterWithNamespaceModifierRenamePendingWeak.Pin();
+	TSharedPtr<TArray<FName>> ParameterNamesWithNamespaceModifierRenamePending = ParametersWithNamespaceModifierRenamePendingWeak.Pin();
 	if (ParameterNamesWithNamespaceModifierRenamePending.IsValid())
 	{
 		return ParameterNamesWithNamespaceModifierRenamePending->Contains(Parameter.GetName());
@@ -77,7 +204,7 @@ bool FNiagaraParameterAction::GetIsNamespaceModifierRenamePending() const
 
 void FNiagaraParameterAction::SetIsNamespaceModifierRenamePending(bool bIsNamespaceModifierRenamePending)
 {
-	TSharedPtr<TArray<FName>> ParameterNamesWithNamespaceModifierRenamePending = ParameterWithNamespaceModifierRenamePendingWeak.Pin();
+	TSharedPtr<TArray<FName>> ParameterNamesWithNamespaceModifierRenamePending = ParametersWithNamespaceModifierRenamePendingWeak.Pin();
 	if (ParameterNamesWithNamespaceModifierRenamePending.IsValid())
 	{
 		if (bIsNamespaceModifierRenamePending)
@@ -91,16 +218,123 @@ void FNiagaraParameterAction::SetIsNamespaceModifierRenamePending(bool bIsNamesp
 	}
 }
 
-/************************************************************************/
-/* FNiagaraScriptVarAndViewInfoAction									*/
-/************************************************************************/
-FNiagaraScriptVarAndViewInfoAction::FNiagaraScriptVarAndViewInfoAction(const FNiagaraScriptVariableAndViewInfo& InScriptVariableAndViewInfo,
-	FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping, FText InKeywords, int32 InSectionID)
-	: FEdGraphSchemaAction(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGrouping, MoveTemp(InKeywords), InSectionID)
-	, ScriptVariableAndViewInfo(InScriptVariableAndViewInfo)
+UEdGraphNode* FNiagaraAction_NewNode::CreateNode(UEdGraph* ParentGraph, UEdGraphPin* FromPin, FVector2D NodePosition, bool bSelectNewNode) const
 {
+	// see niagara schema 
+	int32 NiagaraNodeDistance = 60;
+	
+	UEdGraphNode* ResultNode = nullptr;
+
+	// If there is a template, we actually use it
+	if (NodeTemplate != nullptr)
+	{
+		FString OutErrorMsg;
+		UNiagaraNode* NiagaraNodeTemplate = Cast<UNiagaraNode>(NodeTemplate);
+		if (NiagaraNodeTemplate && !NiagaraNodeTemplate->CanAddToGraph(CastChecked<UNiagaraGraph>(ParentGraph), OutErrorMsg))
+		{
+			if (OutErrorMsg.Len() > 0)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(OutErrorMsg));
+			}
+			return ResultNode;
+		}
+
+		const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "NiagaraEditorNewNode", "Niagara Editor: New Node"));
+		ParentGraph->Modify();
+
+		NodeTemplate->SetFlags(RF_Transactional);
+
+		// set outer to be the graph so it doesn't go away
+		NodeTemplate->Rename(NULL, ParentGraph, REN_NonTransactional);
+		ParentGraph->AddNode(NodeTemplate, true, bSelectNewNode);
+
+		NodeTemplate->CreateNewGuid();
+		NodeTemplate->PostPlacedNewNode();
+		NodeTemplate->AllocateDefaultPins();
+		NodeTemplate->AutowireNewNode(FromPin);
+
+		// For input pins, new node will generally overlap node being dragged off
+		// Work out if we want to visually push away from connected node
+		int32 XLocation = NodePosition.X;
+		if (FromPin && FromPin->Direction == EGPD_Input)
+		{
+			UEdGraphNode* PinNode = FromPin->GetOwningNode();
+			const float XDelta = FMath::Abs(PinNode->NodePosX - NodePosition.X);
+
+			if (XDelta < NiagaraNodeDistance)
+			{
+				// Set location to edge of current node minus the max move distance
+				// to force node to push off from connect node enough to give selection handle
+				XLocation = PinNode->NodePosX - NiagaraNodeDistance;
+			}
+		}
+
+		NodeTemplate->NodePosX = XLocation;
+		NodeTemplate->NodePosY = NodePosition.Y;
+		NodeTemplate->SnapToGrid(GetDefault<UEditorStyleSettings>()->GridSnapSize);
+
+		ResultNode = NodeTemplate;
+
+		ParentGraph->NotifyGraphChanged();
+	}
+
+	return ResultNode;
 }
 
+UEdGraphNode* FNiagaraAction_NewNode::CreateNode(UEdGraph* Graph, TArray<UEdGraphPin*>& FromPins, FVector2D NodePosition,	bool bSelectNewNode) const
+{
+	UEdGraphNode* ResultNode = NULL;
+
+	if (FromPins.Num() > 0)
+	{
+		ResultNode = CreateNode(Graph, FromPins[0], NodePosition, bSelectNewNode);
+
+		if (ResultNode)
+		{
+			// Try autowiring the rest of the pins
+			for (int32 Index = 1; Index < FromPins.Num(); ++Index)
+			{
+				ResultNode->AutowireNewNode(FromPins[Index]);
+			}
+		}
+	}
+	else
+	{
+		ResultNode = CreateNode(Graph, nullptr, NodePosition, bSelectNewNode);
+	}
+
+	return ResultNode;
+}
+
+TOptional<FNiagaraVariable> FNiagaraMenuAction_Generic::GetParameterVariable() const
+{
+	return ParameterVariable;
+}
+
+void FNiagaraMenuAction_Generic::SetParameterVariable(const FNiagaraVariable& InParameterVariable)
+{
+	ParameterVariable = InParameterVariable;
+}
+
+bool FNiagaraParameterAction::GetIsExternallyReferenced() const
+{
+	return bIsExternallyReferenced;	
+}
+
+void FNiagaraParameterAction::SetIsExternallyReferenced(bool bInIsExternallyReferenced)
+{
+	bIsExternallyReferenced = bInIsExternallyReferenced;
+}
+
+bool FNiagaraParameterAction::GetIsSourcedFromCustomStackContext() const
+{
+	return bIsSourcedFromCustomStackContext;
+}
+
+void FNiagaraParameterAction::SetIsSourcedFromCustomStackContext(bool bInIsSourcedFromCustomStackContext)
+{
+	bIsSourcedFromCustomStackContext = bInIsSourcedFromCustomStackContext;
+}
 
 /************************************************************************/
 /* FNiagaraParameterGraphDragOperation									*/
@@ -149,20 +383,34 @@ FReply FNiagaraParameterGraphDragOperation::DroppedOnNode(FVector2D ScreenPositi
 	FNiagaraParameterAction* ParameterAction = (FNiagaraParameterAction*)SourceAction.Get();
 	if (ParameterAction)
 	{
-		const FNiagaraVariable& Parameter = ParameterAction->GetParameter();
-		if (UNiagaraNodeParameterMapGet* GetMapNode = Cast<UNiagaraNodeParameterMapGet>(GetHoveredNode()))
+		if (const UNiagaraScriptVariable* ScriptVar = ParameterAction->GetScriptVar())
 		{
-			FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Get Pin", "Drop parameter onto Get node"));
-			GetMapNode->Modify();
-			UEdGraphPin* Pin = GetMapNode->RequestNewTypedPin(EGPD_Output, Parameter.GetType(), Parameter.GetName());
-			GetMapNode->CancelEditablePinName(FText::GetEmpty(), Pin);
-		} 
-		else if (UNiagaraNodeParameterMapSet* SetMapNode = Cast<UNiagaraNodeParameterMapSet>(GetHoveredNode()))
+			if (UNiagaraNodeParameterMapGet* GetMapNode = Cast<UNiagaraNodeParameterMapGet>(GetHoveredNode()))
+			{
+				FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Get Pin", "Drop parameter onto Get node"));
+				FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(GetMapNode, false, ScriptVar);
+			}
+			else if (UNiagaraNodeParameterMapSet* SetMapNode = Cast<UNiagaraNodeParameterMapSet>(GetHoveredNode()))
+			{
+				FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Set Pin", "Drop parameter onto Set node"));
+				FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(SetMapNode, true, ScriptVar);
+			}
+		}
+
+		// Legacy codepath for drag actions that do not carry the UNiagaraScriptVariable.
+		else
 		{
-			FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Set Pin", "Drop parameter onto Set node"));
-			SetMapNode->Modify();
-			UEdGraphPin* Pin = SetMapNode->RequestNewTypedPin(EGPD_Input, Parameter.GetType(), Parameter.GetName());
-			SetMapNode->CancelEditablePinName(FText::GetEmpty(), Pin);
+			const FNiagaraVariable& Parameter = ParameterAction->GetParameter();
+			if (UNiagaraNodeParameterMapGet* GetMapNode = Cast<UNiagaraNodeParameterMapGet>(GetHoveredNode()))
+			{
+				FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Get Pin", "Drop parameter onto Get node"));
+				FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(GetMapNode, false, Parameter);
+			}
+			else if (UNiagaraNodeParameterMapSet* SetMapNode = Cast<UNiagaraNodeParameterMapSet>(GetHoveredNode()))
+			{
+				FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Set Pin", "Drop parameter onto Set node"));
+				FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(SetMapNode, true, Parameter);
+			}
 		}
 	}
 
@@ -176,16 +424,43 @@ FReply FNiagaraParameterGraphDragOperation::DroppedOnPanel(const TSharedRef<SWid
 		FNiagaraParameterAction* ParameterAction = (FNiagaraParameterAction*)SourceAction.Get();
 		if (ParameterAction)
 		{
-			FNiagaraParameterNodeConstructionParams NewNodeParams;
-			NewNodeParams.Graph = &Graph;
-			NewNodeParams.GraphPosition = GraphPosition;
-			NewNodeParams.Parameter = ParameterAction->GetParameter();
+			UNiagaraGraph* NiagaraGraph = Cast<UNiagaraGraph>(&Graph);
+
+			auto GetScriptVar = [&ParameterAction, &NiagaraGraph]()->const UNiagaraScriptVariable* {
+				const UNiagaraScriptVariable* ActionScriptVar = ParameterAction->GetScriptVar();
+				if (ActionScriptVar != nullptr)
+				{
+					return ActionScriptVar;
+				}
+				return NiagaraGraph->GetScriptVariable(ParameterAction->GetParameter());
+			};
+
+			const UNiagaraScriptVariable* ScriptVariable = GetScriptVar();
+			// if the ScriptVariable is a nullptr, it is likely that the action was dropped on a panel different than the original
+			if(ScriptVariable == nullptr)
+			{
+				return FReply::Handled();
+			}
+
+			FNiagaraParameterNodeConstructionParams NewNodeParams(
+				GraphPosition,
+				&Graph,
+				ParameterAction->GetParameter(),
+				ScriptVariable
+			);
 
 			// Take into account current state of modifier keys in case the user changed his mind
 			FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
 			const bool bModifiedKeysActive = ModifierKeys.IsControlDown() || ModifierKeys.IsAltDown();
 			const bool bAutoCreateGetter = bModifiedKeysActive ? ModifierKeys.IsControlDown() : bControlDrag;
 			const bool bAutoCreateSetter = bModifiedKeysActive ? ModifierKeys.IsAltDown() : bAltDrag;
+			
+			if(ScriptVariable != nullptr && ScriptVariable->GetIsStaticSwitch())
+			{
+				MakeStaticSwitch(NewNodeParams, ScriptVariable);
+				return FReply::Handled();
+			}
+			
 			// Handle Getter/Setters
 			if (bAutoCreateGetter || bAutoCreateSetter)
 			{
@@ -258,7 +533,15 @@ void FNiagaraParameterGraphDragOperation::MakeGetMap(FNiagaraParameterNodeConstr
 	GetNode->NodePosX = InParams.GraphPosition.X;
 	GetNode->NodePosY = InParams.GraphPosition.Y;
 	GetNodeCreator.Finalize();
-	GetNode->RequestNewTypedPin(EGPD_Output, InParams.Parameter.GetType(), InParams.Parameter.GetName());
+
+	if (const UNiagaraScriptVariable* ScriptVar = InParams.ScriptVar)
+	{
+		FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(GetNode, false, ScriptVar);
+	}
+	else
+	{
+		FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(GetNode, false, InParams.Parameter);
+	}
 }
 
 void FNiagaraParameterGraphDragOperation::MakeSetMap(FNiagaraParameterNodeConstructionParams InParams)
@@ -271,7 +554,51 @@ void FNiagaraParameterGraphDragOperation::MakeSetMap(FNiagaraParameterNodeConstr
 	SetNode->NodePosX = InParams.GraphPosition.X;
 	SetNode->NodePosY = InParams.GraphPosition.Y;
 	SetNodeCreator.Finalize();
-	SetNode->RequestNewTypedPin(EGPD_Input, InParams.Parameter.GetType(), InParams.Parameter.GetName());
+
+	if (const UNiagaraScriptVariable* ScriptVar = InParams.ScriptVar)
+	{
+		FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(SetNode, true, ScriptVar);
+	}
+	else
+	{
+		FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(SetNode, true, InParams.Parameter);
+	}
+}
+
+void FNiagaraParameterGraphDragOperation::MakeStaticSwitch(FNiagaraParameterNodeConstructionParams InParams, const UNiagaraScriptVariable* ScriptVariable)
+{
+	FScopedTransaction AddNewPinTransaction(LOCTEXT("MakeStaticSwitch", "Make Static Switch"));
+	check(InParams.Graph);
+	InParams.Graph->Modify();
+
+	// copy metadata
+	if (UNiagaraGraph* NiagaraGraph = Cast<UNiagaraGraph>(InParams.Graph))
+	{
+		NiagaraGraph->AddParameter(ScriptVariable);
+	}
+	
+	FGraphNodeCreator<UNiagaraNodeStaticSwitch> SetNodeCreator(*InParams.Graph);
+	UNiagaraNodeStaticSwitch* SwitchNode = SetNodeCreator.CreateNode();
+	SwitchNode->NodePosX = InParams.GraphPosition.X;
+	SwitchNode->NodePosY = InParams.GraphPosition.Y;
+	SwitchNode->InputParameterName = InParams.Parameter.GetName();
+	const FNiagaraTypeDefinition& Type = InParams.Parameter.GetType();
+	
+	if (Type == FNiagaraTypeDefinition::GetBoolDef())
+	{
+		SwitchNode->SwitchTypeData.SwitchType = ENiagaraStaticSwitchType::Bool;
+	}
+	else if (Type == FNiagaraTypeDefinition::GetIntDef())
+	{
+		SwitchNode->SwitchTypeData.SwitchType = ENiagaraStaticSwitchType::Integer;
+	}
+	else if (Type.IsEnum())
+	{
+		SwitchNode->SwitchTypeData.SwitchType = ENiagaraStaticSwitchType::Enum;
+		SwitchNode->SwitchTypeData.Enum = Type.GetEnum();
+	}
+	
+	SetNodeCreator.Finalize();
 }
 
 EVisibility FNiagaraParameterGraphDragOperation::GetIconVisible() const

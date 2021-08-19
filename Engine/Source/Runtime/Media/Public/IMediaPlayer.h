@@ -306,16 +306,44 @@ public:
 	}
 
 	enum class EFeatureFlag {
-		AllowShutdownOnClose = 0,	//!< Allow player to be shutdown right after 'close' event is received from it
-		UsePlaybackTimingV2,		//!< Use v2 playback timing and AV sync
-		UseRealtimeWithVideoOnly,	//!< Use realtime rather then game deltatime to control video playback if no audio is present
-		AlwaysPullNewestVideoFrame,	//!< Mediaframework will not gate video frame output with its own timing, but assumes "ASAP" as output time for every sample
+		AllowShutdownOnClose = 0,		//!< Allow player to be shutdown right after 'close' event is received from it
+		UsePlaybackTimingV2,			//!< Use v2 playback timing and AV sync
+		UseRealtimeWithVideoOnly,		//!< Use realtime rather then game deltatime to control video playback if no audio is present
+		AlwaysPullNewestVideoFrame,		//!< Mediaframework will not gate video frame output with its own timing, but assumes "ASAP" as output time for every sample
+		PlayerUsesInternalFlushOnSeek,	//!< The player implements an internal flush logic on seeks and Mediaframework will not issue an explicit Flush() call to it on seeks
 	};
 	
 	virtual bool GetPlayerFeatureFlag(EFeatureFlag /*flag*/) const
 	{
 		// Override in child class if needed.
 		return false;
+	}
+
+	class IAsyncResourceReleaseNotification
+	{
+	public:
+		virtual ~IAsyncResourceReleaseNotification() {}
+		virtual void Signal(uint32 ResourceFlags) = 0;
+	};
+	typedef TSharedRef<IAsyncResourceReleaseNotification, ESPMode::ThreadSafe> IAsyncResourceReleaseNotificationRef;
+
+	/**
+	 * Set async resource release notification for use with IMediaPlayerLifecycleManagerDelegate
+	 */
+	virtual bool SetAsyncResourceReleaseNotification(IAsyncResourceReleaseNotificationRef AsyncDestructNotification)
+	{
+		// Override in child class if needed.
+		return false;
+	}
+
+	/*
+	* Return IMediaPlayerLifecycleManagerDelegate::ResourceFlags bitmask to indicate resource types recreated on a open call
+	*/
+	virtual uint32 GetNewResourcesOnOpen() const
+	{
+		// Override in child class if needed. Default assumes resources carry over (to a large degree) and are created per instance only
+		// (as a simplified model for older players)
+		return 0;
 	}
 
 public:

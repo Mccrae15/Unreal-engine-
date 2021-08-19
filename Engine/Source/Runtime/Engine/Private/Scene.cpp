@@ -361,6 +361,7 @@ FPostProcessSettings::FPostProcessSettings()
 	// to set all bOverride_.. by default to false
 	FMemory::Memzero(this, sizeof(FPostProcessSettings));
 
+	TemperatureType = ETemperatureMethod::TEMP_WhiteBalance;
 	WhiteTemp = 6500.0f;
 	WhiteTint = 0.0f;
 
@@ -587,6 +588,10 @@ FPostProcessSettings::FPostProcessSettings()
 
 	PathTracingMaxBounces = 32;
 	PathTracingSamplesPerPixel = 16384;
+	PathTracingFilterWidth = 3.0f;
+	PathTracingEnableEmissive = 1;
+	PathTracingMaxPathExposure = 30.0f;
+	PathTracingEnableDenoiser = 1;
 	
 	bMobileHQGaussian = false;
 
@@ -601,7 +606,8 @@ FPostProcessSettings::FPostProcessSettings()
 }
 
 FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
-	: bOverride_WhiteTemp(Settings.bOverride_WhiteTemp)
+	: bOverride_TemperatureType(Settings.bOverride_TemperatureType)
+	, bOverride_WhiteTemp(Settings.bOverride_WhiteTemp)
 	, bOverride_WhiteTint(Settings.bOverride_WhiteTint)
 	, bOverride_ColorSaturation(Settings.bOverride_ColorSaturation)
 	, bOverride_ColorContrast(Settings.bOverride_ColorContrast)
@@ -781,10 +787,15 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_RayTracingGISamplesPerPixel(Settings.bOverride_RayTracingGISamplesPerPixel)
 	, bOverride_PathTracingMaxBounces(Settings.bOverride_PathTracingMaxBounces)
 	, bOverride_PathTracingSamplesPerPixel(Settings.bOverride_PathTracingSamplesPerPixel)
+	, bOverride_PathTracingFilterWidth(Settings.bOverride_PathTracingFilterWidth)
+	, bOverride_PathTracingEnableEmissive(Settings.bOverride_PathTracingEnableEmissive)
+	, bOverride_PathTracingMaxPathExposure(Settings.bOverride_PathTracingMaxPathExposure)
+	, bOverride_PathTracingEnableDenoiser(Settings.bOverride_PathTracingEnableDenoiser)
 
 	, bMobileHQGaussian(Settings.bMobileHQGaussian)
 	, BloomMethod(Settings.BloomMethod)
 	, AutoExposureMethod(Settings.AutoExposureMethod)
+	, TemperatureType(Settings.TemperatureType)
 	, WhiteTemp(Settings.WhiteTemp)
 	, WhiteTint(Settings.WhiteTint)
 	, ColorSaturation(Settings.ColorSaturation)
@@ -963,6 +974,10 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 
 	, PathTracingMaxBounces(Settings.PathTracingMaxBounces)
 	, PathTracingSamplesPerPixel(Settings.PathTracingSamplesPerPixel)
+	, PathTracingFilterWidth(Settings.PathTracingFilterWidth)
+	, PathTracingEnableEmissive(Settings.PathTracingEnableEmissive)
+	, PathTracingMaxPathExposure(Settings.PathTracingMaxPathExposure)
+	, PathTracingEnableDenoiser(Settings.PathTracingEnableDenoiser)
 
 	, LPVFadeRange(Settings.LPVFadeRange)
 	, LPVDirectionalOcclusionFadeRange(Settings.LPVDirectionalOcclusionFadeRange)

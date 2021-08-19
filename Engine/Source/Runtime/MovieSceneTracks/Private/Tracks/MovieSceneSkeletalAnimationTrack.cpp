@@ -249,10 +249,12 @@ bool UMovieSceneSkeletalAnimationTrack::PopulateEvaluationTree(TMovieSceneEvalua
 }
 
 #if WITH_EDITOR
-void UMovieSceneSkeletalAnimationTrack::OnSectionMoved(UMovieSceneSection& Section, const FMovieSceneSectionMovedParams& Params)
+EMovieSceneSectionMovedResult UMovieSceneSkeletalAnimationTrack::OnSectionMoved(UMovieSceneSection& Section, const FMovieSceneSectionMovedParams& Params)
 {
 	SortSections();
 	SetUpRootMotions(true);
+	
+	return EMovieSceneSectionMovedResult::None;
 }
 #endif
 
@@ -511,7 +513,7 @@ void UMovieSceneSkeletalAnimationTrack::SetUpRootMotions(bool bForce)
 			UMovieSceneSkeletalAnimationSection* AnimSection = Cast<UMovieSceneSkeletalAnimationSection>(Section);
 			if (AnimSection)
 			{
-				if (AnimSection->GetOffsetTransform().Equals(FTransform::Identity, 1e-3f) == false)
+				if (AnimSection->GetOffsetTransform().Equals(FTransform::Identity, KINDA_SMALL_NUMBER) == false)
 				{
 					bAnySectionsHaveOffset = true;
 				}
@@ -627,7 +629,6 @@ void UMovieSceneSkeletalAnimationTrack::SetUpRootMotions(bool bForce)
 
 	}
 }
-
 static FTransform GetWorldTransformForBone(UAnimSequence* AnimSequence, USkeletalMeshComponent* MeshComponent,const FName& InBoneName, float Seconds)
 {
 	FName BoneName = InBoneName;

@@ -973,7 +973,7 @@ namespace DatasmithSceneUtilsImpl
 			{
 				if (ExpressionElement)
 				{
-					if (ExpressionElement->IsA(EDatasmithMaterialExpressionType::Texture))
+					if (ExpressionElement->IsSubType(EDatasmithMaterialExpressionType::Texture))
 					{
 						const IDatasmithMaterialExpressionTexture* TextureExpression = static_cast<IDatasmithMaterialExpressionTexture*>(ExpressionElement);
 						if (FCString::Strlen(TextureExpression->GetTexturePathName()) > 0)
@@ -985,7 +985,7 @@ namespace DatasmithSceneUtilsImpl
 							}
 						}
 					}
-					else if (ExpressionElement->IsA(EDatasmithMaterialExpressionType::Generic))
+					else if (ExpressionElement->IsSubType(EDatasmithMaterialExpressionType::Generic))
 					{
 						const IDatasmithMaterialExpressionGeneric* GenericExpression = static_cast<IDatasmithMaterialExpressionGeneric*>(ExpressionElement);
 
@@ -1000,7 +1000,7 @@ namespace DatasmithSceneUtilsImpl
 							}
 						}
 					}
-					else if (ExpressionElement->IsA(EDatasmithMaterialExpressionType::FunctionCall))
+					else if (ExpressionElement->IsSubType(EDatasmithMaterialExpressionType::FunctionCall))
 					{
 						const IDatasmithMaterialExpressionFunctionCall* FunctionExpression = static_cast<IDatasmithMaterialExpressionFunctionCall*>(ExpressionElement);
 						if (FCString::Strlen(FunctionExpression->GetFunctionPathName()) > 0)
@@ -1040,7 +1040,7 @@ namespace DatasmithSceneUtilsImpl
 			if ( MaterialElement->GetUseMaterialAttributes() )
 			{
 				ParseExpressionElement(MaterialElement->GetMaterialAttributes().GetExpression());
-			}			
+			}
 		}
 
 		void ScanCompositeTexture( IDatasmithCompositeTexture* CompositeTexture )
@@ -1098,6 +1098,47 @@ namespace DatasmithSceneUtilsImpl
 			}
 		}
 
+		void ScanVariant( TSharedPtr<IDatasmithVariantElement> Variant )
+		{
+			for (int32 BindingIndex = 0; BindingIndex < Variant->GetActorBindingsCount(); ++BindingIndex)
+			{
+				TSharedPtr<IDatasmithActorBindingElement> ActorBinding = Variant->GetActorBinding(BindingIndex);
+
+				for (int32 PropertyIndex = 0; PropertyIndex < ActorBinding->GetPropertyCapturesCount(); ++PropertyIndex)
+				{
+					TSharedPtr<IDatasmithBasePropertyCaptureElement> BasePropCaptureElement = ActorBinding->GetPropertyCapture(PropertyIndex);
+					if (BasePropCaptureElement->IsSubType(EDatasmithElementVariantSubType::ObjectPropertyCapture))
+					{
+						// Mark all materials used in this actor binding as referenced
+						TSharedPtr<IDatasmithObjectPropertyCaptureElement> PropCaptureElement = StaticCastSharedPtr<IDatasmithObjectPropertyCaptureElement>(BasePropCaptureElement);
+						TSharedPtr<IDatasmithElement> TargetElement = PropCaptureElement->GetRecordedObject().Pin();
+						if (TargetElement.IsValid() && TargetElement->IsA(EDatasmithElementType::BaseMaterial))
+						{
+							TSharedPtr<IDatasmithBaseMaterialElement> TargetMaterialElement = StaticCastSharedPtr<IDatasmithBaseMaterialElement>(TargetElement);
+							if (TargetMaterialElement.IsValid())
+							{
+								ReferencedMaterials.Add(TargetMaterialElement);
+							}
+						}
+					}
+				}
+			}
+		}
+
+		void ScanLevelVariantSet( TSharedPtr<IDatasmithLevelVariantSetsElement> LevelVariantSets )
+		{
+			for (int32 VariantSetIndex = 0; VariantSetIndex < LevelVariantSets->GetVariantSetsCount(); ++VariantSetIndex)
+			{
+				TSharedPtr<IDatasmithVariantSetElement> VariantSet = LevelVariantSets->GetVariantSet(VariantSetIndex);
+
+				for (int32 VariantIndex = 0; VariantIndex < VariantSet->GetVariantsCount(); ++VariantIndex)
+				{
+					TSharedPtr<IDatasmithVariantElement> Variant = VariantSet->GetVariant(VariantIndex);
+					ScanVariant(Variant);
+				}
+			}
+		}
+
 		void Initialize()
 		{
 			int32 AssetElementCount = Scene->GetTexturesCount() + Scene->GetMaterialsCount() +
@@ -1136,6 +1177,11 @@ namespace DatasmithSceneUtilsImpl
 			for (int32 Index = 0; Index < Scene->GetActorsCount(); ++Index)
 			{
 				ParseSceneActor( Scene->GetActor(Index) );
+			}
+
+			for (int32 Index = 0; Index < Scene->GetLevelVariantSetsCount(); ++Index)
+			{
+				ScanLevelVariantSet( Scene->GetLevelVariantSets(Index) );
 			}
 
 			for (TSharedPtr<IDatasmithMeshElement >& MeshElement : ReferencedMeshes)
@@ -1298,7 +1344,7 @@ namespace DatasmithSceneUtilsImpl
 				for (int32 AnimIndex = NumAnims - 1; AnimIndex >= 0; --AnimIndex)
 				{
 					TSharedPtr< IDatasmithBaseAnimationElement > Animation = LevelSequence->GetAnimation(AnimIndex);
-					if (Animation.IsValid() && Animation->IsA(EDatasmithElementType::Animation) && Animation->IsSubType((uint64)EDatasmithElementAnimationSubType::TransformAnimation))
+					if (Animation.IsValid() && Animation->IsA(EDatasmithElementType::Animation) && Animation->IsSubType(EDatasmithElementAnimationSubType::TransformAnimation))
 					{
 						const TSharedRef< IDatasmithTransformAnimationElement > TransformAnimation = StaticCastSharedRef< IDatasmithTransformAnimationElement >(Animation.ToSharedRef());
 
@@ -1340,12 +1386,12 @@ namespace DatasmithSceneUtilsImpl
 						continue;
 					}
 
-					if (AnimationElement->IsSubType((uint64)EDatasmithElementAnimationSubType::TransformAnimation))
+					if (AnimationElement->IsSubType(EDatasmithElementAnimationSubType::TransformAnimation))
 					{
 						const IDatasmithTransformAnimationElement* TransformAnimation = static_cast<IDatasmithTransformAnimationElement*>(AnimationElement.Get());
 						bValidSequence = ActorsInScene.Contains(TransformAnimation->GetName());
 					}
-					else if (AnimationElement->IsSubType((uint64)EDatasmithElementAnimationSubType::VisibilityAnimation))
+					else if (AnimationElement->IsSubType(EDatasmithElementAnimationSubType::VisibilityAnimation))
 					{
 						const IDatasmithVisibilityAnimationElement* VisibilityAnimation = static_cast<IDatasmithVisibilityAnimationElement*>(AnimationElement.Get());
 						bValidSequence = ActorsInScene.Contains(VisibilityAnimation->GetName());
@@ -1377,17 +1423,17 @@ namespace DatasmithSceneUtilsImpl
 						continue;
 					}
 
-					if (AnimationElement->IsSubType((uint64)EDatasmithElementAnimationSubType::TransformAnimation))
+					if (AnimationElement->IsSubType(EDatasmithElementAnimationSubType::TransformAnimation))
 					{
 						const IDatasmithTransformAnimationElement* TransformAnimation = static_cast<IDatasmithTransformAnimationElement*>(AnimationElement.Get());
 						bValidSequence = ActorsInScene.Contains(TransformAnimation->GetName());
 					}
-					else if (AnimationElement->IsSubType((uint64)EDatasmithElementAnimationSubType::VisibilityAnimation))
+					else if (AnimationElement->IsSubType(EDatasmithElementAnimationSubType::VisibilityAnimation))
 					{
 						const IDatasmithVisibilityAnimationElement* VisibilityAnimation = static_cast<IDatasmithVisibilityAnimationElement*>(AnimationElement.Get());
 						bValidSequence = ActorsInScene.Contains(VisibilityAnimation->GetName());
 					}
-					else if (AnimationElement->IsSubType((uint64)EDatasmithElementAnimationSubType::SubsequenceAnimation))
+					else if (AnimationElement->IsSubType(EDatasmithElementAnimationSubType::SubsequenceAnimation))
 					{
 						TSharedRef<IDatasmithSubsequenceAnimationElement> SubsequenceAnimation = StaticCastSharedRef<IDatasmithSubsequenceAnimationElement>(AnimationElement.ToSharedRef());
 						bValidSequence = ValidSequences.Contains(SubsequenceAnimation->GetSubsequence().Pin());
@@ -1427,44 +1473,57 @@ void FDatasmithSceneUtils::CleanUpScene(TSharedRef<IDatasmithScene> Scene, bool 
 	}
 }
 
-FString FDatasmithUniqueNameProviderBase::GenerateUniqueName(const FString& BaseName)
+FString FDatasmithUniqueNameProviderBase::GenerateUniqueName(const FString& InBaseName, int32 CharBudget)
 {
 	const int32 FrequentlyUsedThreshold = 5; // don't saturate the table with uncommon names
-	if (!Contains(BaseName))
+
+	for (int32 CurrentBaseNameCharBudget = CharBudget; CurrentBaseNameCharBudget >= 1; --CurrentBaseNameCharBudget)
 	{
-		AddExistingName(BaseName);
-		return BaseName;
+		FString ShortName = InBaseName.Left(CurrentBaseNameCharBudget);
+
+		if (!Contains(ShortName))
+		{
+			AddExistingName(ShortName);
+			return ShortName;
+		}
+
+		// use the frequently used label info to avoid useless indices iterations
+		int32 LastKnownIndex = 1;
+		int32* FreqIndexPtr = FrequentlyUsedNames.Find(ShortName);
+		if (FreqIndexPtr != nullptr && *FreqIndexPtr > LastKnownIndex)
+		{
+			LastKnownIndex = *FreqIndexPtr;
+		}
+
+		// loop to find an available indexed name
+		FString NumberedName;
+		do
+		{
+			++LastKnownIndex;
+			NumberedName = FString::Printf(TEXT("%s_%d"), *ShortName, LastKnownIndex);
+		} while (NumberedName.Len() <= CharBudget && Contains(NumberedName));
+
+		if (NumberedName.Len() > CharBudget)
+		{
+			continue;
+		}
+
+		// update frequently used names
+		if (FreqIndexPtr != nullptr)
+		{
+			*FreqIndexPtr = LastKnownIndex;
+		}
+		else if (LastKnownIndex > FrequentlyUsedThreshold)
+		{
+			FrequentlyUsedNames.Add(ShortName, LastKnownIndex);
+		}
+
+		AddExistingName(NumberedName);
+		return NumberedName;
 	}
 
-	// use the frequently used label info to avoid useless indices iterations
-	int32 LastKnownIndex = 1;
-	int32* FreqIndexPtr = FrequentlyUsedNames.Find(BaseName);
-	if (FreqIndexPtr != nullptr &&  *FreqIndexPtr > LastKnownIndex)
-	{
-		LastKnownIndex = *FreqIndexPtr;
-	}
-
-	// loop to find an available indexed name
-	FString ModifiedName;
-	do
-	{
-		++LastKnownIndex;
-		ModifiedName = FString::Printf(TEXT("%s_%d"), *BaseName, LastKnownIndex);
-	} while (Contains(ModifiedName));
-
-	// update frequently used names
-	if (FreqIndexPtr != nullptr)
-	{
-		*FreqIndexPtr = LastKnownIndex;
-	}
-	else if (LastKnownIndex > FrequentlyUsedThreshold)
-	{
-		FrequentlyUsedNames.Add(BaseName, LastKnownIndex);
-	}
-
-	AddExistingName(ModifiedName);
-
-	return ModifiedName;
+	UE_LOG(LogDatasmith, Warning, TEXT("Cannot generate a unique name from '%s'."), *InBaseName);
+	return {};
 }
 
 

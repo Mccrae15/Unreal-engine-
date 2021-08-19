@@ -141,7 +141,7 @@ FDefaultGameMoviePlayer::~FDefaultGameMoviePlayer()
 	FlushRenderingCommands();
 }
 
-void FDefaultGameMoviePlayer::RegisterMovieStreamer(TSharedPtr<IMovieStreamer> InMovieStreamer)
+void FDefaultGameMoviePlayer::RegisterMovieStreamer(TSharedPtr<IMovieStreamer, ESPMode::ThreadSafe> InMovieStreamer)
 {
 	if (InMovieStreamer.IsValid() && !MovieStreamers.Contains(InMovieStreamer))
 	{
@@ -354,7 +354,7 @@ bool FDefaultGameMoviePlayer::PlayMovie()
 		ActiveMovieStreamer.Reset();
 		if (MovieStreamingIsPrepared())
 		{
-			for (TSharedPtr<IMovieStreamer> MovieStreamer : MovieStreamers)
+			for (TSharedPtr<IMovieStreamer, ESPMode::ThreadSafe> MovieStreamer : MovieStreamers)
 			{
 				if (MovieStreamer->Init(LoadingScreenAttributes.MoviePaths, LoadingScreenAttributes.PlaybackType))
 				{
@@ -382,7 +382,7 @@ bool FDefaultGameMoviePlayer::PlayMovie()
 		
 			{
 				FScopeLock SyncMechanismLock(&SyncMechanismCriticalSection);
-				SyncMechanism = new FSlateLoadingSynchronizationMechanism(WidgetRenderer);
+				SyncMechanism = new FSlateLoadingSynchronizationMechanism(WidgetRenderer, ActiveMovieStreamer);
 				SyncMechanism->Initialize();
 			}
 
@@ -420,7 +420,7 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 {
 	const bool bEnforceMinimumTime = LoadingScreenAttributes.MinimumLoadingScreenDisplayTime >= 0.0f;
 
-	if (LoadingScreenIsPrepared() && ( IsMovieCurrentlyPlaying() || !bEnforceMinimumTime ) )
+	if (LoadingScreenIsPrepared() && IsMovieCurrentlyPlaying())
 	{
 	
 		if (SyncMechanism)
@@ -464,6 +464,8 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 			||	(!bUserCalledFinish && !bEnforceMinimumTime && !IsMovieStreamingFinished() && !bAutoCompleteWhenLoadingCompletes) 
 			||	(bEnforceMinimumTime && (FPlatformTime::Seconds() - LastPlayTime) < LoadingScreenAttributes.MinimumLoadingScreenDisplayTime)))
 		{
+			BeginExitIfRequested();
+
 			// If we are in a loading loop, and this is the last movie in the playlist.. assume you can break out.
 			if (ActiveMovieStreamer.IsValid() && LoadingScreenAttributes.PlaybackType == MT_LoadingLoop && ActiveMovieStreamer->IsLastMovieInPlaylist())
 			{
@@ -490,9 +492,19 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 
 				float DeltaTime = SlateApp.GetDeltaTime();				
 
+				if (ActiveMovieStreamer.IsValid())
+				{
+					ActiveMovieStreamer->TickPreEngine();
+				}
+
 				if (GEngine && bAllowEngineTick && LoadingScreenAttributes.bAllowEngineTick)
 				{
 					GEngine->Tick(DeltaTime, false);
+				}
+
+				if (ActiveMovieStreamer.IsValid())
+				{
+					ActiveMovieStreamer->TickPostEngine();
 				}
 
 				FDefaultGameMoviePlayer* InMoviePlayer = this;
@@ -506,10 +518,15 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 					}
 				);
 				
-				SlateApp.Tick();
+				{
+					FSlateRenderer* SlateRenderer = SlateApp.GetRenderer();
+					FScopeLock ScopeLock(SlateRenderer->GetResourceCriticalSection());
 
-				// Synchronize the game thread and the render thread so that the render thread doesn't get too far behind.
-				SlateApp.GetRenderer()->Sync();
+					SlateApp.Tick();
+
+					// Synchronize the game thread and the render thread so that the render thread doesn't get too far behind.
+					SlateRenderer->Sync();
+				}
 
 				ENQUEUE_RENDER_COMMAND(FinishLoadingMovieFrame)(
 					[](FRHICommandListImmediate& RHICmdList)
@@ -519,6 +536,11 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 					}
 				);
 				FlushRenderingCommands();
+
+				if (ActiveMovieStreamer.IsValid())
+				{
+					ActiveMovieStreamer->TickPostRender();
+				}
 			}
 		}
 
@@ -583,7 +605,7 @@ bool FDefaultGameMoviePlayer::IsMovieStreamingFinished() const
 void FDefaultGameMoviePlayer::Tick( float DeltaTime )
 {
 	check(IsInRenderingThread());
-	if (MainWindow.IsValid() && VirtualRenderWindow.IsValid() && !IsLoadingFinished())
+	if (MainWindow.IsValid() && VirtualRenderWindow.IsValid() && !IsLoadingFinished() && GDynamicRHI && !GDynamicRHI->RHIIsRenderingSuspended())
 	{
 		FScopeLock SyncMechanismLock(&SyncMechanismCriticalSection);
 		if(SyncMechanism)

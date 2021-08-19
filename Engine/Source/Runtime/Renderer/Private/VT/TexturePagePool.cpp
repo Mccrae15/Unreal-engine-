@@ -59,12 +59,12 @@ void FTexturePagePool::EvictAllPages(FVirtualTextureSystem* System)
 	}
 }
 
-void FTexturePagePool::UnmapPages(FVirtualTextureSystem* System, uint8 SpaceID, uint32 vAddress, uint8 MaxLevel)
+void FTexturePagePool::UnmapPages(FVirtualTextureSystem* System, uint8 SpaceID, uint32 vAddress, uint32 WidthInTiles, uint32 HeightInTiles)
 {
 	const uint32 XMin = FMath::ReverseMortonCode2(vAddress);
 	const uint32 YMin = FMath::ReverseMortonCode2(vAddress >> 1);
-	const uint32 XMax = XMin + (1 << MaxLevel);
-	const uint32 YMax = YMin + (1 << MaxLevel);
+	const uint32 XMax = XMin + WidthInTiles;
+	const uint32 YMax = YMin + HeightInTiles;
 
 	// Walk through all of our current mapping entries, and unmap any that are in the desired range
 	for (int32 MappingIndex = NumPages + 1; MappingIndex < PageMapping.Num(); ++MappingIndex)
@@ -122,7 +122,7 @@ void FTexturePagePool::EvictPages(FVirtualTextureSystem* System, FVirtualTexture
 					}
 					else
 					{
-						UnmapAllPages(System, i, false);
+						UnmapAllPages(System, i, true);
 						FreeHeap.Update(0, i);
 					}
 				}

@@ -59,10 +59,11 @@ public:
 	virtual void Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs) override;
 	virtual bool RefreshFromExternalChanges() override;
 	virtual ENiagaraNumericOutputTypeSelectionMode GetNumericOutputTypeSelectionMode() const override;
+	virtual bool GenerateCompileHashForClassMembers(const UClass* InClass, FNiagaraCompileHashVisitor* InVisitor) const override;
 	//~ End UNiagaraNode Interface
 
 	//~ Begin UNiagaraNodeWithDynamicPins Interface
-	virtual bool AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType) override;
+	virtual bool AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType) const override;
 	//~ End UNiagaraNodeWithDynamicPins Interface
 
 protected:
@@ -72,8 +73,8 @@ protected:
 
 	//~ Begin UNiagaraNodeWithDynamicPins Interface
 	virtual bool AllowDynamicPins() const override;
-	virtual bool CanMovePin(const UEdGraphPin* Pin) const override { return false; }
-	virtual void OnNewTypedPinAdded(UEdGraphPin* NewPin) override;
+	virtual bool CanMovePin(const UEdGraphPin* Pin, int32 DirectionToMove) const override { return false; }
+	virtual void OnNewTypedPinAdded(UEdGraphPin*& NewPin) override;
 	virtual void OnPinRenamed(UEdGraphPin* RenamedPin, const FString& OldName) override;
 	virtual bool CanRemovePin(const UEdGraphPin* Pin) const override;
 	//~ End UNiagaraNodeWithDynamicPins Interface

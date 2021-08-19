@@ -2,79 +2,56 @@
 
 
 #include "DMXFixtureComponent.h"
+
 #include "DMXFixtureActor.h"
 #include "DMXFixtureActorMatrix.h"
-#include "Kismet/KismetMathLibrary.h"
-#include "RHICommandList.h"
+
 #include "RenderingThread.h"
+#include "RHICommandList.h"
+#include "Kismet/KismetMathLibrary.h"
 
 
 UDMXFixtureComponent::UDMXFixtureComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
-
-	// init cells to 1 and set current
-	InitCells(1);
-
-	IsEnabled = true;
-	UseInterpolation = false;
-	UsingMatrixData = false;
-	SkipThreshold = 0.01f;
-	InterpolationScale = 1.0f;
 }
 
-void UDMXFixtureComponent::Initialize()
+void UDMXFixtureComponent::InitCells(int NumCells)
 {
-	// Get dmx signal format from dmx fixture actor
-	ADMXFixtureActor* ParentFixture = Cast<ADMXFixtureActor>(GetOwner());
-	if (ParentFixture)
-	{
-		UDMXEntityFixturePatch* Patch = ParentFixture->DMX->GetFixturePatch();
-		if (Patch)
-		{
-			TMap<FDMXAttributeName, EDMXFixtureSignalFormat> SignalFormatsMap = Patch->GetAttributeSignalFormats();
-			SetBitResolution(SignalFormatsMap);
-		}
-	}
-
-	// Get number of cells from dmx Matrix Fixture
-	ADMXFixtureActorMatrix* ParentMatrixFixture = Cast<ADMXFixtureActorMatrix>(GetOwner());
-	if (ParentMatrixFixture && UsingMatrixData)
-	{
-		int nCells = ParentMatrixFixture->XCells * ParentMatrixFixture->YCells;
-		InitCells(nCells);
-	}
-
-	// set interpolation range value
-	SetRangeValue();
-
-	// Apply interpolation speed scale
-	ApplySpeedScale();
-
-	// Run the Initialize blueprint event
-	InitializeComponent();
-}
-
-
-void UDMXFixtureComponent::OnComponentCreated()
-{
-	Initialize();
-}
-
-
-void UDMXFixtureComponent::InitCells(int NCells)
-{
-	Cells.Init(FCell(), NCells);
-	CurrentCell = &Cells[0];
-	for (auto& Cell : Cells)
+	Cells.Init(FCell(), NumCells);
+	for (FCell& Cell : Cells)
 	{
 		Cell.ChannelInterpolation.Init(FInterpolationData(), 1);
 	}
 }
 
+void UDMXFixtureComponent::Initialize()
+{
+	ADMXFixtureActorMatrix* ParentMatrixFixture = Cast<ADMXFixtureActorMatrix>(GetOwner());
+	if (ParentMatrixFixture)
+	{
+		bUsingMatrixData = true;
+
+		// Init cells for DMX Matrix Fixtures
+		int nCells = ParentMatrixFixture->XCells * ParentMatrixFixture->YCells;
+		InitCells(nCells);
+
+		if (nCells > 0)
+		{
+			CurrentCell = &Cells[0];
+		}
+	}
+	else
+	{		
+		// Init cells for other parent actors (only one cell)
+		InitCells(1);
+		CurrentCell = &Cells[0];
+	}
+}
+
 void UDMXFixtureComponent::SetCurrentCell(int Index)
 {
-	if (Index < Cells.Num())
+	if (Cells.IsValidIndex(Index))
 	{
 		CurrentCell = &Cells[Index];
 	}

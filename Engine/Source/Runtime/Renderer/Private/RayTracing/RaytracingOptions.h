@@ -47,7 +47,7 @@ struct FRayTracingPrimaryRaysOptions
 extern bool ShouldRenderRayTracingEffect(bool bEffectEnabled);
 
 extern bool AnyRayTracingPassEnabled(const FScene* Scene, const FViewInfo& View);
-extern FRayTracingPrimaryRaysOptions GetRayTracingTranslucencyOptions();
+extern FRayTracingPrimaryRaysOptions GetRayTracingTranslucencyOptions(const FViewInfo& View);
 
 extern bool ShouldRenderRayTracingSkyLight(const FSkyLightSceneProxy* SkyLightSceneProxy);
 extern bool ShouldRenderRayTracingAmbientOcclusion(const FViewInfo& View);
@@ -57,12 +57,14 @@ extern bool ShouldRenderRayTracingTranslucency(const FViewInfo& View);
 extern bool ShouldRenderRayTracingShadows();
 extern bool ShouldRenderRayTracingShadowsForLight(const FLightSceneProxy& LightProxy);
 extern bool ShouldRenderRayTracingShadowsForLight(const FLightSceneInfoCompact& LightInfo);
+extern bool ShouldRenderExperimentalPluginRayTracingGlobalIllumination();
 extern bool CanOverlayRayTracingOutput(const FViewInfo& View);
 
 extern bool EnableRayTracingShadowTwoSidedGeometry();
 extern float GetRaytracingMaxNormalBias();
 
 extern bool CanUseRayTracingLightingMissShader(EShaderPlatform ShaderPlatform);
+extern bool CanUseRayTracingAMDHitToken();
 
 #else // RHI_RAYTRACING
 
@@ -116,6 +118,11 @@ FORCEINLINE bool ShouldRenderRayTracingShadowsForLight(const FLightSceneInfoComp
 	return false;
 }
 
+FORCEINLINE bool ShouldRenderExperimentalPluginRayTracingGlobalIllumination()
+{
+	return false;
+}
+
 FORCEINLINE bool CanOverlayRayTracingOutput(const FViewInfo& View)
 {
 	return true;
@@ -126,4 +133,9 @@ FORCEINLINE bool CanUseRayTracingLightingMissShader(EShaderPlatform)
 	return false;
 }
 
-#endif
+FORCEINLINE bool CanUseRayTracingAMDHitToken()
+{
+	return false;
+}
+
+#endif // RHI_RAYTRACING

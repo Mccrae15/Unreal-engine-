@@ -10,6 +10,7 @@
 #include "RenderingThread.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "CoreGlobals.h"
+#include "RayTracingGeometryManager.h"
 
 /** Whether to enable mip-level fading or not: +1.0f if enabled, -1.0f if disabled. */
 float GEnableMipLevelFading = 1.0f;
@@ -78,21 +79,30 @@ void FRenderResource::InitResource()
 	check(IsInRenderingThread());
 	if (ListIndex == INDEX_NONE)
 	{
-		TArray<FRenderResource*>& ResourceList = GetResourceList();
-		TArray<int32>& FreeIndicesList = GetFreeIndicesList();
-
-		// If resource list is currently being iterated, new resources must be added to the end of the list, to ensure they're processed during the iteration
-		// Otherwise empty slots in the list may be re-used for new resources
 		int32 LocalListIndex = INDEX_NONE;
-		if (FreeIndicesList.Num() > 0 && ResourceListIterationActive.GetValue() == 0)
+
+		if (PLATFORM_NEEDS_RHIRESOURCELIST || !GIsRHIInitialized)
 		{
-			LocalListIndex = FreeIndicesList.Pop();
-			check(ResourceList[LocalListIndex] == nullptr);
-			ResourceList[LocalListIndex] = this;
+			TArray<FRenderResource*>& ResourceList = GetResourceList();
+			TArray<int32>& FreeIndicesList = GetFreeIndicesList();
+
+			// If resource list is currently being iterated, new resources must be added to the end of the list, to ensure they're processed during the iteration
+			// Otherwise empty slots in the list may be re-used for new resources
+			if (FreeIndicesList.Num() > 0 && ResourceListIterationActive.GetValue() == 0)
+			{
+				LocalListIndex = FreeIndicesList.Pop();
+				check(ResourceList[LocalListIndex] == nullptr);
+				ResourceList[LocalListIndex] = this;
+			}
+			else
+			{
+				LocalListIndex = ResourceList.Add(this);
+			}
 		}
 		else
 		{
-			LocalListIndex = ResourceList.Add(this);
+			// Mark this resource as initialized
+			LocalListIndex = 0;
 		}
 
 		if (GIsRHIInitialized)
@@ -120,10 +130,12 @@ void FRenderResource::ReleaseResource()
 				ReleaseDynamicRHI();
 			}
 
+#if PLATFORM_NEEDS_RHIRESOURCELIST
 			TArray<FRenderResource*>& ResourceList = GetResourceList();
 			TArray<int32>& FreeIndicesList = GetFreeIndicesList();
 			ResourceList[ListIndex] = nullptr;
 			FreeIndicesList.Add(ListIndex);
+#endif
 			ListIndex = INDEX_NONE;
 		}
 	}
@@ -294,8 +306,52 @@ void FTextureReference::InitRHI()
 	TextureReferenceRHI = RHICreateTextureReference(&LastRenderTimeRHI);
 }
 	
+int32 GTextureReferenceRevertsLastRenderContainer = 1;
+FAutoConsoleVariableRef CVarTextureReferenceRevertsLastRenderContainer(
+	TEXT("r.TextureReferenceRevertsLastRenderContainer"),
+	GTextureReferenceRevertsLastRenderContainer,
+	TEXT(""));
+
 void FTextureReference::ReleaseRHI()
 {
+#if PLATFORM_ANDROID 
+	if (TextureReferenceRHI.GetReference())
+	{
+		bool bTextureReferenceRevertsLastRenderContainer = GTextureReferenceRevertsLastRenderContainer != 0;
+		
+		// Check Android's config rules system so we can HF this at startup if needed.
+		{			
+			static bool bConfigRulesChecked = false;
+			static TOptional<bool> bConfigRulesRevertsLastRenderContainer;
+			if (!bConfigRulesChecked)
+			{
+				const FString* ConfigRulesStr = FAndroidMisc::GetConfigRulesVariable(TEXT("TextureReferenceRevertsLastRenderContainer"));
+				if (ConfigRulesStr)
+				{
+					bConfigRulesRevertsLastRenderContainer = ConfigRulesStr->Equals("true", ESearchCase::IgnoreCase);
+					UE_LOG(LogRHI, Log, TEXT("TextureReferenceRevertsLastRenderContainer, set by config rules: %d"), (int)bConfigRulesRevertsLastRenderContainer.GetValue());
+				}
+				else
+				{
+					UE_LOG(LogRHI, Log, TEXT("TextureReferenceRevertsLastRenderContainer, no config rule set: %d"), (int)bTextureReferenceRevertsLastRenderContainer);
+				}
+				bConfigRulesChecked = true;
+			}
+
+			if (bConfigRulesRevertsLastRenderContainer.IsSet())
+			{
+				bTextureReferenceRevertsLastRenderContainer = bConfigRulesRevertsLastRenderContainer.GetValue();
+			}
+		} 
+
+		if (bTextureReferenceRevertsLastRenderContainer && TextureReferenceRHI->GetLastRenderTimeContainer() == &LastRenderTimeRHI)
+		{
+			// we're going away, TextureReferenceRHI must swap out its (soon to be) dangling ref.
+			TextureReferenceRHI->SetDefaultLastRenderTimeContainer();
+		}
+	}
+#endif
+
 	TextureReferenceRHI.SafeRelease();
 }
 
@@ -309,6 +365,72 @@ TGlobalResource<FNullColorVertexBuffer> GNullColorVertexBuffer;
 
 /** The global null vertex buffer, which is set with a stride of 0 on meshes */
 TGlobalResource<FNullVertexBuffer> GNullVertexBuffer;
+
+/*------------------------------------------------------------------------------
+	FRayTracingGeometry implementation.
+------------------------------------------------------------------------------*/
+
+#if RHI_RAYTRACING
+
+void FRayTracingGeometry::CreateRayTracingGeometry(ERTAccelerationStructureBuildPriority InBuildPriority)
+{
+	// Release previous RHI object if any
+	ReleaseRHI();
+
+	check(RawData.Num() == 0 || Initializer.OfflineData == nullptr);
+	if (RawData.Num())
+	{
+		Initializer.bDiscardOfflineData = true;
+		Initializer.OfflineData = &RawData;
+	}
+
+	bool bAllSegmentsAreValid = Initializer.Segments.Num() > 0;
+	for (const FRayTracingGeometrySegment& Segment : Initializer.Segments)
+	{
+		if (!Segment.VertexBuffer)
+		{
+			bAllSegmentsAreValid = false;
+			break;
+		}
+	}
+
+	if (bAllSegmentsAreValid)
+	{
+		RayTracingGeometryRHI = RHICreateRayTracingGeometry(Initializer);
+		if (Initializer.OfflineData == nullptr)
+		{
+			// Request build if not skip
+			if (InBuildPriority != ERTAccelerationStructureBuildPriority::Skip)
+			{
+				RayTracingBuildRequestIndex = GRayTracingGeometryManager.RequestBuildAccelerationStructure(this, InBuildPriority);
+			}
+		}
+		else
+		{
+			// Offline data ownership is transferred to the RHI, which discards it after use.
+			// It is no longer valid to use it after this point.
+			Initializer.OfflineData = nullptr;
+		}
+	}
+}
+
+void FRayTracingGeometry::ReleaseRHI()
+{
+	if (HasPendingBuildRequest())
+	{
+		GRayTracingGeometryManager.RemoveBuildRequest(RayTracingBuildRequestIndex);
+		RayTracingBuildRequestIndex = INDEX_NONE;
+	}
+	RayTracingGeometryRHI.SafeRelease();
+}
+
+void FRayTracingGeometry::BoostBuildPriority(float InBoostValue) const
+{
+	check(HasPendingBuildRequest());
+	GRayTracingGeometryManager.BoostPriority(RayTracingBuildRequestIndex, InBoostValue);
+}
+
+#endif // RHI_RAYTRACING
 
 /*------------------------------------------------------------------------------
 	FGlobalDynamicVertexBuffer implementation.

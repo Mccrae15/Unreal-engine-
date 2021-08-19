@@ -95,6 +95,8 @@ struct FRenderAssetStreamingManager final : public IRenderAssetStreamingManager
 	/** Pool size for streaming. */
 	virtual int64 GetPoolSize() const override { return GTexturePoolSize;  }
 
+	virtual int64 GetRequiredPoolSize() const override { return DisplayedStats.RequiredPool; }
+
 	virtual int64 GetMaxEverRequired() const override { return MaxEverRequired; }
 
 	virtual void ResetMaxEverRequired() override { MaxEverRequired = 0; }
@@ -173,6 +175,8 @@ struct FRenderAssetStreamingManager final : public IRenderAssetStreamingManager
 
 	/** Propagates a change to the active lighting scenario. */
 	void PropagateLightingScenarioChange() override;
+
+	void AddRenderedTextureStats(TMap<FString, FRenderedTextureStats>& InOutRenderedTextureStats) override;
 
 private:
 //BEGIN: Thread-safe functions and data

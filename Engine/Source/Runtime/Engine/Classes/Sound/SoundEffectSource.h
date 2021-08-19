@@ -30,7 +30,12 @@ struct ENGINE_API FSourceEffectChainEntry
 	USoundEffectSourcePreset* Preset;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect")
-	uint32 bBypass : 1;
+	uint32 bBypass:1;
+
+	FSourceEffectChainEntry()
+	: Preset(nullptr)
+	, bBypass(false)
+	{}
 };
 
 /** Chain of source effect presets that can be shared between referencing sounds. */

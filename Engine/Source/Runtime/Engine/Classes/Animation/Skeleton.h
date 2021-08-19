@@ -10,6 +10,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
+#include "HAL/CriticalSection.h"
 #include "Misc/Guid.h"
 #include "ReferenceSkeleton.h"
 #include "Animation/PreviewAssetAttachComponent.h"
@@ -198,7 +199,7 @@ struct FRigConfiguration
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	class URig * Rig;
+	class URig * Rig = nullptr;
 
 	// @todo in the future we can make this to be run-time data
 	UPROPERTY()
@@ -549,8 +550,10 @@ public:
 		OnRetargetSourceChanged.Broadcast();
 	}
 
-
 	typedef TArray<FBoneNode> FBoneTreeType;
+
+	//Use this Lock everytime you change or access LinkupCache and SkelMesh2LinkupCache member.
+	FCriticalSection LinkupCacheLock;
 
 	/** Non-serialised cache of linkups between different skeletal meshes and this Skeleton. */
 	TArray<struct FSkeletonToMeshLinkup> LinkupCache;

@@ -32,6 +32,7 @@ void FDataprepEditorStyle::Initialize()
 
 	const FVector2D Icon16x16(16.0f, 16.0f);
 	const FVector2D Icon20x20(20.0f, 20.0f);
+	const FVector2D Icon22x22(22.0f, 22.0f);
 	const FVector2D Icon24x24(24.0f, 24.0f);
 	const FVector2D Icon32x32(32.0f, 32.0f);
 	const FVector2D Icon40x40(40.0f, 40.0f);
@@ -47,11 +48,6 @@ void FDataprepEditorStyle::Initialize()
 	StyleSet->Set("DataprepEditor.ShowDataprepSettings", new IMAGE_PLUGIN_BRUSH("Icons/IconOptions", Icon40x40));
 	StyleSet->Set("DataprepEditor.ShowDatasmithSceneSettings", new IMAGE_PLUGIN_BRUSH("Icons/IconOptions", Icon40x40));
 
-	StyleSet->Set("DataprepEditor.BuildWorld", new IMAGE_PLUGIN_BRUSH("Icons/BuildWorld", Icon40x40));
-	StyleSet->Set("DataprepEditor.BuildWorld.Small", new IMAGE_PLUGIN_BRUSH("Icons/BuildWorld", Icon20x20));
-	StyleSet->Set("DataprepEditor.BuildWorld.Selected", new IMAGE_PLUGIN_BRUSH("Icons/BuildWorld", Icon40x40));
-	StyleSet->Set("DataprepEditor.BuildWorld.Selected.Small", new IMAGE_PLUGIN_BRUSH("Icons/BuildWorld", Icon20x20));
-
 	StyleSet->Set("DataprepEditor.CommitWorld", new IMAGE_PLUGIN_BRUSH("Icons/CommitWorld", Icon40x40));
 	StyleSet->Set("DataprepEditor.CommitWorld.Small", new IMAGE_PLUGIN_BRUSH("Icons/CommitWorld", Icon20x20));
 	StyleSet->Set("DataprepEditor.CommitWorld.Selected", new IMAGE_PLUGIN_BRUSH("Icons/CommitWorld", Icon40x40));
@@ -62,7 +58,17 @@ void FDataprepEditorStyle::Initialize()
 	StyleSet->Set("DataprepEditor.ExecutePipeline.Selected", new IMAGE_PLUGIN_BRUSH("Icons/ExecutePipeline", Icon40x40));
 	StyleSet->Set("DataprepEditor.ExecutePipeline.Selected.Small", new IMAGE_PLUGIN_BRUSH("Icons/ExecutePipeline", Icon20x20));
 
-	StyleSet->Set("DataprepEditor.TrackNode.Slot", new IMAGE_PLUGIN_BRUSH("CircleBox", Icon32x32));
+	StyleSet->Set("DataprepEditor.Pipeline.GroupActions", new IMAGE_PLUGIN_BRUSH("Icons/GroupActions", Icon16x16));
+	StyleSet->Set("DataprepEditor.Pipeline.UngroupActions", new IMAGE_PLUGIN_BRUSH("Icons/UngroupActions", Icon16x16));
+	StyleSet->Set("DataprepEditor.Pipeline.EnableActions", new IMAGE_PLUGIN_BRUSH("Icons/EnableActions", Icon16x16));
+	StyleSet->Set("DataprepEditor.Pipeline.DisableActions", new IMAGE_PLUGIN_BRUSH("Icons/DisableActions", Icon16x16));
+	StyleSet->Set("DataprepEditor.Pipeline.EnableActionGroup", new IMAGE_PLUGIN_BRUSH("Icons/EnableActionGroup", Icon16x16));
+	StyleSet->Set("DataprepEditor.Pipeline.DisableActionGroup", new IMAGE_PLUGIN_BRUSH("Icons/DisableActionGroup", Icon16x16));
+	StyleSet->Set("DataprepEditor.Pipeline.PreviewFilter", new IMAGE_PLUGIN_BRUSH("Icons/PreviewFilter", Icon16x16));
+	StyleSet->Set("DataprepEditor.Pipeline.InversePreviewFilter", new IMAGE_PLUGIN_BRUSH("Icons/InversePreviewFilter", Icon16x16));
+	StyleSet->Set("DataprepEditor.Pipeline.ClearPreviewFilter", new IMAGE_PLUGIN_BRUSH("Icons/ClearPreviewFilter", Icon16x16));
+
+	StyleSet->Set("DataprepEditor.TrackNode.Slot", new IMAGE_PLUGIN_BRUSH("CircleBox", Icon22x22));
 
 	StyleSet->Set("DataprepEditor.Node.Body", new BOX_BRUSH("Node_Body", FMargin(16.f/64.f, 25.f/64.f, 16.f/64.f, 16.f/64.f)));
 
@@ -71,7 +77,8 @@ void FDataprepEditorStyle::Initialize()
 	// Dataprep action UI
 	{
 		StyleSet->Set("Dataprep.Background.Black", FLinearColor(FColor(26, 26, 26)) );
-		StyleSet->Set("Dataprep.TextSeparator.Color", FLinearColor(FColor(200, 200, 200, 200)) );
+		StyleSet->Set("Dataprep.TextSeparator.Color", FLinearColor(FColor(120, 120, 120, 255)) );
+		StyleSet->Set("Dataprep.TextSeparatorActionNode.Color", FLinearColor(FColor(100, 100, 100, 255)) );
 
 		StyleSet->Set("DataprepEditor.SoftwareCursor_Grab", new IMAGE_PLUGIN_BRUSH("Icons/cursor_grab", Icon20x20));
 		StyleSet->Set("DataprepEditor.SoftwareCursor_Hand", new IMAGE_PLUGIN_BRUSH("Icons/cursor_hand", Icon20x20));
@@ -81,6 +88,8 @@ void FDataprepEditorStyle::Initialize()
 		StyleSet->Set("DataprepAction.Body.Padding", FMargin(6.f, 2.f, 2.f, 2.f));
 		StyleSet->Set("DataprepAction.Steps.Padding", FMargin(11.f, 2.f, 6.f, 2.f));
 		StyleSet->Set("DataprepAction.DragAndDrop", FLinearColor(FColor(212, 212, 59)) );
+
+		StyleSet->Set("DataprepAction.Group.OutlineColor", FLinearColor(FColor(0, 102, 255)));
 
 		StyleSet->Set("DataprepAction.OutlineColor", FLinearColor(FColor(10, 177, 51)));
 		StyleSet->Set("DataprepAction.BackgroundColor", FLinearColor(FColor(61, 61, 61)));
@@ -115,11 +124,13 @@ void FDataprepEditorStyle::Initialize()
 		StyleSet->Set("DataprepActionStep.Selected", FLinearColor(FColor(1, 202, 252)) );
 		StyleSet->Set("DataprepActionStep.Filter.OutlineColor", FLinearColor(FColor(220, 125, 67)));
 		StyleSet->Set("DataprepActionStep.Operation.OutlineColor", FLinearColor(FColor(67, 177, 220)) );
+		StyleSet->Set("DataprepActionStep.SelectionTransform.OutlineColor", FLinearColor(FColor(255, 88, 255)) );
 		StyleSet->Set("DataprepActionStep.Separator.Color", FLinearColor(FColor(182, 219, 192)) );
 
-		StyleSet->Set("DataprepActionStep.Outter.Regular.Padding", FMargin(10.f, 3.f, 10.f, 3.f));
-		StyleSet->Set("DataprepActionStep.Outter.Selected.Padding", FMargin(10.f, 0.f, 4.f, 0.f));
-		StyleSet->Set("DataprepActionStep.Padding", FMargin(15.f, 3.f, 5.f, 3.f));
+		StyleSet->Set("DataprepActionStep.Outter.Disabled.Padding", FMargin(5.f, 3.f, 6.f, 3.f));
+		StyleSet->Set("DataprepActionStep.Outter.Regular.Padding", FMargin(5.f, 3.f, 10.f, 3.f));
+		StyleSet->Set("DataprepActionStep.Outter.Selected.Padding", FMargin(5.f, 0.f, 3.f, 0.f));
+		StyleSet->Set("DataprepActionStep.Padding", FMargin(10.f, 3.f, 6.f, 3.f));
 
 		StyleSet->Set("DataprepActionStep.DnD.Outter.Padding", FMargin(0.f, 5.f, 0.f, 5.f));
 		StyleSet->Set("DataprepActionStep.DnD.Inner.Padding", FMargin(5.f, 5.f, 5.f, 5.f));
@@ -142,6 +153,8 @@ void FDataprepEditorStyle::Initialize()
 				.SetShadowColorAndOpacity(FLinearColor(0.f, 0.f, 0.f, 0.7f));
 			StyleSet->Set("DataprepActionBlock.PreviewTextBlockStyle", TilteTextBlockStyle);
 		}
+
+		StyleSet->Set("DataprepEditor.ActionStepNode.ArrowNext", new IMAGE_PLUGIN_BRUSH("Triangle", FVector2D(30.0f, 10.0f)));
 	}
 
 	// DataprepGraphEditor

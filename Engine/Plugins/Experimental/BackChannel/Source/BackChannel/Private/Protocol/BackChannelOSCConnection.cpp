@@ -93,7 +93,7 @@ void FBackChannelOSCConnection::ReceiveAndDispatchMessages(const float MaxTime /
 
 void FBackChannelOSCConnection::ReceiveMessages(const float MaxTime /*= 0*/)
 {
-    // Cap packets at 128MB.
+	// Cap packets at 128MB.
 	const int kMaxPacketSize = 128 * 1024 * 1024;
 
 	const double StartTime = FPlatformTime::Seconds();
@@ -132,17 +132,17 @@ void FBackChannelOSCConnection::ReceiveMessages(const float MaxTime /*= 0*/)
 						{
 							ReceiveBuffer.AddUninitialized(Size - ReceiveBuffer.Num());
 						}
-                        ExpectedSizeOfNextPacket = Size;
+						ExpectedSizeOfNextPacket = Size;
 					}
 					else
 					{
 						// if this is abnormally large it's likely a malformed packet so just reject it. We have to disconnect because we've no
                         // idea where the next valid packet in the stream is.
 						UE_LOG(LogBackChannel, Error,
-                               TEXT("Received packet of %d bytes that was out of the range [0,%d]. Assuming data is malformed and disconnecring"),
-                               Size, kMaxPacketSize);
-                        HasErrorState = true;
-                        ExpectedSizeOfNextPacket = 4;
+						       TEXT("Received packet of %d bytes that was out of the range [0,%d]. Assuming data is malformed and disconnecring"),
+						       Size, kMaxPacketSize);
+						HasErrorState = true;
+						ExpectedSizeOfNextPacket = 4;
 					}
 				}
 				else
@@ -377,7 +377,7 @@ int32 FBackChannelOSCConnection::GetMessageLimitForPath(const TCHAR* InPath)
 
 	if (Path.EndsWith(TEXT("*")))
 	{
-		Path.LeftChop(1);
+		Path.LeftChopInline(1);
 	}
 
 	// todo - search for vest match, not first match

@@ -46,6 +46,25 @@ static FAutoConsoleVariableRef CVarHairStrandsLoadAsset(TEXT("r.HairStrands.Load
 static int32 GEnableGroomAsyncLoad = 0;
 static FAutoConsoleVariableRef CVarGroomAsyncLoad(TEXT("r.HairStrands.AsyncLoad"), GEnableGroomAsyncLoad, TEXT("Allow groom asset to be loaded asynchronously in the editor"));
 
+static TAutoConsoleVariable<int32> GHairStrandsWarningLogVerbosity(
+	TEXT("r.HairStrands.Log"),
+	-1,
+	TEXT("Enable warning log report for groom related asset (0: no logging, 1: error only, 2: error & warning only, other: all logs). By default all logging are enabled (-1). Value needs to be set at startup time."));
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+void UpdateHairStrandsLogVerbosity()
+{
+	const int32 Verbosity = GHairStrandsWarningLogVerbosity->GetInt();
+	switch (Verbosity)
+	{
+	case 0:  UE_SET_LOG_VERBOSITY(LogHairStrands, NoLogging); break;
+	case 1:  UE_SET_LOG_VERBOSITY(LogHairStrands, Error); break;
+	case 2:  UE_SET_LOG_VERBOSITY(LogHairStrands, Warning); break;
+	default: UE_SET_LOG_VERBOSITY(LogHairStrands, Log); break;
+	};
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 enum class EHairAtlasTextureType
@@ -68,7 +87,7 @@ static void InitAtlasTexture(ResourceType* InResource, UTexture2D* InTexture, EH
 	ENQUEUE_RENDER_COMMAND(HairStrandsCardsTextureCommand)(
 	[InResource, InTexture, InType](FRHICommandListImmediate& RHICmdList)
 	{
-		FSamplerStateRHIRef DefaultSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+		FSamplerStateRHIRef DefaultSampler = TStaticSamplerState<SF_AnisotropicLinear, AM_Clamp, AM_Clamp, AM_Clamp, 0, 0>::GetRHI();
 		switch (InType)
 		{
 		case EHairAtlasTextureType::Depth:
@@ -341,6 +360,8 @@ UGroomAsset::UGroomAsset(const FObjectInitializer& ObjectInitializer)
 
 	MinLOD.Default = 0;
 	DisableBelowMinLodStripping.Default = false;
+
+	UpdateHairStrandsLogVerbosity();
 }
 
 bool UGroomAsset::HasGeometryType(uint32 GroupIndex, EGroomGeometryType Type) const
@@ -512,6 +533,7 @@ void UGroomAsset::UpdateHairGroupsInfo()
 		Info.NumGuides = Data.Guides.Data.GetNumCurves();
 		Info.NumCurveVertices = Data.Strands.Data.GetNumPoints();
 		Info.NumGuideVertices = Data.Guides.Data.GetNumPoints();
+		Info.MaxCurveLength = Data.Strands.Data.StrandsCurves.MaxLength;
 		if (bForceReset)
 		{
 			Info.bIsVisible = true;
@@ -2213,7 +2235,10 @@ static void InitCardsTextureResources(UGroomAsset* GroomAsset)
 					InitAtlasTexture(LOD.RestResource, Desc->Textures.AttributeTexture, EHairAtlasTextureType::Attribute);
 					InitAtlasTexture(LOD.RestResource, Desc->Textures.CoverageTexture, EHairAtlasTextureType::Coverage);
 					InitAtlasTexture(LOD.RestResource, Desc->Textures.AuxilaryDataTexture, EHairAtlasTextureType::AuxilaryData);
-					LOD.RestResource->bInvertUV = Desc->SourceType == EHairCardsSourceType::Procedural; // Should fix procedural texture so that this does not happen
+					if (LOD.RestResource)
+					{
+						LOD.RestResource->bInvertUV = Desc->SourceType == EHairCardsSourceType::Procedural; // Should fix procedural texture so that this does not happen
+					}
 				}
 			}
 		}

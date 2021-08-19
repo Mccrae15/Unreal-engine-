@@ -409,10 +409,52 @@ namespace PyUtil
 	bool IsMappingType(PyTypeObject* InType);
 
 	/**
+	 * Cache of on-disk Python modules to optimize repeated IsModuleAvailableForImport queries.
+	 * @note This cache does not automatically watch or update itself from file-system changes after the initial scan!
+	 */
+	class FOnDiskModules
+	{
+	public:
+		FOnDiskModules() = default;
+
+		explicit FOnDiskModules(FString InModuleNameWildcard)
+			: ModuleNameWildcard(MoveTemp(InModuleNameWildcard))
+		{
+		}
+
+		/**
+		 * Add any module files found under the given path.
+		 * @note Function is non-recursive, and will find both "{Module}.py" and "{Module}/__init__.py" module layouts.
+		 */
+		void AddModules(const TCHAR* InPath);
+
+		/**
+		 * Remove any module files found under the given path.
+		 */
+		void RemoveModules(const TCHAR* InPath);
+
+		/**
+		 * Check to see whether the given module is known to the cache, optionally returning the actual module file location if it is.
+		 * @note Will look for both "{Module}.py" and "{Module}/__init__.py" module layouts.
+		 */
+		bool HasModule(const TCHAR* InModuleName, FString* OutResolvedFile = nullptr) const;
+
+	private:
+		FString ModuleNameWildcard;
+
+		TSet<FString> CachedModules;
+	};
+
+	/**
+	 * Get the cache of on-disk Unreal Python modules ("unreal_*" wildcard).
+	 */
+	FOnDiskModules& GetOnDiskUnrealModulesCache();
+
+	/**
 	 * Test to see whether the given module is available for import (is in the sys.modules table (which includes built-in modules), or is in any known sys.path path).
 	 * @note This function can't handle dot separated names.
 	 */
-	bool IsModuleAvailableForImport(const TCHAR* InModuleName, FString* OutResolvedFile = nullptr);
+	bool IsModuleAvailableForImport(const TCHAR* InModuleName, const FOnDiskModules* InOnDiskModules = nullptr, FString* OutResolvedFile = nullptr);
 
 	/**
 	 * Test to see whether the given module is available for import (is in the sys.modules table).
@@ -527,16 +569,16 @@ namespace PyUtil
 	bool EnableDeveloperWarnings();
 
 	/**
-	 * Log any pending Python error (will also clear the error).
-	 * @return The error text that was logged.
+	 * Log and clear any pending Python error, optionally retrieving the error text that was logged.
+	 * @return True if Python was in an error state, false otherwise.
 	 */
-	FString LogPythonError(const bool bInteractive = false);
+	bool LogPythonError(FString* OutError = nullptr, const bool bInteractive = false);
 
 	/**
-	 * Re-throw any pending Python error via FFrame::KismetExecutionMessage (will also clear the error).
-	 * @return The error text that was thrown.
+	 * Re-throw and clear any pending Python error via FFrame::KismetExecutionMessage, optionally retrieving the error text that was thrown.
+	 * @return True if Python was in an error state, false otherwise.
 	 */
-	FString ReThrowPythonError();
+	bool ReThrowPythonError(FString* OutError = nullptr);
 }
 
 #endif	// WITH_PYTHON

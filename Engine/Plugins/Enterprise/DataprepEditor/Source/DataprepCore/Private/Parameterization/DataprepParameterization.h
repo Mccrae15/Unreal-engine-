@@ -73,9 +73,7 @@ struct FDataprepParameterizationBinding
 	GENERATED_BODY()
 
 	FDataprepParameterizationBinding()
-		: ObjectBinded( nullptr )
-		, PropertyChain()
-		, ValueTypeValidationData()
+		: ValueTypeValidationData()
 	{}
 
 	FDataprepParameterizationBinding(UDataprepParameterizableObject* InObjectBinded, TArray<FDataprepPropertyLink> InPropertyChain);
@@ -88,7 +86,7 @@ struct FDataprepParameterizationBinding
 	bool operator==(const FDataprepParameterizationBinding& Other) const;
 
 	UPROPERTY()
-	UDataprepParameterizableObject* ObjectBinded;
+	UDataprepParameterizableObject* ObjectBinded = nullptr;
 
 	UPROPERTY()
 	TArray<FDataprepPropertyLink> PropertyChain;
@@ -140,7 +138,7 @@ struct FDataprepParametrizationBindingSetKeyFuncs : DefaultKeyFuncs<TSharedRef<F
 /**
  * Encapsulate the unidirectionality necessary for a constant cost of access to the data related to the bindings
  */
-UCLASS(MinimalAPI, Experimental)
+UCLASS(MinimalAPI)
 class UDataprepParameterizationBindings : public UObject
 {
 public:
@@ -237,14 +235,13 @@ private:
 /** 
  * The DataprepParameterization contains the data for the parameterization of a pipeline
  */
-UCLASS(MinimalAPI, Experimental)
+UCLASS(MinimalAPI)
 class UDataprepParameterization : public UObject
 {
 public:
 	GENERATED_BODY()
 
 	UDataprepParameterization();
-	virtual ~UDataprepParameterization();
 
 	// UObject interface
 	virtual void PostInitProperties() override;
@@ -252,6 +249,7 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	virtual void PostTransacted(const FTransactionObjectEvent& TransactionEvent) override;
+	virtual void FinishDestroy() override;
 	// End of UObject interface
 
 	void OnObjectModified(UObject* Object);
@@ -269,6 +267,8 @@ public:
 	void RemoveBindingFromObjects(const TArrayView<UDataprepParameterizableObject*>& Objects);
 
 	void GetExistingParameterNamesForType(FProperty* Property, bool bIsDescribingFullProperty, TSet<FString>& OutValidExistingNames, TSet<FString>& OutInvalidNames) const;
+
+	void DuplicateObjectParamaterization(const UDataprepParameterizableObject* InObject, UDataprepParameterizableObject* OutObject);
 
 private:
 
@@ -389,7 +389,7 @@ private:
 };
 
 
-UCLASS(MinimalAPI, Experimental)
+UCLASS(MinimalAPI)
 class UDataprepParameterizationInstance : public UObject
 {
 public:

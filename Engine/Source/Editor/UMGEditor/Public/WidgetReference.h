@@ -25,8 +25,7 @@ private:
  */
 struct UMGEDITOR_API FWidgetReference
 {
-	friend class FWidgetBlueprintEditor;
-	friend class FHierarchyWidgetDragDropOp;
+	friend FWidgetBlueprintEditor;
 
 public:
 	FWidgetReference();
@@ -50,6 +49,8 @@ public:
 
 		return TSharedPtr<SWidget>();
 	}
+
+	TSharedPtr<FWidgetBlueprintEditor> GetWidgetEditor() const { return WidgetEditor.Pin(); };
 
 	/** Checks if widget reference is the same as another widget reference, based on the template pointers. */
 	bool operator==( const FWidgetReference& Other ) const

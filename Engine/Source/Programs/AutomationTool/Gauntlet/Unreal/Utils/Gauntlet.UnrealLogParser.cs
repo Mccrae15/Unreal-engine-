@@ -18,6 +18,43 @@ namespace Gauntlet
 	public class UnrealLogParser
 	{
 		/// <summary>
+		/// Represents the level
+		/// </summary>
+		public enum LogLevel
+		{
+			Log,
+			Display,
+			Verbose,
+			VeryVerbose,
+			Warning,
+			Error
+		}
+
+		/// <summary>
+		/// Represents a line in the log
+		/// </summary>
+		public class LogEntry
+		{
+			public string Category { get; private set; }
+
+			public LogLevel Level { get; private set; }
+
+			public string Message { get; private set; }
+
+			public LogEntry(string InCategory, LogLevel InLevel, string InMessage)
+			{
+				Category = InCategory;
+				Level = InLevel;
+				Message = InMessage;
+			}
+
+			public override string ToString()
+			{
+				return string.Format("Log{0}: {1}: {2}", Category, Level, Message);
+			}
+		}
+
+		/// <summary>
 		/// Compound object that represents a fatal entry 
 		/// </summary>
 		public class CallstackMessage
@@ -90,7 +127,18 @@ namespace Gauntlet
 		/// </summary>
 		public string Content { get; protected set; }
 
+		/// <summary>
+		/// All entries in the log
+		/// </summary>
+		public IEnumerable<LogEntry> Entries { get; protected set; }
+
+		/// <summary>
+		/// Summary of the log
+		/// </summary>
 		private LogSummary Summary;
+
+		// Track log levels we couldn't identify
+		protected static HashSet<string> UnidentifiedLogLevels = new HashSet<string>();
 
 		/// <summary>
 		/// Constructor that takes the content to parse
@@ -101,6 +149,37 @@ namespace Gauntlet
 		{
 			// convert linefeed to remove \r which is captured in regex's :(
 			Content = InContent.Replace(Environment.NewLine, "\n");
+
+			// Search for LogFoo:< optional Display|Error etc:> Message
+			MatchCollection MC = Regex.Matches(Content, @"Log(?<category>[\w\d]+):\s*(?:(?<level>Display|Verbose|VeryVerbose|Warning|Error|Fatal):\s)?(?<message>.*)");
+
+			List<LogEntry> ParsedEntries = new List<LogEntry>();
+
+			foreach (Match M in MC)
+			{
+				string Category = M.Groups["category"].ToString();
+				string LevelStr = M.Groups["level"].ToString();
+				string Message = M.Groups["message"].ToString();
+
+				LogLevel Level = LogLevel.Log;
+
+				if (!string.IsNullOrEmpty(LevelStr))
+				{
+					if (!Enum.TryParse(LevelStr, out Level))
+					{
+						// only show a warning once
+						if (!UnidentifiedLogLevels.Contains(LevelStr))
+						{
+							UnidentifiedLogLevels.Add(LevelStr);
+							Log.Warning("Failed to match log level {0} to enum!", LevelStr);
+						}
+					}
+				}
+
+				ParsedEntries.Add(new LogEntry(Category, Level, Message));
+			}
+
+			Entries = ParsedEntries;
 		}
 
 		public LogSummary GetSummary()
@@ -137,7 +216,7 @@ namespace Gauntlet
 
 			if (!NewSummary.RequestedExit)
 			{
-				string[] Completion = GetAllMatchingLines("F.+::RequestExit");
+				string[] Completion = GetAllMatchingLines("F[a-zA-Z0-9]+::RequestExit");
 				string[] ErrorCompletion = GetAllMatchingLines("StaticShutdownAfterError");
 
 				if (Completion.Length > 0 || ErrorCompletion.Length > 0)
@@ -269,6 +348,15 @@ namespace Gauntlet
 		}
 
 		/// <summary>
+		/// Returns channels that signify the editor doing stuff
+		/// </summary>
+		/// <returns></returns>
+		public IEnumerable<string> GetEditorBusyChannels()
+		{
+			return GetLogChannels(new string[] { "Automation", "FunctionalTest", "Material", "DerivedDataCache", "ShaderCompilers", "Texture", "SkeletalMesh", "StaticMesh", "Python" }, false);
+		}
+
+		/// <summary>
 		/// Return all entries for the specified channel. E.g. "OrionGame" will
 		/// return all entries starting with LogOrionGame
 		/// </summary>
@@ -369,14 +457,44 @@ namespace Gauntlet
 		}
 
 		/// <summary>
+		/// Returns a block of lines that start and end with the specified regex patterns
+		/// </summary>
+		/// <param name="StartPattern">Regex to match the first line</param>
+		/// <param name="EndPattern">Regex to match the final line</param>
+		/// <param name="PatternOptions">Optional RegexOptions applied to both patterns. IgnoreCase by default.</param>
+		/// <returns>Array of strings for each found block of lines. Lines within each string are delimited by newline character.</returns>
+		public string[] GetGroupsOfLinesBetween(string StartPattern, string EndPattern, RegexOptions PatternOptions = RegexOptions.IgnoreCase)
+		{
+			Regex StartRegex = new Regex(StartPattern, PatternOptions);
+			Regex EndRegex = new Regex(EndPattern, PatternOptions);
+			List<string> Blocks = new List<string>();
+
+			foreach (Match StartMatch in StartRegex.Matches(Content))
+			{
+				int StartIndex = Content.LastIndexOf('\n', StartMatch.Index) + 1;
+				Match EndMatch = EndRegex.Match(Content, StartMatch.Index + StartMatch.Length);
+				int EndIndex = Content.IndexOf('\n', EndMatch.Index);
+
+				if (EndIndex > StartIndex)
+				{
+					string Block = Content.Substring(StartIndex, EndIndex - StartIndex);
+
+					Blocks.Add(Block);
+				}
+			}
+
+			return Blocks.ToArray();
+		}
+
+		/// <summary>
 		/// Returns a block of lines that start with the specified regex
 		/// </summary>
-		/// <param name="Pattern"></param>
-		/// <param name="LineCount"></param>
-		/// <returns></returns>
-		public string[] GetGroupsOfLinesStartingWith(string Pattern, int LineCount)
+		/// <param name="Pattern">Regex to match the first line</param>
+		/// <param name="LineCount">Number of lines in the returned block</param>
+		/// <returns>Array of strings for each found block of lines. Lines within each string are delimited by newline character.</returns>
+		public string[] GetGroupsOfLinesStartingWith(string Pattern, int LineCount, RegexOptions PatternOptions = RegexOptions.IgnoreCase)
 		{
-			Regex regex = new Regex(Pattern, RegexOptions.IgnoreCase);
+			Regex regex = new Regex(Pattern, PatternOptions);
 
 			List<string> Blocks = new List<string>();
 
@@ -402,8 +520,6 @@ namespace Gauntlet
 
 			return Blocks.ToArray();
 		}
-
-
 
 		/// <summary>
 		/// Finds all callstack-based errors with the specified pattern
@@ -606,9 +722,6 @@ namespace Gauntlet
 
 			return FilteredTraces;
 		}
-
-			
-
 
 		/// <summary>
 		/// Attempts to find an exit code for a test

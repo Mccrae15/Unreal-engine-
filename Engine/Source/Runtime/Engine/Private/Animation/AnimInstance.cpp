@@ -58,7 +58,6 @@ DEFINE_STAT(STAT_Montage_UpdateWeight);
 DEFINE_STAT(STAT_UpdateCurves);
 DEFINE_STAT(STAT_UpdateCurvesToEvaluationContext);
 DEFINE_STAT(STAT_UpdateCurvesPostEvaluation);
-DEFINE_STAT(STAT_LocalBlendCSBoneTransforms);
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Anim Init Time"), STAT_AnimInitTime, STATGROUP_Anim, );
 DEFINE_STAT(STAT_AnimInitTime);
@@ -188,7 +187,7 @@ void UAnimInstance::InitializeAnimation(bool bInDeferRootNodeInitialization)
 	USkeletalMeshComponent* OwnerComponent = GetSkelMeshComponent();
 	if (OwnerComponent->SkeletalMesh != NULL)
 	{
-		CurrentSkeleton = OwnerComponent->SkeletalMesh->Skeleton;
+		CurrentSkeleton = OwnerComponent->SkeletalMesh->GetSkeleton();
 	}
 	else
 	{
@@ -477,12 +476,6 @@ void UAnimInstance::UpdateAnimation(float DeltaSeconds, bool bNeedsValidRootMoti
 		UpdateMontageEvaluationData();
 	}
 
-	if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
-	{
-		// Process internal batched property copies
-		PropertyAccess::ProcessCopies(this, AnimBlueprintClass->GetPropertyAccessLibrary(), EPropertyAccessCopyBatch::ExternalBatched);
-	}
-
 	{
 		SCOPE_CYCLE_COUNTER(STAT_NativeUpdateAnimation);
 		CSV_SCOPED_TIMING_STAT(Animation, NativeUpdate);
@@ -497,6 +490,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		SCOPE_CYCLE_COUNTER(STAT_BlueprintUpdateAnimation);
 		CSV_SCOPED_TIMING_STAT(Animation, BlueprintUpdate);
 		BlueprintUpdateAnimation(DeltaSeconds);
+	}
+
+	// Perform property access copies after the event graph work - this allows properties that are transformed and
+	// accessed via BP functions to be correctly transformed.
+	if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
+	{
+		// Process internal batched property copies
+		PropertyAccess::ProcessCopies(this, AnimBlueprintClass->GetPropertyAccessLibrary(), EPropertyAccessCopyBatch::ExternalBatched);
 	}
 	
 	// Determine whether or not the animation should be immediately updated according to current state
@@ -903,7 +904,7 @@ void UAnimInstance::DisplayDebugInstance(FDisplayDebugManager& DisplayDebugManag
 		FAnimInstanceProxy& Proxy = GetProxyOnGameThread<FAnimInstanceProxy>();
 
 		FString DebugText = FString::Printf(TEXT("LOD(%d/%d) UpdateCounter(%d) EvalCounter(%d) CacheBoneCounter(%d) InitCounter(%d) DeltaSeconds(%.3f)"),
-			SkelMeshComp->PredictedLODLevel, MaxLODIndex, Proxy.GetUpdateCounter().Get(), Proxy.GetEvaluationCounter().Get(),
+			SkelMeshComp->GetPredictedLODLevel(), MaxLODIndex, Proxy.GetUpdateCounter().Get(), Proxy.GetEvaluationCounter().Get(),
 			Proxy.GetCachedBonesCounter().Get(), Proxy.GetInitializationCounter().Get(), Proxy.GetDeltaSeconds());
 
 		DisplayDebugManager.DrawString(DebugText, Indent);
@@ -1181,7 +1182,7 @@ int32 UAnimInstance::GetLODLevel() const
 	USkeletalMeshComponent* SkelMeshComp = GetSkelMeshComponent();
 	check(SkelMeshComp)
 
-	return SkelMeshComp->PredictedLODLevel;
+	return SkelMeshComp->GetPredictedLODLevel();
 }
 
 void UAnimInstance::RecalcRequiredBones()
@@ -1189,7 +1190,7 @@ void UAnimInstance::RecalcRequiredBones()
 	USkeletalMeshComponent* SkelMeshComp = GetSkelMeshComponent();
 	check( SkelMeshComp )
 
-	if( SkelMeshComp->SkeletalMesh && SkelMeshComp->SkeletalMesh->Skeleton )
+	if( SkelMeshComp->SkeletalMesh && SkelMeshComp->SkeletalMesh->GetSkeleton() )
 	{
 		GetProxyOnGameThread<FAnimInstanceProxy>().RecalcRequiredBones(SkelMeshComp, SkelMeshComp->SkeletalMesh);
 	}
@@ -1563,9 +1564,9 @@ void UAnimInstance::GetActiveCurveNames(EAnimCurveType CurveType, TArray<FName>&
 void UAnimInstance::GetAllCurveNames(TArray<FName>& OutNames) const
 {
 	USkeletalMeshComponent* SkelMeshComp = GetOwningComponent();
-	if (SkelMeshComp && SkelMeshComp->SkeletalMesh && SkelMeshComp->SkeletalMesh->Skeleton)
+	if (SkelMeshComp && SkelMeshComp->SkeletalMesh && SkelMeshComp->SkeletalMesh->GetSkeleton())
 	{
-		const USkeleton* CurSkeleton = SkelMeshComp->SkeletalMesh->Skeleton;
+		const USkeleton* CurSkeleton = SkelMeshComp->SkeletalMesh->GetSkeleton();
 
 		const FSmartNameMapping* Mapping = CurSkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
 		if (Mapping)
@@ -2842,6 +2843,27 @@ void UAnimInstance::PerformLinkedLayerOverlayOperation(TSubclassOf<UAnimInstance
 				}
 			}
 		}
+
+#if DO_CHECK
+		// Verify required bones are consistent now we may have spawned a new instance.
+		// If required bones arrays for linked instances are not built to the same LOD, then when running the anim graph
+		// we can get problems/asserts trying to blend curves/poses of differing sizes (see FORT-354970, for example).
+		// If required bones are flagged for update we are assuming that RefreshBoneTransforms will end up rectifying
+		// any inconsistencies.
+		if(MeshComp->GetAnimInstance() && MeshComp->bRequiredBonesUpToDate)
+		{
+			const int32 RootLOD = MeshComp->GetAnimInstance()->GetRequiredBones().GetCalculatedForLOD();
+			for(UAnimInstance* LinkedInstance : MeshComp->GetLinkedAnimInstances())
+			{
+				check(RootLOD == LinkedInstance->GetRequiredBones().GetCalculatedForLOD());
+			}
+
+			if(MeshComp->GetPostProcessInstance())
+			{
+				check(RootLOD == MeshComp->GetPostProcessInstance()->GetRequiredBones().GetCalculatedForLOD());
+			}
+		}
+#endif	
 	}
 }
 

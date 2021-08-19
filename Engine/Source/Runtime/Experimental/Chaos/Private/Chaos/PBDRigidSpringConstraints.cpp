@@ -109,7 +109,7 @@ namespace Chaos
 
 		const FVec3 Difference = WorldSpaceX2 - WorldSpaceX1;
 
-		const float Distance = Difference.Size();
+		const FReal Distance = Difference.Size();
 		check(Distance > 1e-7);
 
 		const FVec3 Direction = Difference / Distance;
@@ -143,8 +143,8 @@ namespace Chaos
 	{
 		const FConstrainedParticlePair& Constraint = Constraints[ConstraintIndex];
 
-		TGenericParticleHandle<FReal, 3> Particle0 = Constraints[ConstraintIndex][0];
-		TGenericParticleHandle<FReal, 3> Particle1 = Constraints[ConstraintIndex][1];
+		FGenericParticleHandle Particle0 = Constraints[ConstraintIndex][0];
+		FGenericParticleHandle Particle1 = Constraints[ConstraintIndex][1];
 		const bool bIsRigidDynamic0 = Particle0->IsDynamic();
 		const bool bIsRigidDynamic1 = Particle1->IsDynamic();
 

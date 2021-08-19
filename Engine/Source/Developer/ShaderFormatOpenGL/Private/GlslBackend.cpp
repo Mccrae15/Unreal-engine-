@@ -333,7 +333,7 @@ static const char* GLSLIntCastTypes[5] =
 	"ivec4",
 };
 
-static const char* ES31FrameBufferFetchStorageQualifier = "FRAME_BUFFERFETCH_STORAGE_QUALIFIER ";
+static const char* FBF_StorageQualifier = "FBF_STORAGE_QUALIFIER ";
 static_assert((sizeof(GLSLExpressionTable) / sizeof(GLSLExpressionTable[0])) == ir_opcode_count, "GLSLExpressionTableSizeMismatch");
 
 struct SDMARange
@@ -586,17 +586,11 @@ class ir_gen_glsl_visitor : public ir_visitor
 	/** number of loops in the generated code */
 	int loop_count;
 
-	/** Whether the shader being cross compiled needs EXT_shader_texture_lod. */
-	bool bUsesGLTextureLODExtension;
-
 	/** Whether the shader being cross compiled needs GL_EXT_texture_buffer. */
 	bool bUsesTextureBuffer;
 
 	/** Whether the shader being cross compiled needs GL_OES_shader_image_atomic. */
 	bool bUseImageAtomic;
-
-	// Found dFdx or dFdy
-	bool bUsesDXDY;
 
 	// True if the discard instruction was encountered.
 	bool bUsesDiscard;
@@ -1196,9 +1190,9 @@ class ir_gen_glsl_visitor : public ir_visitor
 					check(layout_bits == 0);
 					layout = ralloc_asprintf(nullptr, "layout(location=%d) ", var->location);
 				}
-
-				const bool bOverrideFBFOutputVarStorageQualifier = bIsES31 && bUsesFrameBufferFetch && var->name && (strncmp(var->name, "out_Target0", 11) == 0);
-				const char* StorageQualifier = bOverrideFBFOutputVarStorageQualifier ? ES31FrameBufferFetchStorageQualifier : mode_str[var->mode];
+				
+				const bool bNeedsFBFOutput = (bUsesFrameBufferFetch || bUsesDepthbufferFetch) && var->name && (strncmp(var->name, "out_Target0", 11) == 0);
+				const char* StorageQualifier = bNeedsFBFOutput ? FBF_StorageQualifier : mode_str[var->mode];
 
 				ralloc_asprintf_append(
 					buffer,
@@ -1278,6 +1272,32 @@ class ir_gen_glsl_visitor : public ir_visitor
 
 	virtual void visit(ir_function_signature *sig)
 	{
+		if (sig->is_main && ShaderTarget == fragment_shader)
+		{
+			// print this right before 'main' where all outputs are already declared
+			if (bUsesFrameBufferFetch)
+			{
+				ralloc_asprintf_append(buffer, "\n#ifdef GL_EXT_shader_framebuffer_fetch\n");
+				ralloc_asprintf_append(buffer, "  vec4 FramebufferFetchES2() { return out_Target0; }\n");
+				ralloc_asprintf_append(buffer, "#elif defined(GL_ARM_shader_framebuffer_fetch)\n");
+				ralloc_asprintf_append(buffer, "  vec4 FramebufferFetchES2() { return gl_LastFragColorARM; }\n");
+				ralloc_asprintf_append(buffer, "#else\n");
+				ralloc_asprintf_append(buffer, "  vec4 FramebufferFetchES2() { return vec4(0.0, 0.0, 0.0, 0.0); }\n");
+				ralloc_asprintf_append(buffer, "#endif\n\n");
+			}
+			
+			if (bUsesDepthbufferFetch)
+			{
+				ralloc_asprintf_append(buffer, "\n#ifdef GL_ARM_shader_framebuffer_fetch_depth_stencil\n");
+				ralloc_asprintf_append(buffer, "  float DepthbufferFetchES2() { return gl_LastFragDepthARM; }\n");
+				ralloc_asprintf_append(buffer, "#elif defined(GL_EXT_shader_framebuffer_fetch)\n");
+				ralloc_asprintf_append(buffer, "  float DepthbufferFetchES2() { return out_Target0.w; }\n");
+				ralloc_asprintf_append(buffer, "#else\n");
+				ralloc_asprintf_append(buffer, "  float DepthbufferFetchES2() { return 0.0; }\n");
+				ralloc_asprintf_append(buffer, "#endif\n\n");
+			}
+		}
+				
 		// Reset temporary id count.
 		temp_id = 0;
 		bool bPrintComma = false;
@@ -1417,11 +1437,6 @@ class ir_gen_glsl_visitor : public ir_visitor
 		}
 		else if (numOps < 4)
 		{
-			if (op == ir_unop_dFdx || op == ir_unop_dFdy)
-			{
-				bUsesDXDY = true;
-			}
-
 			ralloc_asprintf_append(buffer, GLSLExpressionTable[op][0]);
 			for (int i = 0; i < numOps; ++i)
 			{
@@ -1455,15 +1470,6 @@ class ir_gen_glsl_visitor : public ir_visitor
 			op = ir_tex;
 		}
 
-		bool bEmitEXT = false;
-
-		if (bIsES && op == ir_txl && ShaderTarget == fragment_shader)
-		{
-			// See http://www.khronos.org/registry/gles/extensions/EXT/EXT_shader_texture_lod.txt
-			bUsesGLTextureLODExtension = true;
-			bEmitEXT = true;
-		}
-
 		if (op == ir_txf)
 		{
 			bUsesTextureBuffer = true;
@@ -1480,7 +1486,7 @@ class ir_gen_glsl_visitor : public ir_visitor
 			grad_str[op == ir_txd],
 			lod_str[op == ir_txl],
 			offset_str[tex->offset != 0],
-			EXT_str[(int)bEmitEXT]
+			EXT_str[0]
 		);
 		tex->sampler->accept(this);
 
@@ -2930,6 +2936,71 @@ class ir_gen_glsl_visitor : public ir_visitor
 		}
 	}
 
+	int count_total_components(_mesa_glsl_parse_state* State, exec_list* extern_vars)
+	{
+		int total_components = 0;
+
+		foreach_iter(exec_list_iterator, iter, *extern_vars)
+		{
+			ir_variable* var = ((extern_var*)iter.get())->var;
+			const glsl_type* type = var->type;
+			if (!strcmp(var->name, "gl_in"))
+			{
+				// Ignore it, as we can't properly frame this information in current format, and it's not used anyway for geometry shaders
+				continue;
+			}
+			if (!strncmp(var->name, "in_", 3) || !strncmp(var->name, "out_", 4))
+			{
+				if (type->is_record())
+				{
+					// This is the specific case for GLSL >= 150, as we generate a struct with a member for each interpolator (which we still want to count)
+					if (type->length != 1)
+					{
+						_mesa_glsl_warning(State, "Found a complex structure as in/out, counting is not implemented yet...\n");
+						continue;
+					}
+
+					type = type->fields.structure->type;
+				}
+				check(type);
+				bool is_array = type->is_array();
+				total_components += (is_array ? type->length * type->vector_elements : type->vector_elements) * type->matrix_columns;
+			}
+		}
+		return total_components;
+	}
+
+	void check_inout_limits(_mesa_glsl_parse_state* state)
+	{
+		if (CompileTarget == HCT_FeatureLevelES3_1)
+		{
+			// check the number of varying in/out varyings are within the minimum GLES 3.0 spec.
+			const int GLES31_FragmentInComponentCountLimit = 60; // GL_MAX_FRAGMENT_INPUT_COMPONENTS
+			const int GLES31_VertexOutComponentCountLimit = 64; // GL_MAX_VERTEX_OUTPUT_COMPONENTS
+
+			int ins = 0;
+			int outs = 0;
+			if (ShaderTarget == fragment_shader && !input_variables.is_empty())
+			{
+				ins = count_total_components(state, &input_variables);
+			}
+			if (ShaderTarget == vertex_shader && !output_variables.is_empty())
+			{
+				outs = count_total_components(state, &output_variables);
+			}
+
+			if (ins > GLES31_FragmentInComponentCountLimit)
+			{
+				_mesa_glsl_error(state, "GLES 3.1 fragment input varying component count exceeded: %d used, max allowed %d\n", ins, GLES31_FragmentInComponentCountLimit);
+			}
+
+			if (outs > GLES31_VertexOutComponentCountLimit)
+			{
+				_mesa_glsl_error(state, "GLES 3.1 vertex output varying component count exceeded: %d used, max allowed %d\n", outs, GLES31_VertexOutComponentCountLimit);
+			}
+		}
+	}
+
 	/**
 	 * Print the input/output signature for this shader.
 	 */
@@ -3115,46 +3186,40 @@ class ir_gen_glsl_visitor : public ir_visitor
 			ralloc_asprintf_append(buffer, "// Uses samplerExternalOES\n");
 		}
 
-		if (bUsesGLTextureLODExtension)
-		{
-			ralloc_asprintf_append(buffer, "#ifndef DONTEMITEXTENSIONSHADERTEXTURELODENABLE\n");
-			ralloc_asprintf_append(buffer, "#extension GL_EXT_shader_texture_lod : enable\n");
-			ralloc_asprintf_append(buffer, "#endif\n");
-		}
-
 		if (state->bSeparateShaderObjects && !state->bGenerateES && 
 			((state->target == tessellation_control_shader) || (state->target == tessellation_evaluation_shader)))
 		{
 			ralloc_asprintf_append(buffer, "#extension GL_ARB_tessellation_shader : enable\n");
 		}
 
-		if (bUsesDXDY && bIsES)
-		{
-			ralloc_asprintf_append(buffer, "#extension GL_OES_standard_derivatives : enable\n");
-		}
-
-		if (bUsesInstanceID && bIsES)
-		{
-			ralloc_asprintf_append(buffer, "#ifdef UE_EXT_draw_instanced\n");
-			ralloc_asprintf_append(buffer, "#extension GL_EXT_draw_instanced : enable\n");
-			ralloc_asprintf_append(buffer, "#define gl_InstanceID gl_InstanceIDEXT\n");
-			ralloc_asprintf_append(buffer, "#endif\n");
-		}
-		
 		if (bUsesFramebufferFetchES2)
 		{
-			ralloc_asprintf_append(buffer, "\n#ifdef UE_EXT_shader_framebuffer_fetch\n");
+			ralloc_asprintf_append(buffer, "\n#ifdef GL_EXT_shader_framebuffer_fetch\n");
 			ralloc_asprintf_append(buffer, "#extension GL_EXT_shader_framebuffer_fetch : enable\n");
-			ralloc_asprintf_append(buffer, "#define EXT_shader_framebuffer_fetch_enabled 1\n");
-			ralloc_asprintf_append(buffer, "#endif\n");
-			ralloc_asprintf_append(buffer, "\n#ifdef GL_ARM_shader_framebuffer_fetch\n");
+			ralloc_asprintf_append(buffer, "#define %sinout\n", FBF_StorageQualifier);
+			ralloc_asprintf_append(buffer, "#elif defined(GL_ARM_shader_framebuffer_fetch)\n");
 			ralloc_asprintf_append(buffer, "#extension GL_ARM_shader_framebuffer_fetch : enable\n");
 			ralloc_asprintf_append(buffer, "#endif\n");
 		}
-
+				
 		if (bUsesDepthbufferFetchES2)
 		{
+			ralloc_asprintf_append(buffer, "\n#ifdef GL_ARM_shader_framebuffer_fetch_depth_stencil\n");
 			ralloc_asprintf_append(buffer, "#extension GL_ARM_shader_framebuffer_fetch_depth_stencil : enable\n");
+			if (!bUsesFramebufferFetchES2)
+			{
+				ralloc_asprintf_append(buffer, "#elif defined(GL_EXT_shader_framebuffer_fetch)\n");
+				ralloc_asprintf_append(buffer, "#extension GL_EXT_shader_framebuffer_fetch : enable\n");
+				ralloc_asprintf_append(buffer, "#define %sinout\n", FBF_StorageQualifier);
+			}
+			ralloc_asprintf_append(buffer, "#endif\n");
+		}
+
+		if (bUsesFramebufferFetchES2 || bUsesDepthbufferFetchES2)
+		{
+			ralloc_asprintf_append(buffer, "\n#ifndef %s\n", FBF_StorageQualifier);
+			ralloc_asprintf_append(buffer, "#define %sout\n", FBF_StorageQualifier);
+			ralloc_asprintf_append(buffer, "#endif\n");
 		}
 
 		if (CompileTarget == HCT_FeatureLevelES3_1Ext)
@@ -3234,10 +3299,8 @@ public:
 		, needs_semicolon(false)
 		, should_print_uint_literals_as_ints(false)
 		, loop_count(0)
-		, bUsesGLTextureLODExtension(false)
 		, bUsesTextureBuffer(false)
 		, bUseImageAtomic(false)
-		, bUsesDXDY(false)
 		, bUsesDiscard(false)
 		, bUsesInstanceID(false)
 		, bNoGlobalUniforms(bInNoGlobalUniforms)
@@ -3268,34 +3331,12 @@ public:
 
 		char* default_precision_buffer = ralloc_asprintf(mem_ctx, "");
 
-		if (bEmitPrecision && !(ShaderTarget == vertex_shader))
+		if (bEmitPrecision && ShaderTarget == fragment_shader)
 		{
-			// TODO: Improve this...
-			
 			const char* DefaultPrecision = bDefaultPrecisionIsHalf ? "mediump" : "highp";
 			ralloc_asprintf_append(&default_precision_buffer, "precision %s float;\n", DefaultPrecision);
 			// always use highp for integers as shaders use them as bit storage
 			ralloc_asprintf_append(&default_precision_buffer, "precision %s int;\n", "highp");
-
-			if (bIsES) // ES workarounds
-			{
-				ralloc_asprintf_append(buffer, "\n#ifndef DONTEMITSAMPLERDEFAULTPRECISION\n"); 
-				ralloc_asprintf_append(buffer, "precision %s sampler2D;\n", DefaultPrecision);
-				ralloc_asprintf_append(buffer, "precision %s samplerCube;\n\n", DefaultPrecision);
-				ralloc_asprintf_append(buffer, "#endif\n");
-
-				// SGX540 compiler can get upset with some operations that mix highp and mediump.
-				// this results in a shader compile fail with output "compile failed."
-				// Although the actual cause of the failure hasnt been determined this code appears to prevent
-				// compile failure for cases so far seen.
-				ralloc_asprintf_append(buffer, "\n#ifdef TEXCOORDPRECISIONWORKAROUND\n");
-				ralloc_asprintf_append(buffer, "vec4 texture2DTexCoordPrecisionWorkaround(sampler2D p, vec2 tcoord)\n");
-				ralloc_asprintf_append(buffer, "{\n");
-				ralloc_asprintf_append(buffer, "	return texture2D(p, tcoord);\n");
-				ralloc_asprintf_append(buffer, "}\n");
-				ralloc_asprintf_append(buffer, "#define texture2D texture2DTexCoordPrecisionWorkaround\n");
-				ralloc_asprintf_append(buffer, "#endif\n");
-			}
 		}
 
 		// HLSLCC_DX11ClipSpace adjustment
@@ -3334,56 +3375,6 @@ bool compiler_internal_AdjustIsFrontFacing(bool isFrontFacing)
 			}
 		}
 
-		// FramebufferFetchES2 'intrinsic'
-		if (bUsesFrameBufferFetch)
-		{
-			if (state->language_version == 310)
-			{
-				// Append framebuffer fetch function. note: we want ES3.1 to throw an error if the device does not support framebuffer fetch.
-				// Fwd declare of FramebufferFetchES2 b/c we dont have access to out_Target0 yet, 
-				// #define FramebufferFetchES2() (out_Target0) fails b/c adreno preprocessor does not consume braces at call site. i.e. (out_Target0)()			
-				ralloc_asprintf_append(buffer, "\n#ifdef UE_EXT_shader_framebuffer_fetch\n");
-				ralloc_asprintf_append(buffer, "	#define %sinout\n", ES31FrameBufferFetchStorageQualifier);
-				ralloc_asprintf_append(buffer, "	vec4 FramebufferFetchES2();\n");
-				ralloc_asprintf_append(buffer, "#elif defined( GL_ARM_shader_framebuffer_fetch)\n");
-				ralloc_asprintf_append(buffer, "	#define %sout\n", ES31FrameBufferFetchStorageQualifier);
-				//ralloc_asprintf_append(buffer, "	highp vec4 gl_LastFragColorARM;\n"); // Does not work on S7 MALI
-				ralloc_asprintf_append(buffer, "	vec4 FramebufferFetchES2() { return gl_LastFragColorARM; }\n");
-				ralloc_asprintf_append(buffer, "#else\n");
-				ralloc_asprintf_append(buffer, "	#define %sout\n", ES31FrameBufferFetchStorageQualifier);
-				ralloc_asprintf_append(buffer, "	vec4 FramebufferFetchES2() { return vec4(0.0, 0.0, 0.0, 0.0); }\n");
-				ralloc_asprintf_append(buffer, "#endif\n\n");
-			}
-			else // ES3
-			{
-				ralloc_asprintf_append(buffer, "\n#ifdef UE_EXT_shader_framebuffer_fetch\n");
-				ralloc_asprintf_append(buffer, "	#if (__VERSION__ >= 300)\n");
-				ralloc_asprintf_append(buffer, "		vec4 FramebufferFetchES2() { return gl_FragColor; }\n");
-				ralloc_asprintf_append(buffer, "	#else\n");
-				ralloc_asprintf_append(buffer, "		vec4 FramebufferFetchES2() { return gl_LastFragData[0]; }\n");
-				ralloc_asprintf_append(buffer, "	#endif\n");
-				ralloc_asprintf_append(buffer, "#else\n");
-				ralloc_asprintf_append(buffer, "	#ifdef GL_ARM_shader_framebuffer_fetch\n");
-				//ralloc_asprintf_append(buffer, "		highp vec4 gl_LastFragColorARM;\n"); Does not work on S7 MALI
-				ralloc_asprintf_append(buffer, "		vec4 FramebufferFetchES2() { return gl_LastFragColorARM; }\n");
-				ralloc_asprintf_append(buffer, "	#else\n");
-				ralloc_asprintf_append(buffer, "		vec4 FramebufferFetchES2() { return vec4(0.0, 0.0, 0.0, 0.0); }\n");
-				ralloc_asprintf_append(buffer, "	#endif\n");
-				ralloc_asprintf_append(buffer, "#endif\n\n");
-			}
-
-
-		}
-
-		if (bUsesDepthbufferFetch)
-		{
-			ralloc_asprintf_append(buffer, "\n#ifdef GL_ARM_shader_framebuffer_fetch_depth_stencil\n");
-			ralloc_asprintf_append(buffer, "float DepthbufferFetchES2() { return gl_LastFragDepthARM; }\n");
-			ralloc_asprintf_append(buffer, "#else\n");
-			ralloc_asprintf_append(buffer, "float DepthbufferFetchES2() { return 0.0; }\n");
-			ralloc_asprintf_append(buffer, "#endif\n\n");
-		}
-
 		foreach_iter(exec_list_iterator, iter, *ir)
 		{
 			ir_instruction *inst = (ir_instruction *)iter.get();
@@ -3391,16 +3382,11 @@ bool compiler_internal_AdjustIsFrontFacing(bool isFrontFacing)
 		}
 		buffer = 0;
 
+		check_inout_limits(state);
+
 		char* code_footer = ralloc_asprintf(mem_ctx, "");
 		buffer = &code_footer;
-		if (bUsesFrameBufferFetch && state->language_version == 310)
-		{
-			// Append ES3.1's framebuffer fetch code after the main function.
-			// It has been fwd declared earlier. Now we have access to out_Target0.
-			ralloc_asprintf_append(buffer, "\n#ifdef UE_EXT_shader_framebuffer_fetch\n");
-			ralloc_asprintf_append(buffer, "	vec4 FramebufferFetchES2() {return out_Target0;}\n");
-			ralloc_asprintf_append(buffer, "#endif\n");
-		}
+		//
 		buffer = 0;
 
 		char* decl_buffer = ralloc_asprintf(mem_ctx, "");
@@ -3612,7 +3598,7 @@ char* FGlslCodeBackend::GenerateCode(exec_list* ir, _mesa_glsl_parse_state* stat
 	FixRedundantCasts(ir);
 //IRDump(ir);
 
-	const bool bDefaultPrecisionIsHalf = ((HlslCompileFlags & HLSLCC_UseFullPrecisionInPS) == 0 && Frequency != HSF_ComputeShader);
+	const bool bDefaultPrecisionIsHalf = (Frequency == HSF_PixelShader) && (HlslCompileFlags & HLSLCC_UseFullPrecisionInPS) == 0;
 	const bool bUsesExternalTexture = ((HlslCompileFlags & HLSLCC_UsesExternalTexture) == HLSLCC_UsesExternalTexture);
 	
 	FBreakPrecisionChangesVisitor BreakPrecisionChangesVisitor(state, bDefaultPrecisionIsHalf);
@@ -5722,7 +5708,7 @@ void FGlslLanguageSpec::SetupLanguageIntrinsics(_mesa_glsl_parse_state* State, e
 {
 	unsigned IntrinsicReturnType = bDefaultPrecisionIsHalf ? IR_INTRINSIC_ALL_FLOATING : IR_INTRINSIC_FLOAT;
 	make_intrinsic_genType(ir, State, FRAMEBUFFER_FETCH_ES2, ir_invalid_opcode, IntrinsicReturnType, 0, 4, 4);
-	make_intrinsic_genType(ir, State, DEPTHBUFFER_FETCH_ES2, ir_invalid_opcode, IntrinsicReturnType, 0, 1, 1);
+	make_intrinsic_genType(ir, State, DEPTHBUFFER_FETCH_ES2, ir_invalid_opcode, IR_INTRINSIC_FLOAT, 0, 1, 1);
 
 	{
 		ir_function* func = new(State)ir_function("compiler_internal_AdjustInputSemantic");

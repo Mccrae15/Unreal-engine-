@@ -13,6 +13,7 @@
 #include "Styling/SlateBrush.h"
 #include "AssetThumbnail.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Editor.h"
 #endif
 #include "NiagaraSettings.h"
 
@@ -117,6 +118,10 @@ UNiagaraComponentRendererProperties::UNiagaraComponentRendererProperties()
 		GEditor->OnObjectsReplaced().AddUObject(this, &UNiagaraComponentRendererProperties::OnObjectsReplacedCallback);
 	}
 #endif
+
+	AttributeBindings.Reserve(2);
+	AttributeBindings.Add(&EnabledBinding);
+	AttributeBindings.Add(&RendererVisibilityTagBinding);
 }
 
 UNiagaraComponentRendererProperties::~UNiagaraComponentRendererProperties()
@@ -138,7 +143,7 @@ void UNiagaraComponentRendererProperties::PostLoad()
 		Binding.AttributeBinding.PostLoad(InSourceMode);
 	}
 	EnabledBinding.PostLoad(InSourceMode);
-
+	RendererVisibilityTagBinding.PostLoad(InSourceMode);
 
 	PostLoadBindings(ENiagaraRendererSourceDataMode::Particles);
 }
@@ -150,6 +155,7 @@ void UNiagaraComponentRendererProperties::UpdateSourceModeDerivates(ENiagaraRend
 	if (SrcEmitter)
 	{
 		EnabledBinding.CacheValues(SrcEmitter, InSourceMode);
+		RendererVisibilityTagBinding.CacheValues(SrcEmitter, InSourceMode);
 		for (FNiagaraComponentPropertyBinding& Binding : PropertyBindings)
 		{
 			Binding.AttributeBinding.CacheValues(SrcEmitter, InSourceMode);
@@ -171,13 +177,56 @@ void UNiagaraComponentRendererProperties::PostInitProperties()
 			ComponentRendererPropertiesToDeferredInit.Add(this);
 			return;
 		}
-		else if (!EnabledBinding.IsValid())
+		else
 		{
-			EnabledBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_COMPONENTS_ENABLED);
+			if (!EnabledBinding.IsValid())
+			{
+				EnabledBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_COMPONENTS_ENABLED);
+			}
+			if (!RendererVisibilityTagBinding.IsValid())
+			{
+				RendererVisibilityTagBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_VISIBILITY_TAG);
+			}
 		}
 	}
 }
 
+#if WITH_EDITORONLY_DATA
+// Function definition copied from UEdGraphSchema_K2
+bool FindFunctionParameterDefaultValue(const UFunction* Function, const FProperty* Param, FString& OutString)
+{
+	bool bHasAutomaticValue = false;
+
+	const FString& MetadataDefaultValue = Function->GetMetaData(*Param->GetName());
+	if (!MetadataDefaultValue.IsEmpty())
+	{
+		// Specified default value in the metadata
+		OutString = MetadataDefaultValue;
+		bHasAutomaticValue = true;
+
+		// If the parameter is a class then try and get the full name as the metadata might just be the short name
+		if (Param->IsA<FClassProperty>() && !FPackageName::IsValidObjectPath(OutString))
+		{
+			if (UClass* DefaultClass = FindObject<UClass>(ANY_PACKAGE, *OutString, true))
+			{
+				OutString = DefaultClass->GetPathName();
+			}
+		}
+	}
+	else
+	{
+		const FName MetadataCppDefaultValueKey(*(FString(TEXT("CPP_Default_")) + Param->GetName()));
+		const FString& MetadataCppDefaultValue = Function->GetMetaData(MetadataCppDefaultValueKey);
+		if (!MetadataCppDefaultValue.IsEmpty())
+		{
+			OutString = MetadataCppDefaultValue;
+			bHasAutomaticValue = true;
+		}
+	}
+
+	return bHasAutomaticValue;
+}
+#endif
 
 void UNiagaraComponentRendererProperties::CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) 
 {
@@ -189,7 +238,6 @@ void UNiagaraComponentRendererProperties::UpdateSetterFunctions()
 	SetterFunctionMapping.Empty();
 	for (FNiagaraComponentPropertyBinding& PropertyBinding : PropertyBindings)
 	{
-		PropertyBinding.SetterFunction = nullptr;
 		if (!TemplateComponent || SetterFunctionMapping.Contains(PropertyBinding.PropertyName))
 		{
 			continue;
@@ -210,7 +258,13 @@ void UNiagaraComponentRendererProperties::UpdateSetterFunctions()
 			{
 				PropertyName.RemoveFromStart("b", ESearchCase::CaseSensitive);
 			}
-			for (const FString& Prefix : FNiagaraRendererComponents::SetterPrefixes)
+			
+			static const TArray<FString> SetterPrefixes = {
+				FString("Set"),
+				FString("K2_Set")
+			};
+
+			for (const FString& Prefix : SetterPrefixes)
 			{
 				FName SetterFunctionName = FName(Prefix + PropertyName);
 				SetterFunction = TemplateComponent->FindFunction(SetterFunctionName);
@@ -229,21 +283,43 @@ void UNiagaraComponentRendererProperties::UpdateSetterFunctions()
 		// If we detect such a case we adapt the binding to either ignore the conversion or we discard the setter completely.
 		if (SetterFunction)
 		{
+			bool bFirstProperty = true;
 			for (FProperty* Property = SetterFunction->PropertyLink; Property; Property = Property->PropertyLinkNext)
 			{
 				if (Property->IsInContainer(SetterFunction->ParmsSize) && Property->HasAnyPropertyFlags(CPF_Parm) && !Property->HasAnyPropertyFlags(CPF_ReturnParm))
 				{
-					FNiagaraTypeDefinition FieldType = UNiagaraComponentRendererProperties::ToNiagaraType(Property);
-					if (FieldType != PropertyBinding.PropertyType && FieldType == PropertyBinding.AttributeBinding.GetType())
+					if (bFirstProperty)
 					{
-						// we can use the original Niagara value with the setter instead of converting it
-						Setter.bIgnoreConversion = true;
-					} else if (FieldType != PropertyBinding.PropertyType)
-					{
-						// setter is completely unusable
-						Setter.Function = nullptr;
+						// the first property is our bound value, so we check for the correct type
+						FNiagaraTypeDefinition FieldType = ToNiagaraType(Property);
+						if (FieldType != PropertyBinding.PropertyType && FieldType == PropertyBinding.AttributeBinding.GetType())
+						{
+							// we can use the original Niagara value with the setter instead of converting it
+							Setter.bIgnoreConversion = true;
+						}
+						else if (FieldType != PropertyBinding.PropertyType)
+						{
+							// setter is completely unusable
+							Setter.Function = nullptr;
+						}
+						bFirstProperty = false;
 					}
-					break;
+#if WITH_EDITORONLY_DATA
+					else
+					{
+						// the other values are just function parameters, so we check if they have custom default values defined in the metadata
+						FString DefaultValue;
+						if (FindFunctionParameterDefaultValue(SetterFunction, Property, DefaultValue))
+						{
+							// Store property setter parameter defaults, as this is kept in metadata which is not available at runtime
+							PropertyBinding.PropertySetterParameterDefaults.Add(Property->GetName(), DefaultValue);
+						}
+						else
+						{
+							PropertyBinding.PropertySetterParameterDefaults.Remove(Property->GetName());
+						}
+					}
+#endif
 				}
 			}
 		}
@@ -262,6 +338,7 @@ void UNiagaraComponentRendererProperties::InitCDOPropertiesAfterModuleStartup()
 {
 	UNiagaraComponentRendererProperties* CDO = CastChecked<UNiagaraComponentRendererProperties>(UNiagaraComponentRendererProperties::StaticClass()->GetDefaultObject());
 	CDO->EnabledBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_COMPONENTS_ENABLED);
+	CDO->RendererVisibilityTagBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_VISIBILITY_TAG);
 
 	for (TWeakObjectPtr<UNiagaraComponentRendererProperties>& WeakComponentRendererProperties : ComponentRendererPropertiesToDeferredInit)
 	{
@@ -270,6 +347,10 @@ void UNiagaraComponentRendererProperties::InitCDOPropertiesAfterModuleStartup()
 			if (!WeakComponentRendererProperties->EnabledBinding.IsValid())
 			{
 				WeakComponentRendererProperties->EnabledBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_COMPONENTS_ENABLED);
+			}
+			if (!WeakComponentRendererProperties->RendererVisibilityTagBinding.IsValid())
+			{
+				WeakComponentRendererProperties->RendererVisibilityTagBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_VISIBILITY_TAG);
 			}
 		}
 	}
@@ -340,12 +421,12 @@ void UNiagaraComponentRendererProperties::PostEditChangeProperty(struct FPropert
 			CreateTemplateComponent();
 
 			FNiagaraComponentPropertyBinding PositionBinding;
-			PositionBinding.AttributeBinding.Setup(SYS_PARAM_PARTICLES_POSITION,  FNiagaraConstants::GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_POSITION), SYS_PARAM_PARTICLES_POSITION);
+			PositionBinding.AttributeBinding.Setup(SYS_PARAM_PARTICLES_POSITION, SYS_PARAM_PARTICLES_POSITION);
 			PositionBinding.PropertyName = FName("RelativeLocation");
 			PropertyBindings.Add(PositionBinding);
 
 			FNiagaraComponentPropertyBinding ScaleBinding;
-			ScaleBinding.AttributeBinding.Setup(SYS_PARAM_PARTICLES_SCALE, FNiagaraConstants::GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_SCALE), SYS_PARAM_PARTICLES_SCALE);
+			ScaleBinding.AttributeBinding.Setup(SYS_PARAM_PARTICLES_SCALE, SYS_PARAM_PARTICLES_SCALE);
 			ScaleBinding.PropertyName = FName("RelativeScale3D");
 			PropertyBindings.Add(ScaleBinding);
 		}
@@ -354,6 +435,7 @@ void UNiagaraComponentRendererProperties::PostEditChangeProperty(struct FPropert
 			TemplateComponent = nullptr;
 		}
 	}
+	UpdateSetterFunctions(); // to refresh the default values for the setter parameters
 	Super::PostEditChangeProperty(e);
 }
 
@@ -439,23 +521,24 @@ FText UNiagaraComponentRendererProperties::GetWidgetDisplayName() const
 	return TemplateComponent ? FText::Format(FText::FromString("{0} Renderer"), TemplateComponent->GetClass()->GetDisplayNameText()) : Super::GetWidgetDisplayName();
 }
 
-const TArray<FNiagaraVariable>& UNiagaraComponentRendererProperties::GetBoundAttributes()
+TArray<FNiagaraVariable> UNiagaraComponentRendererProperties::GetBoundAttributes() const
 {
-	CurrentBoundAttributes.Reset();
+	TArray<FNiagaraVariable> BoundAttributes;
+	BoundAttributes.Reserve(PropertyBindings.Num() + (bAssignComponentsOnParticleID ? 2 : 1));
 
-	CurrentBoundAttributes.Add(SYS_PARAM_PARTICLES_COMPONENTS_ENABLED);
+	BoundAttributes.Add(SYS_PARAM_PARTICLES_COMPONENTS_ENABLED);
 	if (bAssignComponentsOnParticleID)
 	{
-		CurrentBoundAttributes.Add(SYS_PARAM_PARTICLES_UNIQUE_ID);
+		BoundAttributes.Add(SYS_PARAM_PARTICLES_UNIQUE_ID);
 	}
 	for (const FNiagaraComponentPropertyBinding& PropertyBinding : PropertyBindings)
 	{
 		if (PropertyBinding.AttributeBinding.IsValid())
 		{
-			CurrentBoundAttributes.Add(PropertyBinding.AttributeBinding.GetParamMapBindableVariable());
+			BoundAttributes.Add(PropertyBinding.AttributeBinding.GetParamMapBindableVariable());
 		}
 	}
-	return CurrentBoundAttributes;
+	return BoundAttributes;
 }
 
 const TArray<FNiagaraVariable>& UNiagaraComponentRendererProperties::GetOptionalAttributes()

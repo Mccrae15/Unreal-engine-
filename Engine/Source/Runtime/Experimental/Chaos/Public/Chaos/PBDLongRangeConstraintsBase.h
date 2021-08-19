@@ -1,118 +1,95 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Chaos/Array.h"
+#include "Chaos/Core.h"
 #include "Chaos/PBDParticles.h"
+#include "Chaos/PBDActiveView.h"
+#include "Chaos/PBDStiffness.h"
 #include "Containers/Map.h"
 #include "Containers/Set.h"
 
 namespace Chaos
 {
-template<class T, int d>
-class CHAOS_API TPBDLongRangeConstraintsBase
+class CHAOS_API FPBDLongRangeConstraintsBase
 {
 public:
 	enum class EMode : uint8
 	{
-		FastTetherFastLength,
-		AccurateTetherFastLength,
-		AccurateTetherAccurateLength,
+		Euclidean,
+		Geodesic,
+
+		// Deprecated modes
+		FastTetherFastLength = Euclidean,
+		AccurateTetherFastLength = Geodesic,
+		AccurateTetherAccurateLength = Geodesic
 	};
 
-	TPBDLongRangeConstraintsBase(
-		const TDynamicParticles<T, d>& InParticles,
-		const TMap<int32, TSet<uint32>>& PointToNeighbors,
-		const int32 NumberOfAttachments = 1,
-		const T Stiffness = (T)1,
-		const T LimitScale = (T)1,
-		const EMode Mode = EMode::AccurateTetherFastLength);
-
-	virtual ~TPBDLongRangeConstraintsBase() {}
-
-	EMode GetMode() const { return MMode; }
-
-	const TArray<TVector<uint32, 2>>& GetEuclideanConstraints() const { return MEuclideanConstraints; }
-	const TArray<TArray<uint32>>& GetGeodesicConstraints() const { return MGeodesicConstraints; }
-
-	const TArray<T>& GetDists() const { return MDists; }
-
-	static TArray<TArray<uint32>> ComputeIslands(const TMap<int32, TSet<uint32>>& PointToNeighbors, const TArray<uint32>& KinematicParticles);
-
-protected:
-	template<class TConstraintType>
-	inline TVector<T, d> GetDelta(const TConstraintType& Constraint, const TPBDParticles<T, d>& InParticles, const T RefDist) const
+	struct FTether
 	{
-		checkSlow(Constraint.Num() > 1);
-		const uint32 i2 = Constraint[Constraint.Num() - 1];
-		const uint32 i2m1 = Constraint[Constraint.Num() - 2];
-		checkSlow(InParticles.InvM(Constraint[0]) == (T)0.);
-		checkSlow(InParticles.InvM(i2) > (T)0.);
-		const T Distance = ComputeGeodesicDistance(InParticles, Constraint); // This function is used for either Euclidean or Geodesic distances
-		if (Distance < RefDist)
+		int32 Start;
+		int32 End;
+		FReal RefLength;
+
+		FTether(int32 InStart, int32 InEnd, FReal InRefLength): Start(InStart), End(InEnd), RefLength(InRefLength) {}
+
+		inline FVec3 GetDelta(const FPBDParticles& Particles) const
 		{
-			return TVector<T, d>((T)0.);
-		}
+			checkSlow(Particles.InvM(Start) == (FReal)0.);
+			checkSlow(Particles.InvM(End) > (FReal)0.);
+			FVec3 Direction = Particles.P(Start) - Particles.P(End);
+			const FReal Length = Direction.SafeNormalize();
+			const FReal Offset = Length - RefLength;
+			return Offset < (FReal)0. ? FVec3((FReal)0.) : Offset * Direction;
+		};
 
-		//const TVector<T, d> Direction = (InParticles.P(i2m1) - InParticles.P(i2)).GetSafeNormal();
-		TVector<T, d> Direction = InParticles.P(i2m1) - InParticles.P(i2);
-		const T DirLen = Direction.SafeNormalize();
-
-		const T Offset = Distance - RefDist;
-		const TVector<T, d> Delta = MStiffness * Offset * Direction;
-
-	/*  // ryan - this currently fails:
-
-		const T NewDirLen = (InParticles.P(i2) + Delta - InParticles.P(i2m1)).Size();
-		//T Correction = (InParticles.P(i2) - InParticles.P(i2m1)).Size() - (InParticles.P(i2) + Delta - InParticles.P(i2m1)).Size();
-		const T Correction = DirLen - NewDirLen;
-		check(Correction >= 0);
-
-		//T NewDist = (Distance - (InParticles.P(i2) - InParticles.P(i2m1)).Size() + (InParticles.P(i2) + Delta - InParticles.P(i2m1)).Size());
-		const T NewDist = Distance - DirLen + NewDirLen;
-		check(FGenericPlatformMath::Abs(NewDist - RefDist) < 1e-4);
-	*/
-		return Delta;
+		inline void GetDelta(const FPBDParticles& Particles, FVec3& OutDirection, FReal& OutOffset) const
+		{
+			checkSlow(Particles.InvM(Start) == (FReal)0.);
+			checkSlow(Particles.InvM(End) > (FReal)0.);
+			OutDirection = Particles.P(Start) - Particles.P(End);
+			const FReal Length = OutDirection.SafeNormalize();
+			OutOffset = FMath::Max((FReal)0., Length - RefLength);
+		};
 	};
 
-	static T ComputeGeodesicDistance(const TParticles<T, d>& InParticles, const TArray<uint32>& Path)
-	{
-		T distance = 0;
-		for (int32 i = 0; i < Path.Num() - 1; ++i)
-		{
-			distance += (InParticles.X(Path[i]) - InParticles.X(Path[i + 1])).Size();
-		}
-		return distance;
-	}
-	static T ComputeGeodesicDistance(const TPBDParticles<T, d>& InParticles, const TArray<uint32>& Path)
-	{
-		T distance = 0;
-		for (int32 i = 0; i < Path.Num() - 1; ++i)
-		{
-			distance += (InParticles.P(Path[i]) - InParticles.P(Path[i + 1])).Size();
-		}
-		return distance;
-	}
+	FPBDLongRangeConstraintsBase(
+		const FPBDParticles& Particles,
+		const int32 InParticleOffset,
+		const int32 InParticleCount,
+		const TMap<int32, TSet<int32>>& PointToNeighbors,
+		const TConstArrayView<FReal>& StiffnessMultipliers,
+		const int32 MaxNumTetherIslands = 4,
+		const FVec2& InStiffness = FVec2((FReal)0., (FReal)1.),
+		const FReal LimitScale = (FReal)1,
+		const EMode InMode = EMode::AccurateTetherFastLength);
 
-	void ComputeEuclideanConstraints(const TDynamicParticles<T, d>& InParticles, const TMap<int32, TSet<uint32>>& PointToNeighbors, const int32 NumberOfAttachments);
-	void ComputeGeodesicConstraints(const TDynamicParticles<T, d>& InParticles, const TMap<int32, TSet<uint32>>& PointToNeighbors, const int32 NumberOfAttachments);
+	virtual ~FPBDLongRangeConstraintsBase() {}
 
-	static T ComputeDistance(const TParticles<T, d>& InParticles, const uint32 i, const uint32 j) { return (InParticles.X(i) - InParticles.X(j)).Size(); }
-	static T ComputeDistance(const TPBDParticles<T, d>& InParticles, const uint32 i, const uint32 j) { return (InParticles.P(i) - InParticles.P(j)).Size(); }
+	EMode GetMode() const { return Mode; }
 
-	static T ComputeGeodesicDistance(const TParticles<T, d>& InParticles, const TVector<uint32, 2>& Path)
-	{
-		return (InParticles.X(Path[0]) - InParticles.X(Path[1])).Size();
-	}
-	static T ComputeGeodesicDistance(const TPBDParticles<T, d>& InParticles, const TVector<uint32, 2>& Path)
-	{
-		return (InParticles.P(Path[0]) - InParticles.P(Path[1])).Size();
-	}
+	// Return the stiffness input values used by the constraint
+	FVec2 GetStiffness() const { return Stiffness.GetWeightedValue(); }
+
+	// Set the stiffness input values used by the constraint
+	void SetStiffness(const FVec2& InStiffness) { Stiffness.SetWeightedValue(InStiffness); }
+
+	// Set stiffness offset and range, as well as the simulation stiffness exponent
+	void ApplyProperties(const FReal Dt, const int32 NumIterations) { Stiffness.ApplyValues(Dt, NumIterations); }
+
+	const TArray<FTether>& GetTethers() const { return Tethers; }
+
+	static TArray<TArray<int32>> ComputeIslands(const TMap<int32, TSet<int32>>& PointToNeighbors, const TArray<int32>& KinematicParticles);
 
 protected:
-	TArray<TVector<uint32, 2>> MEuclideanConstraints;
-	TArray<TArray<uint32>> MGeodesicConstraints;
-	TArray<T> MDists;
-	T MStiffness;
-	EMode MMode;
+	void ComputeEuclideanConstraints(const FPBDParticles& Particles, const TMap<int32, TSet<int32>>& PointToNeighbors, const int32 NumberOfAttachments);
+	void ComputeGeodesicConstraints(const FPBDParticles& Particles, const TMap<int32, TSet<int32>>& PointToNeighbors, const int32 NumberOfAttachments);
+
+protected:
+	TArray<FTether> Tethers;
+	TPBDActiveView<TArray<FTether>> TethersView;
+	FPBDStiffness Stiffness;
+	const EMode Mode;
+	const int32 ParticleOffset;
+	const int32 ParticleCount;
 };
 }

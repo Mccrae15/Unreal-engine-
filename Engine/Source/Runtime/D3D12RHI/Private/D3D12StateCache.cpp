@@ -241,7 +241,7 @@ void FD3D12StateCacheBase::DirtyStateForNewCommandList()
 		bNeedSetDepthBounds = GSupportsDepthBoundsTest;
 	}
 	
-	bNeedSetShadingRate = GRHISupportsVariableRateShading;
+	bNeedSetShadingRate = GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled;
 	
 	// Always dirty View and Sampler bindings. We detect the slots that are actually used at Draw/Dispatch time.
 	PipelineState.Common.SRVCache.DirtyAll();
@@ -265,7 +265,7 @@ void FD3D12StateCacheBase::DirtyState()
 	bNeedSetBlendFactor = true;
 	bNeedSetStencilRef = true;
 	bNeedSetDepthBounds = GSupportsDepthBoundsTest;
-	bNeedSetShadingRate = GRHISupportsVariableRateShading;
+	bNeedSetShadingRate = GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled;
 	PipelineState.Common.SRVCache.DirtyAll();
 	PipelineState.Common.UAVCache.DirtyAll();
 	PipelineState.Common.CBVCache.DirtyAll();
@@ -496,7 +496,7 @@ void FD3D12StateCacheBase::ApplyState()
 	uint32 NumViews = 0;
 	for (uint32 iTries = 0; iTries < 2; ++iTries)
 	{
-		const UAVSlotMask CurrentShaderUAVRegisterMask = ((UAVSlotMask)1 << PipelineState.Common.CurrentShaderUAVCounts[UAVStage]) - (UAVSlotMask)1;
+		const UAVSlotMask CurrentShaderUAVRegisterMask = BitMask<UAVSlotMask>(PipelineState.Common.CurrentShaderUAVCounts[UAVStage]);
 		CurrentShaderDirtyUAVSlots = CurrentShaderUAVRegisterMask & PipelineState.Common.UAVCache.DirtySlotMask[UAVStage];
 		if (CurrentShaderDirtyUAVSlots)
 		{
@@ -668,7 +668,7 @@ void FD3D12StateCacheBase::ApplySamplers(const FD3D12RootSignature* const pRootS
 		for (uint32 Stage = StartStage; Stage < EndStage; ++Stage)
 		{
 			// Note this code assumes the starting register is index 0.
-			const SamplerSlotMask CurrentShaderSamplerRegisterMask = ((SamplerSlotMask)1 << PipelineState.Common.CurrentShaderSamplerCounts[Stage]) - (SamplerSlotMask)1;
+			const SamplerSlotMask CurrentShaderSamplerRegisterMask = BitMask<SamplerSlotMask>(PipelineState.Common.CurrentShaderSamplerCounts[Stage]);
 			CurrentShaderDirtySamplerSlots[Stage] = CurrentShaderSamplerRegisterMask & Cache.DirtySlotMask[Stage];
 			if (CurrentShaderDirtySamplerSlots[Stage])
 			{
@@ -731,7 +731,7 @@ void FD3D12StateCacheBase::ApplySamplers(const FD3D12RootSignature* const pRootS
 					// We changed the descriptor table, so all resources bound to slots outside of the table's range are now dirty.
 					// If a shader needs to use resources bound to these slots later, we need to set the descriptor table again to ensure those
 					// descriptors are valid.
-					const SamplerSlotMask OutsideCurrentTableRegisterMask = ~(((SamplerSlotMask)1 << Table.Key.Count) - (SamplerSlotMask)1);
+					const SamplerSlotMask OutsideCurrentTableRegisterMask = ~BitMask<SamplerSlotMask>(Table.Key.Count);
 					Cache.Dirty(static_cast<EShaderFrequency>(Stage), OutsideCurrentTableRegisterMask);
 				}
 				else
@@ -1027,9 +1027,12 @@ void FD3D12StateCacheBase::SetUAVs(uint32 UAVStartSlot, uint32 NumSimultaneousUA
 		{
 			Cache.ResidencyHandles[ShaderStage][i] = UAV->GetResidencyHandle();
 
-			if (UAV->CounterResource && (!UAV->CounterResourceInitialized || UAVInitialCountArray[i] != -1))
+			FD3D12Resource* CounterResource = UAV->GetCounterResource();
+			if (CounterResource && (!UAV->IsCounterResourceInitialized() || UAVInitialCountArray[i] != -1))
 			{
-				FD3D12ResourceLocation UploadBufferLocation(GetParentDevice());
+				FD3D12Device* Device = CounterResource->GetParentDevice();
+				FD3D12ResourceLocation UploadBufferLocation(Device);
+
 #if USE_STATIC_ROOT_SIGNATURE
 				uint32* CounterUploadHeapData = static_cast<uint32*>(CmdContext->ConstantsAllocator.Allocate(sizeof(uint32), UploadBufferLocation, nullptr));
 #else
@@ -1037,18 +1040,27 @@ void FD3D12StateCacheBase::SetUAVs(uint32 UAVStartSlot, uint32 NumSimultaneousUA
 #endif
 
 				// Initialize the counter to 0 if it's not been previously initialized and the UAVInitialCount is -1, if not use the value that was passed.
-				*CounterUploadHeapData = (!UAV->CounterResourceInitialized && UAVInitialCountArray[i] == -1) ? 0 : UAVInitialCountArray[i];
+				*CounterUploadHeapData = (!UAV->IsCounterResourceInitialized() && UAVInitialCountArray[i] == -1) ? 0 : UAVInitialCountArray[i];
+
+				// Transition to copy dest
+				FD3D12DynamicRHI::TransitionResource(CmdContext->CommandListHandle, CounterResource, D3D12_RESOURCE_STATE_COPY_DEST, 0);
+
+				Device->GetDefaultCommandContext().numCopies++;
+				CmdContext->CommandListHandle.FlushResourceBarriers();
 
 				CmdContext->CommandListHandle->CopyBufferRegion(
-					UAV->CounterResource->GetResource(),
+					CounterResource->GetResource(),
 					0,
 					UploadBufferLocation.GetResource()->GetResource(),
 					UploadBufferLocation.GetOffsetFromBaseOfResource(),
 					4);
 
-				CmdContext->CommandListHandle.UpdateResidency(UAV->CounterResource);
+				// Restore UAV state
+				FD3D12DynamicRHI::TransitionResource(CmdContext->CommandListHandle, CounterResource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, 0);
 
-				UAV->CounterResourceInitialized = true;
+				CmdContext->CommandListHandle.UpdateResidency(CounterResource);
+
+				UAV->MarkCounterResourceInitialized();
 			}
 		}
 		else

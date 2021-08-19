@@ -69,8 +69,6 @@ struct FDetailLayoutData
 
 typedef TArray<FDetailLayoutData> FDetailLayoutList;
 
-typedef TArray<TSharedPtr<FComplexPropertyNode>> FRootPropertyNodeList;
-
 class FPropertyRowGenerator : public IPropertyRowGenerator, public FTickableEditorObject, public TSharedFromThis<FPropertyRowGenerator>
 {
 public:
@@ -85,7 +83,7 @@ public:
 	virtual const TArray<TWeakObjectPtr<UObject>>& GetSelectedObjects() const override { return SelectedObjects; }
 	virtual const TArray<TSharedRef<IDetailTreeNode>>& GetRootTreeNodes() const override;
 	virtual TSharedPtr<IDetailTreeNode> FindTreeNode(TSharedPtr<IPropertyHandle> PropertyHandle) const override;
-	virtual TArray<TSharedPtr<IDetailTreeNode>> FindTreeNodes(TArray<TSharedPtr<IPropertyHandle>> PropertyHandles) const override;
+	virtual TArray<TSharedPtr<IDetailTreeNode>> FindTreeNodes(const TArray<TSharedPtr<IPropertyHandle>>& PropertyHandles) const override;
 	virtual FOnRowsRefreshed& OnRowsRefreshed() override { return RowsRefreshedDelegate; }
 	virtual void RegisterInstancedCustomPropertyLayout(UStruct* Class, FOnGetDetailCustomizationInstance DetailLayoutDelegate) override;
 	virtual void RegisterInstancedCustomPropertyTypeLayout(FName PropertyTypeName, FOnGetPropertyTypeCustomizationInstance PropertyTypeLayoutDelegate, TSharedPtr<IPropertyTypeIdentifier> Identifier = nullptr) override;
@@ -94,8 +92,11 @@ public:
 	virtual TSharedPtr<FAssetThumbnailPool> GetGeneratedThumbnailPool() override
 	{ 
 		return GetThumbnailPool();
-	};
-
+	}
+	virtual void SetCustomValidatePropertyNodesFunction(FOnValidatePropertyRowGeneratorNodes InCustomValidatePropertyNodesFunction) override
+	{
+		CustomValidatePropertyNodesFunction = MoveTemp(InCustomValidatePropertyNodesFunction);
+	}
 
 	/** FTickableEditorObject interface */
 	virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Always; }
@@ -153,6 +154,8 @@ private:
 	TSharedRef<IPropertyGenerationUtilities> PropertyGenerationUtilities;
 	/** Delegate called when the details panel finishes editing a property (after post edit change is called) */
 	FOnFinishedChangingProperties OnFinishedChangingPropertiesDelegate;
+	/** The ValidatePropertyNodes function can be overridden with this member, if set. Useful if your implementation doesn't require this kind of validation each Tick. */
+	FOnValidatePropertyRowGeneratorNodes CustomValidatePropertyNodesFunction;
 
 	bool bViewingClassDefaultObject;
 };

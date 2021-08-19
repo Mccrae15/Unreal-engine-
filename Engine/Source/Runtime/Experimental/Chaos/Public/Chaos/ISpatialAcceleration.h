@@ -97,14 +97,14 @@ template <typename TPayloadType>
 struct CHAOS_API TSpatialVisitorData
 {
 	TPayloadType Payload;
-	TSpatialVisitorData(const TPayloadType& InPayload, const bool bInHasBounds = false, const TAABB<float, 3>& InBounds = TAABB<float, 3>::ZeroAABB())
+	TSpatialVisitorData(const TPayloadType& InPayload, const bool bInHasBounds = false, const FAABB3& InBounds = FAABB3::ZeroAABB())
 		: Payload(InPayload)
 #if !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
 		, bHasBounds(bInHasBounds)
 		, Bounds(InBounds)
 	{ }
 	bool bHasBounds;
-	TAABB<float, 3> Bounds;
+	FAABB3 Bounds;
 #else
 	{ }
 #endif
@@ -114,7 +114,7 @@ struct CHAOS_API TSpatialVisitorData
 	This class is responsible for gathering any information it wants (for example narrow phase query results).
 	This class determines whether the acceleration structure should continue to iterate through potential instances
 */
-template <typename TPayloadType, typename T>
+template <typename TPayloadType, typename T = FReal>
 class CHAOS_API ISpatialVisitor
 {
 public:
@@ -157,8 +157,8 @@ public:
 	
 	virtual ~ISpacialDebugDrawInterface() = default;
 
-	virtual void Box(const TAABB<T, 3>& InBox, const TVector<T, 3>& InLinearColor, float InThickness) = 0;
-	virtual void Line(const TVector<T, 3>& InBegin, const TVector<T, 3>& InEnd, const TVector<T, 3>& InLinearColor, float InThickness)  = 0;
+	virtual void Box(const TAABB<T, 3>& InBox, const TVector<T, 3>& InLinearColor, Chaos::FReal InThickness) = 0;
+	virtual void Line(const TVector<T, 3>& InBegin, const TVector<T, 3>& InEnd, const TVector<T, 3>& InLinearColor, Chaos::FReal InThickness)  = 0;
 
 };
 
@@ -262,6 +262,11 @@ public:
 	virtual void Raycast(const TVector<T, d>& Start, const TVector<T, d>& Dir, const T Length, ISpatialVisitor<TPayloadType, T>& Visitor) const { check(false); }
 	virtual void Sweep(const TVector<T, d>& Start, const TVector<T, d>& Dir, const T Length, const TVector<T, d> QueryHalfExtents, ISpatialVisitor<TPayloadType, T>& Visitor) const { check(false);}
 	virtual void Overlap(const TAABB<T, d>& QueryBounds, ISpatialVisitor<TPayloadType, T>& Visitor) const { check(false); }
+
+	virtual void Reset()
+	{
+		check(false);
+	}
 
 	virtual void RemoveElement(const TPayloadType& Payload)
 	{

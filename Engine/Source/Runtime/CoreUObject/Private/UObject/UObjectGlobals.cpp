@@ -56,6 +56,9 @@
 #include "HAL/LowLevelMemStats.h"
 #include "Misc/CoreDelegates.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#if WITH_IOSTORE_IN_EDITOR
+#include "IO/IoDispatcher.h"
+#endif
 #include "ProfilingDebugging/LoadTimeTracker.h"
 
 DEFINE_LOG_CATEGORY(LogUObjectGlobals);
@@ -117,6 +120,7 @@ namespace LoadPackageStats
 FCoreUObjectDelegates::FRegisterHotReloadAddedClassesDelegate FCoreUObjectDelegates::RegisterHotReloadAddedClassesDelegate;
 FCoreUObjectDelegates::FRegisterClassForHotReloadReinstancingDelegate FCoreUObjectDelegates::RegisterClassForHotReloadReinstancingDelegate;
 FCoreUObjectDelegates::FReinstanceHotReloadedClassesDelegate FCoreUObjectDelegates::ReinstanceHotReloadedClassesDelegate;
+FCoreUObjectDelegates::FCompiledInUObjectsRegisteredDelegate FCoreUObjectDelegates::CompiledInUObjectsRegisteredDelegate;
 FCoreUObjectDelegates::FIsPackageOKToSaveDelegate FCoreUObjectDelegates::IsPackageOKToSaveDelegate;
 FCoreUObjectDelegates::FOnPackageReloaded FCoreUObjectDelegates::OnPackageReloaded;
 FCoreUObjectDelegates::FNetworkFileRequestPackageReload FCoreUObjectDelegates::NetworkFileRequestPackageReload;
@@ -428,7 +432,7 @@ void GlobalSetProperty( const TCHAR* Value, UClass* Class, FProperty* Property, 
 	if ( Property != NULL && Class != NULL )
 	{
 		// Apply to existing objects of the class.
-		for( FObjectIterator It; It; ++It )
+		for( FThreadSafeObjectIterator It; It; ++It )
 		{	
 			UObject* Object = *It;
 			if( Object->IsA(Class) && !Object->IsPendingKill() )
@@ -1093,8 +1097,11 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageNameO
 
 	UPackage* Result = nullptr;
 
-	if (FPlatformProperties::RequiresCookedData() && GEventDrivenLoaderEnabled
-		&& EVENT_DRIVEN_ASYNC_LOAD_ACTIVE_AT_RUNTIME
+	if ((FPlatformProperties::RequiresCookedData() && GEventDrivenLoaderEnabled
+		&& EVENT_DRIVEN_ASYNC_LOAD_ACTIVE_AT_RUNTIME)
+#if WITH_IOSTORE_IN_EDITOR
+		|| FIoDispatcher::IsInitialized()
+#endif
 		)
 	{
 		FString InName;
@@ -1119,7 +1126,11 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageNameO
 		}
 
 		FName PackageFName(*InPackageName);
-
+#if WITH_IOSTORE_IN_EDITOR
+		// Use the old loader if an uncooked package exists on disk
+		const bool bDoesUncookedPackageExist = FPackageName::DoesPackageExist(InPackageName, nullptr, nullptr, true) && !DoesPackageExistInIoStore(FName(*InPackageName));
+		if (!bDoesUncookedPackageExist)
+#endif
 		{
 			if (FCoreDelegates::OnSyncLoadPackage.IsBound())
 			{
@@ -1132,10 +1143,10 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageNameO
 			{
 				FlushAsyncLoading(RequestID);
 			}
-		}
 
-		Result = (InOuter ? InOuter : FindObjectFast<UPackage>(nullptr, PackageFName));
-		return Result;
+			Result = (InOuter ? InOuter : FindObjectFast<UPackage>(nullptr, PackageFName));
+			return Result;
+		}
 	}
 
 	FString FileToLoad;
@@ -1933,7 +1944,7 @@ struct FObjectDuplicationHelperMethods
 /**
  * Constructor - zero initializes all members
  */
-FObjectDuplicationParameters::FObjectDuplicationParameters( UObject* InSourceObject, UObject* InDestOuter )
+FObjectDuplicationParameters::FObjectDuplicationParameters(UObject* InSourceObject, UObject* InDestOuter)
 : SourceObject(InSourceObject)
 , DestOuter(InDestOuter)
 , DestName(NAME_None)
@@ -1944,8 +1955,9 @@ FObjectDuplicationParameters::FObjectDuplicationParameters( UObject* InSourceObj
 , PortFlags(PPF_None)
 , DuplicateMode(EDuplicateMode::Normal)
 , bAssignExternalPackages(true)
-, DestClass(NULL)
-, CreatedObjects(NULL)
+, bSkipPostLoad(false)
+, DestClass(nullptr)
+, CreatedObjects(nullptr)
 {
 	checkSlow(SourceObject);
 	checkSlow(DestOuter);
@@ -1978,7 +1990,7 @@ UObject* StaticDuplicateObject(UObject const* SourceObject, UObject* DestOuter, 
 		}
 	}
 
-	if ( DestClass == NULL )
+	if ( DestClass == nullptr )
 	{
 		Parameters.DestClass = SourceObject->GetClass();
 	}
@@ -2033,7 +2045,7 @@ UObject* StaticDuplicateObjectEx( FObjectDuplicationParameters& Parameters )
 	Parameters.SourceObject->PreDuplicate(Parameters);
 
 	UObject* DupRootObject = Parameters.DuplicationSeed.FindRef(Parameters.SourceObject);
-	if ( DupRootObject == NULL )
+	if ( DupRootObject == nullptr )
 	{
 		FStaticConstructObjectParameters Params(Parameters.DestClass);
 		Params.Outer = Parameters.DestOuter;
@@ -2135,7 +2147,7 @@ UObject* StaticDuplicateObjectEx( FObjectDuplicationParameters& Parameters )
 		// may not necessarily be the object that is supposed to be its archetype (the caller can populate the duplication seed map with any objects they wish)
 		// and the DuplicationSeed is only used for preserving inter-object references, not for object graphs in SCO and we don't want to call PostDuplicate/PostLoad
 		// on them as they weren't actually duplicated
-		if ( Parameters.DuplicationSeed.Find(OrigObject) == NULL )
+		if ( Parameters.DuplicationSeed.Find(OrigObject) == nullptr )
 		{
 			FDuplicatedObject DupObjectInfo = DuplicatedObjectAnnotation.GetAnnotation( OrigObject );
 
@@ -2147,7 +2159,7 @@ UObject* StaticDuplicateObjectEx( FObjectDuplicationParameters& Parameters )
 			ensure(!(bDuplicateForPIE && DupObjectInfo.DuplicatedObject->HasAnyFlags(RF_Standalone)));
 
 			DupObjectInfo.DuplicatedObject->PostDuplicate(Parameters.DuplicateMode);
-			if ( !DupObjectInfo.DuplicatedObject->IsTemplate() )
+			if (!Parameters.bSkipPostLoad && !DupObjectInfo.DuplicatedObject->IsTemplate())
 			{
 				// Don't want to call PostLoad on class duplicated CDOs
 				TGuardValue<bool> GuardIsRoutingPostLoad(FUObjectThreadContext::Get().IsRoutingPostLoad, true);
@@ -2158,7 +2170,7 @@ UObject* StaticDuplicateObjectEx( FObjectDuplicationParameters& Parameters )
 	}
 
 	// if the caller wanted to know which objects were created, do that now
-	if ( Parameters.CreatedObjects != NULL )
+	if ( Parameters.CreatedObjects != nullptr )
 	{
 		// note that we do not clear the map first - this is to allow callers to incrementally build a collection
 		// of duplicated objects through multiple calls to StaticDuplicateObject
@@ -2172,15 +2184,13 @@ UObject* StaticDuplicateObjectEx( FObjectDuplicationParameters& Parameters )
 
 			// don't include any objects which were in the DuplicationSeed map, as CreatedObjects should only contain the list
 			// of objects actually created during this call to SDO
-			if ( Parameters.DuplicationSeed.Find(OrigObject) == NULL )
+			if ( Parameters.DuplicationSeed.Find(OrigObject) == nullptr )
 			{
 				FDuplicatedObject DupObjectInfo = DuplicatedObjectAnnotation.GetAnnotation( OrigObject );
 				Parameters.CreatedObjects->Add(OrigObject, DupObjectInfo.DuplicatedObject);
 			}
 		}
 	}
-
-	//return DupRoot;
 	return DupRootObject;
 }
 
@@ -2229,6 +2239,31 @@ void SnapshotTransactionBuffer(UObject* Object, TArrayView<const FProperty*> Pro
 	}
 }
 
+// Utility function to evaluate whether we allow an abstract object to be allocated
+int32 FScopedAllowAbstractClassAllocation::AllowAbstractCount = 0;
+FScopedAllowAbstractClassAllocation::FScopedAllowAbstractClassAllocation()
+{
+	++AllowAbstractCount;
+}
+
+FScopedAllowAbstractClassAllocation::~FScopedAllowAbstractClassAllocation()
+{
+	--AllowAbstractCount;
+}
+
+bool FScopedAllowAbstractClassAllocation::IsDisallowedAbstractClass(const UClass* InClass, EObjectFlags InFlags)
+{
+	if (((InFlags& RF_ClassDefaultObject) == 0) && InClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		if (AllowAbstractCount == 0)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool StaticAllocateObjectErrorTests( const UClass* InClass, UObject* InOuter, FName InName, EObjectFlags InFlags)
 {
 	// Validation checks.
@@ -2239,7 +2274,7 @@ bool StaticAllocateObjectErrorTests( const UClass* InClass, UObject* InOuter, FN
 	}
 
 	// for abstract classes that are being loaded NOT in the editor we want to error.  If they are in the editor we do not want to have an error
-	if ( InClass->HasAnyClassFlags(CLASS_Abstract) && (InFlags&RF_ClassDefaultObject) == 0 )
+	if (FScopedAllowAbstractClassAllocation::IsDisallowedAbstractClass(InClass, InFlags))
 	{
 		if ( GIsEditor )
 		{
@@ -2324,7 +2359,7 @@ UObject* StaticAllocateObject
 	bool bCreatingCDO = (InFlags & RF_ClassDefaultObject) != 0;
 
 	check(InClass);
-	check(GIsEditor || bCreatingCDO || !InClass->HasAnyClassFlags(CLASS_Abstract)); // this is a warning in the editor, otherwise it is illegal to create an abstract class, except the CDO
+	check(GIsEditor || !FScopedAllowAbstractClassAllocation::IsDisallowedAbstractClass(InClass, InFlags)); // this is a warning in the editor, otherwise it is illegal to create an abstract class, except the CDO
 	check(InOuter || (InClass == UPackage::StaticClass() && InName != NAME_None)); // only packages can not have an outer, and they must be named explicitly
 	//checkf(InClass != UPackage::StaticClass() || !InOuter || bCreatingCDO, TEXT("Creating nested packages is not allowed: Outer=%s, Package=%s"), *GetNameSafe(InOuter), *InName.ToString());
 	check(bCreatingCDO || !InOuter || InOuter->IsA(InClass->ClassWithin));
@@ -2477,7 +2512,9 @@ UObject* StaticAllocateObject
 				// Finish destroying the object.
 				Obj->ConditionalFinishDestroy();
 			}
+			GUObjectArray.LockInternalArray();
 			Obj->~UObject();
+			GUObjectArray.UnlockInternalArray();
 			bWasConstructedOnOldObject	= true;
 		}
 		else
@@ -2664,6 +2701,9 @@ FObjectInitializer::~FObjectInitializer()
 		return;
 	}
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+
+	// At this point the object has had its native constructor called so it's safe to be used
+	Obj->ClearInternalFlags(EInternalObjectFlags::PendingConstruction);
 
 	const bool bIsCDO = Obj->HasAnyFlags(RF_ClassDefaultObject);
 	UClass* Class = Obj->GetClass();
@@ -3225,7 +3265,7 @@ void FScopedObjectFlagMarker::SaveObjectFlags()
 {
 	StoredObjectFlags.Empty();
 
-	for (FObjectIterator It; It; ++It)
+	for (FThreadSafeObjectIterator It; It; ++It)
 	{
 		UObject* Obj = *It;
 		StoredObjectFlags.Add(*It, FStoredObjectFlags(Obj->GetFlags(), Obj->GetInternalFlags()));
@@ -3517,7 +3557,7 @@ public:
 		FoundReferencesList = FoundReferences;
 
 		// Iterate over all objects.
-		for( FObjectIterator It; It; ++It )
+		for( FThreadSafeObjectIterator It; It; ++It )
 		{
 			UObject* Object	= *It;
 			checkSlow(Object->IsValidLowLevel());
@@ -3656,7 +3696,7 @@ bool IsReferenced(UObject*& Obj, EObjectFlags KeepFlags, EInternalObjectFlags In
 	bool bTempReferenceList = false;
 
 	// Tag objects.
-	for( FObjectIterator It; It; ++It )
+	for( FThreadSafeObjectIterator It; It; ++It )
 	{
 		UObject* Object = *It;
 		Object->ClearFlags( RF_TagGarbageTemp );
@@ -4588,7 +4628,9 @@ namespace UE4CodeGen_Private
 #endif
 
 		NewPackage->SetPackageFlags(Params.PackageFlags);
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		NewPackage->SetGuid(FGuid(Params.BodyCRC, Params.DeclarationsCRC, 0u, 0u));
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		for (UObject* (*const *SingletonFunc)() = Params.SingletonFuncArray, *(*const *SingletonFuncEnd)() = SingletonFunc + Params.NumSingletons; SingletonFunc != SingletonFuncEnd; ++SingletonFunc)
 		{

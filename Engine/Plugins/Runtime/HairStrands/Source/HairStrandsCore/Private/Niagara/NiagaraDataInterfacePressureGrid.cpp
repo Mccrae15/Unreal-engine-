@@ -292,6 +292,7 @@ void UNiagaraDataInterfacePressureGrid::UpdateDeformationGradient(FVectorVMConte
 	// @todo : implement function for cpu 
 }
 
+#if WITH_EDITORONLY_DATA
 bool UNiagaraDataInterfacePressureGrid::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
 	if (Super::GetFunctionHLSL(ParamInfo, FunctionInfo, FunctionInstanceIndex, OutHLSL))
@@ -433,10 +434,11 @@ void UNiagaraDataInterfacePressureGrid::GetParameterDefinitionHLSL(const FNiagar
 {
 	OutHLSL += TEXT("DIVelocityGrid_DECLARE_CONSTANTS(") + ParamInfo.DataInterfaceHLSLSymbol + TEXT(")\n");
 }
+#endif
 
 //------------------------------------------------------------------------------------------------------------
 
-#define NIAGARA_HAIR_STRANDS_THREAD_COUNT 64
+#define NIAGARA_HAIR_STRANDS_THREAD_COUNT_PRESSURE 64
 
 class FClearPressureGridCS : public FGlobalShader
 {
@@ -451,7 +453,7 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("THREAD_COUNT"), NIAGARA_HAIR_STRANDS_THREAD_COUNT);
+		OutEnvironment.SetDefine(TEXT("THREAD_COUNT"), NIAGARA_HAIR_STRANDS_THREAD_COUNT_PRESSURE);
 	}
 
 	FClearPressureGridCS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -513,7 +515,7 @@ inline void ClearBuffer(FRHICommandList& RHICmdList, FNDIVelocityGridBuffer* Cur
 		};
 		RHICmdList.Transition(MakeArrayView(Transitions, UE_ARRAY_COUNT(Transitions)));
 
-		const uint32 GroupSize = NIAGARA_HAIR_STRANDS_THREAD_COUNT;
+		const uint32 GroupSize = NIAGARA_HAIR_STRANDS_THREAD_COUNT_PRESSURE;
 		const uint32 NumElements = (GridSize.X + 1) * (GridSize.Y + 1) * (GridSize.Z + 1);
 
 		const uint32 DispatchCount = FMath::DivideAndRoundUp(NumElements, GroupSize);
@@ -533,7 +535,7 @@ void FNDIPressureGridProxy::PreStage(FRHICommandList& RHICmdList, const FNiagara
 
 	if (ProxyData != nullptr)
 	{
-		if (Context.SimulationStageIndex == 0)
+		if (Context.SimStageData->bFirstStage)
 		{
 			ClearBuffer(RHICmdList, ProxyData->CurrentGridBuffer, ProxyData->DestinationGridBuffer, ProxyData->GridSize, true);
 		}

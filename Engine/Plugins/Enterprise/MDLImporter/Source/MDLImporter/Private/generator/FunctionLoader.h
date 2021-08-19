@@ -5,6 +5,7 @@
 #include "Containers/Map.h"
 #include "Containers/UnrealString.h"
 #include "Materials/MaterialFunction.h"
+#include "UObject/GCObject.h"
 
 class UMaterialFunctionFactoryNew;
 
@@ -31,7 +32,7 @@ namespace Generator
 		Count
 	};
 
-	class FFunctionLoader : FNoncopyable
+	class FFunctionLoader : FNoncopyable, FGCObject
 	{
 	public:
 		FFunctionLoader();
@@ -42,6 +43,10 @@ namespace Generator
 		UMaterialFunction& Get(ECommonFunction Function);
 
 		void SetAssetPath(const FString& FunctionsAssetPath);
+		void SetObjectFlags(EObjectFlags InObjectFlags) { ObjectFlags = InObjectFlags; }
+
+		// FGCObject interface
+		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
 	private:
 		int32              GetVersion(const FString& AssetName) const;
@@ -57,9 +62,11 @@ namespace Generator
 		UMaterialFunctionFactoryNew*      FunctionFactory;
 		TUniquePtr<FFunctionGenerator>    FunctionGenerator;
 		TMap<FString, FGenerationData>    FunctionGenerateMap;
+		TMap<FString, FGenerationData>    NoInlineFunctionGenerateMap;
 		TMap<FString, UMaterialFunction*> LoadedFunctions;
 		TArray<UMaterialFunction*>        CommonFunctions;
 		FString                           FunctionsAssetPath;
+		EObjectFlags                      ObjectFlags;
 	};
 
 	inline UMaterialFunction& FFunctionLoader::Get(ECommonFunction Function)

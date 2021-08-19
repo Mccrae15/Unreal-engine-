@@ -9,6 +9,7 @@
 #include "ColorCorrectRegion.generated.h"
 
 
+class UColorCorrectRegionsSubsystem;
 
 UENUM(BlueprintType)
 enum class EColorCorrectRegionsType : uint8 
@@ -17,6 +18,15 @@ enum class EColorCorrectRegionsType : uint8
 	Box			UMETA(DisplayName = "Box"),
 	Cylinder	UMETA(DisplayName = "Cylinder"),
 	Cone		UMETA(DisplayName = "Cone"),
+	MAX
+};
+
+UENUM(BlueprintType)
+enum class EColorCorrectRegionTemperatureType : uint8
+{
+	LegacyTemperature		UMETA(DisplayName = "Temperature (Legacy)"),
+	WhiteBalance			UMETA(DisplayName = "White Balance"),
+	ColorTemperature		UMETA(DisplayName = "Color Temperature"),
 	MAX
 };
 
@@ -62,6 +72,10 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Color Correction")
 	bool Invert;
 
+	/** Type of algorithm to be used to control color temperature or white balance. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Color Correction")
+	EColorCorrectRegionTemperatureType TemperatureType;
+
 	/** Color correction temperature. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Color Correction")
 	float Temperature;
@@ -81,6 +95,7 @@ public:
 #if WITH_EDITOR
 	/** Called when any of the properties are changed. */
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
 #endif
 
 	/** To handle play in Editor, PIE and Standalone. These methods aggregate objects in play mode similarly to 
@@ -88,4 +103,32 @@ public:
 	*/
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	virtual void BeginDestroy() override;
+
+	virtual void TickActor(float DeltaTime, enum ELevelTick TickType, FActorTickFunction& ThisTickFunction);
+	virtual bool ShouldTickIfViewportsOnly() const;
+
+	/** 
+	* We have to manage the lifetime of the region ourselves, because EndPlay is not guaranteed to be called 
+	* and BeginDestroy could be called from GC when it is too late.
+	*/
+	void Cleanup();
+
+	/**
+	* This is used on render thread, and not atomic on purpose to avoid stalling Render thread even for a little bit. 
+	*/
+	void GetBounds(FVector& InOutOrigin, FVector& InOutBoxExtent) const
+	{
+		InOutOrigin = BoxOrigin;
+		InOutBoxExtent = BoxExtent;
+	};
+
+private:
+	UColorCorrectRegionsSubsystem* ColorCorrectRegionsSubsystem;
+
+	FVector BoxOrigin;
+	FVector BoxExtent;
+
+	FTransform PreviousFrameTransform;
 };

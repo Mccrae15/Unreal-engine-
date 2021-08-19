@@ -27,6 +27,9 @@ using TRailIdMap = TMap<rail::RailID, ValueType, FDefaultSetAllocator, FRailIdKe
 /** Key/Value pairs stored per user on the Rail platform */
 using FMetadataPropertiesRail = FOnlineKeyValuePairs<FString, FVariantData>;
 
+using FUniqueNetIdRailRef = TSharedRef<const class FUniqueNetIdRail, UNIQUENETID_ESPMODE>;
+using FUniqueNetIdRailPtr = TSharedPtr<const class FUniqueNetIdRail, UNIQUENETID_ESPMODE>;
+
 /**
  * Rail specific implementation of the unique net id
  */
@@ -40,57 +43,15 @@ PACKAGE_SCOPE:
 	/** Hidden on purpose */
 	FUniqueNetIdRail() = delete;
 
-	/**
-	 * Copy Constructor
-	 *
-	 * @param Src the id to copy
-	 */
-	explicit FUniqueNetIdRail(const FUniqueNetIdRail& Src) :
-		RailID(Src.RailID)
-	{
-	}
-
 public:
-	/**
-	 * Constructs this object with the specified net id
-	 *
-	 * @param InUniqueNetId the id to set ours to
-	 */
-	explicit FUniqueNetIdRail(uint64 InUniqueNetId) :
-		RailID(InUniqueNetId)
+	template<typename... TArgs>
+	static FUniqueNetIdRailRef Create(TArgs&&... Args)
 	{
+		return MakeShared<FUniqueNetIdRail, UNIQUENETID_ESPMODE>(Forward<TArgs>(Args)...);
 	}
 
-	/**
-	 * Constructs this object with the RailID
-	 *
-	 * @param InUniqueNetId the id to set ours to
-	 */
-	explicit FUniqueNetIdRail(rail::RailID InRailID) :
-		RailID(InRailID)
-	{
-	}
-
-	/**
-	 * Constructs this object with the specified net id
-	 *
-	 * @param String textual representation of an id
-	 */
-	explicit FUniqueNetIdRail(const FString& Str) :
-		RailID(FCString::Atoi64(*Str))
-	{
-	}
-
-
-	/**
-	 * Constructs this object with the specified net id
-	 *
-	 * @param InUniqueNetId the id to set ours to (assumed to be FUniqueNetIdRail in fact)
-	 */
-	explicit FUniqueNetIdRail(const FUniqueNetId& InUniqueNetId) :
-		RailID(*(uint64*)InUniqueNetId.GetBytes())
-	{
-	}
+	/** Allow MakeShared to see private constructors */
+	friend class SharedPointerInternals::TIntrusiveReferenceController<FUniqueNetIdRail>;
 
 	virtual FName GetType() const override
 	{
@@ -129,9 +90,9 @@ public:
 	}
 
 	/** global static instance of invalid (zero) id */
-	static const TSharedRef<const FUniqueNetId>& EmptyId()
+	static const FUniqueNetIdRef& EmptyId()
 	{
-		static const TSharedRef<const FUniqueNetId> EmptyId(MakeShared<FUniqueNetIdRail>(rail::kInvalidRailId));
+		static const FUniqueNetIdRef EmptyId(Create(rail::kInvalidRailId));
 		return EmptyId;
 	}
 
@@ -176,6 +137,58 @@ public:
 	{
 		return RailID;
 	}
+
+private:
+	/**
+	 * Copy Constructor
+	 *
+	 * @param Src the id to copy
+	 */
+	explicit FUniqueNetIdRail(const FUniqueNetIdRail& Src) :
+		RailID(Src.RailID)
+	{
+	}
+
+	/**
+	 * Constructs this object with the specified net id
+	 *
+	 * @param InUniqueNetId the id to set ours to
+	 */
+	explicit FUniqueNetIdRail(uint64 InUniqueNetId) :
+		RailID(InUniqueNetId)
+	{
+	}
+
+	/**
+	 * Constructs this object with the RailID
+	 *
+	 * @param InUniqueNetId the id to set ours to
+	 */
+	explicit FUniqueNetIdRail(rail::RailID InRailID) :
+		RailID(InRailID)
+	{
+	}
+
+	/**
+	 * Constructs this object with the specified net id
+	 *
+	 * @param String textual representation of an id
+	 */
+	explicit FUniqueNetIdRail(const FString& Str) :
+		RailID(FCString::Atoi64(*Str))
+	{
+	}
+
+
+	/**
+	 * Constructs this object with the specified net id
+	 *
+	 * @param InUniqueNetId the id to set ours to (assumed to be FUniqueNetIdRail in fact)
+	 */
+	explicit FUniqueNetIdRail(const FUniqueNetId& InUniqueNetId) :
+		RailID(*(uint64*)InUniqueNetId.GetBytes())
+	{
+	}
 };
 
 #endif // WITH_TENCENT_RAIL_SDK
@@ -191,14 +204,14 @@ private:
 PACKAGE_SCOPE:
 
 	/** UniqueId assigned to this session */
-	TSharedPtr<const FUniqueNetIdString> SessionId;
+	FUniqueNetIdStringPtr SessionId;
 
 public:
 
 	/** Default constructor (for LAN and soon to be serialized values) */
 	FOnlineSessionInfoTencent();
 	/** Constructor for sessions that represent an advertised session */
-	FOnlineSessionInfoTencent(const TSharedPtr<const FUniqueNetIdString>& InSessionId);
+	FOnlineSessionInfoTencent(const FUniqueNetIdStringPtr& InSessionId);
 
 	~FOnlineSessionInfoTencent() = default;
 
@@ -231,7 +244,7 @@ public:
 
 	virtual int32 GetSize() const override
 	{
-		return sizeof(TSharedPtr<const FUniqueNetIdString>);
+		return sizeof(FUniqueNetIdStringPtr);
 	}
 
 	virtual bool IsValid() const override
@@ -252,8 +265,8 @@ public:
 
 	virtual const FUniqueNetId& GetSessionId() const override
 	{
-		static FUniqueNetIdString InvalidId(TEXT("Invalid"), TENCENT_SUBSYSTEM);
-		return SessionId.IsValid() ? *SessionId : InvalidId;
+		static const FUniqueNetIdStringRef InvalidId = FUniqueNetIdString::Create(TEXT("Invalid"), TENCENT_SUBSYSTEM);
+		return SessionId.IsValid() ? *SessionId : *InvalidId;
 	}
 };
 

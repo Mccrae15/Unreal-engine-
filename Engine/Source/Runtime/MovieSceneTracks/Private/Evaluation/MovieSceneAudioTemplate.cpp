@@ -53,7 +53,7 @@ struct FStopAudioPreAnimatedToken : IMovieScenePreAnimatedToken
 		return TMovieSceneAnimTypeID<FStopAudioPreAnimatedToken>();
 	}
 
-	virtual void RestoreState(UObject& InObject, IMovieScenePlayer& Player) override
+	virtual void RestoreState(UObject& InObject, const UE::MovieScene::FRestoreStateParams& Params) override
 	{
 		UAudioComponent* AudioComponent = CastChecked<UAudioComponent>(&InObject);
 		if (AudioComponent)
@@ -80,7 +80,7 @@ struct FDestroyAudioPreAnimatedToken : IMovieScenePreAnimatedToken
 		return TMovieSceneAnimTypeID<FDestroyAudioPreAnimatedToken>();
 	}
 
-	virtual void RestoreState(UObject& InObject, IMovieScenePlayer& Player) override
+	virtual void RestoreState(UObject& InObject, const UE::MovieScene::FRestoreStateParams& Params) override
 	{
 		UAudioComponent* AudioComponent = CastChecked<UAudioComponent>(&InObject);
 		if (AudioComponent)
@@ -269,7 +269,7 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 	{
 		FCachedAudioTrackData& TrackData = PersistentData.GetOrAddTrackData<FCachedAudioTrackData>();
 
-		if ((Context.GetStatus() != EMovieScenePlayerStatus::Playing && Context.GetStatus() != EMovieScenePlayerStatus::Scrubbing) || Context.HasJumped() || Context.GetDirection() == EPlayDirection::Backwards)
+		if ((Context.GetStatus() != EMovieScenePlayerStatus::Playing && Context.GetStatus() != EMovieScenePlayerStatus::Scrubbing && Context.GetStatus() != EMovieScenePlayerStatus::Stepping) || Context.HasJumped() || Context.GetDirection() == EPlayDirection::Backwards)
 		{
 			// stopped, recording, etc
 			TrackData.StopAllSounds();
@@ -288,18 +288,8 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 			FMovieSceneObjectBindingID AttachBindingID = AttachKey.Object;
 			if (AttachBindingID.IsValid())
 			{
-				FMovieSceneSequenceID SequenceID = Operand.SequenceID;
-				if (AttachBindingID.GetSequenceID().IsValid())
-				{
-					// Ensure that this ID is resolvable from the root, based on the current local sequence ID
-					FMovieSceneObjectBindingID RootBindingID = AttachBindingID.ResolveLocalToRoot(SequenceID, Player);
-					SequenceID = RootBindingID.GetSequenceID();
-				}
-
 				// If the transform is set, otherwise use the bound actor's transform
-				FMovieSceneEvaluationOperand ObjectOperand(SequenceID, AttachBindingID.GetGuid());
-
-				for (TWeakObjectPtr<> WeakObject : Player.FindBoundObjects(ObjectOperand))
+				for (TWeakObjectPtr<> WeakObject : AttachBindingID.ResolveBoundObjects(Operand.SequenceID, Player))
 				{
 					AActor* AttachActor = Cast<AActor>(WeakObject.Get());
 					if (AttachActor)
@@ -528,7 +518,7 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 				}
 			}
 
-			if (Context.GetStatus() == EMovieScenePlayerStatus::Scrubbing)
+			if (Context.GetStatus() == EMovieScenePlayerStatus::Scrubbing || Context.GetStatus() == EMovieScenePlayerStatus::Stepping)
 			{
 				// While scrubbing, play the sound for a short time and then cut it.
 				AudioComponent.StopDelayed(AudioTrackConstants::ScrubDuration);

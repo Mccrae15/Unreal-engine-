@@ -1,23 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/Box.h"
+#include "Chaos/Capsule.h"
 #include "Chaos/CastingUtilities.h"
+#include "Chaos/Convex.h"
+#include "Chaos/GJK.h"
+#include "Chaos/HeightField.h"
 #include "Chaos/ImplicitObject.h"
+#include "Chaos/ImplicitObjectScaled.h"
+#include "Chaos/Levelset.h"
 #include "Chaos/Plane.h"
+#include "Chaos/Sphere.h"
 #include "Chaos/Transform.h"
 #include "Chaos/TriangleMeshImplicitObject.h"
-#include "Chaos/HeightField.h"
-#include "Chaos/Convex.h"
-#include "Chaos/Capsule.h"
-#include "ImplicitObjectScaled.h"
-#include "Chaos/Box.h"
-#include "Chaos/Sphere.h"
-#include "Chaos/Levelset.h"
 
 #include "ChaosArchive.h"
 #include <algorithm>
 #include <utility>
-#include "GJK.h"
 
 namespace Chaos
 {
@@ -25,7 +25,7 @@ namespace Chaos
 	struct FMTDInfo
 	{
 		FVec3 Normal;
-		float Penetration;
+		FReal Penetration;
 	};
 
 	template <typename QueryGeometry>
@@ -63,7 +63,7 @@ namespace Chaos
 				{
 					FVec3 LocalA,LocalB,LocalNormal;
 					int32 ClosestVertexIndexA, ClosestVertexIndexB;
-					if(GJKPenetration<false, FReal>(AConcrete,B,BToAFullTM,OutMTD->Penetration,LocalA,LocalB,LocalNormal,ClosestVertexIndexA,ClosestVertexIndexB,Thickness,Offset.SizeSquared() < 1e-4 ? FVec3(1,0,0) : Offset))
+					if(GJKPenetration<false, FReal>(AConcrete,B,BToAFullTM,OutMTD->Penetration,LocalA,LocalB,LocalNormal,ClosestVertexIndexA,ClosestVertexIndexB,Thickness,0.0f,Offset.SizeSquared() < 1e-4 ? FVec3(1,0,0) : Offset))
 					{
 						OutMTD->Normal = ATM.TransformVectorNoScale(LocalNormal);
 						return true;
@@ -93,7 +93,7 @@ namespace Chaos
 				}
 				case ImplicitObjectType::LevelSet:
 				{
-					const TLevelSet<FReal, 3>& ALevelSet = static_cast<const TLevelSet<FReal, 3>&>(A);
+					const FLevelSet& ALevelSet = static_cast<const FLevelSet&>(A);
 					return ALevelSet.OverlapGeom(B, BToATM, Thickness, OutMTD);
 				}
 				default:
@@ -136,10 +136,11 @@ namespace Chaos
 
 		OutFaceIndex = INDEX_NONE;
 		
-		FVec3 LocalPosition(-TNumericLimits<float>::Max()); // Make it obvious when things go wrong
+		FVec3 LocalPosition(-TNumericLimits<FReal>::Max()); // Make it obvious when things go wrong
 		FVec3 LocalNormal(0);
 
 		const FRigidTransform3 BToATM = BTM.GetRelativeTransform(ATM);
+		ensure(FMath::IsNearlyEqual(Dir.SizeSquared(), 1, KINDA_SMALL_NUMBER)); // Added to help determine cause of this ensure firing in GJKRaycast2.
 		const FVec3 LocalDir = ATM.InverseTransformVectorNoScale(Dir);
 
 		bool bSweepAsRaycast = BType == ImplicitObjectType::Sphere && !bComputeMTD;
@@ -165,7 +166,7 @@ namespace Chaos
 				//todo: move this out of here
 				if (const auto Convex = TImplicitObjectScaled<FConvex>::AsScaled(InObject))
 				{
-					return Convex->GetUnscaledObject()->GetSurfaceParticles().Size() > 0;
+					return Convex->GetUnscaledObject()->NumVertices() > 0;
 				}				
 
 				return true;
@@ -179,7 +180,12 @@ namespace Chaos
 			}
 
 			const FVec3 Offset = ATM.GetLocation() - BTM.GetLocation();
-			bResult = Utilities::CastHelper(A, BToATM, [&](const auto& ADowncast, const auto& BToAFullTM){ return GJKRaycast2(ADowncast, B, BToAFullTM, LocalDir, Length, OutTime, LocalPosition, LocalNormal, Thickness, bComputeMTD, Offset, Thickness); });
+			bResult = Utilities::CastHelperNoUnwrap(A, BToATM, 
+				[&](const auto& ADowncast, const auto& BToAFullTM)
+				{
+					return GJKRaycast2(ADowncast, B, BToAFullTM, LocalDir, Length, OutTime, LocalPosition, LocalNormal, Thickness, bComputeMTD, Offset, Thickness);
+				});
+
 			if (AType == ImplicitObjectType::Convex)
 			{
 				//todo: find face index
@@ -209,7 +215,7 @@ namespace Chaos
 				}
 				case ImplicitObjectType::LevelSet:
 				{
-					const TLevelSet<FReal, 3>& ALevelSet = static_cast<const TLevelSet<FReal, 3>&>(A);
+					const FLevelSet& ALevelSet = static_cast<const FLevelSet&>(A);
 					bResult = ALevelSet.SweepGeom(B, BToATM, LocalDir, Length, OutTime, LocalPosition, LocalNormal, OutFaceIndex, Thickness, bComputeMTD);
 					break;
 				}

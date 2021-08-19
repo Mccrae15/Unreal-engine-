@@ -44,6 +44,28 @@ namespace UnrealBuildTool
 			{ "-lumin", "" }
 		};
 
+		public enum ClangSanitizer
+		{
+			None,
+			Address,
+			HwAddress,
+			UndefinedBehavior,
+			UndefinedBehaviorMinimal,
+			//Thread,
+		};
+
+		public static string GetCompilerOption(ClangSanitizer Sanitizer)
+		{
+			switch (Sanitizer)
+			{
+				case ClangSanitizer.Address: return "address";
+				case ClangSanitizer.HwAddress: return "hwaddress";
+				case ClangSanitizer.UndefinedBehavior:
+				case ClangSanitizer.UndefinedBehaviorMinimal: return "undefined";
+				//case ClangSanitizer.Thread: return "thread";
+				default: return "";
+			}
+		}
 
 		protected FileReference ProjectFile;
 		private bool bUseLdGold;
@@ -69,11 +91,12 @@ namespace UnrealBuildTool
 		// whether to enable NEON support for armv7 builds
 		private bool bUseNEONForArmV7 = false;
 
+		// the "-android" suffix paths here are vcpkg triplets for the android platform
 		static private Dictionary<string, string[]> AllArchNames = new Dictionary<string, string[]> {
-			{ "-armv7", new string[] { "armv7", "armeabi-v7a", } },
-			{ "-arm64", new string[] { "arm64", "arm64-v8a", } },
-			{ "-x86",   new string[] { "x86", } },
-			{ "-x64",   new string[] { "x64", "x86_64", } },
+			{ "-armv7", new string[] { "armv7", "armeabi-v7a", "arm-android" } },
+			{ "-arm64", new string[] { "arm64", "arm64-v8a", "arm64-android" } },
+			{ "-x86",   new string[] { "x86", "x86-android" } },
+			{ "-x64",   new string[] { "x64", "x86_64", "x64-android" } },
 		};
 
 		static private Dictionary<string, string[]> LibrariesToSkip = new Dictionary<string, string[]> {
@@ -677,6 +700,11 @@ namespace UnrealBuildTool
 				Result += " -fvisibility=hidden -fvisibility-inlines-hidden"; // Symbols default to hidden.
 			}
 
+			if (CompileEnvironment.DeprecationWarningLevel == WarningLevel.Error)
+			{
+				Result += " -Werror=deprecated-declarations";
+			}
+
 			if (CompileEnvironment.ShadowVariableWarningLevel != WarningLevel.Off)
 			{
 				Result += " -Wshadow" + ((CompileEnvironment.ShadowVariableWarningLevel == WarningLevel.Error) ? "" : " -Wno-error=shadow");
@@ -766,6 +794,39 @@ namespace UnrealBuildTool
 			else
 			{
 				Result += " -fno-rtti";
+			}
+
+			// Profile Guided Optimization (PGO) and Link Time Optimization (LTO)
+			if (CompileEnvironment.bPGOOptimize)
+			{
+				//
+				// Clang emits warnings for each compiled object file that doesn't have a matching entry in the profile data.
+				// This can happen when the profile data is older than the binaries we're compiling.
+				//
+				// Disable these warnings. They are far too verbose.
+				//
+				Result += " -Wno-profile-instr-out-of-date";
+				Result += " -Wno-profile-instr-unprofiled";
+
+				// apparently there can be hashing conflicts with PGO which can result in:
+				// 'Function control flow change detected (hash mismatch)' warnings. 
+				Result += " -Wno-backend-plugin";
+
+				Result += string.Format(" -fprofile-use=\"{0}.profdata\"", Path.Combine(CompileEnvironment.PGODirectory, CompileEnvironment.PGOFilenamePrefix));
+
+				//TODO: measure LTO.
+				//Result += " -flto=thin";
+			}
+			else if (CompileEnvironment.bPGOProfile)
+			{
+				// Always enable LTO when generating PGO profile data.
+				// Android supports only LLVM IR-based for instrumentation-based PGO.
+				Result += " -fprofile-generate";
+				//  for sampling-based profile collection to generate minimal debug information:
+				Result += " -gline-tables-only";
+
+				//TODO: check LTO improves perf.
+				//Result += " -flto=thin";
 			}
 
 			//@todo android: these are copied verbatim from UE3 and probably need adjustment
@@ -871,6 +932,17 @@ namespace UnrealBuildTool
 				Result += " -fno-strict-aliasing";
 				Result += " -fno-short-enums";
 				Result += " -march=atom";
+			}
+
+			ClangSanitizer Sanitizer = BuildWithSanitizer(ProjectFile);
+			if (Sanitizer != ClangSanitizer.None)
+			{
+				Result += " -fsanitize=" + GetCompilerOption(Sanitizer);
+
+				if (Sanitizer == ClangSanitizer.Address || Sanitizer == ClangSanitizer.HwAddress)
+				{
+					Result += " -fno-omit-frame-pointer -DRUNNING_WITH_ASAN=1";
+				}
 			}
 
 			return Result;
@@ -1027,10 +1099,40 @@ namespace UnrealBuildTool
 			Result += "	-Wl,--exclude-libs,libgcc_real.a";
 			Result += " -Wl,--exclude-libs,libatomic.a";
 
-			Result += " -Wl,--build-id=sha1";				// add build-id to make debugging easier
+			Result += " -Wl,--build-id=sha1";               // add build-id to make debugging easier
+
+			if (LinkEnvironment.bPGOOptimize)
+			{
+				//
+				// Clang emits warnings for each compiled object file that doesn't have a matching entry in the profile data.
+				// This can happen when the profile data is older than the binaries we're compiling.
+				//
+				// Disable these warnings. They are far too verbose.
+				//
+				Result += " -Wno-profile-instr-out-of-date";
+				Result += " -Wno-profile-instr-unprofiled";
+
+				Result += string.Format(" -fprofile-use=\"{0}.profdata\"", Path.Combine(LinkEnvironment.PGODirectory, LinkEnvironment.PGOFilenamePrefix));
+
+				//TODO: check LTO improves perf.
+				//Result += " -flto=thin";
+			}
+			else if (LinkEnvironment.bPGOProfile)
+			{
+				// Android supports only LLVM IR-based for instrumentation-based PGO.
+				Result += " -fprofile-generate";
+				//  for sampling-based profile collection to generate minimal debug information:
+				Result += " -gline-tables-only";
+			}
 
 			// verbose output from the linker
 			// Result += " -v";
+
+			ClangSanitizer Sanitizer = BuildWithSanitizer(ProjectFile);
+			if (Sanitizer != ClangSanitizer.None)
+			{
+				Result += " -fsanitize=" + GetCompilerOption(Sanitizer);
+			}
 
 			return Result;
 		}
@@ -1393,7 +1495,6 @@ namespace UnrealBuildTool
 			if (CompileEnvironment.PrecompiledHeaderAction != PrecompiledHeaderAction.Create)
 			{
 				BaseArguments += " -Werror";
-
 			}
 
 			string NativeGluePath = Path.GetFullPath(GetNativeGluePath());
@@ -1412,7 +1513,8 @@ namespace UnrealBuildTool
 			// Add preprocessor definitions to the argument list.
 			foreach (string Definition in CompileEnvironment.Definitions)
 			{
-				BaseArguments += string.Format(" -D \"{0}\"", Definition);
+				// We must change the \" to escaped double quotes to save it properly for clang .rsp
+				BaseArguments += string.Format(" -D \"{0}\"", Definition.Replace("\"", Utils.IsRunningOnMono ? "\\\"" : "\"\""));
 			}
 
 			//LUMIN_MERGE
@@ -2477,6 +2579,23 @@ namespace UnrealBuildTool
 
 			CompileOrLinkAction.CommandPath = BuildHostPlatform.Current.Shell;
 			CompileOrLinkAction.CommandDescription = CommandDescription;
+		}
+
+		public static ClangSanitizer BuildWithSanitizer(FileReference ProjectFile)
+		{
+			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(ProjectFile), UnrealTargetPlatform.Android);
+			string Sanitizer;
+			Ini.GetString("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "ClangSanitizer", out Sanitizer);
+
+			switch (Sanitizer.ToLower())
+			{
+				case "address": return ClangSanitizer.Address;
+				case "hwaddress": return ClangSanitizer.HwAddress;
+				case "undefinedbehavior": return ClangSanitizer.UndefinedBehavior;
+				case "undefinedbehaviorminimal": return ClangSanitizer.UndefinedBehaviorMinimal;
+				//case "thread": return ClangSanitizer.Thread;
+				default: return ClangSanitizer.None;
+			}
 		}
 	};
 }

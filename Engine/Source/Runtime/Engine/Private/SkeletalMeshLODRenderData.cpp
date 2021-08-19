@@ -11,6 +11,7 @@
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "PlatformInfo.h"
 #include "UObject/PropertyPortFlags.h"
+#include "GPUSkinCache.h"
 
 #if WITH_EDITOR
 #include "Modules/ModuleManager.h"
@@ -145,12 +146,15 @@ void FSkeletalMeshLODRenderData::InitResources(bool bNeedsVertexColors, int32 LO
 
 	// DuplicatedVerticesBuffer is used only for SkinCache and Editor features which is SM5 only
     if (IsFeatureLevelSupported(GMaxRHIShaderPlatform, ERHIFeatureLevel::SM5))
-    {
-        for (auto& RenderSection : RenderSections)
-        {
-            check(RenderSection.DuplicatedVerticesBuffer.DupVertData.Num());
-            BeginInitResource(&RenderSection.DuplicatedVerticesBuffer);
-        }
+	{
+		if (GPUSkinCacheNeedsDuplicatedVertices())
+		{
+			for (auto& RenderSection : RenderSections)
+			{
+				check(RenderSection.DuplicatedVerticesBuffer.DupVertData.Num());
+				BeginInitResource(&RenderSection.DuplicatedVerticesBuffer);
+			}
+		}
     }
 
 	// UseGPUMorphTargets() can be toggled only on SM5 atm
@@ -260,16 +264,26 @@ void FSkeletalMeshLODRenderData::ReleaseResources()
 	// DuplicatedVerticesBuffer is used only for SkinCache and Editor features which is SM5 only
     if (IsFeatureLevelSupported(GMaxRHIShaderPlatform, ERHIFeatureLevel::SM5))
 	{
-		for (auto& RenderSection : RenderSections)
+		if (GPUSkinCacheNeedsDuplicatedVertices())
 		{
-			check(RenderSection.DuplicatedVerticesBuffer.DupVertData.Num());
-			BeginReleaseResource(&RenderSection.DuplicatedVerticesBuffer);
+			for (auto& RenderSection : RenderSections)
+			{
+				check(RenderSection.DuplicatedVerticesBuffer.DupVertData.Num());
+				BeginReleaseResource(&RenderSection.DuplicatedVerticesBuffer);
+			}
 		}
 	}
 	BeginReleaseResource(&MorphTargetVertexInfoBuffers);
 	
 	DEC_DWORD_STAT_BY(STAT_SkeletalMeshVertexMemory, SkinWeightProfilesData.GetResourcesSize());
 	SkinWeightProfilesData.ReleaseResources();
+
+#if RHI_RAYTRACING
+	if (IsRayTracingEnabled())
+	{
+		BeginReleaseResource(&StaticRayTracingGeometry);
+	}
+#endif
 }
 
 void FSkeletalMeshLODRenderData::IncrementMemoryStats(bool bNeedsVertexColors)
@@ -472,7 +486,7 @@ int32 FSkeletalMeshLODRenderData::GetPlatformMinLODIdx(const ITargetPlatform* Ta
 	check(TargetPlatform && SkeletalMesh);
 	const FName PlatformGroupName = TargetPlatform->GetPlatformInfo().PlatformGroupName;
 	const FName VanillaPlatformName = TargetPlatform->GetPlatformInfo().VanillaPlatformName;
-	return  SkeletalMesh->MinLod.GetValueForPlatformIdentifiers(PlatformGroupName, VanillaPlatformName);
+	return  SkeletalMesh->GetMinLod().GetValueForPlatformIdentifiers(PlatformGroupName, VanillaPlatformName);
 #else
 	return 0;
 #endif
@@ -491,8 +505,8 @@ uint8 FSkeletalMeshLODRenderData::GenerateClassStripFlags(FArchive& Ar, const US
 	bool bMeshDisablesMinLodStrip = false;
 	if (bIsCook)
 	{
-		MinMeshLod = OwnerMesh ? OwnerMesh->MinLod.GetValueForPlatformIdentifiers(CookTarget->GetPlatformInfo().PlatformGroupName, CookTarget->GetPlatformInfo().VanillaPlatformName) : 0;
-		bMeshDisablesMinLodStrip = OwnerMesh ? OwnerMesh->DisableBelowMinLodStripping.GetValueForPlatformIdentifiers(CookTarget->GetPlatformInfo().PlatformGroupName, CookTarget->GetPlatformInfo().VanillaPlatformName) : false;
+		MinMeshLod = OwnerMesh ? OwnerMesh->GetMinLod().GetValueForPlatformIdentifiers(CookTarget->GetPlatformInfo().PlatformGroupName, CookTarget->GetPlatformInfo().VanillaPlatformName) : 0;
+		bMeshDisablesMinLodStrip = OwnerMesh ? OwnerMesh->GetDisableBelowMinLodStripping().GetValueForPlatformIdentifiers(CookTarget->GetPlatformInfo().PlatformGroupName, CookTarget->GetPlatformInfo().VanillaPlatformName) : false;
 	}
 	const bool bWantToStripBelowMinLod = bIsCook && GStripSkeletalMeshLodsDuringCooking != 0 && MinMeshLod > LODIdx && !bMeshDisablesMinLodStrip;
 
@@ -634,7 +648,7 @@ void FSkeletalMeshLODRenderData::SerializeStreamedData(FArchive& Ar, USkeletalMe
 	StaticVertexBuffers.StaticMeshVertexBuffer.Serialize(Ar, bNeedsCPUAccess);
 	Ar << SkinWeightVertexBuffer;
 
-	if (Owner && Owner->bHasVertexColors)
+	if (Owner && Owner->GetHasVertexColors())
 	{
 		StaticVertexBuffers.ColorVertexBuffer.Serialize(Ar, bForceKeepCPUResources);
 	}
@@ -667,6 +681,7 @@ void FSkeletalMeshLODRenderData::SerializeStreamedData(FArchive& Ar, USkeletalMe
 			SkinWeightProfilesData.SetDynamicDefaultSkinWeightProfile(Owner, LODIdx, true);
 		}
 	}
+	Ar << RayTracingData;
 }
 
 void FSkeletalMeshLODRenderData::SerializeAvailabilityInfo(FArchive& Ar, USkeletalMesh* Owner, int32 LODIdx, bool bAdjacencyDataStripped, bool bNeedsCPUAccess)
@@ -708,7 +723,12 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 	const uint8 ClassDataStripFlags = GenerateClassStripFlags(Ar, OwnerMesh, Idx);
 	FStripDataFlags StripFlags(Ar, ClassDataStripFlags);
 
-	const bool bIsBelowMinLOD = StripFlags.IsClassDataStripped(CDSF_MinLodData);
+#if WITH_EDITOR
+	const bool bIsBelowMinLOD = StripFlags.IsClassDataStripped(CDSF_MinLodData)
+		|| (Ar.IsCooking() && OwnerMesh && Idx < GetPlatformMinLODIdx(Ar.CookingTarget(), OwnerMesh));
+#else
+	const bool bIsBelowMinLOD = false;
+#endif
 	bool bIsLODCookedOut = false;
 	bool bInlined = false;
 

@@ -2,8 +2,11 @@
 #pragma once
 
 #include "Chaos/Box.h"
+#include "Chaos/Convex.h"
+#include "Chaos/ImplicitFwd.h"
 #include "Chaos/ImplicitObject.h"
 #include "Chaos/Transform.h"
+#include "Chaos/Utilities.h"	// For ScaleInertia - pull that into mass utils
 #include "ChaosArchive.h"
 #include "Templates/ChooseClass.h"
 #include "Templates/EnableIf.h"
@@ -15,8 +18,33 @@ namespace Chaos
 
 struct FMTDInfo;
 
+class FImplicitObjectInstanced : public FImplicitObject
+{
+public:
+	FImplicitObjectInstanced(int32 Flags, EImplicitObjectType InType)
+        : FImplicitObject(Flags, InType | ImplicitObjectType::IsInstanced)
+		, OuterMargin(0)
+	{
+	}
+
+	virtual TSerializablePtr<FImplicitObject> GetInnerObject() const
+	{
+		return TSerializablePtr<FImplicitObject>();
+	}
+
+	// Returns a winding order multiplier used in the manifold clipping and required when we have negative scales
+	FORCEINLINE FReal GetWindingOrder() const
+	{
+		return 1.0f;
+	}
+
+	
+protected:
+	FReal OuterMargin;
+};
+	
 template <typename TConcrete>
-class TImplicitObjectInstanced final : public FImplicitObject
+class TImplicitObjectInstanced final : public FImplicitObjectInstanced
 {
 public:
 	using T = typename TConcrete::TType;
@@ -29,30 +57,43 @@ public:
 
 	//needed for serialization
 	TImplicitObjectInstanced()
-		: FImplicitObject(EImplicitObject::HasBoundingBox,StaticType())
-		, OuterMargin(0)
-	{}
+		: FImplicitObjectInstanced(EImplicitObject::HasBoundingBox,StaticType())
+	{
+		this->OuterMargin = 0;
+	}
 
 	TImplicitObjectInstanced(const ObjectType&& Object, const FReal InMargin = 0)
-		: FImplicitObject(EImplicitObject::HasBoundingBox, Object->GetType() | ImplicitObjectType::IsInstanced)
+		: FImplicitObjectInstanced(EImplicitObject::HasBoundingBox, Object->GetType())
 		, MObject(MoveTemp(Object))
-		, OuterMargin(InMargin)
 	{
 		ensure(IsInstanced(MObject->GetType()) == false);	//cannot have an instance of an instance
 		this->bIsConvex = MObject->IsConvex();
 		this->bDoCollide = MObject->GetDoCollide();
+		this->OuterMargin = InMargin;
 		SetMargin(OuterMargin + MObject->GetMargin());
 	}
 
 	TImplicitObjectInstanced(const ObjectType& Object, const FReal InMargin = 0)
-		: FImplicitObject(EImplicitObject::HasBoundingBox,Object->GetType() | ImplicitObjectType::IsInstanced)
+		: FImplicitObjectInstanced(EImplicitObject::HasBoundingBox,Object->GetType())
 		, MObject(Object)
-		, OuterMargin(InMargin)
 	{
 		ensure(IsInstanced(MObject->GetType()) == false);	//cannot have an instance of an instance
 		this->bIsConvex = MObject->IsConvex();
 		this->bDoCollide = MObject->GetDoCollide();
+		this->OuterMargin = InMargin;
 		SetMargin(OuterMargin + MObject->GetMargin());
+	}
+
+	TImplicitObjectInstanced(TImplicitObjectInstanced<TConcrete>&& Other)
+		: FImplicitObjectInstanced(EImplicitObject::HasBoundingBox, Other.MObject->GetType())
+		, MObject(MoveTemp(Other.MObject))
+	{
+		ensureMsgf((IsScaled(MObject->GetType()) == false), TEXT("Scaled objects should not contain each other."));
+		ensureMsgf((IsInstanced(MObject->GetType()) == false), TEXT("Scaled objects should not contain instances."));
+		this->bIsConvex = Other.MObject->IsConvex();
+		this->bDoCollide = Other.MObject->GetDoCollide();
+		this->OuterMargin = Other.OuterMargin;
+		SetMargin(Other.GetMargin());
 	}
 
 	static constexpr EImplicitObjectType StaticType()
@@ -60,9 +101,19 @@ public:
 		return TConcrete::StaticType() | ImplicitObjectType::IsInstanced;
 	}
 
+	virtual TSerializablePtr<FImplicitObject> GetInnerObject() const override
+	{
+		return MakeSerializable(MObject);
+	}
+	
 	const TConcrete* GetInstancedObject() const
 	{
 		return MObject.Get();
+	}
+
+	FReal GetRadius() const
+	{
+		return MObject->GetRadius();
 	}
 
 	bool GetDoCollide() const
@@ -77,7 +128,7 @@ public:
 
 	virtual bool Raycast(const TVector<T, d>& StartPoint, const TVector<T, d>& Dir, const T Length, const T Thickness, T& OutTime, TVector<T, d>& OutPosition, TVector<T, d>& OutNormal, int32& OutFaceIndex) const override
 	{
-		return MObject->Raycast(StartPoint, Dir, Length, GetMargin() + Thickness, OutTime, OutPosition, OutNormal, OutFaceIndex);
+		return MObject->Raycast(StartPoint, Dir, Length, Thickness, OutTime, OutPosition, OutNormal, OutFaceIndex);
 	}
 
 	virtual void Serialize(FChaosArchive& Ar) override
@@ -99,31 +150,30 @@ public:
 
 	virtual bool Overlap(const TVector<T, d>& Point, const T Thickness) const override
 	{
-		return MObject->Overlap(Point, OuterMargin + Thickness);
+		return MObject->Overlap(Point, Thickness);
 	}
 
-	// The support position from the specified direction, including margins
+	// The support position from the specified direction
 	FORCEINLINE TVector<T, d> Support(const TVector<T, d>& Direction, const T Thickness) const
 	{
-		return MObject->Support(Direction, OuterMargin + Thickness); 
+		return MObject->Support(Direction, Thickness); 
 	}
 
-	// The support position from the specified direction, excluding margins
-	FORCEINLINE TVector<T, d> SupportCore(const TVector<T, d>& Direction) const
+	// this shouldn't be called, but is required until we remove the explicit function implementations in CollisionResolution.cpp
+	FORCEINLINE TVector<T, d> SupportScaled(const TVector<T, d>& Direction, const T Thickness, const FVec3& Scale) const
 	{
-		return MObject->SupportCore(Direction);
+		return MObject->SupportScaled(Direction, Thickness, Scale);
+	}
+
+	// The support position from the specified direction, if the shape is reduced by the margin
+	FORCEINLINE TVector<T, d> SupportCore(const TVector<T, d>& Direction, FReal InMargin) const
+	{
+		return MObject->SupportCore(Direction, InMargin);
 	}
 
 	virtual const TAABB<T, d> BoundingBox() const override 
 	{ 
-		if (OuterMargin == 0)
-		{
-			return MObject->BoundingBox();
-		}
-		else
-		{
-			return TAABB<T, d>(MObject->BoundingBox()).Thicken(OuterMargin);
-		}
+		return MObject->BoundingBox();
 	}
 
 	const ObjectType Object() const { return MObject; }
@@ -155,14 +205,14 @@ public:
 	template <typename QueryGeomType>
 	bool LowLevelSweepGeom(const QueryGeomType& B,const TRigidTransform<T,d>& BToATM,const TVector<T,d>& LocalDir,const T Length,T& OutTime,TVector<T,d>& LocalPosition,TVector<T,d>& LocalNormal,int32& OutFaceIndex,T Thickness = 0,bool bComputeMTD = false) const
 	{
-		return MObject->SweepGeom(B,BToATM,LocalDir,Length,OutTime,LocalPosition,LocalNormal,OutFaceIndex,OuterMargin+Thickness,bComputeMTD);
+		return MObject->SweepGeom(B,BToATM,LocalDir,Length,OutTime,LocalPosition,LocalNormal,OutFaceIndex,Thickness,bComputeMTD);
 	}
 
 	/** This is a low level function and assumes the internal object has a OverlapGeom function. Should not be called directly. See GeometryQueries.h : OverlapQuery */
 	template <typename QueryGeomType>
 	bool LowLevelOverlapGeom(const QueryGeomType& B,const TRigidTransform<T,d>& BToATM,T Thickness = 0, FMTDInfo* OutMTD = nullptr) const
 	{
-		return MObject->OverlapGeom(B,BToATM,OuterMargin+Thickness, OutMTD);
+		return MObject->OverlapGeom(B,BToATM,Thickness, OutMTD);
 	}
 
 	virtual uint16 GetMaterialIndex(uint32 HintIndex) const
@@ -170,9 +220,96 @@ public:
 		return MObject->GetMaterialIndex(HintIndex);
 	}
 
+	// Get the index of the plane that most opposes the normal
+	int32 GetMostOpposingPlane(const FVec3& Normal) const
+	{
+		return MObject->GetMostOpposingPlane(Normal);
+	}
+
+	// Get the nearest point on an edge of the specified face
+	FVec3 GetClosestEdgePosition(int32 PlaneIndex, const FVec3& Position) const
+	{
+		return MObject->GetClosestEdgePosition(PlaneIndex, Position);
+	}
+
+	bool GetClosestEdgeVertices(int32 PlaneIndexHint, const FVec3& Position, int32& OutVertexIndex0, int32& OutVertexIndex1) const
+	{
+		return MObject->GetClosestEdgeVertices(PlaneIndexHint, Position, OutVertexIndex0, OutVertexIndex1);
+	}
+
+	// Get an array of all the plane indices that belong to a vertex (up to MaxVertexPlanes).
+	// Returns the number of planes found.
+	int32 FindVertexPlanes(int32 VertexIndex, int32* OutVertexPlanes, int32 MaxVertexPlanes) const
+	{
+		return MObject->FindVertexPlanes(VertexIndex, OutVertexPlanes, MaxVertexPlanes);
+	}
+
+	// The number of vertices that make up the corners of the specified face
+	int32 NumPlaneVertices(int32 PlaneIndex) const
+	{
+		return MObject->NumPlaneVertices(PlaneIndex);
+	}
+
+	// Get the vertex index of one of the vertices making up the corners of the specified face
+	int32 GetPlaneVertex(int32 PlaneIndex, int32 PlaneVertexIndex) const
+	{
+		return MObject->GetPlaneVertex(PlaneIndex, PlaneVertexIndex);
+	}
+
+	int32 GetEdgeVertex(int32 EdgeIndex, int32 EdgeVertexIndex) const
+	{
+		return MObject->GetEdgeVertex(EdgeIndex, EdgeVertexIndex);
+	}
+
+	int32 GetEdgePlane(int32 EdgeIndex, int32 EdgePlaneIndex) const
+	{
+		return MObject->GetEdgePlane(EdgeIndex, EdgePlaneIndex);
+	}
+
+	int32 NumPlanes() const
+	{
+		return MObject->NumPlanes();
+	}
+
+	int32 NumEdges() const
+	{
+		return MObject->NumEdges();
+	}
+
+	int32 NumVertices() const
+	{
+		return MObject->NumVertices();
+	}
+
+	// Get the plane at the specified index (e.g., indices from FindVertexPlanes)
+	const TPlaneConcrete<FReal, 3> GetPlane(int32 FaceIndex) const
+	{
+		return MObject->GetPlane(FaceIndex);
+	}
+
+	// Get the vertex at the specified index (e.g., indices from GetPlaneVertexs)
+	const FVec3 GetVertex(int32 VertexIndex) const
+	{
+		return MObject->GetVertex(VertexIndex);
+	}
+
+	const FVec3 GetCenterOfMass() const
+	{
+		return MObject->GetCenterOfMass();
+	}
+
+	FRotation3 GetRotationOfMass() const
+	{
+		return GetRotationOfMass();
+	}
+
+	const FMatrix33 GetInertiaTensor(const FReal Mass) const
+	{
+		return MObject->GetInertiaTensor(Mass);
+	}
+
 protected:
 	ObjectType MObject;
-	FReal OuterMargin;
 
 	static TImplicitObjectInstanced<TConcrete>* CopyHelper(const TImplicitObjectInstanced<TConcrete>* Obj)
 	{
@@ -180,9 +317,54 @@ protected:
 	}
 };
 
+class FImplicitObjectScaled : public FImplicitObject
+{
+public:
+	FImplicitObjectScaled(int32 Flags, EImplicitObjectType InType)
+		: FImplicitObject(Flags, InType | ImplicitObjectType::IsScaled)
+		, MScale(1)
+		, MInvScale(1)
+		, OuterMargin(0.0f)
+		, MLocalBoundingBox(FAABB3::EmptyAABB())
+	{
+	}
+
+	virtual TSerializablePtr<FImplicitObject> GetInnerObject() const
+	{
+		return TSerializablePtr<FImplicitObject>();
+	}
+
+	// Returns a winding order multiplier used in the manifold clipping and required when we have negative scales
+	FORCEINLINE FReal GetWindingOrder() const
+	{
+		const FVec3 SignVector = MScale.GetSignVector();
+		return SignVector.X * SignVector.Y * SignVector.Z;
+	}
+
+	const FVec3& GetScale() const
+	{
+		return MScale;
+	}
+
+	const FVec3& GetInvScale() const
+	{
+		return MInvScale;
+	}
+	
+	virtual const FAABB3 BoundingBox() const override
+	{
+		return MLocalBoundingBox;
+	}
+
+protected:
+	FVec3 MScale;
+	FVec3 MInvScale;
+	FReal OuterMargin;	//Allows us to inflate the instance before the scale is applied. This is useful when sweeps need to apply a non scale on a geometry with uniform thickness
+	FAABB3 MLocalBoundingBox;
+};
 
 template<typename TConcrete, bool bInstanced = true>
-class TImplicitObjectScaled final : public FImplicitObject
+class TImplicitObjectScaled final : public FImplicitObjectScaled
 {
 public:
 	using T = typename TConcrete::TType;
@@ -194,10 +376,9 @@ public:
 	using FImplicitObject::GetTypeName;
 
 	TImplicitObjectScaled(ObjectType Object, const TVector<T, d>& Scale, T InMargin = 0)
-	    : FImplicitObject(EImplicitObject::HasBoundingBox, Object->GetType() | ImplicitObjectType::IsScaled)
+	    : FImplicitObjectScaled(EImplicitObject::HasBoundingBox, Object->GetType())
 	    , MObject(MoveTemp(Object))
 		, MSharedPtrForRefCount(nullptr)
-		, OuterMargin(InMargin)
 	{
 		ensureMsgf((IsScaled(MObject->GetType()) == false), TEXT("Scaled objects should not contain each other."));
 		ensureMsgf((IsInstanced(MObject->GetType()) == false), TEXT("Scaled objects should not contain instances."));
@@ -211,14 +392,14 @@ public:
 		}
 		this->bIsConvex = MObject->IsConvex();
 		this->bDoCollide = MObject->GetDoCollide();
+		this->OuterMargin = InMargin;
 		SetScale(Scale);
 	}
 
 	TImplicitObjectScaled(TSharedPtr<TConcrete, ESPMode::ThreadSafe> Object, const TVector<T, d>& Scale, T InMargin = 0)
-	    : FImplicitObject(EImplicitObject::HasBoundingBox, Object->GetType() | ImplicitObjectType::IsScaled)
+	    : FImplicitObjectScaled(EImplicitObject::HasBoundingBox, Object->GetType())
 	    , MObject(MakeSerializable<TConcrete, ESPMode::ThreadSafe>(Object))
 		, MSharedPtrForRefCount(Object)
-		, OuterMargin(InMargin)
 	{
 		ensureMsgf((IsScaled(MObject->GetType()) == false), TEXT("Scaled objects should not contain each other."));
 		ensureMsgf((IsInstanced(MObject->GetType()) == false), TEXT("Scaled objects should not contain instances."));
@@ -232,37 +413,39 @@ public:
 		}
 		this->bIsConvex = MObject->IsConvex();
 		this->bDoCollide = MObject->GetDoCollide();
+		this->OuterMargin = InMargin;
 		SetScale(Scale);
 	}
 
 	TImplicitObjectScaled(ObjectType Object, TUniquePtr<Chaos::FImplicitObject> &&ObjectOwner, const TVector<T, d>& Scale, T InMargin = 0)
-	    : FImplicitObject(EImplicitObject::HasBoundingBox, Object->GetType() | ImplicitObjectType::IsScaled)
+	    : FImplicitObjectScaled(EImplicitObject::HasBoundingBox, Object->GetType())
 	    , MObject(Object)
 		, MSharedPtrForRefCount(nullptr)
-		, OuterMargin(InMargin)
 	{
 		ensureMsgf((IsScaled(MObject->GetType(true)) == false), TEXT("Scaled objects should not contain each other."));
 		ensureMsgf((IsInstanced(MObject->GetType(true)) == false), TEXT("Scaled objects should not contain instances."));
 		this->bIsConvex = Object->IsConvex();
 		this->bDoCollide = MObject->GetDoCollide();
+		this->OuterMargin = InMargin;
 		SetScale(Scale);
 	}
 
 	TImplicitObjectScaled(const TImplicitObjectScaled<TConcrete, bInstanced>& Other) = delete;
 	TImplicitObjectScaled(TImplicitObjectScaled<TConcrete, bInstanced>&& Other)
-	    : FImplicitObject(EImplicitObject::HasBoundingBox, Other.MObject->GetType() | ImplicitObjectType::IsScaled)
+	    : FImplicitObjectScaled(EImplicitObject::HasBoundingBox, Other.MObject->GetType() | ImplicitObjectType::IsScaled)
 	    , MObject(MoveTemp(Other.MObject))
 		, MSharedPtrForRefCount(MoveTemp(Other.MSharedPtrForRefCount))
-	    , MScale(Other.MScale)
-		, MInvScale(Other.MInvScale)
-		, OuterMargin(Other.OuterMargin)
-	    , MLocalBoundingBox(MoveTemp(Other.MLocalBoundingBox))
 	{
 		ensureMsgf((IsScaled(MObject->GetType()) == false), TEXT("Scaled objects should not contain each other."));
 		ensureMsgf((IsInstanced(MObject->GetType()) == false), TEXT("Scaled objects should not contain instances."));
 		this->bIsConvex = Other.MObject->IsConvex();
 		this->bDoCollide = Other.MObject->GetDoCollide();
-		SetMargin(Other.GetMargin());
+		this->OuterMargin = Other.OuterMargin;
+		this->MScale = Other.MScale;
+        this->MInvScale = Other.MInvScale;
+        this->OuterMargin = Other.OuterMargin;
+        this->MLocalBoundingBox = Other.MLocalBoundingBox;
+        SetMargin(Other.GetMargin());
 	}
 	~TImplicitObjectScaled() {}
 
@@ -325,20 +508,24 @@ public:
 		}
 	}
 
+	virtual TSerializablePtr<FImplicitObject> GetInnerObject() const override
+	{
+		return MakeSerializable(MObject);
+	}
+
 	const TConcrete* GetUnscaledObject() const
 	{
 		return MObject.Get();
 	}
 
+	FReal GetRadius() const
+	{
+		return (MObject->GetRadius() > 0.0f) ? Margin : 0.0f;
+	}
+	
 	virtual T PhiWithNormal(const TVector<T, d>& X, TVector<T, d>& Normal) const override
 	{
-		const TVector<T, d> UnscaledX = MInvScale * X;
-		TVector<T, d> UnscaledNormal;
-		const T UnscaledPhi = MObject->PhiWithNormal(UnscaledX, UnscaledNormal) - OuterMargin;
-		Normal = MScale * UnscaledNormal;
-		const T ScaleFactor = Normal.SafeNormalize();
-		const T ScaledPhi = UnscaledPhi * ScaleFactor;
-		return ScaledPhi;
+		return MObject->PhiWithNormalScaled(X, MScale, Normal);
 	}
 
 	virtual bool Raycast(const TVector<T, d>& StartPoint, const TVector<T, d>& Dir, const T Length, const T Thickness, T& OutTime, TVector<T, d>& OutPosition, TVector<T, d>& OutNormal, int32& OutFaceIndex) const override
@@ -358,9 +545,9 @@ public:
 			
 			TVector<T, d> UnscaledPosition;
 			TVector<T, d> UnscaledNormal;
-			float UnscaledTime;
+			T UnscaledTime;
 
-			if (MObject->Raycast(UnscaledStart, UnscaledDir, UnscaledLength, OuterMargin + Thickness * MInvScale[0], UnscaledTime, UnscaledPosition, UnscaledNormal, OutFaceIndex))
+			if (MObject->Raycast(UnscaledStart, UnscaledDir, UnscaledLength, Thickness * MInvScale[0], UnscaledTime, UnscaledPosition, UnscaledNormal, OutFaceIndex))
 			{
 				//We double check that NewTime < Length because of potential precision issues. When that happens we always keep the shortest hit first
 				const T NewTime = LengthScaleInv * UnscaledTime;
@@ -395,13 +582,13 @@ public:
 
 			TVector<T, d> UnscaledPosition;
 			TVector<T, d> UnscaledNormal;
-			float UnscaledTime;
+			T UnscaledTime;
 
 			auto ScaledB = MakeScaledHelper(B, MInvScale);
 
 			TRigidTransform<T, d> BToATMNoScale(BToATM.GetLocation() * MInvScale, BToATM.GetRotation());
 			
-			if (MObject->SweepGeom(ScaledB, BToATMNoScale, UnscaledDir, UnscaledLength, UnscaledTime, UnscaledPosition, UnscaledNormal, OutFaceIndex, OuterMargin + Thickness, bComputeMTD, MScale))
+			if (MObject->SweepGeom(ScaledB, BToATMNoScale, UnscaledDir, UnscaledLength, UnscaledTime, UnscaledPosition, UnscaledNormal, OutFaceIndex, Thickness, bComputeMTD, MScale))
 			{
 				const T NewTime = LengthScaleInv * UnscaledTime;
 				//We double check that NewTime < Length because of potential precision issues. When that happens we always keep the shortest hit first
@@ -424,7 +611,7 @@ public:
 		TRigidTransform<T, d> AToBTMNoScale(AToBTM.GetLocation() * MInvScale, AToBTM.GetRotation());
 
 		auto ScaledA = MakeScaledHelper(A, MInvScale);
-		return MObject->GJKContactPoint(ScaledA, AToBTMNoScale, OuterMargin + Thickness, Location, Normal, Penetration, MScale);
+		return MObject->GJKContactPoint(ScaledA, AToBTMNoScale, Thickness, Location, Normal, Penetration, MScale);
 	}
 
 	/** This is a low level function and assumes the internal object has a OverlapGeom function. Should not be called directly. See GeometryQueries.h : OverlapQuery */
@@ -435,31 +622,53 @@ public:
 
 		auto ScaledB = MakeScaledHelper(B, MInvScale);
 		TRigidTransform<T, d> BToATMNoScale(BToATM.GetLocation() * MInvScale, BToATM.GetRotation());
-		return MObject->OverlapGeom(ScaledB, BToATMNoScale, OuterMargin + Thickness, OutMTD, MScale);
+		return MObject->OverlapGeom(ScaledB, BToATMNoScale, Thickness, OutMTD, MScale);
 	}
 
 	// Get the index of the plane that most opposes the normal
 	int32 GetMostOpposingPlane(const FVec3& Normal) const
 	{
-		return MObject->GetMostOpposingPlane(GetInverseScaledNormal(Normal));
+		return MObject->GetMostOpposingPlaneScaled(Normal, MScale);
 	}
 
-	// Get the index of the plane that most opposes the normal, assuming it passes through the specified vertex
-	int32 GetMostOpposingPlaneWithVertex(int32 VertexIndex, const FVec3& Normal) const
+	// Get the nearest point on an edge of the specified face
+	FVec3 GetClosestEdgePosition(int32 PlaneIndex, const FVec3& Position) const
 	{
-		return MObject->GetMostOpposingPlane(VertexIndex, GetInverseScaledNormal(Normal));
+		return MObject->GetClosestEdgePosition(PlaneIndex, MInvScale * Position) * MScale;
 	}
 
-	// Get the set of planes that pass through the specified vertex
-	TArrayView<const int32> GetVertexPlanes(int32 VertexIndex) const
+	bool GetClosestEdgeVertices(int32 PlaneIndex, const FVec3& Position, int32& OutVertexIndex0, int32& OutVertexIndex1) const
 	{
-		return MObject->GetVertexPlanes(VertexIndex);
+		return MObject->GetClosestEdgeVertices(PlaneIndex, MInvScale * Position, OutVertexIndex0, OutVertexIndex1);
 	}
 
-	// Get the list of vertices that form the boundary of the specified face
-	TArrayView<const int32> GetPlaneVertices(int32 FaceIndex) const
+	// Get an array of all the plane indices that belong to a vertex (up to MaxVertexPlanes).
+	// Returns the number of planes found.
+	int32 FindVertexPlanes(int32 VertexIndex, int32* OutVertexPlanes, int32 MaxVertexPlanes) const
 	{
-		return MObject->GetPlaneVertices(FaceIndex);
+		return MObject->FindVertexPlanes(VertexIndex, OutVertexPlanes, MaxVertexPlanes);
+	}
+
+	// The number of vertices that make up the corners of the specified face
+	int32 NumPlaneVertices(int32 PlaneIndex) const
+	{
+		return MObject->NumPlaneVertices(PlaneIndex);
+	}
+
+	// Get the vertex index of one of the vertices making up the corners of the specified face
+	int32 GetPlaneVertex(int32 PlaneIndex, int32 PlaneVertexIndex) const
+	{
+		return MObject->GetPlaneVertex(PlaneIndex, PlaneVertexIndex);
+	}
+
+	int32 GetEdgeVertex(int32 EdgeIndex, int32 EdgeVertexIndex) const
+	{
+		return MObject->GetEdgeVertex(EdgeIndex, EdgeVertexIndex);
+	}
+
+	int32 GetEdgePlane(int32 EdgeIndex, int32 EdgePlaneIndex) const
+	{
+		return MObject->GetEdgePlane(EdgeIndex, EdgePlaneIndex);
 	}
 
 	int32 NumPlanes() const
@@ -467,19 +676,24 @@ public:
 		return MObject->NumPlanes();
 	}
 
+	int32 NumEdges() const
+	{
+		return MObject->NumEdges();
+	}
+
 	int32 NumVertices() const
 	{
 		return MObject->NumVertices();
 	}
 
-	// Get the plane at the specified index (e.g., indices from GetVertexPlanes)
+	// Get the plane at the specified index (e.g., indices from FindVertexPlanes)
 	const TPlaneConcrete<FReal, 3> GetPlane(int32 FaceIndex) const
 	{
 		const TPlaneConcrete<FReal, 3> InnerPlane = MObject->GetPlane(FaceIndex);
-		return TPlaneConcrete<FReal, 3>(MScale * InnerPlane.X(), GetScaledNormal(InnerPlane.Normal()));
+		return TPlaneConcrete<FReal, 3>::MakeScaledUnsafe(InnerPlane, MScale);	// "Unsafe" means scale has no zeros
 	}
 
-	// Get the vertex at the specified index (e.g., indices from GetPlaneVertices)
+	// Get the vertex at the specified index (e.g., indices from GetPlaneVertex)
 	const FVec3 GetVertex(int32 VertexIndex) const
 	{
 		const FVec3 InnerVertex = MObject->GetVertex(VertexIndex);
@@ -489,18 +703,8 @@ public:
 
 	virtual int32 FindMostOpposingFace(const TVector<T, d>& Position, const TVector<T, d>& UnitDir, int32 HintFaceIndex, T SearchDist) const override
 	{
-		//ensure(OuterMargin == 0);	//not supported: do we care?
 		ensure(FMath::IsNearlyEqual(UnitDir.SizeSquared(), 1, KINDA_SMALL_NUMBER));
-
-		const TVector<T, d> UnscaledPosition = MInvScale * Position;
-		const TVector<T, d> UnscaledDirDenorm = MInvScale * UnitDir;
-		const float LengthScale = UnscaledDirDenorm.Size();
-		const TVector<T, d> UnscaledDir
-			= ensure(LengthScale > TNumericLimits<T>::Min())
-			? UnscaledDirDenorm / LengthScale
-			: TVector<T, d>(0.f, 0.f, 1.f);
-		const T UnscaledSearchDist = SearchDist * MScale.Max();	//this is not quite right since it's no longer a sphere, but the whole thing is fuzzy anyway
-		return MObject->FindMostOpposingFace(UnscaledPosition, UnscaledDir, HintFaceIndex, UnscaledSearchDist);
+		return MObject->FindMostOpposingFaceScaled(Position, UnitDir, HintFaceIndex, SearchDist, MScale);
 	}
 
 	virtual TVector<T, 3> FindGeometryOpposingNormal(const TVector<T, d>& DenormDir, int32 HintFaceIndex, const TVector<T, d>& OriginalNormal) const override
@@ -509,9 +713,9 @@ public:
 		ensure(FMath::IsNearlyEqual(OriginalNormal.SizeSquared(), 1, KINDA_SMALL_NUMBER));
 
 		// Get unscaled dir and normal
-		const TVector<T, 3> LocalDenormDir = DenormDir * MInvScale;
-		const TVector<T, 3> LocalOriginalNormalDenorm = OriginalNormal * MInvScale;
-		const float NormalLengthScale = LocalOriginalNormalDenorm.Size();
+		const TVector<T, 3> LocalDenormDir = DenormDir * MScale;
+		const TVector<T, 3> LocalOriginalNormalDenorm = OriginalNormal * MScale;
+		const T NormalLengthScale = LocalOriginalNormalDenorm.Size();
 		const TVector<T, 3> LocalOriginalNormal
 			= ensure(NormalLengthScale > SMALL_NUMBER)
 			? LocalOriginalNormalDenorm / NormalLengthScale
@@ -519,7 +723,7 @@ public:
 
 		// Compute final normal
 		const TVector<T, d> LocalNormal = MObject->FindGeometryOpposingNormal(LocalDenormDir, HintFaceIndex, LocalOriginalNormal);
-		TVector<T, d> Normal = LocalNormal;
+		TVector<T, d> Normal = LocalNormal * MInvScale;
 		if (CHAOS_ENSURE(Normal.SafeNormalize(TNumericLimits<T>::Min())) == 0)
 		{
 			Normal = TVector<T,3>(0,0,1);
@@ -535,7 +739,7 @@ public:
 		// TODO: consider alternative that handles thickness scaling properly in 3D, only works for uniform scaling right now
 		const T UnscaleThickness = MInvScale[0] * Thickness; 
 
-		return MObject->Overlap(UnscaledPoint, OuterMargin + UnscaleThickness);
+		return MObject->Overlap(UnscaledPoint, UnscaleThickness);
 	}
 
 	virtual Pair<TVector<T, d>, bool> FindClosestIntersectionImp(const TVector<T, d>& StartPoint, const TVector<T, d>& EndPoint, const T Thickness) const override
@@ -575,21 +779,19 @@ public:
 		// But this is the same as pt \dot dir >= dir^T Ax = (dir^TA) x = (A^T dir)^T x
 		//So let dir' = A^T dir.
 		//Since we only support scaling on the principal axes A is a diagonal (and therefore symmetric) matrix and so a simple component wise multiplication is sufficient
-		const TVector<T, d> UnthickenedPt = MObject->Support(Direction * MScale, OuterMargin) * MScale;
+		const TVector<T, d> UnthickenedPt = MObject->Support(Direction * MScale, 0.0f) * MScale;
 		return Thickness > 0 ? TVector<T, d>(UnthickenedPt + Direction.GetSafeNormal() * Thickness) : UnthickenedPt;
 	}
 
-	FORCEINLINE_DEBUGGABLE TVector<T, d> SupportCore(const TVector<T, d>& Direction) const
+	FORCEINLINE_DEBUGGABLE TVector<T, d> SupportCore(const TVector<T, d>& Direction, FReal InMargin) const
 	{
-		return MObject->SupportCore(Direction * MScale) * MScale;
+		return MObject->SupportCoreScaled(Direction, InMargin, MScale);
 	}
 
-	const TVector<T, d>& GetScale() const { return MScale; }
-	const TVector<T, d>& GetInvScale() const { return MInvScale; }
-	void SetScale(const TVector<T, d>& Scale)
+	void SetScale(const FVec3& Scale)
 	{
-		constexpr T MinMagnitude = 1e-6;
-		for (int Axis = 0; Axis < d; ++Axis)
+		constexpr FReal MinMagnitude = 1e-6;
+		for (int Axis = 0; Axis < 3; ++Axis)
 		{
 			if (!CHAOS_ENSURE(FMath::Abs(Scale[Axis]) >= MinMagnitude))
 			{
@@ -602,28 +804,28 @@ public:
 
 			MInvScale[Axis] = 1 / MScale[Axis];
 		}
-		SetMargin(OuterMargin + Scale[0] * MObject->GetMargin());
+		SetMargin(OuterMargin + MScale[0] * MObject->GetMargin());
 		UpdateBounds();
 	}
 
-	virtual const TAABB<T, d> BoundingBox() const override { return MLocalBoundingBox; }
-
 	const FReal GetVolume() const
 	{
-		// TODO: More precise volume!
-		return BoundingBox().GetVolume();
-	}
-
-	const FMatrix33 GetInertiaTensor(const FReal Mass) const
-	{
-		// TODO: More precise inertia!
-		return BoundingBox().GetInertiaTensor(Mass);
+		return MScale.X * MScale.Y * MScale.Z * MObject->GetVolume();
 	}
 
 	const FVec3 GetCenterOfMass() const
 	{
-		// TODO: I'm not sure this is correct in all cases
 		return MScale * MObject->GetCenterOfMass();
+	}
+
+	FRotation3 GetRotationOfMass() const
+	{
+		return MObject->GetRotationOfMass();
+	}
+
+	const FMatrix33 GetInertiaTensor(const FReal Mass) const
+	{
+		return Utilities::ScaleInertia(MObject->GetInertiaTensor(Mass), MScale, false);
 	}
 
 	const ObjectType Object() const { return MObject; }
@@ -665,19 +867,12 @@ public:
 private:
 	ObjectType MObject;
 	TSharedPtr<TConcrete, ESPMode::ThreadSafe> MSharedPtrForRefCount; // Temporary solution to force ref counting on trianglemesh from body setup.
-	TVector<T, d> MScale;
-	TVector<T, d> MInvScale;
-	T OuterMargin;	//Allows us to inflate the instance before the scale is applied. This is useful when sweeps need to apply a non scale on a geometry with uniform thickness
-	TAABB<T, d> MLocalBoundingBox;
 
 	//needed for serialization
 	TImplicitObjectScaled()
-	: FImplicitObject(EImplicitObject::HasBoundingBox, StaticType())
-	, OuterMargin(0)
+	: FImplicitObjectScaled(EImplicitObject::HasBoundingBox, StaticType())
 	{}
 	friend FImplicitObject;	//needed for serialization
-
-	friend class FImplicitObjectScaled;
 
 	static TImplicitObjectScaled<TConcrete, true>* CopyHelper(const TImplicitObjectScaled<TConcrete, true>* Obj)
 	{
@@ -689,30 +884,6 @@ private:
 		return new TImplicitObjectScaled<TConcrete, false>(Obj->MObject->Copy(), Obj->MScale, Obj->OuterMargin);
 	}
 
-	// Convert a normal in the scaled object space into a normal in the inner object space.
-	FVec3 GetInverseScaledNormal(const TVector<T, d>& OuterNormal) const
-	{
-		const TVector<T, d> UnscaledDirDenorm = MInvScale * OuterNormal;
-		const float LengthScale = UnscaledDirDenorm.Size();
-		const TVector<T, d> UnscaledDir
-			= ensure(LengthScale > TNumericLimits<T>::Min())
-			? UnscaledDirDenorm / LengthScale
-			: TVector<T, d>(0.f, 0.f, 1.f);
-		return UnscaledDir;
-	}
-
-	// Convert a normal in the inner object space (unscaled) into a normal in the outer scaled object space
-	FVec3 GetScaledNormal(const TVector<T, d>& InnerNormal) const
-	{
-		const TVector<T, d> ScaledDirDenorm = MScale * InnerNormal;
-		const float LengthScale = ScaledDirDenorm.Size();
-		const TVector<T, d> ScaledDir
-			= ensure(LengthScale > TNumericLimits<T>::Min())
-			? ScaledDirDenorm / LengthScale
-			: TVector<T, d>(0.f, 0.f, 1.f);
-		return ScaledDir;
-	}
-
 	void UpdateBounds()
 	{
 		const TAABB<T, d> UnscaledBounds = MObject->BoundingBox();
@@ -720,7 +891,6 @@ private:
 		MLocalBoundingBox = TAABB<T, d>(Vector1, Vector1);	//need to grow it out one vector at a time in case scale is negative
 		const TVector<T, d> Vector2 = UnscaledBounds.Max() *MScale;
 		MLocalBoundingBox.GrowToInclude(Vector2);
-		MLocalBoundingBox.Thicken(OuterMargin);
 	}
 
 	template <typename QueryGeomType>

@@ -10,7 +10,6 @@
 #include "PrimitiveSceneProxy.h"
 #include "MeshBatch.h"
 #include "Engine/Engine.h"
-#include "Misc/ScopeTryLock.h"
 #include "SceneManagement.h"
 #include "LocalVertexFactory.h"
 #include "Materials/Material.h"
@@ -34,9 +33,7 @@ public:
 	}
 	~FLidarPointCloudCollisionRendering()
 	{
-		VertexFactory.ReleaseResource();
-		VertexBuffer.ReleaseResource();
-		IndexBuffer.ReleaseResource();
+		Release();
 	}
 
 	void Initialize(FLidarPointCloudOctree* Octree)
@@ -55,11 +52,22 @@ public:
 			MaxVertexIndex = CollisionData->Vertices.Num() - 1;
 		}
 	}
+	void Release()
+	{
+		VertexFactory.ReleaseResource();
+		VertexBuffer.ReleaseResource();
+		IndexBuffer.ReleaseResource();
+	}
 
 	const FVertexFactory* GetVertexFactory() const { return &VertexFactory; }
 	const FIndexBuffer* GetIndexBuffer() const { return &IndexBuffer; }
 	const int32 GetNumPrimitives() const { return NumPrimitives; }
 	const int32 GetMaxVertexIndex() const { return MaxVertexIndex; }
+
+	bool ShouldRenderCollision() const
+	{
+		return NumPrimitives > 0 && VertexFactory.IsInitialized();
+	}
 
 private:
 	class FLidarPointCloudCollisionVertexFactory : public FLocalVertexFactory
@@ -89,8 +97,7 @@ private:
 	} VertexFactory;
 	class FLidarPointCloudCollisionVertexBuffer : public FVertexBuffer
 	{
-	private:
-		const void* Data;
+		const FVector* Data;
 		int32 DataLength;
 
 	public:
@@ -114,7 +121,6 @@ private:
 	} VertexBuffer;
 	class FLidarPointCloudCollisionIndexBuffer : public FIndexBuffer
 	{
-	private:
 		const int32* Data;
 		int32 DataLength;
 
@@ -155,12 +161,14 @@ public:
 	FLidarPointCloudSceneProxy(ULidarPointCloudComponent* Component)
 		: FPrimitiveSceneProxy(Component)
 		, ProxyWrapper(MakeShared<FLidarPointCloudSceneProxyWrapper, ESPMode::ThreadSafe>(this))
-		, Component(Component)
+		, bCompatiblePlatform(GetScene().GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 		, Owner(Component->GetOwner())
 		, CollisionRendering(Component->GetPointCloud()->CollisionRendering)
 	{
 		// Skip material verification - async update could occasionally cause it to crash
 		bVerifyUsedMaterials = false;
+
+		TreeBuffer = new FLidarPointCloudRenderBuffer();
 
 		MaterialRelevance = Component->GetMaterialRelevance(GetScene().GetFeatureLevel());
 	}
@@ -174,12 +182,12 @@ public:
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_PointCloudSceneProxy_GetDynamicMeshElements);
 
-		if (!Component->GetMaterial(0))
+		if (!CanBeRendered() || !RenderData.RenderParams.Material)
 		{
 			return;
 		}
 
-		const bool bUsesSprites = Component->PointSize > 0;
+		const bool bUsesSprites = RenderData.RenderParams.PointSize > 0;
 
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
@@ -195,15 +203,15 @@ public:
 
 					for (const FLidarPointCloudProxyUpdateDataNode& Node : RenderData.SelectedNodes)
 					{
-						if (Node.DataNode && Node.DataNode->GetDataCache())
+						if (Node.DataNode && ((RenderData.bUseStaticBuffers && Node.DataNode->GetVertexFactory()) || (!RenderData.bUseStaticBuffers && Node.DataNode->GetDataCache())))
 						{
 							FMeshBatch& MeshBatch = Collector.AllocateMesh();
 
 							MeshBatch.Type = bUsesSprites ? PT_TriangleList : PT_PointList;
 							MeshBatch.LODIndex = 0;
-							MeshBatch.VertexFactory = &GLidarPointCloudVertexFactory;
+							MeshBatch.VertexFactory = RenderData.bUseStaticBuffers ? Node.DataNode->GetVertexFactory() : (FVertexFactory*)&GLidarPointCloudSharedVertexFactory;
 							MeshBatch.bWireframe = false;
-							MeshBatch.MaterialRenderProxy = Component->GetMaterial(0)->GetRenderProxy();
+							MeshBatch.MaterialRenderProxy = RenderData.RenderParams.Material->GetRenderProxy();
 							MeshBatch.ReverseCulling = IsLocalToWorldDeterminantNegative();
 							MeshBatch.DepthPriorityGroup = SDPG_World;
 
@@ -226,7 +234,7 @@ public:
 				FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
 
 				// Draw selected nodes' bounds
-				if (Component->bDrawNodeBounds)
+				if (RenderData.RenderParams.bDrawNodeBounds)
 				{
 					for (const FBox& Node : RenderData.Bounds)
 					{
@@ -241,7 +249,7 @@ public:
 				}
 
 				// Render collision wireframe
-				if (ViewFamily.EngineShowFlags.Collision && IsCollisionEnabled() && CollisionRendering && CollisionRendering->GetNumPrimitives() > 0)
+				if (ViewFamily.EngineShowFlags.Collision && IsCollisionEnabled() && CollisionRendering && CollisionRendering->ShouldRenderCollision())
 				{
 					// Create colored proxy
 					FColoredMaterialRenderProxy* CollisionMaterialInstance;
@@ -249,10 +257,22 @@ public:
 					Collector.RegisterOneFrameMaterialProxy(CollisionMaterialInstance);
 
 					FMeshBatch& MeshBatch = Collector.AllocateMesh();
-					if (PrepareCollisionWireframe(MeshBatch, CollisionMaterialInstance))
-					{
-						Collector.AddMesh(ViewIndex, MeshBatch);
-					}
+					MeshBatch.Type = PT_TriangleList;
+					MeshBatch.VertexFactory = CollisionRendering->GetVertexFactory();
+					MeshBatch.bWireframe = true;
+					MeshBatch.MaterialRenderProxy = CollisionMaterialInstance;
+					MeshBatch.ReverseCulling = !IsLocalToWorldDeterminantNegative();
+					MeshBatch.DepthPriorityGroup = SDPG_World;
+					MeshBatch.CastShadow = false;
+
+					FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
+					BatchElement.IndexBuffer = CollisionRendering->GetIndexBuffer();
+					BatchElement.FirstIndex = 0;
+					BatchElement.NumPrimitives = CollisionRendering->GetNumPrimitives();
+					BatchElement.MinVertexIndex = 0;
+					BatchElement.MaxVertexIndex = CollisionRendering->GetMaxVertexIndex();
+
+					Collector.AddMesh(ViewIndex, MeshBatch);
 				}
 #endif // !(UE_BUILD_SHIPPING)
 			}
@@ -263,36 +283,19 @@ public:
 	{
 		FPrimitiveViewRelevance Result;
 
-		Result.bDrawRelevance = IsShown(View);
-		Result.bShadowRelevance = IsShadowCast(View);
-		Result.bDynamicRelevance = true;
-		Result.bStaticRelevance = false;
-		Result.bRenderInMainPass = ShouldRenderInMainPass();
-		Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
-		Result.bRenderCustomDepth = ShouldRenderCustomDepth();
-		MaterialRelevance.SetPrimitiveViewRelevance(Result);
+		if (CanBeRendered())
+		{
+			Result.bDrawRelevance = IsShown(View);
+			Result.bShadowRelevance = IsShadowCast(View);
+			Result.bDynamicRelevance = true;
+			Result.bStaticRelevance = false;
+			Result.bRenderInMainPass = ShouldRenderInMainPass();
+			Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
+			Result.bRenderCustomDepth = ShouldRenderCustomDepth();
+			MaterialRelevance.SetPrimitiveViewRelevance(Result);
+		}
 
 		return Result;
-	}
-
-	bool PrepareCollisionWireframe(FMeshBatch& MeshBatch, FColoredMaterialRenderProxy* CollisionMaterialInstance) const
-	{
-		MeshBatch.Type = PT_TriangleList;
-		MeshBatch.VertexFactory = CollisionRendering->GetVertexFactory();
-		MeshBatch.bWireframe = true;
-		MeshBatch.MaterialRenderProxy = CollisionMaterialInstance;
-		MeshBatch.ReverseCulling = !IsLocalToWorldDeterminantNegative();
-		MeshBatch.DepthPriorityGroup = SDPG_World;
-		MeshBatch.CastShadow = false;
-
-		FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
-		BatchElement.IndexBuffer = CollisionRendering->GetIndexBuffer();
-		BatchElement.FirstIndex = 0;
-		BatchElement.NumPrimitives = CollisionRendering->GetNumPrimitives();
-		BatchElement.MinVertexIndex = 0;
-		BatchElement.MaxVertexIndex = CollisionRendering->GetMaxVertexIndex();
-
-		return true;
 	}
 
 	/** UserData is used to pass rendering information to the VertexFactory */
@@ -300,57 +303,51 @@ public:
 	{	
 		FLidarPointCloudBatchElementUserData UserDataElement;
 
-		const bool bUsesSprites = Component->PointSize > 0;
-
-		FVector BoundsSize = Component->GetPointCloud()->GetBounds().GetSize();
-
-		// Make sure to apply minimum bounds size
-		BoundsSize.X = FMath::Max(BoundsSize.X, 0.001f);
-		BoundsSize.Y = FMath::Max(BoundsSize.Y, 0.001f);
-		BoundsSize.Z = FMath::Max(BoundsSize.Z, 0.001f);
+		const bool bUsesSprites = RenderData.RenderParams.PointSize > 0;
 
 		// Update shader parameters
-		UserDataElement.bEditorView = Component->IsOwnedByEditor();
+		UserDataElement.bEditorView = RenderData.RenderParams.bOwnedByEditor;
+		UserDataElement.ReversedVirtualDepthMultiplier = RenderData.VDMultiplier;
 		UserDataElement.VirtualDepth = RenderData.VDMultiplier * Node.VirtualDepth;
-		UserDataElement.SpriteSize = RenderData.RootCellSize / FMath::Pow(2.0f, UserDataElement.VirtualDepth);
-		UserDataElement.SpriteSizeMultiplier = Component->PointSize * Component->GetComponentScale().GetAbsMax();
+		UserDataElement.SpriteSizeMultiplier = bUsesSprites ? (RenderData.RenderParams.PointSize + RenderData.RenderParams.GapFillingStrength * 0.005f) * RenderData.RenderParams.ComponentScale : 0;
+		UserDataElement.bUseScreenSizeScaling = RenderData.RenderParams.ScalingMethod == ELidarPointCloudScalingMethod::FixedScreenSize;;
+		UserDataElement.bUsePerPointScaling = RenderData.RenderParams.ScalingMethod == ELidarPointCloudScalingMethod::PerPoint;
+		UserDataElement.bUseStaticBuffers = RenderData.bUseStaticBuffers;
+		UserDataElement.RootCellSize = RenderData.RootCellSize;
+		UserDataElement.RootExtent = FVector(RenderData.RenderParams.BoundsSize.GetAbsMax() * 0.5f);
 
-		UserDataElement.IndexDivisor = bUsesSprites ? 4 : 1;
-		UserDataElement.LocationOffset = Component->GetPointCloud()->GetLocationOffset().ToVector();		
+		UserDataElement.LocationOffset = RenderData.RenderParams.LocationOffset;
 		UserDataElement.ViewRightVector = InView->GetViewRight();
 		UserDataElement.ViewUpVector = InView->GetViewUp();
-		UserDataElement.bUseCameraFacing = !Component->ShouldRenderFacingNormals();
-		UserDataElement.BoundsSize = BoundsSize;
-		UserDataElement.ElevationColorBottom = FVector(Component->ColorSource == ELidarPointCloudColorationMode::None ? FColor::White : Component->ElevationColorBottom);
-		UserDataElement.ElevationColorTop = FVector(Component->ColorSource == ELidarPointCloudColorationMode::None ? FColor::White : Component->ElevationColorTop);
-		UserDataElement.bUseCircle = bUsesSprites && Component->PointShape == ELidarPointCloudSpriteShape::Circle;
-		UserDataElement.bUseColorOverride = Component->ColorSource != ELidarPointCloudColorationMode::Data;
-		UserDataElement.bUseElevationColor = Component->ColorSource == ELidarPointCloudColorationMode::Elevation || Component->ColorSource == ELidarPointCloudColorationMode::None;
-		UserDataElement.Offset = Component->Offset;
-		UserDataElement.Contrast = Component->Contrast;
-		UserDataElement.Saturation = Component->Saturation;
-		UserDataElement.Gamma = Component->Gamma;
-		UserDataElement.Tint = FVector(Component->ColorTint);
-		UserDataElement.IntensityInfluence = Component->IntensityInfluence;
+		UserDataElement.bUseCameraFacing = !RenderData.RenderParams.bShouldRenderFacingNormals;
+		UserDataElement.BoundsSize = RenderData.RenderParams.BoundsSize;
+		UserDataElement.ElevationColorBottom = FVector(RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::None ? FColor::White : RenderData.RenderParams.ElevationColorBottom);
+		UserDataElement.ElevationColorTop = FVector(RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::None ? FColor::White : RenderData.RenderParams.ElevationColorTop);
+		UserDataElement.bUseCircle = bUsesSprites && RenderData.RenderParams.PointShape == ELidarPointCloudSpriteShape::Circle;
+		UserDataElement.bUseColorOverride = RenderData.RenderParams.ColorSource != ELidarPointCloudColorationMode::Data;
+		UserDataElement.bUseElevationColor = RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::Elevation || RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::None;
+		UserDataElement.Offset = RenderData.RenderParams.Offset;
+		UserDataElement.Contrast = RenderData.RenderParams.Contrast;
+		UserDataElement.Saturation = RenderData.RenderParams.Saturation;
+		UserDataElement.Gamma = RenderData.RenderParams.Gamma;
+		UserDataElement.Tint = RenderData.RenderParams.ColorTint;
+		UserDataElement.IntensityInfluence = RenderData.RenderParams.IntensityInfluence;
 
-		UserDataElement.bUseClassification = Component->ColorSource == ELidarPointCloudColorationMode::Classification;
-		UserDataElement.SetClassificationColors(Component->ClassificationColors);
+		UserDataElement.bUseClassification = RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::Classification;
+		UserDataElement.SetClassificationColors(RenderData.RenderParams.ClassificationColors);
 				
 		UserDataElement.NumClippingVolumes = FMath::Min(RenderData.ClippingVolumes.Num(), 16);
 
 		for (uint32 i = 0; i < UserDataElement.NumClippingVolumes; ++i)
 		{
-			const ALidarClippingVolume* ClippingVolume = RenderData.ClippingVolumes[i];
-			const FVector Extent = ClippingVolume->GetActorScale3D() * 100;
-			UserDataElement.ClippingVolume[i] = FMatrix(FPlane(ClippingVolume->GetActorLocation(), ClippingVolume->Mode == ELidarClippingVolumeMode::ClipInside),
-													 FPlane(ClippingVolume->GetActorForwardVector(), Extent.X),
-												     FPlane(ClippingVolume->GetActorRightVector(), Extent.Y),
-													 FPlane(ClippingVolume->GetActorUpVector(), Extent.Z));
+			const FLidarPointCloudClippingVolumeParams& ClippingVolume = RenderData.ClippingVolumes[i];
 
-			UserDataElement.bStartClipped = UserDataElement.bStartClipped || ClippingVolume->Mode == ELidarClippingVolumeMode::ClipOutside;
+			UserDataElement.ClippingVolume[i] = ClippingVolume.PackedShaderData;
+			UserDataElement.bStartClipped |= ClippingVolume.Mode == ELidarClippingVolumeMode::ClipOutside;
 		}
 
-		UserDataElement.DataBuffer = Node.DataNode->GetDataCache()->SRV;
+		UserDataElement.DataBuffer = Node.DataNode->GetDataCache() ? Node.DataNode->GetDataCache()->SRV : nullptr;
+		UserDataElement.TreeBuffer = TreeBuffer->SRV;
 
 		return UserDataElement;
 	}
@@ -365,15 +362,32 @@ public:
 		return reinterpret_cast<size_t>(&UniquePointer);
 	}
 
-	virtual void UpdateRenderData(FLidarPointCloudProxyUpdateData InRenderData) override { RenderData = InRenderData; }
+	virtual void UpdateRenderData(const FLidarPointCloudProxyUpdateData& InRenderData) override
+	{
+		RenderData = InRenderData;
+
+		const int32 NumTreeStructure = RenderData.TreeStructure.Num() > 0 ? RenderData.TreeStructure.Num() : 16;
+		TreeBuffer->Resize(NumTreeStructure);
+		uint8* DataPtr = (uint8*)RHILockVertexBuffer(TreeBuffer->Buffer, 0, NumTreeStructure * sizeof(uint32), RLM_WriteOnly);
+		FMemory::Memzero(DataPtr, NumTreeStructure * sizeof(uint32));
+		if (RenderData.TreeStructure.Num() > 0)
+		{
+			FMemory::Memcpy(DataPtr, RenderData.TreeStructure.GetData(), NumTreeStructure * sizeof(uint32));
+		}
+		RHIUnlockVertexBuffer(TreeBuffer->Buffer);
+	}
+
+	bool CanBeRendered() const { return bCompatiblePlatform; }
 
 public:
 	TSharedPtr<FLidarPointCloudSceneProxyWrapper, ESPMode::ThreadSafe> ProxyWrapper;
 
 private:
+	bool bCompatiblePlatform;
+
 	FLidarPointCloudProxyUpdateData RenderData;
 
-	ULidarPointCloudComponent* Component;
+	FLidarPointCloudRenderBuffer* TreeBuffer;
 	FMaterialRelevance MaterialRelevance;
 	AActor* Owner;
 
@@ -386,7 +400,11 @@ FPrimitiveSceneProxy* ULidarPointCloudComponent::CreateSceneProxy()
 	if (PointCloud)
 	{
 		Proxy = new FLidarPointCloudSceneProxy(this);
-		FLidarPointCloudLODManager::RegisterProxy(this, Proxy->ProxyWrapper);
+		
+		if (Proxy->CanBeRendered())
+		{
+			FLidarPointCloudLODManager::RegisterProxy(this, Proxy->ProxyWrapper);
+		}
 	}
 	return Proxy;
 }
@@ -420,7 +438,7 @@ void ULidarPointCloud::InitializeCollisionRendering()
 	}
 }
 
-void ULidarPointCloud::ReleaseCollisionRendering()
+void ULidarPointCloud::ReleaseCollisionRendering(bool bDestroyAfterRelease)
 {
 	// Do not process, if the app in incapable of rendering
 	if (!FApp::CanEverRender())
@@ -432,16 +450,23 @@ void ULidarPointCloud::ReleaseCollisionRendering()
 	{
 		if (CollisionRendering)
 		{
-			delete CollisionRendering;
-			CollisionRendering = nullptr;
+			if (bDestroyAfterRelease)
+			{
+				delete CollisionRendering;
+				CollisionRendering = nullptr;
+			}
+			else
+			{
+				CollisionRendering->Release();
+			}
 		}
 	}
 	else
 	{
 		ENQUEUE_RENDER_COMMAND(ReleaseCollisionRendering)(
-			[this](FRHICommandListImmediate& RHICmdList)
+			[this, bDestroyAfterRelease](FRHICommandListImmediate& RHICmdList)
 			{
-				ReleaseCollisionRendering();
+				ReleaseCollisionRendering(bDestroyAfterRelease);
 			});
 	}
 }

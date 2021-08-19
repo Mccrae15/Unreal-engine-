@@ -122,6 +122,8 @@
 #include "AnimGraphNode_LinkedInputPose.h"
 #include "AnimGraphNode_Root.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "AssetRegistryModule.h"
+#include "Misc/FeedbackContext.h"
 
 #include "AssetRegistryModule.h"
 #include "Misc/MessageDialog.h"
@@ -1766,14 +1768,14 @@ void FBlueprintEditorUtils::PropagateParentBlueprintDefaults(UClass* ClassToProp
 	check(NewCDO);
 
 	// Get the blueprint's BP derived lineage
-	TArray<UBlueprint*> ParentBP;
-	UBlueprint::GetBlueprintHierarchyFromClass(ClassToPropagate, ParentBP);
+	TArray<UBlueprintGeneratedClass*> ParentBPStack;
+	UBlueprint::GetBlueprintHierarchyFromClass(ClassToPropagate, ParentBPStack);
 
 	// Starting from the least derived BP class, copy the properties into the new CDO
-	for(int32 i = ParentBP.Num() - 1; i > 0; i--)
+	for(int32 Index = ParentBPStack.Num() - 1; Index > 0; --Index)
 	{
-		checkf(ParentBP[i]->GeneratedClass != nullptr, TEXT("Parent classes for class %s have not yet been generated.  Compile-on-load must be processed for the parent class first."), *ClassToPropagate->GetName());
-		UObject* LayerCDO = ParentBP[i]->GeneratedClass->GetDefaultObject();
+		checkf(ParentBPStack[Index], TEXT("Parent classes for class %s have not yet been generated.  Compile-on-load must be processed for the parent class first."), *ClassToPropagate->GetName());
+		UObject* LayerCDO = ParentBPStack[Index]->GetDefaultObject();
 
 		UEditorEngine::FCopyPropertiesForUnrelatedObjectsParams CopyDetails;
 		CopyDetails.bReplaceObjectClassReferences = false;
@@ -3321,6 +3323,41 @@ bool FBlueprintEditorUtils::IsLevelScriptBlueprint(const UBlueprint* Blueprint)
 	return (Blueprint && Blueprint->BlueprintType == BPTYPE_LevelScript);
 }
 
+bool FBlueprintEditorUtils::IsParentClassABlueprint(const UBlueprint* Blueprint)
+{
+	if (Blueprint)
+	{
+		UObject* ParentClass = Blueprint->ParentClass;
+		if (ParentClass)
+		{
+			if (ParentClass->IsA(UBlueprintGeneratedClass::StaticClass()))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool FBlueprintEditorUtils::IsParentClassAnEditableBlueprint(const UBlueprint* Blueprint)
+{
+	if (Blueprint)
+	{
+		UObject* ParentClass = Blueprint->ParentClass;
+		if (ParentClass)
+		{
+			UBlueprintGeneratedClass* ParentBPGC = Cast<UBlueprintGeneratedClass>(ParentClass);
+			if (ParentBPGC && ParentBPGC->ClassGeneratedBy)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 bool FBlueprintEditorUtils::IsAnonymousBlueprintClass(const UClass* Class)
 {
 	return (Class && Class->GetOutermost()->ContainsMap());
@@ -3658,14 +3695,30 @@ int32 FBlueprintEditorUtils::FindTimelineIndex(const UBlueprint* Blueprint, cons
 
 void FBlueprintEditorUtils::GetSCSVariableNameList(const UBlueprint* Blueprint, TSet<FName>& VariableNames)
 {
-	if(Blueprint != nullptr && Blueprint->SimpleConstructionScript != nullptr)
+	if (Blueprint)
 	{
-		for (USCS_Node* SCS_Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+		GetSCSVariableNameList(Blueprint->SimpleConstructionScript, VariableNames);
+	}
+}
+
+void FBlueprintEditorUtils::GetSCSVariableNameList(const UBlueprintGeneratedClass* BPGC, TSet<FName>& VariableNames)
+{
+	if (BPGC)
+	{
+		GetSCSVariableNameList(BPGC->SimpleConstructionScript, VariableNames);
+	}
+}
+
+void FBlueprintEditorUtils::GetSCSVariableNameList(const USimpleConstructionScript* SCS, TSet<FName>& VariableNames)
+{
+	if (SCS)
+	{
+		for (USCS_Node* SCS_Node : SCS->GetAllNodes())
 		{
-			if (SCS_Node != nullptr)
+			if (SCS_Node)
 			{
 				const FName VariableName = SCS_Node->GetVariableName();
-				if(VariableName != NAME_None)
+				if (VariableName != NAME_None)
 				{
 					VariableNames.Add(VariableName);
 				}
@@ -3697,22 +3750,22 @@ void FBlueprintEditorUtils::GetImplementingBlueprintsFunctionNameList(const UBlu
 	}
 }
 
-int32 FBlueprintEditorUtils::FindSCS_Node(const UBlueprint* Blueprint, const FName& InName) 
+USCS_Node* FBlueprintEditorUtils::FindSCS_Node(const UBlueprint* Blueprint, const FName InName) 
 {
 	if (Blueprint->SimpleConstructionScript)
 	{
 		const TArray<USCS_Node*>& AllSCS_Nodes = Blueprint->SimpleConstructionScript->GetAllNodes();
 	
-		for(int32 i=0; i<AllSCS_Nodes.Num(); i++)
+		for (USCS_Node* SCSNode : AllSCS_Nodes)
 		{
-			if(AllSCS_Nodes[i]->GetVariableName() == InName)
+			if (SCSNode->GetVariableName() == InName)
 			{
-				return i;
+				return SCSNode;
 			}
 		}
 	}
 
-	return INDEX_NONE;
+	return nullptr;
 }
 
 void FBlueprintEditorUtils::SetBlueprintOnlyEditableFlag(UBlueprint* Blueprint, const FName& VarName, const bool bNewBlueprintOnly)
@@ -3907,13 +3960,10 @@ void FBlueprintEditorUtils::SetBlueprintVariableMetaData(UBlueprint* Blueprint, 
 			if (TimelineIndex == INDEX_NONE)
 			{
 				//Not a Timeline is this a SCS Node?
-				const int32 SCS_NodeIndex = FBlueprintEditorUtils::FindSCS_Node(Blueprint,VarName);
-
-				if (SCS_NodeIndex != INDEX_NONE)
+				if (USCS_Node* SCSNode = FBlueprintEditorUtils::FindSCS_Node(Blueprint,VarName))
 				{
-					Blueprint->SimpleConstructionScript->GetAllNodes()[SCS_NodeIndex]->SetMetaData(MetaDataKey, MetaDataValue);
+					SCSNode->SetMetaData(MetaDataKey, MetaDataValue);
 				}
-
 			}
 			else
 			{
@@ -3967,16 +4017,12 @@ bool FBlueprintEditorUtils::GetBlueprintVariableMetaData(const UBlueprint* Bluep
 			if (TimelineIndex == INDEX_NONE)
 			{
 				//Not a Timeline is this a SCS Node?
-				const int32 SCS_NodeIndex = FBlueprintEditorUtils::FindSCS_Node(Blueprint,VarName);
-
-				if (SCS_NodeIndex != INDEX_NONE)
+				if (USCS_Node* Desc = FBlueprintEditorUtils::FindSCS_Node(Blueprint,VarName))
 				{
-					USCS_Node& Desc = *Blueprint->SimpleConstructionScript->GetAllNodes()[SCS_NodeIndex];
-
-					int32 EntryIndex = Desc.FindMetaDataEntryIndexForKey(MetaDataKey);
+					const int32 EntryIndex = Desc->FindMetaDataEntryIndexForKey(MetaDataKey);
 					if (EntryIndex != INDEX_NONE)
 					{
-						OutMetaDataValue = Desc.GetMetaData(MetaDataKey);
+						OutMetaDataValue = Desc->GetMetaData(MetaDataKey);
 						return true;
 					}
 				}
@@ -4031,11 +4077,9 @@ void FBlueprintEditorUtils::RemoveBlueprintVariableMetaData(UBlueprint* Blueprin
 			if (TimelineIndex == INDEX_NONE)
 			{
 				//Not a Timeline is this a SCS Node?
-				const int32 SCS_NodeIndex = FBlueprintEditorUtils::FindSCS_Node(Blueprint,VarName);
-
-				if (SCS_NodeIndex != INDEX_NONE)
+				if (USCS_Node* SCSNode = FBlueprintEditorUtils::FindSCS_Node(Blueprint, VarName))
 				{
-					Blueprint->SimpleConstructionScript->GetAllNodes()[SCS_NodeIndex]->RemoveMetaData(MetaDataKey);
+					SCSNode->RemoveMetaData(MetaDataKey);
 				}
 
 			}
@@ -4116,15 +4160,15 @@ void FBlueprintEditorUtils::SetBlueprintVariableCategory(UBlueprint* Blueprint, 
 			const int32 VarIndex = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, VarName);
 			if (VarIndex != INDEX_NONE)
 			{
-				Blueprint->NewVariables[VarIndex].Category = SetCategory;
+				Blueprint->NewVariables[VarIndex].Category = MoveTemp(SetCategory);
 			}
 			else
 			{
-				const int32 SCS_NodeIndex = FBlueprintEditorUtils::FindSCS_Node(Blueprint, VarName);
-				if (SCS_NodeIndex != INDEX_NONE)
+				
+				if (USCS_Node* SCSNode = FBlueprintEditorUtils::FindSCS_Node(Blueprint, VarName))
 				{
-					Blueprint->SimpleConstructionScript->GetAllNodes()[SCS_NodeIndex]->Modify();
-					Blueprint->SimpleConstructionScript->GetAllNodes()[SCS_NodeIndex]->CategoryName = SetCategory;
+					SCSNode->Modify();
+					SCSNode->CategoryName = MoveTemp(SetCategory);
 				}
 			}
 		}
@@ -4136,7 +4180,7 @@ void FBlueprintEditorUtils::SetBlueprintVariableCategory(UBlueprint* Blueprint, 
 		{
 			OutFunctionEntryNode->Modify();
 			LocalVariable->SetMetaData(TEXT("Category"), *SetCategory.ToString());
-			LocalVariable->Category = SetCategory;
+			LocalVariable->Category = MoveTemp(SetCategory);
 		}
 	}
 
@@ -4322,10 +4366,9 @@ FText FBlueprintEditorUtils::GetBlueprintVariableCategory(UBlueprint* Blueprint,
 	if(CategoryName.IsEmpty() && Blueprint->SimpleConstructionScript != nullptr)
 	{
 		// Look for the variable in the SCS (in case the Blueprint has not been compiled yet)
-		const int32 SCS_NodeIndex = FBlueprintEditorUtils::FindSCS_Node(Blueprint, VarName);
-		if (SCS_NodeIndex != INDEX_NONE)
+		if (USCS_Node* SCSNode = FBlueprintEditorUtils::FindSCS_Node(Blueprint, VarName))
 		{
-			CategoryName = Blueprint->SimpleConstructionScript->GetAllNodes()[SCS_NodeIndex]->CategoryName;
+			CategoryName = SCSNode->CategoryName;
 		}
 	}
 
@@ -4592,21 +4635,28 @@ void FBlueprintEditorUtils::GetClassVariableList(const UBlueprint* Blueprint, TS
 		if (bIncludePrivateVars)
 		{
 			// Include SCS node variable names, timelines, and other member variables that may be pending compilation. Consider them to be "private" as they're not technically accessible for editing just yet.
-			TArray<UBlueprint*> ParentBPStack;
+			TArray<UBlueprintGeneratedClass*> ParentBPStack;
 			UBlueprint::GetBlueprintHierarchyFromClass(Blueprint->SkeletonGeneratedClass, ParentBPStack);
 			for (int32 StackIndex = ParentBPStack.Num() - 1; StackIndex >= 0; --StackIndex)
 			{
-				UBlueprint* ParentBP = ParentBPStack[StackIndex];
-				check(ParentBP != nullptr);
+				UBlueprintGeneratedClass* ParentPBGC = ParentBPStack[StackIndex];
+				check(ParentPBGC);
+				UBlueprint* ParentBP = Cast<UBlueprint>(ParentPBGC->ClassGeneratedBy);
 
-				GetSCSVariableNameList(ParentBP, VisibleVariables);
+				GetSCSVariableNameList(ParentPBGC, VisibleVariables);
 
-				for (int32 VariableIndex = 0; VariableIndex < ParentBP->NewVariables.Num(); ++VariableIndex)
+				if (ParentBP)
 				{
-					VisibleVariables.Add(ParentBP->NewVariables[VariableIndex].VarName);
+					for (const FBPVariableDescription& Variable : ParentBP->NewVariables)
+					{
+						VisibleVariables.Add(Variable.VarName);
+					}
 				}
 
-				for (UTimelineTemplate* Timeline : ParentBP->Timelines)
+				// Since we defer copying the timeline templates to the BPGC until compile time, 
+				// we consider the BP (when present) to be authoritative.
+				const TArray<UTimelineTemplate*>& Timelines = ParentBP ? ParentBP->Timelines : ParentPBGC->Timelines;
+				for (UTimelineTemplate* Timeline : Timelines)
 				{
 					if (Timeline)
 					{
@@ -4728,7 +4778,7 @@ void FBlueprintEditorUtils::RemoveMemberVariable(UBlueprint* Blueprint, const FN
 
 void FBlueprintEditorUtils::BulkRemoveMemberVariables(UBlueprint* Blueprint, const TArray<FName>& VarNames)
 {
-	const FScopedTransaction Transaction( LOCTEXT("DeleteUnusedVariables", "Delete Unused Variables") );
+	const FScopedTransaction Transaction( LOCTEXT("BulkRemoveMemberVariables", "Bulk Remove Member Variables") );
 	Blueprint->Modify();
 
 	bool bModified = false;
@@ -4746,6 +4796,39 @@ void FBlueprintEditorUtils::BulkRemoveMemberVariables(UBlueprint* Blueprint, con
 	if (bModified)
 	{
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	}
+}
+
+void FBlueprintEditorUtils::GetUsedAndUnusedVariables(UBlueprint* Blueprint, TArray<FProperty*>& OutUsedVariables, TArray<FProperty*>& OutUnusedVariables)
+{
+	TArray<FName> VariableNames;
+	for (TFieldIterator<FProperty> PropertyIt(Blueprint->SkeletonGeneratedClass, EFieldIteratorFlags::ExcludeSuper); PropertyIt; ++PropertyIt)
+	{
+		FProperty* Property = *PropertyIt;
+		// Don't show delegate properties, there is special handling for these
+		const bool bDelegateProp = Property->IsA(FDelegateProperty::StaticClass()) || Property->IsA(FMulticastDelegateProperty::StaticClass());
+		const bool bShouldShowProp = (!Property->HasAnyPropertyFlags(CPF_Parm) && Property->HasAllPropertyFlags(CPF_BlueprintVisible) && !bDelegateProp);
+
+		if (bShouldShowProp)
+		{
+			FName VarName = Property->GetFName();
+
+			const int32 VarInfoIndex = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, VarName);
+			const bool bHasVarInfo = (VarInfoIndex != INDEX_NONE);
+
+			const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(Property);
+			bool bIsTimeline = ObjectProperty &&
+				ObjectProperty->PropertyClass &&
+				ObjectProperty->PropertyClass->IsChildOf(UTimelineComponent::StaticClass());
+			if (!bIsTimeline && bHasVarInfo && !FBlueprintEditorUtils::IsVariableUsed(Blueprint, VarName))
+			{
+				OutUnusedVariables.Add(Property);
+			}
+			else
+			{
+				OutUsedVariables.Add(Property);
+			}
+		}
 	}
 }
 
@@ -5211,7 +5294,7 @@ FName FBlueprintEditorUtils::DuplicateMemberVariable(UBlueprint* InFromBlueprint
 				if (OldPropertyAddr)
 				{
 					// if there is a property for variable, it means the original default value was already copied, so it can be safely overridden
-					Variable.DefaultValue.Empty();
+					NewVar.DefaultValue.Empty();
 					TargetProperty->ExportTextItem(NewVar.DefaultValue, OldPropertyAddr, OldPropertyAddr, nullptr, PPF_SerializedAsImportText);
 				}
 			}
@@ -5721,43 +5804,97 @@ bool FBlueprintEditorUtils::IsVariableComponent(const FBPVariableDescription& Va
 	return false;
 }
 
-bool FBlueprintEditorUtils::IsVariableUsed(const UBlueprint* Blueprint, const FName& Name, UEdGraph* LocalGraphScope/* = nullptr*/ )
+bool FBlueprintEditorUtils::IsVariableUsed(const UBlueprint* InBlueprint, const FName& Name, UEdGraph* LocalGraphScope/* = nullptr*/)
 {
-	TArray<UEdGraph*> AllGraphs;
-	Blueprint->GetAllGraphs(AllGraphs);
-	for(TArray<UEdGraph*>::TConstIterator it(AllGraphs); it; ++it)
+	auto CheckSingleBlueprint = [&Name, LocalGraphScope](const UBlueprint* Blueprint) -> bool
 	{
-		const UEdGraph* CurrentGraph = *it;
-
-		if(CurrentGraph == LocalGraphScope || LocalGraphScope == nullptr)
+		TArray<UEdGraph*> AllGraphs;
+		Blueprint->GetAllGraphs(AllGraphs);
+		for (TArray<UEdGraph*>::TConstIterator it(AllGraphs); it; ++it)
 		{
-			TArray<UK2Node_Variable*> GraphNodes;
-			CurrentGraph->GetNodesOfClass(GraphNodes);
-
-			for (const UK2Node_Variable* CurrentNode : GraphNodes )
+			const UEdGraph* CurrentGraph = *it;
+			check(CurrentGraph);
+			if (CurrentGraph == LocalGraphScope || LocalGraphScope == nullptr)
 			{
-				if(Name == CurrentNode->GetVarName())
-				{
-					return true;
-				}
-			}
+				TArray<UK2Node_Variable*> GraphNodes;
+				CurrentGraph->GetNodesOfClass(GraphNodes);
 
-			// Also consider "used" if there's a GetClassDefaults node that exposes the variable as an output pin that's connected to something.
-			TArray<UK2Node_GetClassDefaults*> ClassDefaultsNodes;
-			CurrentGraph->GetNodesOfClass(ClassDefaultsNodes);
-			for (const UK2Node_GetClassDefaults* ClassDefaultsNode : ClassDefaultsNodes)
-			{
-				if (ClassDefaultsNode->GetInputClass() == Blueprint->SkeletonGeneratedClass)
+				for (const UK2Node_Variable* CurrentNode : GraphNodes)
 				{
-					const UEdGraphPin* VarPin = ClassDefaultsNode->FindPin(Name);
-					if (VarPin && VarPin->Direction == EGPD_Output && VarPin->LinkedTo.Num() > 0)
+					if (Name == CurrentNode->GetVarName())
 					{
 						return true;
 					}
 				}
+
+				// Also consider "used" if there's a GetClassDefaults node that exposes the variable as an output pin that's connected to something.
+				TArray<UK2Node_GetClassDefaults*> ClassDefaultsNodes;
+				CurrentGraph->GetNodesOfClass(ClassDefaultsNodes);
+				for (const UK2Node_GetClassDefaults* ClassDefaultsNode : ClassDefaultsNodes)
+				{
+					if (ClassDefaultsNode->GetInputClass() == Blueprint->SkeletonGeneratedClass)
+					{
+						const UEdGraphPin* VarPin = ClassDefaultsNode->FindPin(Name);
+						if (VarPin && VarPin->Direction == EGPD_Output && VarPin->LinkedTo.Num() > 0)
+						{
+							return true;
+						}
+					}
+				}
 			}
 		}
+
+		return false;
+	};
+
+	if (CheckSingleBlueprint(InBlueprint))
+	{
+		return true;
 	}
+
+	if (!LocalGraphScope)
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		FARFilter Filter;
+		AssetRegistryModule.Get().GetReferencers(InBlueprint->GetPackage()->GetFName(), Filter.PackageNames, UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::EDependencyQuery::Hard);
+		if (Filter.PackageNames.Num() > 0)
+		{
+			GWarn->BeginSlowTask(LOCTEXT("LoadingReferencerAssets", "Loading Referencers..."), true);
+
+			Filter.TagsAndValues.Add(TEXT("IsDataOnly"), TOptional<FString>(TEXT("false")));
+			TArray<FAssetData> ReferencersAssetData;
+			AssetRegistryModule.Get().GetAssets(Filter, ReferencersAssetData);
+			for (const FAssetData& ReferencerData : ReferencersAssetData)
+			{
+				UObject* ReferencerAsset = ReferencerData.GetAsset();
+				if (UBlueprint* BlueprintReferencer = Cast<UBlueprint>(ReferencerAsset))
+				{
+					if (CheckSingleBlueprint(BlueprintReferencer))
+					{
+						GWarn->EndSlowTask();
+						return true;
+					}
+				}
+				else if (UWorld* WorldReferencer = Cast<UWorld>(ReferencerAsset))
+				{
+					if (WorldReferencer->PersistentLevel && WorldReferencer->PersistentLevel->OwningWorld)
+					{
+						for (UBlueprint* BP : WorldReferencer->PersistentLevel->GetLevelBlueprints())
+						{
+							if (CheckSingleBlueprint(BP))
+							{
+								GWarn->EndSlowTask();
+								return true;
+							}
+						}
+					}
+				}
+			}
+
+			GWarn->EndSlowTask();
+		}
+	}
+
 	return false;
 }
 
@@ -8043,7 +8180,7 @@ void FBlueprintEditorUtils::FixLevelScriptActorBindings(ALevelScriptActor* Level
 void FBlueprintEditorUtils::ListPackageContents(UPackage* Package, FOutputDevice& Ar)
 {
 	Ar.Logf(TEXT("Package %s contains:"), *Package->GetName());
-	for (FObjectIterator ObjIt; ObjIt; ++ObjIt)
+	for (FThreadSafeObjectIterator ObjIt; ObjIt; ++ObjIt)
 	{
 		if (ObjIt->GetOuter() == Package)
 		{
@@ -8068,7 +8205,7 @@ bool FBlueprintEditorUtils::KismetDiagnosticExec(const TCHAR* InStream, FOutputD
 		TSet<UPackage*> BadPackages;
 
 		// Run thru every object in the world
-		for (FObjectIterator ObjectIt; ObjectIt; ++ObjectIt)
+		for (FThreadSafeObjectIterator ObjectIt; ObjectIt; ++ObjectIt)
 		{
 			UObject* TestObj = *ObjectIt;
 
@@ -8172,7 +8309,7 @@ bool FBlueprintEditorUtils::KismetDiagnosticExec(const TCHAR* InStream, FOutputD
 		for (UPackage* BadPackage : BadPackages)
 		{
 			Ar.Logf(TEXT("\nBad package %s contains:"), *BadPackage->GetName());
-			for (FObjectIterator ObjIt; ObjIt; ++ObjIt)
+			for (FThreadSafeObjectIterator ObjIt; ObjIt; ++ObjIt)
 			{
 				if (ObjIt->GetOuter() == BadPackage)
 				{
@@ -8229,7 +8366,7 @@ bool FBlueprintEditorUtils::KismetDiagnosticExec(const TCHAR* InStream, FOutputD
 	else if (FParse::Command(&Str, TEXT("ListRootSetObjects")))
 	{
 		UE_LOG(LogBlueprintDebug, Log, TEXT("--- LISTING ROOTSET OBJ ---"));
-		for( FObjectIterator it; it; ++it )
+		for( FThreadSafeObjectIterator it; it; ++it )
 		{
 			UObject* CurrObj = *it;
 			if( CurrObj->IsRooted() )
@@ -8630,11 +8767,6 @@ FBlueprintEditorUtils::EPropertyReadableState FBlueprintEditorUtils::IsPropertyR
 	return EPropertyReadableState::Readable;
 }
 
-bool FBlueprintEditorUtils::IsPropertyReadOnlyInCurrentBlueprint(const UBlueprint* Blueprint, const FProperty* Property)
-{
-	return (IsPropertyWritableInBlueprint(Blueprint, Property) != EPropertyWritableState::Writable);
-}
-
 void FBlueprintEditorUtils::FindAndSetDebuggableBlueprintInstances()
 {
 	TMap< UBlueprint*, TArray< AActor* > > BlueprintsNeedingInstancesToDebug;
@@ -8760,7 +8892,14 @@ bool FBlueprintEditorUtils::PropertyValueFromString_Direct(const FProperty* Prop
 			int32 IntValue = 0;
 			if (const UEnum* Enum = ByteProperty->Enum)
 			{
-				IntValue = Enum->GetValueByName(FName(*StrValue));
+				if (StrValue.Len() < NAME_SIZE)
+				{
+					IntValue = Enum->GetValueByName(FName(*StrValue));
+				}
+				else
+				{
+					IntValue = INDEX_NONE;
+				}
 				bParseSucceeded = (INDEX_NONE != IntValue);
 
 				// If the parse did not succeed, clear out the int to keep the enum value valid
@@ -8778,16 +8917,36 @@ bool FBlueprintEditorUtils::PropertyValueFromString_Direct(const FProperty* Prop
 		}
 		else if (const FEnumProperty* EnumProperty = CastField<const FEnumProperty>(Property))
 		{
-			int64 IntValue = EnumProperty->GetEnum()->GetValueByName(FName(*StrValue));
-			bParseSucceeded = (INDEX_NONE != IntValue);
-
-			// If the parse did not succeed, clear out the int to keep the enum value valid
-			if (!bParseSucceeded)
+			bParseSucceeded = false;
+			if (const UEnum* Enum = EnumProperty->GetEnum())
 			{
-				IntValue = 0;
+				int64 IntValue = INDEX_NONE;
+				if (StrValue.Len() < NAME_SIZE)
+				{
+					IntValue = Enum->GetValueByName(FName(*StrValue));
+				}
+				bParseSucceeded = (INDEX_NONE != IntValue);
+
+				// If the parse did not succeed, clear out the int to keep the enum value valid
+				if (!bParseSucceeded)
+				{
+					IntValue = 0;
+				}
+				bParseSucceeded = bParseSucceeded && (IntValue <= 255) && (IntValue >= 0);
+				EnumProperty->GetUnderlyingProperty()->SetIntPropertyValue(DirectValue, IntValue);
 			}
-			bParseSucceeded = bParseSucceeded && (IntValue <= 255) && (IntValue >= 0);
-			EnumProperty->GetUnderlyingProperty()->SetIntPropertyValue(DirectValue, IntValue);
+			else
+			{
+				UE_LOG(
+					LogBlueprint,
+					Warning,
+					TEXT("Member 'Enum' of EnumProperty is nullptr, copy   operation would fail. You could ignore this message if you moved the enum class. EnumProperty name:'%s', OwningObject: '%s', outer of OwningObject: '%s', outer of outer: '%s'"),
+					*EnumProperty->GetName(),
+					*GetNameSafe(OwningObject),
+					*GetNameSafe(OwningObject ? OwningObject->GetOuter() : nullptr),
+					*GetNameSafe(OwningObject ? OwningObject->GetOuter() ? OwningObject->GetOuter()->GetOuter(): nullptr : nullptr)
+				);
+			}
 		}
 		else if (Property->IsA(FStrProperty::StaticClass()))
 		{

@@ -12,16 +12,11 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Input/SComboBox.h"
 
-class SDMXOutputFaderList;
-class IDMXProtocol;
-
 struct FSpinBoxStyle;
 class SBorder;
-class STextBlock;
-
-template<typename NumericType>
-class SSpinBoxVertical;
 class SInlineEditableTextBlock;
+template<typename NumericType> class SSpinBoxVertical;
+class STextBlock;
 
 
 /** Individual fader UI class */
@@ -39,7 +34,6 @@ public:
 		, _UniverseID(1)
 		, _StartingAddress(1)
 		, _EndingAddress(1)
-		, _ProtocolName(NAME_None)
 	{}
 		/** The name displayed above the fader */
 		SLATE_ARGUMENT(FText, FaderName)
@@ -62,9 +56,6 @@ public:
 		/** The end channel Address to send DMX to */
 		SLATE_ARGUMENT(int32, EndingAddress)
 
-		/** The protocol name which should be used to send dmx */
-		SLATE_ARGUMENT(FName, ProtocolName)
-
 		/** Called when the fader gets selected */
 		SLATE_EVENT(FDMXFaderDelegate, OnRequestDelete)
 
@@ -86,8 +77,8 @@ public:
 	bool IsSelected() const { return bSelected; }
 
 private:
-	/** Sends the current value to the channels in universe specified by the widget */
-	void SendDMX();
+	/** Sanetizes DMX properties (Universe ID etc.) if they hold invalid values */
+	void SanetizeDMXProperties();
 
 	/** True if the fader is selected */
 	bool bSelected = false;
@@ -99,30 +90,8 @@ protected:
 	virtual bool SupportsKeyboardFocus() const override { return true; }
 	//~ End SWidget implementation
 
-private:
 	/** Generates a widget to edit the adresses the fader sould send DMX to */
 	TSharedRef<SWidget> GenerateAdressEditWidget();
-
-	/** Generates the protocol combo box */
-	TSharedRef<SComboBox<TSharedPtr<FName>>> GenerateProtocolComboBox(const FName& InitialProtocolName);
-
-	/** Generates an entry in the protocol combo box */
-	TSharedRef<SWidget> GenerateProtocolComboBoxEntry(TSharedPtr<FName> ProtocolName);
-
-	/** Returns the selected protocol name as text */
-	FText GetSelectedProtocolText() const;
-
-	/** Called when a protocol was selected */
-	void OnProtocolSelected(TSharedPtr<FName> NewProtocolName, ESelectInfo::Type SelectInfo);
-
-	/** Combo box with available protocols */
-	TSharedPtr<SComboBox<TSharedPtr<FName>>> ProtocolComboBox;
-
-	/** Protocols to be shown in the protocol combo box */
-	TArray<TSharedPtr<FName>> ProtocolNameArray;
-
-	/** The protocol that is used to send dmx */
-	IDMXProtocolPtr Protocol;
 
 public:
 	/** Returns the name of the fader */
@@ -135,7 +104,7 @@ public:
 	int32 GetStartingAddress() const { return StartingAddress; }
 
 	/** Returns the Ending Channel to which to send DMX to */
-	int32 GetEndingAddress() const { return StartingAddress; }
+	int32 GetEndingAddress() const { return EndingAddress; }
 
 	/** Gets the value of the fader */
 	uint8 GetValue() const;
@@ -181,20 +150,23 @@ private:
 	/** Called when the fader name changes */
 	void OnFaderNameCommitted(const FText& NewFaderName, ETextCommit::Type InCommit);
 
-	/** Called when the UniverseID border was doubleclicked, to give some more click-space to users */
-	FReply OnUniverseIDBorderDoubleClicked(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent);
+	/** Called when the UniverseID border was Clicked, to give some more click-space to users */
+	FReply OnUniverseIDBorderClicked(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent);
 
-	/** Called when the Starting Adress border was doubleclicked, to give some more click-space to users */
-	FReply OnStartingAddressBorderDoubleClicked(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent);
+	/** Called when the Min Value border was Clicked, to give some more click-space to users */
+	FReply OnMinValueBorderClicked(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent);
 
-	/** Called when the Ending Adress was doubleclicked, to give some more click-space to users */
-	FReply OnEndingAddressBorderDoubleClicked(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent);
+	/** Called when the Max Value border was Clicked, to give some more click-space to users */
+	FReply OnMaxValueBorderClicked(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent);
+
+	/** Called when the Starting Adress border was Clicked, to give some more click-space to users */
+	FReply OnStartingAddressBorderClicked(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent);
+
+	/** Called when the Ending Adress was Clicked, to give some more click-space to users */
+	FReply OnEndingAddressBorderClicked(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent);
 
 	/** Returns the UniverseID as text */
 	FText GetUniverseIDAsText() const { return FText::FromString(FString::FromInt(UniverseID)); }
-
-	/** Called when UniverseID changes, but is not commited yet */
-	bool VerifyUniverseID(const FText& UniverseIDText, FText& OutErrorText);
 
 	/** Called when the UniverseID was commited */
 	void OnUniverseIDCommitted(const FText& UniverseIDText, ETextCommit::Type InCommit);
@@ -202,17 +174,11 @@ private:
 	/** Returns the max value as text */
 	FText GetStartingAddressAsText() const { return FText::FromString(FString::FromInt(StartingAddress)); }
 
-	/** Called when max value changes, but is not commited yet */
-	bool VerifyStartingAddress(const FText& StartingAddressText, FText& OutErrorText);
-
 	/** Called when the UniverseID was commited */
 	void OnStartingAddressCommitted(const FText& StartingAddressText, ETextCommit::Type InCommit);
 
 	/** Returns the max value as text */
 	FText GetEndingAddressAsText() const { return FText::FromString(FString::FromInt(EndingAddress)); }
-
-	/** Called when max value changes, but is not commited yet */
-	bool VerifyEndingAddress(const FText& EndingAddressText, FText& OutErrorText);
 
 	/** Called when the UniverseID was commited */
 	void OnEndingAddressCommitted(const FText& EndingAddressText, ETextCommit::Type InCommit);
@@ -220,30 +186,17 @@ private:
 	/** Returns the max value as text */
 	FText GetMaxValueAsText() const { return FText::FromString(FString::FromInt(MaxValue)); }
 
-	/** Called when max value changes, but is not commited yet */
-	bool VerifyMaxValue(const FText& MaxValueText, FText& OutErrorText);
-
 	/** Called when the max value was commited */
 	void OnMaxValueCommitted(const FText& MaxValueText, ETextCommit::Type InCommit);
 
 	/** Returns the min value as text */
 	FText GetMinValueAsText() const { return FText::FromString(FString::FromInt(MinValue)); }
 
-	/** Called when min value changes, but is not commited yet */
-	bool VerifyMinValue(const FText& MinValueText, FText& OutErrorText);
-
 	/** Called when the min value was commited */
 	void OnMinValueCommitted(const FText& MinValueText, ETextCommit::Type InCommit);
 
 	/**Change fader background color on hover */
 	const FSlateBrush* GetBorderImage() const;
-
-public:
-	/** Gets the protocol name used for this fader */
-	const FName& GetProtocolName() const;
-
-	/** Gets the protocol used for this fader */
-	const IDMXProtocolPtr& GetProtocol() const { return Protocol; }
 
 private:
 	/** Background of the fader */
@@ -257,6 +210,12 @@ private:
 
 	/** The actual editable fader */
 	TSharedPtr<SSpinBoxVertical<uint8>> FaderSpinBox;
+
+	/** Textblock to edit the Max Value of the Fader */
+	TSharedPtr<SInlineEditableTextBlock> MaxValueEditableTextBlock;
+
+	/** Textblock to edit the Min Value of the Fader */
+	TSharedPtr<SInlineEditableTextBlock> MinValueEditableTextBlock;
 
 	/** Textblock to edit the UniverseID */
 	TSharedPtr<SInlineEditableTextBlock> UniverseIDEditableTextBlock;

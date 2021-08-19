@@ -37,6 +37,15 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingStarted, UTakeRecorder*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingFinished, UTakeRecorder*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingCancelled, UTakeRecorder*);
 
+DECLARE_DELEGATE_RetVal_OneParam(FTakeRecorderParameters, FTakeRecorderParameterDelegate,const FTakeRecorderParameters&);
+
+struct TAKERECORDER_API FTakeRecorderParameterOverride
+{
+	void RegisterHandler(FName OverrideName, FTakeRecorderParameterDelegate Delegate);
+	void UnregisterHandler(FName OverrideName);
+
+	TMap<FName, FTakeRecorderParameterDelegate> Delegates;
+};
 
 DECLARE_LOG_CATEGORY_EXTERN(ManifestSerialization, Verbose, All);
 
@@ -60,6 +69,12 @@ public:
 	 * Retrieve a multi-cast delegate that is triggered when a new recording begins
 	 */
 	static FOnTakeRecordingInitialized& OnRecordingInitialized();
+
+	/**
+	 * On take initialization overrides provide a mechanism to adjust parameter values when
+	 * a new take is initialized.
+	 */
+	static FTakeRecorderParameterOverride& TakeInitializeParameterOverride();
 
 public:
 
@@ -89,6 +104,11 @@ public:
 	{
 		return State;
 	}
+
+	/**
+	 * Disable saving data on tick event. This make the TakeRecord a no-op.
+	 */
+	void SetDisableSaveTick( bool );
 
 public:
 
@@ -139,7 +159,7 @@ private:
 	/**
 	 * Called after PreRecord To Start
 	 */
-	void Start(const FTimecode& InTimecodeSource);
+	void Start();
 
 	/**
 	 * Ticked by a tickable game object to performe any necessary time-sliced logic
@@ -157,9 +177,14 @@ private:
 	bool CreateDestinationAsset(const TCHAR* AssetPathFormat, ULevelSequence* LevelSequenceBase, UTakeRecorderSources* Sources, UTakeMetaData* MetaData, FText* OutError);
 
 	/**
+	 * Setup a existing asset to record into based on the parameters
+	 */
+	bool SetupDestinationAsset(const FTakeRecorderParameters& InParameters, ULevelSequence* LevelSequenceBase, UTakeRecorderSources* Sources, UTakeMetaData* MetaData, FText* OutError);
+
+	/**
 	 * Attempt to open the sequencer UI for the asset to be recorded
 	 */
-	bool InitializeSequencer(FText* OutError);
+	bool InitializeSequencer(ULevelSequence* LevelSequence, FText* OutError);
 
 	/**
 	 * Discovers the source world to record from, and initializes it for recording
@@ -171,10 +196,19 @@ private:
 	 */
 	void InitializeFromParameters();
 
+	/**
+     * Returns true if notification widgets should be shown when recording.
+	 * It takes into account TakeRecorder project settings, the command line, and global unattended settings.
+     */
+	bool ShouldShowNotifications();
+
 private:
 
+	/* The time at which to record. Taken from the Sequencer global time, otherwise based on timecode */
+	FQualifiedFrameTime GetRecordTime() const;
+
 	/** Called by Tick and Start to make sure we record at start */
-	void InternalTick(const FTimecode& InTimecodeSource, float DeltaTime);
+	void InternalTick(float DeltaTime);
 
 	virtual UWorld* GetWorld() const override;
 
@@ -188,6 +222,12 @@ private:
 
 	/** FFrameTime in MovieScene Resolution we are at*/
 	FFrameTime CurrentFrameTime;
+
+	/** Timecode at the start of recording */
+	FTimecode TimecodeAtStart;
+
+	/** Optional frame to stop recording at*/
+	TOptional<FFrameNumber> StopRecordingFrame;
 
 	/** The asset that we should output recorded data into */
 	UPROPERTY(transient)
@@ -244,4 +284,7 @@ private:
 
 	EAllowEditsMode CachedAllowEditsMode;
 	EAutoChangeMode CachedAutoChangeMode;
+	EUpdateClockSource CachedClockSource;
+	
+	TRange<FFrameNumber> CachedPlaybackRange;
 };

@@ -318,11 +318,11 @@ void FAnimationViewportClient::SaveCameraAsDefault()
 
 		FViewportCameraTransform& ViewTransform = GetViewTransform();
 		SkelMesh->Modify();
-		SkelMesh->DefaultEditorCameraLocation = ViewTransform.GetLocation();
-		SkelMesh->DefaultEditorCameraRotation = ViewTransform.GetRotation();
-		SkelMesh->DefaultEditorCameraLookAt = ViewTransform.GetLookAt();
-		SkelMesh->DefaultEditorCameraOrthoZoom = ViewTransform.GetOrthoZoom();
-		SkelMesh->bHasCustomDefaultEditorCamera = true;
+		SkelMesh->SetDefaultEditorCameraLocation(ViewTransform.GetLocation());
+		SkelMesh->SetDefaultEditorCameraRotation(ViewTransform.GetRotation());
+		SkelMesh->SetDefaultEditorCameraLookAt(ViewTransform.GetLookAt());
+		SkelMesh->SetDefaultEditorCameraOrthoZoom(ViewTransform.GetOrthoZoom());
+		SkelMesh->SetHasCustomDefaultEditorCamera(true);
 
 		// Create and display a notification 
 		const FText NotificationText = FText::Format(LOCTEXT("SavedDefaultCamera", "Saved default camera for {0}"), FText::AsCultureInvariant(SkelMesh->GetName()));
@@ -345,7 +345,7 @@ void FAnimationViewportClient::ClearDefaultCamera()
 		FScopedTransaction Transaction(LOCTEXT("ClearDefaultCamera", "Clear Default Camera"));
 
 		SkelMesh->Modify();
-		SkelMesh->bHasCustomDefaultEditorCamera = false;
+		SkelMesh->SetHasCustomDefaultEditorCamera(false);
 
 		// Create and display a notification 
 		const FText NotificationText = FText::Format(LOCTEXT("ClearedDefaultCamera", "Cleared default camera for {0}"), FText::AsCultureInvariant(SkelMesh->GetName()));
@@ -358,7 +358,7 @@ void FAnimationViewportClient::ClearDefaultCamera()
 bool FAnimationViewportClient::HasDefaultCameraSet() const
 {
 	USkeletalMesh* SkelMesh = GetAnimPreviewScene()->GetPreviewMeshComponent()->SkeletalMesh;
-	return (SkelMesh && SkelMesh->bHasCustomDefaultEditorCamera);
+	return (SkelMesh && SkelMesh->GetHasCustomDefaultEditorCamera());
 }
 
 static void DisableAllBodiesSimulatePhysics(UDebugSkelMeshComponent* PreviewMeshComponent)
@@ -465,9 +465,9 @@ void FAnimationViewportClient::Draw(const FSceneView* View, FPrimitiveDrawInterf
 		// Display socket hit points
 		if (PreviewMeshComponent->bDrawSockets )
 		{
-			if (PreviewMeshComponent->bSkeletonSocketsVisible && PreviewMeshComponent->SkeletalMesh->Skeleton )
+			if (PreviewMeshComponent->bSkeletonSocketsVisible && PreviewMeshComponent->SkeletalMesh->GetSkeleton() )
 			{
-				DrawSockets(PreviewMeshComponent, PreviewMeshComponent->SkeletalMesh->Skeleton->Sockets, FSelectedSocketInfo(), PDI, true);
+				DrawSockets(PreviewMeshComponent, PreviewMeshComponent->SkeletalMesh->GetSkeleton()->Sockets, FSelectedSocketInfo(), PDI, true);
 			}
 
 			if ( PreviewMeshComponent->bMeshSocketsVisible )
@@ -626,7 +626,7 @@ void FAnimationViewportClient::ShowBoneNames( FCanvas* Canvas, FSceneView* View 
 	//Most of the code taken from FASVViewportClient::Draw() in AnimSetViewerMain.cpp
 	FSkeletalMeshRenderData* SkelMeshRenderData = PreviewMeshComponent->GetSkeletalMeshRenderData();
 	check(SkelMeshRenderData);
-	const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->PredictedLODLevel, 0, SkelMeshRenderData->LODRenderData.Num()-1);
+	const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->GetPredictedLODLevel(), 0, SkelMeshRenderData->LODRenderData.Num()-1);
 	FSkeletalMeshLODRenderData& LODData = SkelMeshRenderData->LODRenderData[ LODIndex ];
 
 	// Check if our reference skeleton is out of synch with the one on the loddata
@@ -741,7 +741,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 		TextValue = ConcatenateLine(TextValue, LOCTEXT("AdditiveRefPoseWarning", "<AnimViewport.WarningText>Additive ref pose contains scales of 0.0, this can cause additive animations to not give the desired results</>"));
 	}
 
-	if (PreviewMeshComponent->SkeletalMesh->MorphTargets.Num() > 0)
+	if (PreviewMeshComponent->SkeletalMesh->GetMorphTargets().Num() > 0)
 	{
 		TArray<UMaterial*> ProcessedMaterials;
 		TArray<UMaterial*> MaterialsThatNeedMorphFlagOn;
@@ -750,7 +750,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 		const TIndirectArray<FSkeletalMeshLODModel>& LODModels = PreviewMeshComponent->SkeletalMesh->GetImportedModel()->LODModels;
 		int32 LodNumber = LODModels.Num();
 		TArray<UMaterialInterface*> MaterialUsingMorphTarget;
-		for (UMorphTarget *MorphTarget : PreviewMeshComponent->SkeletalMesh->MorphTargets)
+		for (UMorphTarget *MorphTarget : PreviewMeshComponent->SkeletalMesh->GetMorphTargets())
 		{
 			if (MorphTarget == nullptr)
 			{
@@ -765,7 +765,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 						const FSkeletalMeshLODModel& LODModel = LODModels[LodIdx];
 						if (LODModel.Sections.IsValidIndex(SectionIndex))
 						{
-							MaterialUsingMorphTarget.AddUnique(PreviewMeshComponent->SkeletalMesh->Materials[LODModel.Sections[SectionIndex].MaterialIndex].MaterialInterface);
+							MaterialUsingMorphTarget.AddUnique(PreviewMeshComponent->SkeletalMesh->GetMaterials()[LODModel.Sections[SectionIndex].MaterialIndex].MaterialInterface);
 						}
 					}
 				}
@@ -859,7 +859,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 			int32 NumBonesMappedToVerts;
 			int32 NumSectionsInUse;
 
-			const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->PredictedLODLevel, 0, SkelMeshResource->LODRenderData.Num() - 1);
+			const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->GetPredictedLODLevel(), 0, SkelMeshResource->LODRenderData.Num() - 1);
 			FSkeletalMeshLODRenderData& LODData = SkelMeshResource->LODRenderData[LODIndex];
 
 			NumBonesInUse = LODData.RequiredBones.Num();
@@ -950,7 +950,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 			FSkeletalMeshRenderData* SkelMeshResource = PreviewMeshComponent->GetSkeletalMeshRenderData();
 			check(SkelMeshResource);
 
-			const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->PredictedLODLevel, 0, SkelMeshResource->LODRenderData.Num() - 1);
+			const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->GetPredictedLODLevel(), 0, SkelMeshResource->LODRenderData.Num() - 1);
 			FSkeletalMeshLODRenderData& LODData = SkelMeshResource->LODRenderData[LODIndex];
 
 			// Current LOD 
@@ -988,7 +988,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 			const FSkeletalMeshRenderData* SkelMeshResource = PreviewMeshComponent->GetSkeletalMeshRenderData();
 			check(SkelMeshResource);
 			
-			const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->PredictedLODLevel, 0, SkelMeshResource->LODRenderData.Num() - 1);
+			const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->GetPredictedLODLevel(), 0, SkelMeshResource->LODRenderData.Num() - 1);
 			const FSkeletalMeshLODRenderData& LODData = SkelMeshResource->LODRenderData[LODIndex];
 			
 			const FName ProfileName = PreviewMeshComponent->GetCurrentSkinWeightProfileName();
@@ -1666,7 +1666,7 @@ FBox FAnimationViewportClient::ComputeBoundingBoxForSelectedEditorSection() cons
 		return FBox(ForceInitToZero);
 	}
 
-	const int32 LODLevel = PreviewMeshComponent->PredictedLODLevel;
+	const int32 LODLevel = PreviewMeshComponent->GetPredictedLODLevel();
 	const int32 SelectedEditorSection = PreviewMeshComponent->GetSelectedEditorSection();
 	const FSkeletalMeshRenderData& SkelMeshRenderData = MeshObject->GetSkeletalMeshRenderData();
 
@@ -1714,14 +1714,14 @@ void FAnimationViewportClient::FocusViewportOnPreviewMesh(bool bUseCustomCamera)
 	{
 		if (USkeletalMesh* const SkelMesh = PreviewMeshComponent->SkeletalMesh)
 		{
-			if (bUseCustomCamera && SkelMesh->bHasCustomDefaultEditorCamera)
+			if (bUseCustomCamera && SkelMesh->GetHasCustomDefaultEditorCamera())
 			{
 				FViewportCameraTransform& ViewTransform = GetViewTransform();
 
-				ViewTransform.SetLocation(SkelMesh->DefaultEditorCameraLocation);
-				ViewTransform.SetRotation(SkelMesh->DefaultEditorCameraRotation);
-				ViewTransform.SetLookAt(SkelMesh->DefaultEditorCameraLookAt);
-				ViewTransform.SetOrthoZoom(SkelMesh->DefaultEditorCameraOrthoZoom);
+				ViewTransform.SetLocation(SkelMesh->GetDefaultEditorCameraLocation());
+				ViewTransform.SetRotation(SkelMesh->GetDefaultEditorCameraRotation());
+				ViewTransform.SetLookAt(SkelMesh->GetDefaultEditorCameraLookAt());
+				ViewTransform.SetOrthoZoom(SkelMesh->GetDefaultEditorCameraOrthoZoom());
 
 				Invalidate();
 				return;
@@ -1750,7 +1750,7 @@ float FAnimationViewportClient::GetFloorOffset() const
 	USkeletalMesh* Mesh = GetPreviewScene()->GetPreviewMeshComponent()->SkeletalMesh;
 	if ( Mesh )
 	{
-		return Mesh->FloorOffset;
+		return Mesh->GetFloorOffset();
 	}
 
 	return 0.0f;
@@ -1766,7 +1766,7 @@ void FAnimationViewportClient::SetFloorOffset( float NewValue )
 		FScopedTransaction Transaction( LOCTEXT( "SetFloorOffset", "Set Floor Offset" ) );
 		Mesh->Modify();
 
-		Mesh->FloorOffset = NewValue;
+		Mesh->SetFloorOffset(NewValue);
 		UpdateCameraSetup(); // This does the actual moving of the floor mesh
 		Invalidate();
 	}

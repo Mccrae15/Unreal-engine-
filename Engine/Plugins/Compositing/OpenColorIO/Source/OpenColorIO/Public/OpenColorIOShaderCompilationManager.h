@@ -2,8 +2,10 @@
 
 #pragma once
 
-#include "OpenColorIOShared.h"
+#include "CoreMinimal.h"
 #include "ShaderCompiler.h"
+
+class FShaderType;
 
 
 /** Information tracked for each shader compile worker process instance. */
@@ -25,7 +27,7 @@ struct FOpenColorIOShaderCompileWorkerInfo
 	double StartTime;
 
 	/** Jobs that this worker is responsible for compiling. */
-	TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> QueuedJobs;
+	TArray<FShaderCommonCompileJobPtr> QueuedJobs;
 
 	FOpenColorIOShaderCompileWorkerInfo() :
 		bIssuedTasksToWorker(false),
@@ -52,14 +54,12 @@ struct FOpenColorIOShaderMapCompileResults
 {
 	FOpenColorIOShaderMapCompileResults() :
 		NumJobsQueued(0),
-		bAllJobsSucceeded(true),
-		bRecreateComponentRenderStateOnCompletion(false)
+		bAllJobsSucceeded(true)
 	{}
 
 	int32 NumJobsQueued;
 	bool bAllJobsSucceeded;
-	bool bRecreateComponentRenderStateOnCompletion;
-	TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> FinishedJobs;
+	TArray<FShaderCommonCompileJobPtr> FinishedJobs;
 };
 
 
@@ -85,18 +85,17 @@ public:
 	~FOpenColorIOShaderCompilationManager();
 
 	OPENCOLORIO_API void Tick(float DeltaSeconds = 0.0f);
-	OPENCOLORIO_API void AddJobs(TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> InNewJobs);
+	OPENCOLORIO_API void AddJobs(TArray<FShaderCommonCompileJobPtr> InNewJobs);
 	OPENCOLORIO_API void ProcessAsyncResults();
 
 	void FinishCompilation(const TCHAR* InTransformName, const TArray<int32>& ShaderMapIdsToFinishCompiling);
 
 private:
 	void ProcessCompiledOpenColorIOShaderMaps(TMap<int32, FOpenColorIOShaderMapFinalizeResults>& CompiledShaderMaps, float TimeBudget);
-	void RunCompileJobs();
 
 	void InitWorkerInfo();
 
-	TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> JobQueue;
+	TArray<FShaderCommonCompileJobPtr> JobQueue;
 
 	/** Map from shader map Id to the compile results for that map, used to gather compiled results. */
 	TMap<int32, FOpenColorIOShaderMapCompileResults> OpenColorIOShaderMapJobs;

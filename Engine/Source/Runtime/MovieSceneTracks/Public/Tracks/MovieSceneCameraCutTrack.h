@@ -41,6 +41,8 @@ public:
 	virtual bool SupportsMultipleRows() const override;
 	virtual EMovieSceneTrackEasingSupportFlags SupportsEasing(FMovieSceneSupportsEasingParams& Params) const override;
 	virtual const TArray<UMovieSceneSection*>& GetAllSections() const override;
+	virtual bool HasSection(const UMovieSceneSection& Section) const override;
+	virtual bool IsEmpty() const override;
 	virtual void RemoveSection(UMovieSceneSection& Section) override;
 	virtual void RemoveSectionAt(int32 SectionIndex) override;
 	virtual void RemoveAllAnimationData() override;
@@ -50,14 +52,14 @@ public:
 #endif
 
 #if WITH_EDITOR
-	virtual void OnSectionMoved(UMovieSceneSection& Section, const FMovieSceneSectionMovedParams& Params) override;
+	virtual EMovieSceneSectionMovedResult OnSectionMoved(UMovieSceneSection& Section, const FMovieSceneSectionMovedParams& Params) override;
 #endif
+
+	MOVIESCENETRACKS_API FFrameNumber FindEndTimeForCameraCut(FFrameNumber StartTime);
 
 protected:
 
-	FFrameNumber FindEndTimeForCameraCut(FFrameNumber StartTime);
-
-	virtual void PreCompileImpl() override;
+	virtual void PreCompileImpl(FMovieSceneTrackPreCompileResult& OutPreCompileResult) override;
 
 public:
 	UPROPERTY()

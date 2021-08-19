@@ -112,8 +112,9 @@ FOpenXRInputPlugin::FOpenXRAction::FOpenXRAction(XrActionSet InActionSet, XrActi
 	XR_ENSURE(xrCreateAction(Set, &Info, &Handle));
 }
 
-FOpenXRInputPlugin::FOpenXRController::FOpenXRController(XrActionSet InActionSet, const char* InName)
+FOpenXRInputPlugin::FOpenXRController::FOpenXRController(XrActionSet InActionSet, XrPath InUserPath, const char* InName)
 	: ActionSet(InActionSet)
+	, UserPath(InUserPath)
 	, GripAction(XR_NULL_HANDLE)
 	, AimAction(XR_NULL_HANDLE)
 	, VibrationAction(XR_NULL_HANDLE)
@@ -149,8 +150,8 @@ void FOpenXRInputPlugin::FOpenXRController::AddActionDevices(FOpenXRHMD* HMD)
 {
 	if (HMD)
 	{
-		GripDeviceId = HMD->AddActionDevice(GripAction);
-		AimDeviceId = HMD->AddActionDevice(AimAction);
+		GripDeviceId = HMD->AddActionDevice(GripAction, UserPath);
+		AimDeviceId = HMD->AddActionDevice(AimAction, UserPath);
 	}
 }
 
@@ -217,6 +218,12 @@ int32 FOpenXRInputPlugin::FOpenXRInput::GetDeviceIDForMotionSource(FName MotionS
 	}
 }
 
+XrPath FOpenXRInputPlugin::FOpenXRInput::GetUserPathForMotionSource(FName MotionSource) const
+{
+	const FOpenXRController& Controller = Controllers[MotionSourceToControllerHandMap.FindChecked(MotionSource)];
+	return Controller.UserPath;
+}
+
 bool FOpenXRInputPlugin::FOpenXRInput::IsOpenXRInputSupportedMotionSource(const FName MotionSource) const
 {
 	return
@@ -249,13 +256,18 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildActions()
 	FCStringAnsi::Strcpy(SetInfo.localizedActionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "Unreal Engine 4");
 	XR_ENSURE(xrCreateActionSet(Instance, &SetInfo, &ActionSet));
 
+	XrPath LeftHand = GetPath(Instance, "/user/hand/left");
+	XrPath RightHand = GetPath(Instance, "/user/hand/right");
+
 	// Controller poses
 	OpenXRHMD->ResetActionDevices();
-	Controllers.Add(EControllerHand::Left, FOpenXRController(ActionSet, "Left Controller"));
-	Controllers.Add(EControllerHand::Right, FOpenXRController(ActionSet, "Right Controller"));
+	Controllers.Add(EControllerHand::Left, FOpenXRController(ActionSet, LeftHand, "Left Controller"));
+	Controllers.Add(EControllerHand::Right, FOpenXRController(ActionSet, RightHand, "Right Controller"));
 
 	// Generate a map of all supported interaction profiles
+	XrPath SimpleControllerPath = GetPath(Instance, "/interaction_profiles/khr/simple_controller");
 	TMap<FString, FInteractionProfile> Profiles;
+	Profiles.Add("SimpleController", FInteractionProfile(SimpleControllerPath, true));
 	Profiles.Add("Daydream", FInteractionProfile(GetPath(Instance, "/interaction_profiles/google/daydream_controller"), false));
 	Profiles.Add("Vive", FInteractionProfile(GetPath(Instance, "/interaction_profiles/htc/vive_controller"), true));
 	Profiles.Add("MixedReality", FInteractionProfile(GetPath(Instance, "/interaction_profiles/microsoft/motion_controller"), true));
@@ -276,8 +288,8 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildActions()
 	}
 
 	// Generate a list of the sub-action paths so we can query the left/right hand individually
-	SubactionPaths.Add(GetPath(Instance, "/user/hand/left"));
-	SubactionPaths.Add(GetPath(Instance, "/user/hand/right"));
+	SubactionPaths.Add(LeftHand);
+	SubactionPaths.Add(RightHand);
 
 	auto InputSettings = GetMutableDefault<UInputSettings>();
 	if (InputSettings != nullptr)
@@ -336,17 +348,14 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildActions()
 			);
 	}
 
-	bool bGripAndAimBindingsAdded = false;
-
 	for (TPair<FString, FInteractionProfile>& Pair : Profiles)
 	{
 		FInteractionProfile& Profile = Pair.Value;
 
 		// Only suggest interaction profile bindings if the developer has provided bindings for them
-		if (Profile.Bindings.Num() > 0)
+		// An exception is made for the Simple Controller Profile which is always bound as a fallback
+		if (Profile.Bindings.Num() > 0 || Profile.Path == SimpleControllerPath)
 		{
-			bGripAndAimBindingsAdded = true;
-
 			// Add the bindings for the controller pose and haptics
 			Profile.Bindings.Add(XrActionSuggestedBinding {
 				Controllers[EControllerHand::Left].GripAction, GetPath(Instance, "/user/hand/left/input/grip/pose")
@@ -379,32 +388,6 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildActions()
 			InteractionProfile.suggestedBindings = Profile.Bindings.GetData();
 			XR_ENSURE(xrSuggestInteractionProfileBindings(Instance, &InteractionProfile));
 		}
-	}
-	
-	// If we have no profile bindings at all we will bind grip/aim to the Kronos Simple Controller profile, so that motion controller grip/aim poses function by default.
-	if (!bGripAndAimBindingsAdded)
-	{
-		TArray<XrActionSuggestedBinding> Bindings;
-		Bindings.Add(XrActionSuggestedBinding{
-			Controllers[EControllerHand::Left].GripAction, GetPath(Instance, "/user/hand/left/input/grip/pose")
-			});
-		Bindings.Add(XrActionSuggestedBinding{
-			Controllers[EControllerHand::Right].GripAction, GetPath(Instance, "/user/hand/right/input/grip/pose")
-			});
-		Bindings.Add(XrActionSuggestedBinding{
-			Controllers[EControllerHand::Left].AimAction, GetPath(Instance, "/user/hand/left/input/aim/pose")
-			});
-		Bindings.Add(XrActionSuggestedBinding{
-			Controllers[EControllerHand::Right].AimAction, GetPath(Instance, "/user/hand/right/input/aim/pose")
-			});
-
-		XrInteractionProfileSuggestedBinding InteractionProfile;
-		InteractionProfile.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
-		InteractionProfile.next = nullptr;
-		InteractionProfile.interactionProfile = GetPath(Instance, "/interaction_profiles/khr/simple_controller");
-		InteractionProfile.countSuggestedBindings = Bindings.Num();
-		InteractionProfile.suggestedBindings = Bindings.GetData();
-		XR_ENSURE(xrSuggestInteractionProfileBindings(Instance, &InteractionProfile));
 	}
 
 	Controllers[EControllerHand::Left].AddActionDevices(OpenXRHMD);
@@ -446,7 +429,7 @@ int32 FOpenXRInputPlugin::FOpenXRInput::SuggestBindings(XrInstance Instance, FOp
 	{
 		// Key names that are parseable into an OpenXR path have exactly 4 tokens
 		TArray<FString> Tokens;
-		if (InputKey.Key.ToString().ParseIntoArray(Tokens, TEXT("_")) != 4)
+		if (InputKey.Key.ToString().ParseIntoArray(Tokens, TEXT("_")) != EKeys::NUM_XR_KEY_TOKENS)
 		{
 			continue;
 		}
@@ -482,6 +465,12 @@ int32 FOpenXRInputPlugin::FOpenXRInput::SuggestBindings(XrInstance Instance, FOp
 			else if (Component == "click")
 			{
 				if (Tokens[0] == "ValveIndex" && (Identifier == "trackpad" || Identifier == "squeeze"))
+				{
+					continue;
+				}
+
+				// The OpenXR spec says that .../input/system/click might not be available for application usage
+				if (Identifier == "system")
 				{
 					continue;
 				}
@@ -621,9 +610,9 @@ void FOpenXRInputPlugin::FOpenXRInput::SendControllerEvents()
 				State.type = XR_TYPE_ACTION_STATE_BOOLEAN;
 				State.next = nullptr;
 				XrResult Result = xrGetActionStateBoolean(Session, &GetInfo, &State);
-				if (Result >= XR_SUCCESS && State.isActive && State.changedSinceLastSync)
+				if (Result >= XR_SUCCESS && State.changedSinceLastSync)
 				{
-					if (State.currentState)
+					if (State.currentState && State.isActive)
 					{
 						MessageHandler->OnControllerButtonPressed(*ActionKey, 0, /*IsRepeat =*/false);
 					}
@@ -874,7 +863,7 @@ ETrackingStatus FOpenXRInputPlugin::FOpenXRInput::GetControllerTrackingStatus(co
 		State.type = XR_TYPE_ACTION_STATE_POSE;
 		State.next = nullptr;
 		XrResult Result = xrGetActionStatePose(Session, &GetInfo, &State);
-		if (Result >= XR_SUCCESS && State.isActive)
+		if (XR_SUCCEEDED(Result) && State.isActive)
 		{
 			FQuat Orientation;
 			bool bIsTracked = OpenXRHMD->GetIsTracked(GetDeviceIDForMotionSource(MotionSource));

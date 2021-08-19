@@ -32,6 +32,8 @@
 class IControlRigObjectBinding;
 class UScriptStruct;
 class USkeletalMesh;
+
+struct FReferenceSkeleton;
 struct FRigUnit;
 struct FRigControl;
 
@@ -374,6 +376,12 @@ public:
 	// Setup the initial transforms / ref pose of the bones based on a reference skeleton
 	void SetBoneInitialTransformsFromRefSkeleton(const FReferenceSkeleton& InReferenceSkeleton);
 
+	const FControlRigDrawInterface& GetDrawInterface() const { return DrawInterface; };
+	FControlRigDrawInterface& GetDrawInterface() { return DrawInterface; };
+
+	const FControlRigDrawContainer& GetDrawContainer() const { return DrawContainer; };
+	FControlRigDrawContainer& GetDrawContainer() { return DrawContainer; };
+
 private:
 
 	UPROPERTY()
@@ -463,7 +471,7 @@ private:
 	void UpdateAvailableControls();
 
 	/** Remove a transient / temporary control used to interact with a pin */
-	FName AddTransientControl(URigVMPin* InPin, FRigElementKey SpaceKey = FRigElementKey());
+	FName AddTransientControl(URigVMPin* InPin, FRigElementKey SpaceKey = FRigElementKey(), FTransform OffsetTransform = FTransform::Identity);
 
 	/** Sets the value of a transient control based on a pin */
 	bool SetTransientControlValue(URigVMPin* InPin);

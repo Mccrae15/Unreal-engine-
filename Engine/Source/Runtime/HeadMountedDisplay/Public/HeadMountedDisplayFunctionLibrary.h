@@ -372,4 +372,14 @@ class HEADMOUNTEDDISPLAY_API UHeadMountedDisplayFunctionLibrary : public UBluepr
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Input|XRTracking")
 	static bool GetControllerTransformForTime(UObject* WorldContext, const int32 ControllerIndex, const FName MotionSource, FTimespan Time, bool& bTimeWasUsed, FRotator& Orientation, FVector& Position, bool& bProvidedLinearVelocity, FVector& LinearVelocity, bool& bProvidedAngularVelocity, FVector& AngularVelocityRadPerSec);
+
+	/**
+	 * Get the bounds of the area where the user can freely move while remaining tracked centered around the specified origin
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Input|XRTracking")
+	static FVector2D GetPlayAreaBounds(TEnumAsByte<EHMDTrackingOrigin::Type> Origin = EHMDTrackingOrigin::Stage);
+
+	/** Breaks an XR key apart into the interaction profile, handedness, motion source, indentifier and component. */
+	UFUNCTION(BlueprintPure, Category = "Input|XRTracking", meta = (NativeBreakFunc))
+	static void BreakKey(FKey InKey, FString& InteractionProfile, EControllerHand& Hand, FName& MotionSource, FString& Indentifier, FString& Component);
 };

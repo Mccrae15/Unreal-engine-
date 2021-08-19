@@ -51,14 +51,21 @@ namespace Electra
 			H265,
 			// --- Audio ---
 			AAC = 100,
-			//
-			LastEntryDummy
+			EAC3,
+			// --- Subtitle / Caption ---
+			WebVTT = 200,
 		};
 
 		EStreamType GetStreamType() const
 		{
 			return StreamType;
 		}
+
+		FString GetMimeType() const;
+		FString GetMimeTypeWithCodec() const;
+		FString GetMimeTypeWithCodecAndFeatures() const;
+
+		bool ParseFromRFC6381(const FString& CodecOTI);
 
 		void SetStreamType(EStreamType InStreamType)
 		{
@@ -80,7 +87,6 @@ namespace Electra
 			switch (GetCodec())
 			{
 				case ECodec::H264:
-					return true;
 				case ECodec::H265:
 					return true;
 				default:
@@ -93,6 +99,18 @@ namespace Electra
 			switch (GetCodec())
 			{
 				case ECodec::AAC:
+				case ECodec::EAC3:
+					return true;
+				default:
+					return false;
+			}
+		}
+
+		bool IsSubtitleCodec() const
+		{
+			switch (GetCodec())
+			{
+				case ECodec::WebVTT:
 					return true;
 				default:
 					return false;
@@ -402,6 +420,36 @@ namespace Electra
 			// We do not compare frame rate here as we are interested in values that may require a decoder reconfiguration.
 			return Codec != Other.Codec || Resolution != Other.Resolution || ProfileLevel != Other.ProfileLevel || AspectRatio != Other.AspectRatio;
 		}
+
+		bool Equals(const FStreamCodecInformation& Other) const
+		{
+			if (StreamType == Other.StreamType && Codec == Other.Codec && CodecSpecifier.Equals(Other.CodecSpecifier) && StreamLanguageCode.Equals(Other.StreamLanguageCode))
+			{
+				if (StreamType == EStreamType::Video)
+				{
+					return Resolution == Other.Resolution &&
+						   Crop == Other.Crop &&
+						   AspectRatio == Other.AspectRatio &&
+						   FrameRate == Other.FrameRate &&
+						   ProfileLevel == Other.ProfileLevel;
+				}
+				else if (StreamType == EStreamType::Audio)
+				{
+					return SampleRate == Other.SampleRate &&
+						   NumChannels == Other.NumChannels &&
+						   ChannelConfiguration == Other.ChannelConfiguration &&
+						   AudioDecodingComplexity == Other.AudioDecodingComplexity &&
+						   AudioAccessibility == Other.AudioAccessibility &&
+						   NumberOfAudioObjects == Other.NumberOfAudioObjects;
+				}
+				else if (StreamType == EStreamType::Subtitle)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
 	private:
 		struct FProfileLevel
 		{
@@ -461,24 +509,124 @@ namespace Electra
 	struct FStreamMetadata
 	{
 		FStreamCodecInformation		CodecInformation;					//!< Stream codec information
-		FString						PlaylistID;							//!< URL or some other ID of the playlist (FIXME: this is mostly for HLS)
+		FString						ID;									//!< ID of this stream
 		int32						Bandwidth;							//!< Bandwidth required for this stream in bits per second
-		uint32						StreamUniqueID;						//!< Uniquely identifies this stream
-		FString						LanguageCode;
-		// TODO: additional information
+		bool Equals(const FStreamMetadata& Other) const
+		{
+			return ID == Other.ID && Bandwidth == Other.Bandwidth && CodecInformation.Equals(Other.CodecInformation);
+		}
 	};
 
+	/**
+	 * Metadata per track type.
+	 *
+	 * See: https://dev.w3.org/html5/html-sourcing-inband-tracks/
+	 *
+	 * While this may not represent every possible "role" the presentation format may offer this is a
+	 * representation that covers most of the use cases and can be applied to a variety of formats.
+	 */
+	struct FTrackMetadata
+	{
+		FString ID;
+		FString Kind;
+		FString Language;		// ISO-639-1 language code
+		FString Label;
 
+		TArray<FStreamMetadata> StreamDetails;
+		FStreamCodecInformation HighestBandwidthCodec;
+		int32 HighestBandwidth = 0;
+		bool Equals(const FTrackMetadata& Other) const
+		{
+			bool bEquals = ID.Equals(Other.ID) && Kind.Equals(Other.Kind) && Language.Equals(Other.Language);
+			if (bEquals)
+			{
+				if (StreamDetails.Num() == Other.StreamDetails.Num())
+				{
+					for(int32 i=0; i<StreamDetails.Num(); ++i)
+					{
+						if (!StreamDetails[i].Equals(Other.StreamDetails[i]))
+						{
+							return false;
+						}
+					}
+					return true;
+				}
+			}
+			return false;
+		}
+	};
 
 
 	/**
-	 * Temporary!
-	 * Used to convey the user's stream preferences (ie. language and other things) to the player.
+	 * Stream selection attributes.
+	 * See FTrackMetadata comments.
 	 */
-	struct FStreamPreferences
+	struct FStreamSelectionAttributes
 	{
-		FParamDict	Unused;							//!< This is only here as a placeholder for now. Nothing writes to or reads from this.
+		// Primarily used for audio selection. Should typically be set to "main" or left unset.
+		TOptional<FString> Kind;
+
+		// Used for audio and subtitles or captions. The language must be a valid two letter ISO-639 (-1, -2 or -3) code
+		// for which a two-letter ISO-639-1 equivalent exists. This is the equivalent of the primary language subtag of
+		// RFC-4646 and of RFC-5646
+		TOptional<FString> Language_ISO639;
+
+		// Rarely used. Unconditionally selects a track by its index where the index is a sequential numbering from [0..n)
+		// of the tracks as they are found. If the index is invalid the selection rules for kind and language are applied.
+		TOptional<int32> OverrideIndex;
+
+		bool IsCompatibleWith(const FStreamSelectionAttributes& Other)
+		{
+			FString Kind1 = Kind.IsSet() ? Kind.GetValue() : FString();
+			FString Kind2 = Other.Kind.IsSet() ? Other.Kind.GetValue() : FString();
+
+			FString Lang1 = Language_ISO639.IsSet() ? Language_ISO639.GetValue() : FString();
+			FString Lang2 = Other.Language_ISO639.IsSet() ? Other.Language_ISO639.GetValue() : FString();
+
+			if (Kind1.IsEmpty() || Kind2.IsEmpty() || Kind1.Equals(Kind2))
+			{
+				return Lang1.Equals(Lang2);
+			}
+			return false;
+		}
+
+		void Reset()
+		{
+			Kind.Reset();
+			Language_ISO639.Reset();
+			OverrideIndex.Reset();
+		}
+		void UpdateWith(const FString& InKind, const FString& InLanguage, int32 InOverrideIndex)
+		{
+			Reset();
+			if (!InKind.IsEmpty())
+			{
+				Kind = InKind;
+			}
+			if (!InLanguage.IsEmpty())
+			{
+				Language_ISO639 = InLanguage;
+			}
+			if (InOverrideIndex >= 0)
+			{
+				OverrideIndex = InOverrideIndex;
+			}
+		}
+		void UpdateIfOverrideSet(const FString& InKind, const FString& InLanguage)
+		{
+			if (OverrideIndex.IsSet())
+			{
+				ClearOverrideIndex();
+				Kind = InKind;
+				Language_ISO639 = InLanguage;
+			}
+		}
+		void ClearOverrideIndex()
+		{
+			OverrideIndex.Reset();
+		}
 	};
+
 
 
 

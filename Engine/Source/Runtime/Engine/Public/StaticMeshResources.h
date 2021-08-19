@@ -611,7 +611,7 @@ public:
 	/** Bounds of the renderable mesh. */
 	FBoxSphereBounds Bounds;
 
-	bool IsInitialized()
+	bool IsInitialized() const
 	{
 		return bIsInitialized;
 	}
@@ -625,6 +625,8 @@ public:
 	uint8 NumInlinedLODs;
 
 	uint8 CurrentFirstLODIdx;
+
+	uint8 LODBiasModifier;
 
 #if WITH_EDITORONLY_DATA
 
@@ -697,7 +699,8 @@ public:
 	 */
 	FORCEINLINE const FStaticMeshLODResources* GetCurrentFirstLOD(int32 MinLODIdx) const
 	{
-		return &LODResources[GetCurrentFirstLODIdx(MinLODIdx)];
+		const int32 LODIdx = GetCurrentFirstLODIdx(MinLODIdx);
+		return LODResources.IsValidIndex(LODIdx) ? &LODResources[LODIdx] : nullptr;
 	}
 
 private:
@@ -1046,6 +1049,7 @@ protected:
 	const FDistanceFieldVolumeData* DistanceFieldData;	
 
 #if RHI_RAYTRACING
+	bool bSupportRayTracing;
 	bool bDynamicRayTracingGeometry;
 	TArray<FRayTracingGeometry, TInlineAllocator<MAX_MESH_LOD_COUNT>> DynamicRayTracingGeometries;
 	TArray<FRWBuffer, TInlineAllocator<MAX_MESH_LOD_COUNT>> DynamicRayTracingGeometryVertexBuffers;

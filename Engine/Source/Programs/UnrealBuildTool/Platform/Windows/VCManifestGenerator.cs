@@ -537,6 +537,19 @@ namespace UnrealBuildTool
 			return "ms-resource:" + ResourceEntryName;
 		}
 
+		protected string AddExternalResourceEntry(string ResourceEntryName, string DefaultValue, Dictionary<string,string> CultureIdToCultureValues)
+		{
+			DefaultResourceWriter.AddResource(ResourceEntryName, DefaultValue);
+
+			foreach( KeyValuePair<string,string> CultureIdToCultureValue in CultureIdToCultureValues)
+			{
+				var Writer = PerCultureResourceWriters[CultureIdToCultureValue.Key];
+				Writer.AddResource(ResourceEntryName, CultureIdToCultureValue.Value);
+			}
+
+			return "ms-resource:" + ResourceEntryName;
+		}
+
 		protected string AddDebugResourceString(string ResourceEntryName, string Value)
 		{
 			DefaultResourceWriter.AddResource(ResourceEntryName, Value);
@@ -575,8 +588,8 @@ namespace UnrealBuildTool
 			return new XElement(GetName("Resources", Schema2010NS), CultureElements);
 		}
 
-        protected XElement GetIdentity(out string IdentityName)
-        {
+		protected string GetIdentityPackageName()
+		{
             // Read the PackageName from config
             var PackageName = Regex.Replace(GetConfigString("PackageName", "ProjectName", "DefaultUE4Project"), "[^-.A-Za-z0-9]", "");
             if (string.IsNullOrWhiteSpace(PackageName))
@@ -585,7 +598,17 @@ namespace UnrealBuildTool
                 Log.TraceError("Consider using the setting [{0}]:PackageName to provide a specific value.", IniSection_PlatformTargetSettings);
             }
 
+			return PackageName;
+		}
+
+		protected string GetIdentityPublisherName()
+		{
             var PublisherName = GetConfigString("PublisherName", "CompanyDistinguishedName", "CN=NoPublisher");
+			return PublisherName;
+		}
+
+		protected string GetIdentityVersionNumber()
+		{
             var VersionNumber = GetConfigString("PackageVersion", "ProjectVersion", "1.0.0.0");
             VersionNumber = ValidatePackageVersion(VersionNumber);
 
@@ -595,6 +618,15 @@ namespace UnrealBuildTool
             {
 				VersionNumber = IncludeBuildVersionInPackageVersion(VersionNumber);
             }
+
+			return VersionNumber;
+		}
+
+        protected XElement GetIdentity(out string IdentityName)
+        {
+            var PackageName = GetIdentityPackageName();
+            var PublisherName = GetIdentityPublisherName();
+            var VersionNumber = GetIdentityVersionNumber();
 
             IdentityName = PackageName;
 

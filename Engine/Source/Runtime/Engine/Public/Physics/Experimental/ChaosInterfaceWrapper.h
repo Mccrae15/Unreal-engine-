@@ -5,6 +5,7 @@
 #include "Chaos/ParticleHandleFwd.h"
 #include "PhysicsInterfaceUtilsCore.h"
 #include "CollisionQueryFilterCallbackCore.h"
+#include "Chaos/PBDRigidsEvolutionFwd.h"
 //todo: move this include into an impl header
 
 class FPhysScene_Chaos;
@@ -28,7 +29,7 @@ struct FScopedSceneReadLock
 	FScopedSceneReadLock(FPhysScene_Chaos& SceneIn);
 	~FScopedSceneReadLock();
 
-	FPhysScene_Chaos& Scene;
+	Chaos::FPBDRigidsSolver* Solver;
 };
 #endif
 
@@ -41,7 +42,7 @@ inline FQueryFilterData MakeQueryFilterData(const FCollisionFilterData& FilterDa
 #endif
 }
 
-FBodyInstance* GetUserData(const Chaos::TGeometryParticle<float, 3>& Actor);
+FBodyInstance* GetUserData(const Chaos::FGeometryParticle& Actor);
 
 #if WITH_CHAOS
 UPhysicalMaterial* GetUserData(const Chaos::FChaosPhysicsMaterial& Material);

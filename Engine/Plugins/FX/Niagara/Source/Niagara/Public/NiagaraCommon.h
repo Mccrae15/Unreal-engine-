@@ -13,16 +13,24 @@
 #include "UObject/WeakFieldPtr.h"
 #include "NiagaraCommon.generated.h"
 
+class UNiagaraComponent;
 class UNiagaraSystem;
 class UNiagaraScript;
 class UNiagaraDataInterface;
 class UNiagaraEmitter;
 class FNiagaraSystemInstance;
 class UNiagaraParameterCollection;
+class UNiagaraParameterDefinitionsBase;
 struct FNiagaraParameterStore;
 
 //#define NIAGARA_NAN_CHECKING 1
 #define NIAGARA_NAN_CHECKING 0
+
+#define NIAGARA_MEMORY_TRACKING	!UE_BUILD_SHIPPING
+
+#ifndef NIAGARA_COMPUTEDEBUG_ENABLED
+	#define NIAGARA_COMPUTEDEBUG_ENABLED WITH_EDITOR
+#endif
 
 #define INTERPOLATED_PARAMETER_PREFIX TEXT("PREV_")
 
@@ -77,6 +85,17 @@ enum class ENiagaraGpuBufferFormat : uint8
 	Max UMETA(Hidden),
 };
 
+UENUM()
+enum class ENiagaraMipMapGeneration : uint8
+{
+	/** Mips will not be created or automatically generated. */
+	Disabled,
+	/** Mips will be generated after each stage where the interfaces is written to. */
+	PostStage,
+	/** Mips will be generated after all stages have been run if the interface was written to. */
+	PostSimulate,
+};
+
 // TODO: Custom will eventually mean that the default value or binding will be overridden by a subgraph default, i.e. expose it to a "Initialize variable" node. 
 // TODO: Should we add an "Uninitialized" entry, or is that too much friction? 
 UENUM()
@@ -88,6 +107,38 @@ enum class ENiagaraDefaultMode : uint8
 	Binding,   
 	// Default initialization is done using a sub-graph.
 	Custom,    
+	// Fail compilation if this value has not been set previously in the stack.
+	FailIfPreviouslyNotSet
+};
+
+/** How to handle how Niagara rendered effects should generate motion vectors by default (can still be overridden on a case-by-case basis) */
+UENUM()
+enum class ENiagaraDefaultRendererMotionVectorSetting
+{
+	/**
+	 * Motion vectors generated are precise (ideal for motion blur and temporal anti-aliasing).
+	 * Requires relevant emitters to store more data per particle, and may affect vertex processing performance.
+	 */
+	Precise,
+	/**
+	 * Approximates the motion vectors from current velocity.
+	 * Saves memory and performance, but can result in lower quality motion blur and/or anti-aliasing.
+	 */
+	Approximate
+};
+
+/** How a given Niagara renderer should handle motion vector generation. */
+UENUM()
+enum class ENiagaraRendererMotionVectorSetting
+{
+	/** Determines the best method to employ when generating motion vectors (accurate vs. approximate) based on project and renderer settings */
+	AutoDetect,
+	/** Force motion vectors to be precise for this renderer. */
+	Precise,
+	/** Force motion vectors to be approximate for this renderer (higher performance, lower particle memory usage). */
+	Approximate,
+	/** Do not generate motion vectors (i.e. render the object as though it is stationary). */
+	Disable
 };
 
 UENUM()
@@ -264,7 +315,6 @@ struct FNiagaraScriptDataUsageInfo
 	bool bReadsAttributeData;
 };
 
-
 USTRUCT()
 struct NIAGARA_API FNiagaraFunctionSignature
 {
@@ -319,6 +369,14 @@ struct NIAGARA_API FNiagaraFunctionSignature
 	UPROPERTY()
 	uint32 bSoftDeprecatedFunction : 1;
 
+	/** Whether or not this function should be treated as a compile tag. */
+	UPROPERTY()
+	uint32 bIsCompileTagGenerator : 1;
+
+	/** Hidden functions can not be placed but may be bound and used.  This is useful to hide functionality while developing. */
+	UPROPERTY(transient)
+	uint32 bHidden : 1;
+
 	/** Bitmask for which scripts are supported for this function. Use UNiagaraScript::MakeSupportedUsageContextBitmask to make the bitmask. */
 	UPROPERTY(meta = (Bitmask, BitmaskEnum = ENiagaraScriptUsage))
 	int32 ModuleUsageBitmask;
@@ -338,6 +396,12 @@ struct NIAGARA_API FNiagaraFunctionSignature
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(meta = (SkipForCompileHash = true))
 	FText Description;
+
+	UPROPERTY(meta = (SkipForCompileHash = true))
+	TMap<FNiagaraVariableBase, FText> InputDescriptions;
+
+	UPROPERTY(meta = (SkipForCompileHash = true))
+	TMap<FNiagaraVariableBase, FText> OutputDescriptions;
 #endif
 
 	FNiagaraFunctionSignature() 
@@ -349,6 +413,8 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		, bSupportsGPU(true)
 		, bWriteFunction(false)
 		, bSoftDeprecatedFunction(false)
+		, bIsCompileTagGenerator(false)
+		, bHidden(false)
 		, ModuleUsageBitmask(0)
 		, ContextStageMinIndex(INDEX_NONE)
 		, ContextStageMaxIndex(INDEX_NONE)
@@ -357,8 +423,6 @@ struct NIAGARA_API FNiagaraFunctionSignature
 
 	FNiagaraFunctionSignature(FName InName, TArray<FNiagaraVariable>& InInputs, TArray<FNiagaraVariable>& InOutputs, FName InSource, bool bInRequiresContext, bool bInMemberFunction)
 		: Name(InName)
-		, Inputs(InInputs)
-		, Outputs(InOutputs)
 		, bRequiresContext(bInRequiresContext)
 		, bRequiresExecPin(false)
 		, bMemberFunction(bInMemberFunction)
@@ -367,31 +431,23 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		, bSupportsGPU(true)
 		, bWriteFunction(false)
 		, bSoftDeprecatedFunction(false)
+		, bIsCompileTagGenerator(false)
+		, bHidden(false)
 		, ModuleUsageBitmask(0)
 		, ContextStageMinIndex(INDEX_NONE)
 		, ContextStageMaxIndex(INDEX_NONE)
 	{
-
-	}
-
-	FNiagaraFunctionSignature(FName InName, TArray<FNiagaraVariable>& InInputs, TArray<FNiagaraVariable>& InOutputs, FName InSource, bool bInRequiresContext, bool bInMemberFunction, TMap<FName, FName>& InFunctionSpecifiers)
-		: Name(InName)
-		, Inputs(InInputs)
-		, Outputs(InOutputs)
-		, bRequiresContext(bInRequiresContext)
-		, bRequiresExecPin(false)
-		, bMemberFunction(bInMemberFunction)
-		, bExperimental(false)
-		, bSupportsCPU(true)
-		, bSupportsGPU(true)
-		, bWriteFunction(false)
-		, bSoftDeprecatedFunction(false)
-		, ModuleUsageBitmask(0)
-		, ContextStageMinIndex(INDEX_NONE)
-		, ContextStageMaxIndex(INDEX_NONE)
-		, FunctionSpecifiers(InFunctionSpecifiers)
-	{
-
+		Inputs.Reserve(InInputs.Num());
+		for (FNiagaraVariable& Var : InInputs)
+		{
+			Inputs.Add(Var);
+		}
+		
+		Outputs.Reserve(InOutputs.Num());
+		for (FNiagaraVariable& Var : InOutputs)
+		{
+			Outputs.Add(Var);
+		}
 	}
 
 	bool operator==(const FNiagaraFunctionSignature& Other) const
@@ -425,10 +481,33 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		bMatches &= OwnerName == Other.OwnerName;
 		bMatches &= ContextStageMinIndex == Other.ContextStageMinIndex;
 		bMatches &= ContextStageMaxIndex == Other.ContextStageMaxIndex;
+		bMatches &= bIsCompileTagGenerator == Other.bIsCompileTagGenerator;
 		return bMatches;
 	}
 
 	FString GetName()const { return Name.ToString(); }
+
+	void AddInput(FNiagaraVariable InputVar, FText Tooltip = FText())
+	{
+		Inputs.Add(InputVar);
+	#if WITH_EDITORONLY_DATA
+		if (!Tooltip.IsEmpty())
+		{
+			InputDescriptions.Add(InputVar, Tooltip);
+		}
+	#endif
+	}
+
+	void AddOutput(FNiagaraVariable OutputVar, const FText& Tooltip = FText())
+	{
+		Outputs.Add(OutputVar);
+	#if WITH_EDITORONLY_DATA
+		if (!Tooltip.IsEmpty())
+		{
+			OutputDescriptions.Add(OutputVar, Tooltip);
+		}
+	#endif
+	}
 
 	void SetDescription(const FText& Desc)
 	{
@@ -436,6 +515,7 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		Description = Desc;
 	#endif
 	}
+	
 	FText GetDescription() const
 	{
 	#if WITH_EDITORONLY_DATA
@@ -444,10 +524,9 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		return FText::FromName(Name);
 	#endif
 	}
+	
 	bool IsValid()const { return Name != NAME_None && (Inputs.Num() > 0 || Outputs.Num() > 0); }
 };
-
-
 
 USTRUCT()
 struct NIAGARA_API FNiagaraScriptDataInterfaceInfo
@@ -581,7 +660,7 @@ struct FVMExternalFunctionBindingInfo
 	TArray<bool> InputParamLocations;
 
 	UPROPERTY()
-	int32 NumOutputs;
+	int32 NumOutputs = 0;
 
 	UPROPERTY()
 	TArray<FVMFunctionSpecifier> FunctionSpecifiers;
@@ -623,20 +702,23 @@ struct NIAGARA_API FNiagaraSystemUpdateContext
 {
 	GENERATED_BODY()
 
-	FNiagaraSystemUpdateContext(const UNiagaraSystem* System, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive) { Add(System, bReInit); }
+	FNiagaraSystemUpdateContext(UNiagaraComponent* Component, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(Component, bReInit); }
+	FNiagaraSystemUpdateContext(const UNiagaraSystem* System, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(System, bReInit); }
 #if WITH_EDITORONLY_DATA
-	FNiagaraSystemUpdateContext(const UNiagaraEmitter* Emitter, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive)  { Add(Emitter, bReInit); }
-	FNiagaraSystemUpdateContext(const UNiagaraScript* Script, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive)  { Add(Script, bReInit); }	
-	FNiagaraSystemUpdateContext(const UNiagaraParameterCollection* Collection, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive) { Add(Collection, bReInit); }
+	FNiagaraSystemUpdateContext(const UNiagaraEmitter* Emitter, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(Emitter, bReInit); }
+	FNiagaraSystemUpdateContext(const UNiagaraScript* Script, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(Script, bReInit); }
+	FNiagaraSystemUpdateContext(const UNiagaraParameterCollection* Collection, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(Collection, bReInit); }
 #endif
-	FNiagaraSystemUpdateContext() :bDestroyOnAdd(false), bOnlyActive(false) { }
+	FNiagaraSystemUpdateContext() :bDestroyOnAdd(false), bOnlyActive(false), bDestroySystemSim(true) { }
 	FNiagaraSystemUpdateContext(FNiagaraSystemUpdateContext& Other) = delete;
 
 	~FNiagaraSystemUpdateContext();
 
 	void SetDestroyOnAdd(bool bInDestroyOnAdd) { bDestroyOnAdd = bInDestroyOnAdd; }
 	void SetOnlyActive(bool bInOnlyActive) { bOnlyActive = bInOnlyActive; }
+	void SetDestroySystemSim(bool bInDestroySystemSim) { bDestroySystemSim = bInDestroySystemSim; }
 
+	void Add(UNiagaraComponent* Component, bool bReInit);
 	void Add(const UNiagaraSystem* System, bool bReInit);
 #if WITH_EDITORONLY_DATA
 	void Add(const UNiagaraEmitter* Emitter, bool bReInit);
@@ -646,9 +728,13 @@ struct NIAGARA_API FNiagaraSystemUpdateContext
 
 	/** Adds all currently active systems.*/
 	void AddAll(bool bReInit);
-
+	
 	/** Handles any pending reinits or resets of system instances in this update context. */
 	void CommitUpdate();
+
+	DECLARE_DELEGATE_OneParam(FCustomWorkDelegate, UNiagaraComponent*);
+	FCustomWorkDelegate& GetPreWork(){ return PreWork; }
+	FCustomWorkDelegate& GetPostWork() { return PostWork; }
 
 private:
 	void AddInternal(class UNiagaraComponent* Comp, bool bReInit);
@@ -664,50 +750,14 @@ private:
 
 	bool bDestroyOnAdd;
 	bool bOnlyActive;
+	bool bDestroySystemSim;
 	//TODO: When we allow component less systems we'll also want to find and reset those.
-};
 
-struct FComponentPropertyAddress
-{
-	TWeakFieldPtr<FProperty> Property;
-	void* Address;
-
-	FProperty* GetProperty() const
-	{
-		FProperty* PropertyPtr = Property.Get();
-		if (PropertyPtr && Address && !PropertyPtr->HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed))
-		{
-			return PropertyPtr;
-		}
-		return nullptr;
-	}
-
-	FComponentPropertyAddress() : Property(nullptr), Address(nullptr) {}
-};
-
-struct FNiagaraComponentRenderPoolEntry
-{
-	TWeakObjectPtr<USceneComponent> Component;
-	float InactiveTimeLeft = 0;
-	TMap<FName, FComponentPropertyAddress> PropertyAddressMapping;
-	int32 LastAssignedToParticleID = -1;
-};
-
-struct FNiagaraComponentUpdateTask
-{
-	TWeakObjectPtr<USceneComponent> TemplateObject;
-	TFunction<void(USceneComponent*, FNiagaraComponentRenderPoolEntry&)> UpdateCallback;
-	int32 ParticleID = -1;
-	int32 SmallestID = -1;
-#if WITH_EDITORONLY_DATA
-	bool bVisualizeComponents = true;
-#endif
-};
-
-struct FNiagaraComponentRenderPool
-{
-	TWeakObjectPtr<AActor> OwnerActor;
-	TMap<TObjectKey<USceneComponent>, TArray<FNiagaraComponentRenderPoolEntry>> PoolsByTemplate;
+	/** Delegate called before a component is added to the context for update. */
+	FCustomWorkDelegate PreWork;
+	
+	/** Delegate called before after a component has been updated. */
+	FCustomWorkDelegate PostWork;
 };
 
 /** Defines different usages for a niagara script. */
@@ -903,12 +953,14 @@ struct FNiagaraVariableAttributeBinding
 	bool NIAGARA_API DoesBindingExistOnSource() const { return bBindingExistsOnSource; }
 	bool NIAGARA_API CanBindToHostParameterMap() const { return bBindingExistsOnSource && !bIsCachedParticleValue; }
 	void NIAGARA_API SetValue(const FName& InValue, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	void NIAGARA_API SetAsPreviousValue(const FNiagaraVariableBase& Src, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	void NIAGARA_API SetAsPreviousValue(const FNiagaraVariableAttributeBinding& Src, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
 	void NIAGARA_API CacheValues(const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
 	bool NIAGARA_API RenameVariableIfMatching(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
 	bool NIAGARA_API Matches(const FNiagaraVariableBase& OldVariable, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
 
 #if WITH_EDITORONLY_DATA
-	NIAGARA_API const FName& GetName(ENiagaraRendererSourceDataMode InSourceMode) const;
+	NIAGARA_API const FName& GetName() const { return CachedDisplayName; }
 	NIAGARA_API FString GetDefaultValueString() const;
 #endif
 	NIAGARA_API const FNiagaraVariableBase& GetParamMapBindableVariable() const { return ParamMapVariable; }
@@ -923,7 +975,7 @@ struct FNiagaraVariableAttributeBinding
 		return RootVariable.GetValue<T>();
 	}
 
-	void NIAGARA_API Setup(const FNiagaraVariableBase& InRootVar, const FNiagaraVariableBase& InDataSetVar, const FNiagaraVariable& InDefaultValue, ENiagaraRendererSourceDataMode InSourceMode = ENiagaraRendererSourceDataMode::Particles);
+	void NIAGARA_API Setup(const FNiagaraVariableBase& InRootVar, const FNiagaraVariable& InDefaultValue, ENiagaraRendererSourceDataMode InSourceMode = ENiagaraRendererSourceDataMode::Particles);
 
 	void NIAGARA_API PostLoad(ENiagaraRendererSourceDataMode InSourceMode);
 	void NIAGARA_API Dump() const;
@@ -1031,12 +1083,89 @@ struct FNiagaraScriptVariableBinding
 	bool IsValid() const { return Name != NAME_None; }
 };
 
+struct NIAGARA_API FNiagaraAliasContext
+{
+	/** Defines different modes which can be used to split rapid iteration parameter constant names. */
+	enum class ERapidIterationParameterMode
+	{
+		/** Rapid iteration parameters will be from the system. */
+		SystemScript,
+		/** Rapid iteration parameters will be from an emitter or particle script. */
+		EmitterOrParticleScript,
+		/** Rapid iteration parameters will not be handled. NOTE: Using this mode will cause an assert if the context is used with a rapid iteration parameter constant name. */
+		None
+	};
+
+	FNiagaraAliasContext(ERapidIterationParameterMode InRapidIterationParameterMode = ERapidIterationParameterMode::None)
+		: RapidIterationParameterMode(InRapidIterationParameterMode)
+	{
+	}
+
+	FNiagaraAliasContext(ENiagaraScriptUsage InScriptUsage)
+		: RapidIterationParameterMode(InScriptUsage == ENiagaraScriptUsage::SystemSpawnScript || InScriptUsage == ENiagaraScriptUsage::SystemUpdateScript ?
+			ERapidIterationParameterMode::SystemScript : ERapidIterationParameterMode::EmitterOrParticleScript)
+	{
+	}
+
+	/** Configures the context to replace the unaliased emitter namespace with an emitter name namespace in parameter map parameters and rapid iteration parameters. */
+	FNiagaraAliasContext& ChangeEmitterToEmitterName(const FString& InEmitterName);
+
+	/** Configures the context to replace an emitter name namespace with the unaliased emitter namespace in parameter map parameters and rapid iteration parameters. */
+	FNiagaraAliasContext& ChangeEmitterNameToEmitter(const FString& InEmitterName);
+
+	/** Configures the context to replace an old emitter name namespace with a new emitter name namespace in parameter map parameters and rapid iteration parameters. */
+	FNiagaraAliasContext& ChangeEmitterName(const FString& InOldEmitterName, const FString& InNewEmitterName);
+
+	/** Configures the context to replace the unaliased module namespace with a module name namespace in parameter map parameters and rapid iteration parameters. */
+	FNiagaraAliasContext& ChangeModuleToModuleName(const FString& InModuleName);
+
+	/** Configures the context to replace a module name namespace with the unaliased module namespace in parameter map parameters and rapid iteration parameters. */
+	FNiagaraAliasContext& ChangeModuleNameToModule(const FString& InModuleName);
+
+	/** Configures the context to replace an old module name namespace with a new module name namespace in parameter map parameters and rapid iteration parameters. */
+	FNiagaraAliasContext& ChangeModuleName(const FString& InOldModuleName, const FString& InNewModuleName);
+
+	/** Configures the context to replace the stack context namespace with the specified named stack context in parameter map parameters. */
+	FNiagaraAliasContext& ChangeStackContext(const FString& InStackContextName);
+
+	ERapidIterationParameterMode GetRapidIterationParameterMode() const { return RapidIterationParameterMode; }
+
+	const TOptional<FString>& GetEmitterName() const { return EmitterName; }
+	const TOptional<TPair<FString, FString>>& GetEmitterMapping() const { return EmitterMapping; }
+
+	const TOptional<FString>& GetModuleName() const { return ModuleName; }
+	const TOptional<TPair<FString, FString>>& GetModuleMapping() const { return ModuleMapping; }
+
+	const TOptional<FString>& GetStackContextName() const { return StackContextName; }
+	const TOptional<TPair<FString, FString>>& GetStackContextMapping() const { return StackContextMapping; }
+
+	static const FString EmitterNamespaceString;
+	static const FString ModuleNamespaceString;
+	static const FString StackContextNamespaceString;
+	static const FString RapidIterationParametersNamespaceString;
+	static const FString EngineNamespaceString;
+	static const FString AssignmentNodePrefix;
+
+private:
+	ERapidIterationParameterMode RapidIterationParameterMode;
+
+	TOptional<FString> EmitterName;
+	TOptional<TPair<FString, FString>> EmitterMapping;
+
+	TOptional<FString> ModuleName;
+	TOptional<TPair<FString, FString>> ModuleMapping;
+
+	TOptional<FString> StackContextName;
+	TOptional<TPair<FString, FString>> StackContextMapping;
+};
+
 namespace FNiagaraUtilities
 {
 	/** Builds a unique name from a candidate name and a set of existing names.  The candidate name will be made unique
 	if necessary by adding a 3 digit index to the end. */
 	FName NIAGARA_API GetUniqueName(FName CandidateName, const TSet<FName>& ExistingNames);
 
+	NIAGARA_API FString CreateRapidIterationConstantName(FName InVariableName, const TCHAR* InEmitterName, ENiagaraScriptUsage InUsage);
 	FNiagaraVariable NIAGARA_API ConvertVariableToRapidIterationConstantName(FNiagaraVariable InVar, const TCHAR* InEmitterName, ENiagaraScriptUsage InUsage);
 
 	void CollectScriptDataInterfaceParameters(const UObject& Owner, const TArrayView<UNiagaraScript*>& Scripts, FNiagaraParameterStore& OutDataInterfaceParameters);
@@ -1054,16 +1183,35 @@ namespace FNiagaraUtilities
 	}
 
 	// Whether the platform supports GPU particles. A static function that doesn't not rely on any runtime switches.
-	inline bool SupportsGPUParticles(EShaderPlatform ShaderPlatform)
+	inline bool SupportsComputeShaders(EShaderPlatform ShaderPlatform)
 	{
 		return RHISupportsComputeShaders(ShaderPlatform);
 	}
+
+	// DEPRECATED, use SupportsComputeShaders instead!
+	inline bool SupportsGPUParticles(EShaderPlatform ShaderPlatform)
+	{
+		return SupportsComputeShaders(ShaderPlatform);
+	}
+
+	// When enabled log more information for the end user
+#if NO_LOGGING
+	inline bool LogVerboseWarnings() { return false; }
+#else
+	bool LogVerboseWarnings();
+#endif
 
 	// Whether GPU particles are currently allowed. Could change depending on config and runtime switches.
 	bool AllowGPUParticles(EShaderPlatform ShaderPlatform);
 
 	// Whether compute shaders are allowed. Could change depending on config and runtime switches.
 	bool AllowComputeShaders(EShaderPlatform ShaderPlatform);
+
+	// Are we able to use the GPU for culling?
+	bool AllowGPUCulling(EShaderPlatform ShaderPlatform);
+
+	// Are we able to use the GPU for sorting?
+	bool AllowGPUSorting(EShaderPlatform ShaderPlatform);
 
 	ENiagaraCompileUsageStaticSwitch NIAGARA_API ConvertScriptUsageToStaticSwitchUsage(ENiagaraScriptUsage ScriptUsage);
 	ENiagaraScriptContextStaticSwitch NIAGARA_API ConvertScriptUsageToStaticSwitchContext(ENiagaraScriptUsage ScriptUsage);
@@ -1092,6 +1240,8 @@ namespace FNiagaraUtilities
 	NIAGARA_API ETextureRenderTargetFormat BufferFormatToRenderTargetFormat(ENiagaraGpuBufferFormat NiagaraFormat);
 
 	NIAGARA_API FString SanitizeNameForObjectsAndPackages(const FString& InName);
+
+	NIAGARA_API FNiagaraVariable ResolveAliases(const FNiagaraVariable& InVar, const FNiagaraAliasContext& InContext);
 };
 
 USTRUCT()
@@ -1100,6 +1250,8 @@ struct NIAGARA_API FNiagaraUserParameterBinding
 	GENERATED_USTRUCT_BODY()
 
 	FNiagaraUserParameterBinding();
+
+	FNiagaraUserParameterBinding(const FNiagaraTypeDefinition& InMaterialDef);
 
 	UPROPERTY(EditAnywhere, Category = "User Parameter")
 	FNiagaraVariable Parameter;
@@ -1110,19 +1262,28 @@ struct NIAGARA_API FNiagaraUserParameterBinding
 	}
 };
 
+template<>
+struct TStructOpsTypeTraits<FNiagaraUserParameterBinding> : public TStructOpsTypeTraitsBase2<FNiagaraUserParameterBinding>
+{
+	enum
+	{
+		WithIdenticalViaEquality = true
+	};
+};
+
 USTRUCT()
 struct FNiagaraRandInfo
 {
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY(EditAnywhere, Category = "Random")
-	int32 Seed1;
+	int32 Seed1 = 0;
 	
 	UPROPERTY(EditAnywhere, Category = "Random")
-	int32 Seed2;
+	int32 Seed2 = 0;
 
 	UPROPERTY(EditAnywhere, Category = "Random")
-	int32 Seed3;
+	int32 Seed3 = 0;
 };
 
 
@@ -1198,3 +1359,195 @@ private:
 	const T* StructPtr = nullptr;
 #endif
 };
+
+
+/** Records necessary information to verify that this will link properly and trace where that linkage dependency exists. */
+USTRUCT()
+struct FNiagaraCompileDependency
+{
+	GENERATED_USTRUCT_BODY()
+public:
+	FNiagaraCompileDependency()
+	{
+		LinkerErrorMessage = FString();
+		NodeGuid = FGuid();
+		PinGuid = FGuid();
+		StackGuids.Empty();
+	}
+
+	FNiagaraCompileDependency(const FNiagaraVariableBase& InVar, const FString& InLinkerErrorMessage, FGuid InNodeGuid = FGuid(), FGuid InPinGuid = FGuid(), const TArray<FGuid>& InCallstackGuids = TArray<FGuid>())
+		: LinkerErrorMessage(InLinkerErrorMessage), NodeGuid(InNodeGuid), PinGuid(InPinGuid), StackGuids(InCallstackGuids), DependentVariable(InVar) {}
+
+	/* The message itself*/
+	UPROPERTY()
+	FString LinkerErrorMessage;
+
+	/** The node guid that generated the compile event*/
+	UPROPERTY()
+	FGuid NodeGuid;
+
+	/** The pin persistent id that generated the compile event*/
+	UPROPERTY()
+	FGuid PinGuid;
+
+	/** The compile stack frame of node id's*/
+	UPROPERTY()
+	TArray<FGuid> StackGuids;
+
+	/** The variable we are dependent on.*/
+	UPROPERTY()
+	FNiagaraVariableBase DependentVariable;
+
+	FORCEINLINE bool operator==(const FNiagaraCompileDependency& Other)const
+	{
+		return DependentVariable == Other.DependentVariable && NodeGuid == Other.NodeGuid && PinGuid == Other.PinGuid && StackGuids == Other.StackGuids;
+	}
+
+	FORCEINLINE bool operator!=(const FNiagaraCompileDependency& Other)const
+	{
+		return !(*this == Other);
+	}
+};
+
+
+USTRUCT()
+struct FNiagaraScalabilityState
+{
+	GENERATED_BODY()
+
+	FNiagaraScalabilityState()
+		: Significance(1.0f)
+		, bCulled(0)
+		, bPreviousCulled(0)
+		, bCulledByDistance(0)
+		, bCulledByInstanceCount(0)
+		, bCulledByVisibility(0)
+		, bCulledByGlobalBudget(0)
+	{
+	}
+
+	FNiagaraScalabilityState(float InSignificance, bool InCulled, bool InPreviousCulled)
+		: Significance(InSignificance)
+		, bCulled(InCulled)
+		, bPreviousCulled(InPreviousCulled)
+		, bCulledByDistance(0)
+		, bCulledByInstanceCount(0)
+		, bCulledByVisibility(0)
+		, bCulledByGlobalBudget(0)
+	{
+	}
+
+	bool IsDirty() const { return bCulled != bPreviousCulled; }
+	void Apply() { bPreviousCulled = bCulled; }
+
+	UPROPERTY(VisibleAnywhere, Category="Scalability")
+	float Significance;
+
+	UPROPERTY(VisibleAnywhere, Category = "Scalability")
+	uint8 bCulled : 1;
+
+	UPROPERTY(VisibleAnywhere, Category="Scalability")
+	uint8 bPreviousCulled : 1;
+
+	UPROPERTY(VisibleAnywhere, Category="Scalability")
+	uint8 bCulledByDistance : 1;
+
+	UPROPERTY(VisibleAnywhere, Category = "Scalability")
+	uint8 bCulledByInstanceCount : 1;
+
+	UPROPERTY(VisibleAnywhere, Category = "Scalability")
+	uint8 bCulledByVisibility : 1;
+	
+	UPROPERTY(VisibleAnywhere, Category = "Scalability")
+	uint8 bCulledByGlobalBudget : 1;
+};
+
+
+UENUM()
+enum class ENCPoolMethod : uint8
+{
+	/**
+	* The component will be created fresh and not allocated from the pool.
+	*/
+	None,
+
+	/**
+	* The component is allocated from the pool and will be automatically released back to it.
+	* User need not handle this any more that other NCs but interaction with the NC after the tick it's spawned in are unsafe.
+	* This method is useful for one-shot fx that you don't need to keep a reference to and can fire and forget.
+	*/
+	AutoRelease,
+
+	/**
+	* NC is allocated from the pool but will NOT be automatically released back to it. User has ownership of the NC and must call ReleaseToPool when finished with it otherwise the NC will leak.
+	* Interaction with the NC after it has been released are unsafe.
+	* This method is useful for persistent FX that you need to modify parameters upon etc over it's lifetime.
+	*/
+	ManualRelease,
+
+	/**
+	Special entry allowing manual release NCs to be manually released but wait until completion to be returned to the pool.
+	*/
+	ManualRelease_OnComplete UMETA(Hidden),
+
+	/**
+	Special entry that marks a NC as having been returned to the pool. All NCs currently in the pool are marked this way.
+	*/
+	FreeInPool UMETA(Hidden),
+};
+
+UENUM()
+enum class ENiagaraSystemInstanceState : uint8
+{
+	None,
+	PendingSpawn,
+	PendingSpawnPaused,
+	Spawning,
+	Running,
+	Paused,
+	Num
+};
+
+UENUM()
+enum class ENiagaraFunctionDebugState : uint8
+{
+	NoDebug,
+	Basic,
+};
+
+/** Args struct for INiagaraParameterDefinitionsSubscriberViewModel::SynchronizeWithParameterDefinitions(...). */
+struct NIAGARA_API FSynchronizeWithParameterDefinitionsArgs
+{
+	FSynchronizeWithParameterDefinitionsArgs();
+
+	/** If set, instead of gathering all available parameter libraries, only consider subscribed parameter definitions that have a matching Id. */
+	TArray<FGuid> SpecificDefinitionsUniqueIds;
+
+	/** If set, instead of synchronizing to all destination script variables (UNiagaraScriptVariable owned by the object the INiagaraParameterDefinitionsSubscriberViewModel is viewing,
+	 *  only synchronize destination script variables that have a matching Id.
+	 */
+	TArray<FGuid> SpecificDestScriptVarIds;
+
+	/** Default false; If true, instead of gathering available parameter definitions to synchronize via INiagaraParameterDefinitionsSubscriber::GetSubscribedParameterDefinitionsPendingSynchronization(),
+	 *  ignore the pending synchronization flag and gather via INiagaraParameterDefinitionsSubscriber::GetSubscribedParameterDefinitions().
+	 *  Note: If true, SpecificDefinitionsUniqueIds and SpecificDestScriptVarIds will still apply.
+	 */
+	bool bForceGatherDefinitions;
+
+	/** Default false; If true, instead of comparing parameter change IDs to check if a parameter needs to be synchronized, ignore the change IDs.
+	 *  Note: If true, SpecificDefinitionsUniqueIds and SpecificDestScriptVarIds will still apply.
+	 */
+	bool bForceSynchronizeParameters;
+
+	/** Default false; If true, search for parameters with the same name and type as definitions, and if there is a match, subscribe to the definition. 
+	 *  If the existing parameter default value does not match the definition default value, set the parameter to override the definition default value.
+	 */
+	bool bSubscribeAllNameMatchParameters;
+
+	/** If set, the subscriber will also synchronize the additional parameter definitions in addition to those it is normally subscribed to. */
+	TArray<UNiagaraParameterDefinitionsBase*> AdditionalParameterDefinitions;
+
+	/** If set, the subscriber will rename assignment nodes and map get nodes in its underlying scripts for each Old to New name in addition to those it would during regular synchronization. */
+	TArray<TTuple<FName, FName>> AdditionalOldToNewNames;
+};
+

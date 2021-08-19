@@ -12,6 +12,7 @@
 #include "Interfaces/OnlineChatInterface.h"
 #include "Containers/Queue.h"
 #include "Engine/EngineBaseTypes.h"
+#include "PartyPackage.h"
 #include "SocialParty.generated.h"
 
 class APartyBeaconClient;
@@ -35,12 +36,12 @@ public:
 	FPartyRepData() {}
 	void SetOwningParty(const class USocialParty& InOwnerParty);
 
-	const FPartyPlatformSessionInfo* FindSessionInfo(FName PlatformOssName) const;
+	const FPartyPlatformSessionInfo* FindSessionInfo(const FString& SessionType) const;
 	const TArray<FPartyPlatformSessionInfo>& GetPlatformSessions() const { return PlatformSessions; }
 	FSimpleMulticastDelegate& OnPlatformSessionsChanged() const { return OnPlatformSessionsChangedEvent; } 
 
-	void UpdatePlatformSessionInfo(const FPartyPlatformSessionInfo& SessionInfo);
-	void ClearPlatformSessionInfo(const FName PlatformOssName);
+	void UpdatePlatformSessionInfo(FPartyPlatformSessionInfo&& SessionInfo);
+	void ClearPlatformSessionInfo(const FString& SessionType);
 
 protected:
 	virtual bool CanEditData() const override;
@@ -199,7 +200,7 @@ public:
 	void ResetPrivacySettings();
 	const FPartyPrivacySettings& GetPrivacySettings() const;
 
-PARTY_SCOPE:
+PACKAGE_SCOPE:
 	void InitializeParty(const TSharedRef<const FOnlineParty>& InOssParty);
 	bool IsInitialized() const;
 	void TryFinishInitialization();
@@ -307,8 +308,8 @@ private:
 
 	void SetIsRequestingShutdown(bool bInRequestingShutdown);
 
-	void CreatePlatformSession(FName PlatformOssName);
-	void UpdatePlatformSessionLeader(FName PlatformOssName);
+	void CreatePlatformSession(const FString& SessionType);
+	void UpdatePlatformSessionLeader(const FString& SessionType);
 
 	void HandlePreClientTravel(const FString& PendingURL, ETravelType TravelType, bool bIsSeamlessTravel);
 

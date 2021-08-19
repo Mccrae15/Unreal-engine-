@@ -104,7 +104,7 @@
 
 
 #include "Particles/ParticleEventManager.h"
-
+#include "PhysicsField/PhysicsFieldComponent.h"
 #include "EngineModule.h"
 #include "Streaming/TextureStreamingHelpers.h"
 #include "Net/DataChannel.h"
@@ -125,6 +125,7 @@
 #include "Engine/HLODProxy.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "ObjectTrace.h"
+#include "ReplaySubsystem.h"
 
 #if INCLUDE_CHAOS
 #include "ChaosSolversModule.h"
@@ -338,6 +339,7 @@ FWorldDelegates::FWorldGetAssetTags FWorldDelegates::GetAssetTags;
 FWorldDelegates::FOnWorldTickStart FWorldDelegates::OnWorldTickStart;
 FWorldDelegates::FOnWorldPreActorTick FWorldDelegates::OnWorldPreActorTick;
 FWorldDelegates::FOnWorldPostActorTick FWorldDelegates::OnWorldPostActorTick;
+FWorldDelegates::FOnWorldPreSendAllEndOfFrameUpdates FWorldDelegates::OnWorldPreSendAllEndOfFrameUpdates;
 FWorldDelegates::FWorldEvent FWorldDelegates::OnWorldBeginTearDown;
 #if WITH_EDITOR
 FWorldDelegates::FRefreshLevelScriptActionsEvent FWorldDelegates::RefreshLevelScriptActions;
@@ -345,6 +347,7 @@ FWorldDelegates::FRefreshLevelScriptActionsEvent FWorldDelegates::RefreshLevelSc
 FWorldDelegates::FOnSeamlessTravelStart FWorldDelegates::OnSeamlessTravelStart;
 FWorldDelegates::FOnSeamlessTravelTransition FWorldDelegates::OnSeamlessTravelTransition;
 FWorldDelegates::FOnCopyWorldData FWorldDelegates::OnCopyWorldData;
+FWorldDelegates::FGameInstanceEvent FWorldDelegates::OnStartGameInstance;
 
 UWorld::FOnWorldInitializedActors FWorldDelegates::OnWorldInitializedActors;
 
@@ -453,7 +456,8 @@ void UWorld::Serialize( FArchive& Ar )
 		
 		Ar << LineBatcher;
 		Ar << PersistentLineBatcher;
-		Ar << ForegroundLineBatcher;
+		Ar << ForegroundLineBatcher;  
+		Ar << PhysicsField;
 
 		Ar << MyParticleEventManager;
 		Ar << GameState;
@@ -505,6 +509,7 @@ void UWorld::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collecto
 		Collector.AddReferencedObject( This->LineBatcher, This );
 		Collector.AddReferencedObject( This->PersistentLineBatcher, This );
 		Collector.AddReferencedObject( This->ForegroundLineBatcher, This );
+		Collector.AddReferencedObject( This->PhysicsField, This);
 		Collector.AddReferencedObject( This->MyParticleEventManager, This );
 		Collector.AddReferencedObject( This->GameState, This );
 		Collector.AddReferencedObject( This->AuthorityGameMode, This );
@@ -887,6 +892,14 @@ void UWorld::BeginDestroy()
 		}
 	}
 
+#if WITH_CHAOS
+	if (PhysicsScene != nullptr)
+	{
+		// Tell PhysicsScene to stop kicking off async work so we can cleanup after pending work is complete.
+		PhysicsScene->BeginDestroy();
+	}
+#endif
+
 	if (Scene)
 	{
 		Scene->UpdateParameterCollections(TArray<FMaterialParameterCollectionInstanceResource*>());
@@ -992,6 +1005,28 @@ void UWorld::FinishDestroy()
 	}
 
 	Super::FinishDestroy();
+}
+
+bool UWorld::IsReadyForFinishDestroy()
+{
+#if WITH_CHAOS
+
+	// In single threaded, task will never complete unless we wait on it, allow FinishDestroy so we can wait on task, otherwise this will hang GC.
+	// In multi threaded, we cannot wait in FinishDestroy, as this may schedule another task that is unsafe during GC.
+	const bool bIsSingleThreadEnvironment = FPlatformProcess::SupportsMultithreading() == false;
+	if (bIsSingleThreadEnvironment == false)
+	{
+		if (PhysicsScene != nullptr)
+		{
+			if (PhysicsScene->AreAnyTasksPending())
+			{
+				return false;
+			}
+		}
+	}
+#endif
+
+	return Super::IsReadyForFinishDestroy();
 }
 
 void UWorld::PostLoad()
@@ -1483,7 +1518,6 @@ void UWorld::InitWorld(const InitializationValues IVS)
 		AvoidanceManager = NewObject<UAvoidanceManager>(this, GEngine->AvoidanceManagerClass);
 	}
 
-
 	SetupParameterCollectionInstances();
 
 	if (PersistentLevel->GetOuter() != this)
@@ -1554,11 +1588,6 @@ void UWorld::InitWorld(const InitializationValues IVS)
 #endif
 
 	bAllowAudioPlayback = IVS.bAllowAudioPlayback;
-#if WITH_EDITOR
-	// Disable audio playback on PIE dedicated server
-	bAllowAudioPlayback = bAllowAudioPlayback && (GetNetMode() != NM_DedicatedServer);
-#endif // WITH_EDITOR
-
 	bDoDelayedUpdateCullDistanceVolumes = false;
 
 #if WITH_EDITOR
@@ -1621,19 +1650,14 @@ void UWorld::InitWorld(const InitializationValues IVS)
 		}
 	}
 
-	// invalidate lighting if VT is enabled but no valid data is present
-	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
-	const bool bUseVirtualTextures = (CVar->GetValueOnAnyThread() != 0) && UseVirtualTexturing(FeatureLevel);
-	if (bUseVirtualTextures)
+	// invalidate lighting if VT is enabled but no valid VT data is present or VT is disabled and no valid non-VT data is present.
+	for (auto Level : Levels) //Note: PersistentLevel is part of this array
 	{
-		for (auto Level : Levels) //Note: PersistentLevel is part of this array
+		if (Level && Level->MapBuildData)
 		{
-			if (Level && Level->MapBuildData)
+			if (Level->MapBuildData->IsLightingValid(FeatureLevel) == false)
 			{
-				if (Level->MapBuildData->IsVTLightingValid() == false)
-				{
-					Level->MapBuildData->InvalidateSurfaceLightmaps(this);
-				}
+				Level->MapBuildData->InvalidateSurfaceLightmaps(this);
 			}
 		}
 	}
@@ -1873,6 +1897,8 @@ void UWorld::RemoveActor(AActor* Actor, bool bShouldModifyLevel) const
 		}
 		
 		CheckLevel->Actors[ActorListIndex] = nullptr;
+
+		CheckLevel->ActorsForGC.RemoveSwap(Actor);
 	}
 
 	// Remove actor from network list
@@ -1919,6 +1945,11 @@ void UWorld::ClearWorldComponents()
 	{
 		ForegroundLineBatcher->UnregisterComponent();
 	}
+
+	if (PhysicsField && PhysicsField->IsRegistered())
+	{
+		PhysicsField->UnregisterComponent();
+	}
 }
 
 
@@ -1957,6 +1988,20 @@ void UWorld::UpdateWorldComponents(bool bRerunConstructionScripts, bool bCurrent
 		if(!ForegroundLineBatcher->IsRegistered())	
 		{
 			ForegroundLineBatcher->RegisterComponentWithWorld(this, Context);
+		}
+
+		static IConsoleVariable* PhysicsFieldEnableClipmapCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.PhysicsField.EnableField"));
+		if (PhysicsFieldEnableClipmapCVar && PhysicsFieldEnableClipmapCVar->GetInt() == 1)
+		{
+			if (!PhysicsField)
+			{
+				PhysicsField = NewObject<UPhysicsFieldComponent>();
+			}
+
+			if (!PhysicsField->IsRegistered())
+			{
+				PhysicsField->RegisterComponentWithWorld(this, Context);
+			}
 		}
 	}
 
@@ -2926,8 +2971,9 @@ void FLevelStreamingGCHelper::VerifyLevelsGotRemovedByGC()
 	{
 #if DO_GUARD_SLOW
 		int32 FailCount = 0;
+		const bool bIsAsyncLoading = IsAsyncLoading();
 		// Iterate over all objects and find out whether they reside in a GC'ed level package.
-		for( FObjectIterator It; It; ++It )
+		for( FThreadSafeObjectIterator It; It; ++It )
 		{
 			UObject* Object = *It;
 			// Check whether object's outermost is in the list.
@@ -2935,14 +2981,23 @@ void FLevelStreamingGCHelper::VerifyLevelsGotRemovedByGC()
 			// But disregard package object itself.
 			&&	!Object->IsA(UPackage::StaticClass()) )
 			{
-				UE_LOG(LogWorld, Warning, TEXT("Level object %s didn't get garbage collected! Trying to find culprit, though this might crash. Try increasing stack size if it does. Referenced by:"), *Object->GetFullName());
-				FReferenceChainSearch RefChainSearch(Object, EReferenceChainSearchMode::Shortest | EReferenceChainSearchMode::PrintResults);
-				FailCount++;
+				if (bIsAsyncLoading && Object->HasAnyInternalFlags(EInternalObjectFlags::Async|EInternalObjectFlags::AsyncLoading))
+				{
+					UE_LOG(LogWorld, Display, TEXT("Level object %s isn't released by async loading yet, "
+							"it will get garbage collected next time instead."),
+							*Object->GetFullName());
+				}
+				else
+				{
+					UE_LOG(LogWorld, Warning, TEXT("Level object %s didn't get garbage collected! Trying to find culprit, though this might crash. Try increasing stack size if it does. Referenced by:"), *Object->GetFullName());
+					FReferenceChainSearch RefChainSearch(Object, EReferenceChainSearchMode::Shortest | EReferenceChainSearchMode::PrintResults);
+					FailCount++;
+				}
 			}
 		}
 		if( FailCount > 0 )
 		{
-			UE_LOG(LogWorld, Fatal,TEXT("Streamed out levels were not completely garbage collected! Please see previous log entries."));
+			UE_LOG(LogWorld, Error, TEXT("Streamed out levels were not completely garbage collected! Please see previous log entries."));
 		}
 #endif
 	}
@@ -3169,7 +3224,9 @@ UWorld* UWorld::DuplicateWorldForPIE(const FString& PackageName, UWorld* OwningW
 	PIELevelPackage->SetPackageFlags(PKG_PlayInEditor);
 	PIELevelPackage->PIEInstanceID = PIEInstanceID;
 	PIELevelPackage->FileName = PackageFName;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	PIELevelPackage->SetGuid( EditorLevelPackage->GetGuid() );
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	PIELevelPackage->MarkAsFullyLoaded();
 
 	ULevel::StreamedLevelsOwningWorld.Add(PIELevelPackage->GetFName(), OwningWorld);
@@ -3245,7 +3302,7 @@ void FStreamingLevelsToConsider::Add_Internal(ULevelStreaming* StreamingLevel, b
 	if (StreamingLevel)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_ManageLevelsToConsider);
-		if (bStreamingLevelsBeingConsidered)
+		if (AreStreamingLevelsBeingConsidered())
 		{
 			// Add is a more significant reason than reevaluate, so either we are adding it to the map 
 			// if not already there, or upgrading the reason if not
@@ -3286,7 +3343,7 @@ bool FStreamingLevelsToConsider::Remove(ULevelStreaming* StreamingLevel)
 	if (StreamingLevel)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_ManageLevelsToConsider);
-		if (bStreamingLevelsBeingConsidered)
+		if (AreStreamingLevelsBeingConsidered())
 		{
 			int32 Index;
 			if (StreamingLevels.Find(StreamingLevel, Index))
@@ -3307,21 +3364,27 @@ bool FStreamingLevelsToConsider::Remove(ULevelStreaming* StreamingLevel)
 
 void FStreamingLevelsToConsider::RemoveAt(const int32 Index)
 {
-	if (bStreamingLevelsBeingConsidered)
+	if (AreStreamingLevelsBeingConsidered())
 	{
 		if (ULevelStreaming* StreamingLevel = StreamingLevels[Index])
 		{
 			LevelsToProcess.Remove(StreamingLevel);
+
+			// While we are considering we must null here because we are iterating the array and changing the size would be undesirable
+			StreamingLevels[Index] = nullptr;
 		}
 	}
-	StreamingLevels.RemoveAt(Index, 1, false);
+	else
+	{
+		StreamingLevels.RemoveAt(Index, 1, false);
+	}
 }
 
 void FStreamingLevelsToConsider::Reevaluate(ULevelStreaming* StreamingLevel)
 {
 	if (StreamingLevel)
 	{
-		if (bStreamingLevelsBeingConsidered)
+		if (AreStreamingLevelsBeingConsidered())
 		{
 			// If the streaming level is already in the map then it doesn't need to be updated as it is either
 			// already Reevaluate or the more significant Add
@@ -3349,46 +3412,52 @@ bool FStreamingLevelsToConsider::Contains(ULevelStreaming* StreamingLevel) const
 
 void FStreamingLevelsToConsider::Reset()
 {
-	if (bStreamingLevelsBeingConsidered)
+	if (AreStreamingLevelsBeingConsidered())
 	{
 		// not safe to resize while levels are being considered, just null everything
 		FMemory::Memzero(StreamingLevels.GetData(), StreamingLevels.Num() * sizeof(ULevelStreaming*));
 	}
 	else
 	{
-	StreamingLevels.Reset();
+		StreamingLevels.Reset();
 	}
 	LevelsToProcess.Reset();
 }
 
 void FStreamingLevelsToConsider::BeginConsideration()
 {
-	bStreamingLevelsBeingConsidered = true;
+	StreamingLevelsBeingConsidered++;
 }
 
 void FStreamingLevelsToConsider::EndConsideration()
 {
-	bStreamingLevelsBeingConsidered = false;
+	StreamingLevelsBeingConsidered--;
 
-	if (LevelsToProcess.Num() > 0)
+	if (!AreStreamingLevelsBeingConsidered())
 	{
-		// For any streaming level that was added or had its priority changed while we were considering the
-		// streaming levels go through and ensure they are correctly in the map and sorted to the correct location
-		TSortedMap<ULevelStreaming*, EProcessReason> LevelsToProcessCopy = MoveTemp(LevelsToProcess);
-		for (const TPair<ULevelStreaming*,EProcessReason>& LevelToProcessPair : LevelsToProcessCopy)
+		if (LevelsToProcess.Num() > 0)
 		{
-			if (ULevelStreaming* StreamingLevel = LevelToProcessPair.Key)
+			// For any streaming level that was added or had its priority changed while we were considering the
+			// streaming levels go through and ensure they are correctly in the map and sorted to the correct location
+			TSortedMap<ULevelStreaming*, EProcessReason> LevelsToProcessCopy = MoveTemp(LevelsToProcess);
+			for (const TPair<ULevelStreaming*,EProcessReason>& LevelToProcessPair : LevelsToProcessCopy)
 			{
-				// Remove the level if it is already in the list so we can use Add to place in the correct priority location
-				const bool bIsBeingConsidered = Remove(StreamingLevel);
-
-				// If the level was in the list or this is an Add, now use Add to insert in priority order
-				if (bIsBeingConsidered || LevelToProcessPair.Value == EProcessReason::Add)
+				if (ULevelStreaming* StreamingLevel = LevelToProcessPair.Key)
 				{
-					Add_Internal(StreamingLevel, true);
+					// Remove the level if it is already in the list so we can use Add to place in the correct priority location
+					const bool bIsBeingConsidered = Remove(StreamingLevel);
+
+					// If the level was in the list or this is an Add, now use Add to insert in priority order
+					if (bIsBeingConsidered || LevelToProcessPair.Value == EProcessReason::Add)
+					{
+						Add_Internal(StreamingLevel, true);
+					}
 				}
 			}
 		}
+
+		// Removed null entries that might have been cleared during consideration.
+		StreamingLevels.Remove(nullptr);
 	}
 }
 
@@ -3814,17 +3883,15 @@ bool UWorld::AllowLevelLoadRequests()
 
 void UWorld::HandleTimelineScrubbed()
 {
-	// Stop any FX from the pools
-	GetPSCPool().ReclaimActiveParticleSystems();
-
-	// Stop particles that belong to the AWorldSettings actor, as this persists on scrub
+	// Deactivate all FX components that belong to world settings
+	// These components are all one shot unmanaged FX that are generally going to destroy on complete or be returned back to the component pool they belong to
 	if (AWorldSettings* WorldSettings = GetWorldSettings())
 	{
-		TArray<UParticleSystemComponent*> ParticleSystemComponents;
-		WorldSettings->GetComponents(ParticleSystemComponents);
-		for (UParticleSystemComponent* PSC : ParticleSystemComponents)
+		TArray<UFXSystemComponent*> FXSystemComponents;
+		WorldSettings->GetComponents(FXSystemComponents);
+		for (UFXSystemComponent* FXSystemComponent : FXSystemComponents)
 		{
-			PSC->Complete();
+			FXSystemComponent->DeactivateImmediate();
 		}
 	}
 }
@@ -4526,7 +4593,7 @@ void UWorld::CleanupWorldInternal(bool bSessionEnded, bool bCleanupResources, UW
 		}
 	}
 
-	PSCPool.Cleanup();
+	PSCPool.Cleanup(this);
 
 	FWorldDelegates::OnPostWorldCleanup.Broadcast(this, bSessionEnded, bCleanupResources);
 
@@ -4777,6 +4844,11 @@ void UWorld::RemoveMovieSceneSequenceTickHandler(FDelegateHandle InHandle)
 	MovieSceneSequenceTick.Remove(InHandle);
 }
 
+bool UWorld::IsMovieSceneSequenceTickHandlerBound() const
+{
+	return MovieSceneSequenceTick.IsBound();
+}
+
 ABrush* UWorld::GetDefaultBrush() const
 {
 	check(PersistentLevel);
@@ -4918,6 +4990,18 @@ AWorldSettings* UWorld::GetWorldSettings( const bool bCheckStreamingPersistent, 
 	return WorldSettings;
 }
 
+FString UWorld::GetDebugDisplayName() const
+{
+#if WITH_EDITOR
+	if (GIsEditor)
+	{
+		extern ENGINE_API FString GPlayInEditorContextString;
+
+		return FString::Printf(TEXT("%s (%s)"), *GPlayInEditorContextString, *GetPathNameSafe(this));
+	}
+#endif
+	return GetPathNameSafe(this);
+}
 
 UModel* UWorld::GetModel() const
 {
@@ -5684,8 +5768,18 @@ bool UWorld::IsPlayingReplay() const
 
 bool UWorld::IsRecordingReplay() const
 {
-	// Using IsServer() because it also calls IsRecording() internally
-	return (DemoNetDriver && DemoNetDriver->IsServer());
+	const UGameInstance* GameInst = GetGameInstance();
+	const UReplaySubsystem* ReplaySubsystem = GameInst ? GameInst->GetSubsystem<UReplaySubsystem>() : nullptr;
+
+	if (ReplaySubsystem)
+	{
+		return ReplaySubsystem->IsRecording();
+	}
+	else
+	{
+		// Using IsServer() because it also calls IsRecording() internally
+		return (DemoNetDriver && DemoNetDriver->IsServer());
+	}
 }
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
@@ -5811,6 +5905,11 @@ bool UWorld::SetNewWorldOrigin(FIntVector InNewOriginLocation)
 	if (ForegroundLineBatcher)
 	{
 		ForegroundLineBatcher->ApplyWorldOffset(Offset, true);
+	}
+
+	if (PhysicsField)
+	{
+		PhysicsField->ApplyWorldOffset(Offset, true);
 	}
 
 	FIntVector PreviosWorldOriginLocation = OriginLocation;
@@ -6704,7 +6803,9 @@ void UWorld::SeamlessTravel(const FString& SeamlessTravelURL, bool bAbsolute, FG
 		}
 		// tell the handler to start the transition
 		FSeamlessTravelHandler &SeamlessTravelHandler = GEngine->SeamlessTravelHandlerForWorld( this );
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (!SeamlessTravelHandler.StartTravel(this, NewURL, MapPackageGuid) && !SeamlessTravelHandler.IsInTransition())
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			const FString Error = FText::Format( NSLOCTEXT("Engine", "InvalidUrl", "Invalid URL: {0}"), FText::FromString( SeamlessTravelURL ) ).ToString();
 			GEngine->BroadcastTravelFailure(this, ETravelFailure::InvalidURL, Error);
@@ -7274,12 +7375,21 @@ void UWorld::GetLightMapsAndShadowMaps(ULevel* Level, TArray<UTexture2D*>& OutLi
 			ArIsObjectReferenceCollector = true;
 			ArIsModifyingWeakAndStrongReferences = true; // While we are not modifying them, we want to follow weak references as well
 
-			for (FObjectIterator It; It; ++It)
-			{
-				It->Mark(OBJECTMARK_TagExp);
-			}
+			// Don't bother searching through the object's references if there's no objects of the types we're looking for
+			TArray<UObject*> Objects;
+			GetObjectsOfClass(ULightMapTexture2D::StaticClass(), Objects);
+			GetObjectsOfClass(UShadowMapTexture2D::StaticClass(), Objects);
+			GetObjectsOfClass(ULightMapVirtualTexture2D::StaticClass(), Objects);
 
-			*this << InSearch;
+			if (Objects.Num())
+			{
+				for (FThreadSafeObjectIterator It; It; ++It)
+				{
+					It->Mark(OBJECTMARK_TagExp);
+				}
+
+				*this << InSearch;
+			}
 		}
 
 		FArchive& operator<<(class UObject*& Obj)
@@ -7475,7 +7585,9 @@ static ULevel* DuplicateLevelWithPrefix(ULevel* InLevel, int32 InstanceID )
 	NewPackage->SetPackageFlags( PKG_PlayInEditor );
 	NewPackage->PIEInstanceID = InstanceID;
 	NewPackage->FileName = OriginalPackage->FileName;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	NewPackage->SetGuid( OriginalPackage->GetGuid() );
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	NewPackage->MarkAsFullyLoaded();
 
 	FSoftObjectPath::AddPIEPackageName(NewPackage->GetFName());
@@ -7927,5 +8039,33 @@ bool FAsyncPreRegisterDDCRequest::GetAsynchronousResults(TArray<uint8>& OutData)
 	return bResult;
 }
 #endif
+
+FString ToString(EWorldType::Type Type)
+{
+	switch (Type)
+	{
+	case EWorldType::None: return TEXT("None");
+	case EWorldType::Game: return TEXT("Game");
+	case EWorldType::Editor: return TEXT("Editor");
+	case EWorldType::PIE: return TEXT("PIE");
+	case EWorldType::EditorPreview: return TEXT("EditorPreview");
+	case EWorldType::GamePreview: return TEXT("GamePreview");
+	case EWorldType::GameRPC: return TEXT("GameRPC");
+	case EWorldType::Inactive: return TEXT("Inactive");
+	default: return TEXT("Unknown");
+	}
+}
+
+FString ENGINE_API ToString(ENetMode NetMode)
+{
+	switch (NetMode)
+	{
+	case NM_Standalone: return TEXT("Standalone");
+	case NM_DedicatedServer:  return TEXT("Dedicated Server");
+	case NM_ListenServer: return TEXT("Listen Server");
+	case NM_Client: return TEXT("Client");
+	default: return TEXT("Invalid");
+	}
+}
 
 #undef LOCTEXT_NAMESPACE 

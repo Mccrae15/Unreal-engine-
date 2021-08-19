@@ -60,6 +60,10 @@ public:
 
 	bool IsAllowedToExecute() const;
 
+#if WITH_EDITOR
+	void TickRapidIterationParameters();
+#endif
+
 	void PreTick();
 	void Tick(float DeltaSeconds);
 	void PostTick();
@@ -115,7 +119,7 @@ public:
 	FNiagaraSystemInstance* GetParentSystemInstance()const { return ParentSystemInstance; }
 
 	float NIAGARA_API GetTotalCPUTimeMS();
-	int	NIAGARA_API GetTotalBytesUsed();
+	int64 NIAGARA_API GetTotalBytesUsed();
 
 	ENiagaraExecutionState NIAGARA_API GetExecutionState() { return ExecutionState; }
 	void NIAGARA_API SetExecutionState(ENiagaraExecutionState InState);
@@ -144,7 +148,7 @@ public:
 
 	void SetSystemFixedBoundsOverride(FBox SystemFixedBounds);
 
-	bool FindBinding(const FNiagaraUserParameterBinding& InBinding, TArray<UMaterialInterface*>& OutMaterials) const;
+	bool FindBinding(const FNiagaraUserParameterBinding& InBinding, UMaterialInterface*& OutMaterial) const;
 
 
 	bool HasTicked() const { return TickCount > 0;  }
@@ -152,7 +156,12 @@ public:
 	const FNiagaraParameterStore& GetRendererBoundVariables() const { return RendererBindings; }
 	FNiagaraParameterStore& GetRendererBoundVariables() { return RendererBindings; }
 
+	int32 GetRandomSeed() const { return RandomSeed; }
 	int32 GetInstanceSeed() const { return InstanceSeed; }
+
+	void SetParticleComponentActive(FObjectKey ComponentKey, int32 ParticleID) const;
+
+	bool IsParticleComponentActive(FObjectKey ComponentKey, int32 ParticleID) const;
 
 private:
 	void CheckForErrors();
@@ -212,6 +221,7 @@ private:
 	/* The age of the emitter*/
 	float EmitterAge = 0.0f;
 
+	int32 RandomSeed = 0;
 	int32 InstanceSeed = FGenericPlatformMath::Rand();
 	int32 TickCount = 0;
 
@@ -235,4 +245,8 @@ private:
 	uint32 bResetPending : 1;
 	/** Allows event spawn to be combined into a single spawn.  This is only safe when not using things like ExecIndex(). */
 	uint32 bCombineEventSpawn : 1;
+
+	// This is used to keep track which particles have spawned a component. This is needed when the bOnlyCreateComponentsOnParticleSpawn flag is set in the renderer.
+	// Without this bookkeeping, the particles would lose their components when the render state is recreated or the visibility tag flips them off and on again.
+	mutable TMap<FObjectKey, TSet<int32>> ParticlesWithComponents;
 };

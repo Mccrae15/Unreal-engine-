@@ -101,6 +101,11 @@ UModelComponent
 
 void UModelComponent::BuildRenderData()
 {
+	if (IsRunningDedicatedServer())
+	{
+		return;
+	}
+
 	UModel* TheModel = GetModel();
 
 #if WITH_EDITOR
@@ -252,6 +257,8 @@ public:
 		}
 
 		bGoodCandidateForCachedShadowmap = CacheShadowDepthsFromPrimitivesUsingWPO() || !MaterialRelevance.bUsesWorldPositionOffset;
+
+		bUsingWPOMaterial = !!MaterialRelevance.bUsesWorldPositionOffset;
 
 		// Try to find a color for level coloration.
 		UObject* ModelOuter = InComponent->GetModel()->GetOuter();

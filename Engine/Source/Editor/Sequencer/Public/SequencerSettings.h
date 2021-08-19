@@ -113,11 +113,6 @@ public:
 	/** Sets which channels are keyed when a channel is keyed */
 	void SetKeyGroupMode(EKeyGroupMode);
 
-	/** Gets whether or not to key interp properties only. */
-	bool GetKeyInterpPropertiesOnly() const;
-	/** Sets whether or not to key interp properties only. */
-	void SetKeyInterpPropertiesOnly(bool InbKeyInterpPropertiesOnly); 
-
 	/** Gets default key interpolation. */
 	EMovieSceneKeyInterpolation GetKeyInterpolation() const;
 	/** Sets default key interpolation */
@@ -249,11 +244,6 @@ public:
 	/** Set whether or not the cursor should be kept within the playback range while scrubbing in sequencer */
 	void SetKeepCursorInPlayRangeWhileScrubbing(bool bInKeepCursorInPlayRangeWhileScrubbing);
 
-	/** @return true if the cursor should be kept within the playback range during playback in sequencer, false otherwise */
-	bool ShouldKeepCursorInPlayRange() const;
-	/** Set whether or not the cursor should be kept within the playback range during playback in sequencer */
-	void SetKeepCursorInPlayRange(bool bInKeepCursorInPlayRange);
-
 	/** @return true if the playback range should be synced to the section bounds, false otherwise */
 	bool ShouldKeepPlayRangeInSectionBounds() const;
 	/** Set whether or not the playback range should be synced to the section bounds */
@@ -263,6 +253,11 @@ public:
 	uint8 GetZeroPadFrames() const;
 	/** Set the number of digits we should zero-pad to when showing frame numbers in sequencer */
 	void SetZeroPadFrames(uint8 InZeroPadFrames);
+
+	/** Get the number of frames to increment when jumping forwards/backwards */
+	FFrameNumber GetJumpFrameIncrement() const;
+	/** Set the number of frames to increment when jumping forwards/backwards */
+	void SetJumpFrameIncrement(FFrameNumber InJumpFrameIncrement);
 
 	/** @return true if showing combined keyframes at the top node */
 	bool GetShowCombinedKeyframes() const;
@@ -352,6 +347,12 @@ public:
 	EFrameNumberDisplayFormats GetTimeDisplayFormat() const { return FrameNumberDisplayFormat; }
 	/** Sets the time display format to the specified type. */
 	void SetTimeDisplayFormat(EFrameNumberDisplayFormats InFormat);
+
+	/** What movie renderer to use */
+	FString GetMovieRendererName() const { return MovieRendererName; }
+	/** Sets the movie renderer to use */
+	void SetMovieRendererName(const FString& InMovieRendererName);
+
 protected:
 
 	/** The auto change mode (auto-key, auto-track or none). */
@@ -365,10 +366,6 @@ protected:
 	/**Key group mode. */
 	UPROPERTY(config, EditAnywhere, Category = Keyframing)
 	EKeyGroupMode KeyGroupMode;
-
-	/** Enable or disable only keyframing properties marked with the 'Interp' keyword. */
-	UPROPERTY( config, EditAnywhere, Category=Keyframing )
-	bool bKeyInterpPropertiesOnly;
 
 	/** The interpolation type for newly created keyframes */
 	UPROPERTY( config, EditAnywhere, Category=Keyframing )
@@ -476,10 +473,6 @@ protected:
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
 	bool bKeepCursorInPlayRangeWhileScrubbing;
 
-	/** Enable or disable keeping the cursor in the current playback range during playback. */
-	UPROPERTY( config, EditAnywhere, Category=Timeline )
-	bool bKeepCursorInPlayRange;
-
 	/** Enable or disable keeping the playback range constrained to the section bounds. */
 	UPROPERTY( config, EditAnywhere, Category=Timeline )
 	bool bKeepPlayRangeInSectionBounds;
@@ -487,6 +480,10 @@ protected:
 	/** The number of zeros to pad the frame numbers by. */
 	UPROPERTY( config, EditAnywhere, Category=Timeline )
 	uint8 ZeroPadFrames;
+
+	/** The number of frames to jump by when jumping forward or backwards. */
+	UPROPERTY( config, EditAnywhere, Category=Timeline )
+	FFrameNumber JumpFrameIncrement;
 
 	/** Enable or disable the combined keyframes at the top node level. Disabling can improve editor performance. */
 	UPROPERTY( config, EditAnywhere, Category=Timeline )
@@ -551,6 +548,10 @@ protected:
 	/** What format do we display time in to the user? */
 	UPROPERTY(config, EditAnywhere, Category=General)
 	EFrameNumberDisplayFormats FrameNumberDisplayFormat;
+
+	/** Which movie renderer to use */
+	UPROPERTY(config, EditAnywhere, Category=General)
+	FString MovieRendererName;
 
 	FOnEvaluateSubSequencesInIsolationChanged OnEvaluateSubSequencesInIsolationChangedEvent;
 	FOnShowSelectedNodesOnlyChanged OnShowSelectedNodesOnlyChangedEvent;

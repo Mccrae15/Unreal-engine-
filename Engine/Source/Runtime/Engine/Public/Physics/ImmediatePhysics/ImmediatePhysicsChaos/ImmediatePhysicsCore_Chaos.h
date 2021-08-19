@@ -19,11 +19,11 @@ namespace Chaos
 	class FPBDJointConstraints;
 	class FPerShapeData;
 	template<class T> class TArrayCollectionArray;
-	template<typename T, int D> struct TKinematicGeometryParticleParameters;
+	struct FKinematicGeometryParticleParameters;
 	template<typename T, int D> class TKinematicTarget;
 	template<typename T> class TPBDConstraintIslandRule;
-	template<typename T, int D> struct TPBDRigidParticleParameters;
-	template<typename T, int D> class TPBDRigidsSOAs;
+	struct FPBDRigidParticleParameters;
+	class FPBDRigidsSOAs;
 	template<typename T> class TSimpleConstraintRule;
 
 }
@@ -31,12 +31,13 @@ namespace Chaos
 namespace ImmediatePhysics_Chaos
 {
 	using FReal = Chaos::FReal;
-	const int Dimensions = 3;
+	using FRealSingle = Chaos::FRealSingle;
+	//const int Dimensions = 3;
 
 	using EActorType = ImmediatePhysics_Shared::EActorType;
 	using EForceType = ImmediatePhysics_Shared::EForceType;
 
-	using FKinematicTarget = Chaos::TKinematicTarget<FReal, Dimensions>;
+	using FKinematicTarget = Chaos::TKinematicTarget<FReal, 3>;
 }
 
 struct FBodyInstance;

@@ -6,78 +6,83 @@
 
 #pragma once
 
+#include "../../MortonCode.ush"
 
-#include "../../QuasiRandom.ush" 
+#define RANDSEQ_PURERANDOM	0
+#define RANDSEQ_HALTON		1
+#define RANDSEQ_OWENSOBOL	2
 
+// Select a default if none was specified
+#ifndef RANDSEQ
+#define RANDSEQ			RANDSEQ_OWENSOBOL
+#endif
+
+#ifndef RANDSEQ_RANDOMIZED
+#define RANDSEQ_RANDOMIZED		1 // 1 to randomize per pixel, 0 to share the same sequence in all pixels (useful to benchmark coherent sampling)
+#endif
+
+#ifndef RANDSEQ_ERROR_DIFFUSION
+#define RANDSEQ_ERROR_DIFFUSION 1 // Enabled by default, only works when using RANDSEQ_OWENSOBOL
+#endif
+
+#ifndef RANDSEQ_UNROLL_SOBOL
+#define RANDSEQ_UNROLL_SOBOL 1 // Use unrolled Sobol loop such that table can be inline constants.
+#endif
+
+// This hash mixes bits at the theoretical bias limit
+uint PerfectIntegerHash(uint x)
+{
+	// https://nullprogram.com/blog/2018/07/31/
+	// exact bias: 0.020888578919738908
+	x ^= x >> 17;
+	x *= 0xed5ad4bbu;
+	x ^= x >> 11;
+	x *= 0xac4c1b51u;
+	x ^= x >> 15;
+	x *= 0x31848babu;
+	x ^= x >> 14;
+	return x;
+}
+
+// High quality integer hash - this mixes bits almost perfectly
+uint StrongIntegerHash(uint x)
+{
+	// From https://github.com/skeeto/hash-prospector
+	// bias = 0.16540778981744320
+	x ^= x >> 16;
+	x *= 0xa812d533;
+	x ^= x >> 15;
+	x *= 0xb278e4ad;
+	x ^= x >> 17;
+	return x;
+}
+
+// This is a much weaker hash, but is faster and can be used to drive other hashes
+uint WeakIntegerHash(uint x)
+{
+	// Generated using https://github.com/skeeto/hash-prospector
+	// Estimated Bias ~583
+	x *= 0x92955555u;
+	x ^= x >> 15;
+	return x;
+}
 
 struct RandomSequence
 {
-	uint Type;
-	uint PositionSeed;
-	uint TimeSeed;
-
-	// LCG
-	uint PseudoRandomSeed;
-
-	// Halton options
-	uint HaltonDimensionIndex;
+	uint SampleIndex;		// index into the random sequence
+	uint SampleSeed;		// changes as we draw samples to reflect the change in dimension
 };
 
-// TEA-based pseudo-random number generator
-uint RandInit(uint Seed0, uint Seed1)
-{
-	// Constants cited from "GPU Random Numbers via the Tiny Encryption Algorithm"
-	const uint Delta = 0x9e3779b9;
-	const uint4 Key = uint4(0xa341316c, 0xc8013ea4, 0xad90777d, 0x7e95761e);
-	uint Rounds = 8;
-
-	uint Sum = 0;
-	uint2 Value = uint2(Seed0, Seed1);
-	for (uint Index = 0; Index < Rounds; ++Index)
-	{
-		Sum += Delta;
-		Value.x += (Value.y + Sum) ^ ((Value.y << 4) + Key.x) ^ ((Value.y >> 5) + Key.y);
-		Value.y += (Value.x + Sum) ^ ((Value.x << 4) + Key.z) ^ ((Value.x >> 5) + Key.w);
-	}
-
-	return Value.x;
-}
-
-// Linear congruential generator to evolve pseudo-random numbers
 float Rand(inout uint Seed)
 {
-	// Scale and Bias coefficients are taken from the Park-Miller RNG
-	const uint Scale = 48271;
-	const uint Bias = 0;
-	Seed = Seed * Scale + Bias;
-
-	// Map to significand and divide into [0, 1) range
-	float Result = float(Seed & 0x00FFFFFF);
-	Result /= float(0x01000000);
-	return Result;
+	// Counter based PRNG -- safer than most small-state PRNGs since we use the random values directly here.
+	Seed += 1;
+	uint Output = StrongIntegerHash(Seed);
+	// take low 24 bits
+	return (Output & 0xFFFFFF) * 5.96046447754e-08; // * 2^-24
 }
 
 // #dxr_todo: convert prime factors to constant buffer
-static const uint Primes128LUT[] = {
-	2,3,5,7,11,13,17,19,23,29,
-	31,37,41,43,47,53,59,61,67,71,
-	73,79,83,89,97,101,103,107,109,113,
-	127,131,137,139,149,151,157,163,167,173,
-	179,181,191,193,197,199,211,223,227,229,
-	233,239,241,251,257,263,269,271,277,281,
-	283,293,307,311,313,317,331,337,347,349,
-	353,359,367,373,379,383,389,397,401,409,
-	419,421,431,433,439,443,449,457,461,463,
-	467,479,487,491,499,503,509,521,523,541,
-	547,557,563,569,571,577,587,593,599,601,
-	607,613,617,619,631,641,643,647,653,659,
-	661,673,677,683,691,701,709,719
-};
-uint Prime128(uint Dimension)
-{
-	return Primes128LUT[Dimension % 128];
-}
-
 static const uint Primes512LUT[] = {
 	2,3,5,7,11,13,17,19,23,29,
 	31,37,41,43,47,53,59,61,67,71,
@@ -154,93 +159,312 @@ float Halton(uint Index, uint Base)
 	return r;
 }
 
+
+uint FastOwenScrambling(uint Index, uint Seed) {
+#if 0
+	// reference implementation - scramble bits one at a time
+
+	// loop below does not require pre-inverted bits, so undo the inversion assumed in the optimized case below
+	Index = ReverseBits32(Index);
+	for (uint Mask = 1u << 31, Input = Index; Mask; Mask >>= 1) {
+		Seed = PerfectIntegerHash(Seed); // randomize state
+		Index ^= Seed & Mask;  // flip output (depending on state)
+		Seed ^= Input & Mask;  // flip state  (depending on input)
+	}
+	return Index;
+#else
+	// Laine and Karras / Stratified Sampling for Stochastic Transparency / EGSR 2011
+
+	// The operations below will mix bits toward the left, so temporarily reverse the order
+	// NOTE: This operation has been performed outside this call
+	// Index = ReverseBits32(Index);
+	
+	// This follows the basic construction from the paper above. The error-diffusion sampler which
+	// tiles a single point set across the screen, makes it much easier to visually "see" the impact of the scrambling.
+	// When the scrambling is not good enough, the structure of the space-filling curve is left behind.
+	// Care must be taken to ensure that the scrambling is still unbiased on average though. I found some cases
+	// that seemed to produce lower visual error but were actually biased due to not touching certain bits,
+	// leading to correlations across dimensions.
+
+	// After much experimentation with the hash prospector, I discovered the following two constants which appear to
+	// give results as good (or better) than the original 4 xor-mul constants from the Laine/Karras paper.
+	// It isn't entirely clear to me why some constants work better than others. Some hashes with slightly less
+    // bias produced visibly more error or worse looking power spectra.
+	// Estimates below from hash prospector for all hashes of the form: add,xmul=c0,xmul=c1 (with c0 and c1 being
+	// the constants below).
+	// Ran with score_quality=16 for about ~10000 random hashes
+	// Average bias: ~727.02
+	//   Best  bias: ~723.05
+	//   Worst bias: ~735.19
+	Index += Seed; // randomize the index by our seed (pushes bits toward the left)
+	Index ^= Index * 0x9c117646u;
+	Index ^= Index * 0xe0705d72u;
+
+	// Undo the reverse so that we get left-to-right scrambling
+	// thereby emulating owen-scrambling
+	return ReverseBits32(Index);
+#endif
+}
+
+// 32-bit Sobol matrices for dimension 1,2,3 from:
+// S. Joe and F. Y. Kuo, Constructing Sobol sequences with better two-dimensional projections, SIAM J. Sci. Comput. 30, 2635-2654 (2008)
+//    https://web.maths.unsw.edu.au/~fkuo/sobol/
+// NOTE: we don't bother storing dimension 0 since it is just a bit reversal
+// NOTE2: we don't bother storing dimension 1 either since it has a very simple pattern
+// NOTE3: the matrix elements are reversed to save one reverse in the owen scrambling
+static const uint2 SobolMatrices[] = {
+	uint2(0x00000001, 0x00000001),
+	uint2(0x00000003, 0x00000003),
+	uint2(0x00000006, 0x00000004),
+	uint2(0x00000009, 0x0000000a),
+	uint2(0x00000017, 0x0000001f),
+	uint2(0x0000003a, 0x0000002e),
+	uint2(0x00000071, 0x00000045),
+	uint2(0x000000a3, 0x000000c9),
+	uint2(0x00000116, 0x0000011b),
+	uint2(0x00000339, 0x000002a4),
+	uint2(0x00000677, 0x0000079a),
+	uint2(0x000009aa, 0x00000b67),
+	uint2(0x00001601, 0x0000101e),
+	uint2(0x00003903, 0x0000302d),
+	uint2(0x00007706, 0x00004041),
+	uint2(0x0000aa09, 0x0000a0c3),
+	uint2(0x00010117, 0x0001f104),
+	uint2(0x0003033a, 0x0002e28a),
+	uint2(0x00060671, 0x000457df),
+	uint2(0x000909a3, 0x000c9bae),
+	uint2(0x00171616, 0x0011a105),
+	uint2(0x003a3939, 0x002a7289),
+	uint2(0x00717777, 0x0079e7db),
+	uint2(0x00a3aaaa, 0x00b6dba4),
+	uint2(0x01170001, 0x0100011a),
+	uint2(0x033a0003, 0x030002a7),
+	uint2(0x06710006, 0x0400079e),
+	uint2(0x09a30009, 0x0a000b6d),
+	uint2(0x16160017, 0x1f001001),
+	uint2(0x3939003a, 0x2e003003),
+	uint2(0x77770071, 0x45004004),
+	uint2(0xaaaa00a3, 0xc900a00a)
+};
+
+uint EvolveSobolSeed(inout uint Seed)
+{
+	// constant from: https://www.pcg-random.org/posts/does-it-beat-the-minimal-standard.html
+	const uint MCG_C = 2739110765;
+#if 0
+	return Seed += MCG_C;
+#elif 0
+	Seed += MCG_C;
+	return Seed ^ (Seed >> 16); // scramble lower bits
+#elif 0
+	return PerfectIntegerHash(Seed += 1);
+#elif 0
+	return StrongIntegerHash(Seed += 1);
+#else
+	// a slightly weaker hash is ok since this drives FastOwenScrambling which is itself a hash
+	// Note that the Seed evolution is just an integer addition and the hash should optimize away
+	// when a particular dimension is not used
+	return WeakIntegerHash(Seed += MCG_C);
+#endif
+}
+
+float4 SobolSampler(uint SampleIndex, inout uint Seed)
+{
+	// first scramble the index to decorelate from other 4-tuples
+	uint SobolIndex = FastOwenScrambling(SampleIndex, EvolveSobolSeed(Seed));
+	// now get Sobol' point from this index
+	uint4 Result = uint4(SobolIndex, 0, 0, 0);
+#if RANDSEQ_UNROLL_SOBOL // unrolled version seems faster in most cases
+	UNROLL for (uint b = 0, v = 1; b < 32; b++)
+	{
+		uint IndexBit = (SobolIndex >> b) & 1;
+#else // however a loop with early exit seems faster in the path tracing context (possibly due to low occupancy?)
+	for (uint b = 0, v = 1; SobolIndex; SobolIndex >>= 1, b++)
+	{
+		uint IndexBit = SobolIndex & 1;
+#endif
+		Result.y ^= IndexBit * v;
+		Result.zw ^= IndexBit * SobolMatrices[b];
+		v ^= v << 1;
+	}
+	// finally scramble the points to avoid structured artifacts
+	Result.x = FastOwenScrambling(Result.x, EvolveSobolSeed(Seed));
+	Result.y = FastOwenScrambling(Result.y, EvolveSobolSeed(Seed));
+	Result.z = FastOwenScrambling(Result.z, EvolveSobolSeed(Seed));
+	Result.w = FastOwenScrambling(Result.w, EvolveSobolSeed(Seed));
+
+	// output as float in [0,1) taking care not to skew the distribution
+	// due to the non-uniform spacing of floats in this range
+	return (Result >> 8) * 5.96046447754e-08; // * 2^-24
+}
+
+// This initializes a multi-dimensional sampler for a particular pixel. The TimeSeed parameter should be set
+// such that it changes per sample. See the function below when you know how many samples you plan on taking
+// for a particular integral.
 void RandomSequence_Initialize(inout RandomSequence RandSequence, uint PositionSeed, uint TimeSeed)
 {
-	RandSequence.Type = 0;
-	RandSequence.PositionSeed = PositionSeed;
-	RandSequence.TimeSeed = TimeSeed;
+	// optionally disable randomization per pixel so that all pixels follow the same path in primary sample space
+#if RANDSEQ_RANDOMIZED == 0
+	PositionSeed = 0;
+#endif
 
-	// LCG
-	RandSequence.PseudoRandomSeed = RandInit(PositionSeed, TimeSeed);
-
-	// Halton
-	RandSequence.HaltonDimensionIndex = 0;
+#if RANDSEQ == RANDSEQ_PURERANDOM
+	RandSequence.SampleIndex = 0; // not used
+	RandSequence.SampleSeed = StrongIntegerHash(PositionSeed + StrongIntegerHash(TimeSeed));
+#elif RANDSEQ == RANDSEQ_HALTON
+	RandSequence.SampleIndex = TimeSeed + StrongIntegerHash(PositionSeed);
+	RandSequence.SampleSeed = 0; // this sampler just counts dimensions
+#elif RANDSEQ == RANDSEQ_OWENSOBOL
+	// pre-compute bit reversal needed for FastOwenScrambling since this index doesn't change
+	RandSequence.SampleIndex = ReverseBits32(TimeSeed);
+	// change seed to get a unique sequence per pixel
+	RandSequence.SampleSeed  = StrongIntegerHash(PositionSeed);
+#else
+#error "Unknown random sequence chosen in path tracer"
+#endif
 }
 
-bool RandomSequence_IsLCG(in RandomSequence RandSequence)
+// This is an alternative initialization to the method above when you know how many samples you are planning on taking. This incorporates the 
+// TimeSeed0 (this should usually be the frame number when using all samples in one frame, or should be the frame on which the first sample was
+// taken if taking one sample per frame like the path tracer).
+void RandomSequence_Initialize(inout RandomSequence RandSequence, uint2 PixelCoord, uint SampleIndex, uint TimeSeed0, uint MaxSamples)
 {
-	return RandSequence.Type == 0;
-}
+#if RANDSEQ_ERROR_DIFFUSION == 1 && RANDSEQ == RANDSEQ_OWENSOBOL
+	// The core idea is to use a single sobol pattern across the screen using a space filling curve to correlate nearby pixels
+	// This achieves a much better error diffusion than the random sequence assignment of the method above
+	// This algorithm is covered in the following paper:
+	//   "Screen-Space Blue-Noise Diffusion of Monte Carlo Sampling Error via Hierarchical Ordering of Pixels"
+	//   Siggraph Asia 2020
+	//   http://abdallagafar.com/publications/zsampler/
+	// Improvements made in this version are: 
+	//   - switching the z-order curve for a hilbert curve
+	//   - switching sobol points for owen-sobol points
+	//   - recognizing that the hierarchical scrambling proposed in the original paper is equivalent to Owen-Scrambling of the index
+	// Downsides of this method:
+	//   - quality does not improve beyond the target sample count, making usage with adaptive sampling difficult
+	//   - error-diffusion property is only achieved at the target sample count, earlier samples look random (sometimes slightly worse than random)
 
-bool RandomSequence_IsHalton(in RandomSequence RandSequence)
-{
-	return RandSequence.Type == 1;
-}
+	uint X = PixelCoord.x;
+	uint Y = PixelCoord.y;
 
-bool RandomSequence_IsScrambledHalton(in RandomSequence RandSequence)
-{
-	return RandSequence.Type == 2;
-}
-
-float RandomSequence_generateSample(inout RandomSequence RandSequence, in uint SampleIndex)
-{
-	// dxr_todo: Make choice of random a shader permutation
-	if (RandomSequence_IsHalton(RandSequence))
-	{
-		uint HaltonSampleIndex = RandSequence.TimeSeed;
-
-		float RandomSample = Halton(HaltonSampleIndex, Prime512(RandSequence.HaltonDimensionIndex));
-		RandSequence.HaltonDimensionIndex += 1;
-		return RandomSample;
+#if 0
+	uint TileID = ((X & 255) + (Y & 255) * 256); // Scanline order
+#elif 0
+	uint TileID = ((Y & 1) ? 255 - (X & 255) : (X & 255)) + (Y & 255) * 256; // zig-zag curve
+#elif 0
+	uint TileID = MortonEncode(uint2(X, Y)); // Z-order curve
+#elif 0
+	// ordered dither curve
+	uint TileID = MortonEncode(uint2(X ^ Y, X));
+#elif 0
+    // pure random (breaks nice properties)
+	uint TileID = StrongIntegerHash(X + StrongIntegerHash(Y));
+#else
+	// Hilbert curve: https://github.com/hcs0/Hackers-Delight/blob/master/hilbert/hil_s_from_xy.c.txt
+	uint TileID = 0, HilbertState = 0;
+	for (int i = 7; i >= 0; i--) {
+		uint xi = (X >> i) & 1;
+		uint yi = (Y >> i) & 1;
+		uint Row = 8 * HilbertState + 4 * xi + 2 * yi;
+		TileID = TileID * 4 + ((0x361E9CB4u >> Row) & 3);
+		HilbertState = (0x8FE65831u >> Row) & 3;
 	}
-	else if (RandomSequence_IsScrambledHalton(RandSequence))
-	{
-		uint HaltonSampleIndex = IntegerHash(RandSequence.PositionSeed) + RandSequence.TimeSeed;
+#endif
 
-		float RandomSample = Halton(HaltonSampleIndex, Prime512(RandSequence.HaltonDimensionIndex));
-		RandSequence.HaltonDimensionIndex += 1;
-		return RandomSample;
-	}
-	else // LCG
-	{
-		return Rand(RandSequence.PseudoRandomSeed);
-	}
+	// Combine pixel-level and sample-level bits into the sample index (visible structure will be hidden by owen scrambling of the index)
+	RandSequence.SampleIndex = ReverseBits32((65536 * TimeSeed0 + TileID) * MaxSamples + SampleIndex);
+
+	// progressive encodings (these kind of work, but quality is much worse)
+	//RandSequence.SampleIndex = ReverseBits32(MortonEncode(uint2(TimeSeed0, TileID)) * MaxSamples + SampleIndex);
+	//RandSequence.SampleIndex = ReverseBits32((MortonCode3(MaxSamples * TimeSeed0 + SampleIndex) * 4) | (MortonCode3(Y) * 2) | MortonCode3(X));
+	//RandSequence.SampleIndex = ReverseBits32(MortonEncode(uint2(MortonEncode(uint2(X, Y)), SampleIndex)));
+
+	RandSequence.SampleSeed = 0; // always use the same sequence
+#else
+	// Error diffusion sampler is disabled, just use the simple init function instead
+	RandomSequence_Initialize(RandSequence, PixelCoord.x + PixelCoord.y * 65536, TimeSeed0 * MaxSamples + SampleIndex);
+#endif
 }
 
-float RandomSequence_GenerateSample1D(inout RandomSequence RandSequence, inout uint SampleIndex)
+float RandomSequence_GenerateSample1D(inout RandomSequence RandSequence)
 {
-	float Sample;
-	Sample = RandomSequence_generateSample(RandSequence, SampleIndex);
-	SampleIndex += 1;
-	return Sample;
+	float Result;
+#if RANDSEQ == RANDSEQ_PURERANDOM
+	Result = Rand(RandSequence.SampleSeed);
+#elif RANDSEQ == RANDSEQ_HALTON
+	Result = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 0));
+	RandSequence.SampleSeed += 1;
+#elif RANDSEQ == RANDSEQ_OWENSOBOL
+	// rely on compiler to optimize out dead code for now
+	// #dxr_todo: benchmark and specialize if needed
+	Result = SobolSampler(RandSequence.SampleIndex, RandSequence.SampleSeed).x;
+#else
+#error "Unknown random sequence chosen in path tracer"
+#endif
+	return Result;
 }
 
-float2 RandomSequence_GenerateSample2D(inout RandomSequence RandSequence, inout uint SampleIndex)
+float2 RandomSequence_GenerateSample2D(inout RandomSequence RandSequence)
 {
-	float2 Sample;
-	Sample.x = RandomSequence_generateSample(RandSequence, SampleIndex);
-	Sample.y = RandomSequence_generateSample(RandSequence, SampleIndex + 1);
-	SampleIndex += 2;
-	return Sample;
+	float2 Result;
+#if RANDSEQ == RANDSEQ_PURERANDOM
+	Result.x = Rand(RandSequence.SampleSeed);
+	Result.y = Rand(RandSequence.SampleSeed);
+#elif RANDSEQ == RANDSEQ_HALTON
+	Result.x = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 0));
+	Result.y = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 1));
+	RandSequence.SampleSeed += 2;
+#elif RANDSEQ == RANDSEQ_OWENSOBOL
+	// rely on compiler to optimize out dead code for now
+	// #dxr_todo: benchmark and specialize if needed
+	Result = SobolSampler(RandSequence.SampleIndex, RandSequence.SampleSeed).xy;
+#else
+#error "Unknown random sequence chosen in path tracer"
+#endif
+	return Result;
 }
 
-float3 RandomSequence_GenerateSample3D(inout RandomSequence RandSequence, inout uint SampleIndex)
+float3 RandomSequence_GenerateSample3D(inout RandomSequence RandSequence)
 {
-	float3 Sample;
-	Sample.x = RandomSequence_generateSample(RandSequence, SampleIndex);
-	Sample.y = RandomSequence_generateSample(RandSequence, SampleIndex + 1);
-	Sample.z = RandomSequence_generateSample(RandSequence, SampleIndex + 2);
-	SampleIndex += 3;
-	return Sample;
+	float3 Result;
+#if RANDSEQ == RANDSEQ_PURERANDOM
+	Result.x = Rand(RandSequence.SampleSeed);
+	Result.y = Rand(RandSequence.SampleSeed);
+	Result.z = Rand(RandSequence.SampleSeed);
+#elif RANDSEQ == RANDSEQ_HALTON
+	Result.x = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 0));
+	Result.y = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 1));
+	Result.z = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 2));
+	RandSequence.SampleSeed += 3;
+#elif RANDSEQ == RANDSEQ_OWENSOBOL
+	// rely on compiler to optimize out dead code for now
+	// #dxr_todo: benchmark and specialize if needed
+	Result = SobolSampler(RandSequence.SampleIndex, RandSequence.SampleSeed).xyz;
+#else
+#error "Unknown random sequence chosen in path tracer"
+#endif
+	return Result;
 }
 
-float4 RandomSequence_GenerateSample4D(inout RandomSequence RandSequence, inout uint SampleIndex)
+
+float4 RandomSequence_GenerateSample4D(inout RandomSequence RandSequence)
 {
-	float4 Sample;
-	Sample.x = RandomSequence_generateSample(RandSequence, SampleIndex);
-	Sample.y = RandomSequence_generateSample(RandSequence, SampleIndex + 1);
-	Sample.z = RandomSequence_generateSample(RandSequence, SampleIndex + 2);
-	Sample.w = RandomSequence_generateSample(RandSequence, SampleIndex + 3);
-	SampleIndex += 4;
-	return Sample;
+	float4 Result;
+#if RANDSEQ == RANDSEQ_PURERANDOM
+	Result.x = Rand(RandSequence.SampleSeed);
+	Result.y = Rand(RandSequence.SampleSeed);
+	Result.z = Rand(RandSequence.SampleSeed);
+	Result.w = Rand(RandSequence.SampleSeed);
+#elif RANDSEQ == RANDSEQ_HALTON
+	Result.x = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 0));
+	Result.y = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 1));
+	Result.z = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 2));
+	Result.w = Halton(RandSequence.SampleIndex, Prime512(RandSequence.SampleSeed + 3));
+	RandSequence.SampleSeed += 4;
+#elif RANDSEQ == RANDSEQ_OWENSOBOL
+	Result = SobolSampler(RandSequence.SampleIndex, RandSequence.SampleSeed);
+#else
+#error "Unknown random sequence chosen in path tracer"
+#endif
+	return Result;
 }

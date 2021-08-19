@@ -61,7 +61,7 @@ void FMeshMergeHelpers::ExtractSections(const UStaticMeshComponent* Component, i
 	const UStaticMesh* StaticMesh = Component->GetStaticMesh();
 
 	TArray<FName> MaterialSlotNames;
-	for (const FStaticMaterial& StaticMaterial : StaticMesh->StaticMaterials)
+	for (const FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials())
 	{
 #if WITH_EDITOR
 		MaterialSlotNames.Add(StaticMaterial.ImportedMaterialSlotName);
@@ -70,8 +70,14 @@ void FMeshMergeHelpers::ExtractSections(const UStaticMeshComponent* Component, i
 #endif
 	}
 
-	for (const FStaticMeshSection& MeshSection : StaticMesh->RenderData->LODResources[LODIndex].Sections)
+	for (const FStaticMeshSection& MeshSection : StaticMesh->GetRenderData()->LODResources[LODIndex].Sections)
 	{
+		// Skip empty sections
+		if (MeshSection.NumTriangles == 0)
+		{
+			continue;
+		}
+
 		// Retrieve material for this section
 		UMaterialInterface* StoredMaterial = Component->GetMaterial(MeshSection.MaterialIndex);
 
@@ -148,7 +154,7 @@ void FMeshMergeHelpers::ExtractSections(const UStaticMesh* StaticMesh, int32 LOD
 {
 	static UMaterialInterface* DefaultMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
 
-	for (const FStaticMeshSection& MeshSection : StaticMesh->RenderData->LODResources[LODIndex].Sections)
+	for (const FStaticMeshSection& MeshSection : StaticMesh->GetRenderData()->LODResources[LODIndex].Sections)
 	{
 		// Retrieve material for this section
 		UMaterialInterface* StoredMaterial = StaticMesh->GetMaterial(MeshSection.MaterialIndex);
@@ -161,9 +167,9 @@ void FMeshMergeHelpers::ExtractSections(const UStaticMesh* StaticMesh, int32 LOD
 		SectionInfo.Material = StoredMaterial;
 		SectionInfo.MaterialIndex = MeshSection.MaterialIndex;
 #if WITH_EDITOR
-		SectionInfo.MaterialSlotName = StaticMesh->StaticMaterials.IsValidIndex(MeshSection.MaterialIndex) ? StaticMesh->StaticMaterials[MeshSection.MaterialIndex].ImportedMaterialSlotName : NAME_None;
+		SectionInfo.MaterialSlotName = StaticMesh->GetStaticMaterials().IsValidIndex(MeshSection.MaterialIndex) ? StaticMesh->GetStaticMaterials()[MeshSection.MaterialIndex].ImportedMaterialSlotName : NAME_None;
 #else
-		SectionInfo.MaterialSlotName = StaticMesh->StaticMaterials.IsValidIndex(MeshSection.MaterialIndex) ? StaticMesh->StaticMaterials[MeshSection.MaterialIndex].MaterialSlotName : NAME_None;
+		SectionInfo.MaterialSlotName = StaticMesh->GetStaticMaterials().IsValidIndex(MeshSection.MaterialIndex) ? StaticMesh->GetStaticMaterials()[MeshSection.MaterialIndex].MaterialSlotName : NAME_None;
 #endif
 		
 
@@ -194,7 +200,7 @@ void FMeshMergeHelpers::ExpandInstances(const UInstancedStaticMeshComponent* InI
 	for(const FInstancedStaticMeshInstanceData& InstanceData : InInstancedStaticMeshComponent->PerInstanceSMData)
 	{
 		FMeshDescription InstanceRawMesh = InOutRawMesh;
-		FMeshMergeHelpers::TransformRawMeshVertexData(ComponentTransformInv * FTransform(InstanceData.Transform) * ComponentTransform, InstanceRawMesh);
+		FStaticMeshOperations::ApplyTransform(InstanceRawMesh, ComponentTransformInv * FTransform(InstanceData.Transform) * ComponentTransform);
 		FMeshMergeHelpers::AppendRawMesh(CombinedRawMesh, InstanceRawMesh);
 	}
 
@@ -214,7 +220,7 @@ void FMeshMergeHelpers::RetrieveMesh(const UStaticMeshComponent* StaticMeshCompo
 	const bool bImportedMesh = StaticMesh->IsMeshDescriptionValid(LODIndex);
 		
 	// Export the raw mesh data using static mesh render data
-	ExportStaticMeshLOD(StaticMesh->RenderData->LODResources[LODIndex], RawMesh, StaticMesh->StaticMaterials);
+	ExportStaticMeshLOD(StaticMesh->GetRenderData()->LODResources[LODIndex], RawMesh, StaticMesh->GetStaticMaterials());
 
 	// Make sure the raw mesh is not irreparably malformed.
 	if (RawMesh.VertexInstances().Num() <= 0)
@@ -243,7 +249,7 @@ void FMeshMergeHelpers::RetrieveMesh(const UStaticMeshComponent* StaticMeshCompo
 	}
 
 	// Transform raw mesh vertex data by the Static Mesh Component's component to world transformation	
-	TransformRawMeshVertexData(ComponentToWorldTransform, RawMesh);
+	FStaticMeshOperations::ApplyTransform(RawMesh, ComponentToWorldTransform);
 
 	if (RawMesh.VertexInstances().Num() <= 0)
 	{
@@ -326,10 +332,10 @@ void FMeshMergeHelpers::RetrieveMesh(USkeletalMeshComponent* SkeletalMeshCompone
 			// use the remapping of material indices if there is a valid value
 			if (SrcLODInfo.LODMaterialMap.IsValidIndex(SectionIndex) && SrcLODInfo.LODMaterialMap[SectionIndex] != INDEX_NONE)
 			{
-				MaterialIndex = FMath::Clamp<int32>(SrcLODInfo.LODMaterialMap[SectionIndex], 0, SkeletalMeshComponent->SkeletalMesh->Materials.Num());
+				MaterialIndex = FMath::Clamp<int32>(SrcLODInfo.LODMaterialMap[SectionIndex], 0, SkeletalMeshComponent->SkeletalMesh->GetMaterials().Num());
 			}
 
-			FName ImportedMaterialSlotName = SkeletalMeshComponent->SkeletalMesh->Materials[MaterialIndex].ImportedMaterialSlotName;
+			FName ImportedMaterialSlotName = SkeletalMeshComponent->SkeletalMesh->GetMaterials()[MaterialIndex].ImportedMaterialSlotName;
 			const FPolygonGroupID SectionPolygonGroupID(SectionIndex);
 			if (!RawMesh.IsPolygonGroupValid(SectionPolygonGroupID))
 			{
@@ -396,7 +402,7 @@ void FMeshMergeHelpers::RetrieveMesh(const UStaticMesh* StaticMesh, int32 LODInd
 	}
 	else
 	{
-		ExportStaticMeshLOD(StaticMesh->RenderData->LODResources[LODIndex], RawMesh, StaticMesh->StaticMaterials);
+		ExportStaticMeshLOD(StaticMesh->GetRenderData()->LODResources[LODIndex], RawMesh, StaticMesh->GetStaticMaterials());
 	}
 
 	// Make sure the raw mesh is not irreparably malformed.
@@ -792,53 +798,6 @@ void FMeshMergeHelpers::PropagateSplineDeformationToPhysicsGeometry(USplineMeshC
 	}
 }
 
-void FMeshMergeHelpers::TransformRawMeshVertexData(const FTransform& InTransform, FMeshDescription &OutRawMesh)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(FMeshMergeHelpers::TransformRawMeshVertexData)
-
-	TVertexAttributesRef<FVector> VertexPositions = OutRawMesh.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-	TEdgeAttributesRef<bool> EdgeHardnesses = OutRawMesh.EdgeAttributes().GetAttributesRef<bool>(MeshAttribute::Edge::IsHard);
-	TEdgeAttributesRef<float> EdgeCreaseSharpnesses = OutRawMesh.EdgeAttributes().GetAttributesRef<float>(MeshAttribute::Edge::CreaseSharpness);
-	TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = OutRawMesh.PolygonGroupAttributes().GetAttributesRef<FName>(MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
-	TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = OutRawMesh.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-	TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = OutRawMesh.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
-	TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = OutRawMesh.VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
-	TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = OutRawMesh.VertexInstanceAttributes().GetAttributesRef<FVector4>(MeshAttribute::VertexInstance::Color);
-	TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = OutRawMesh.VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
-
-	for(const FVertexID VertexID : OutRawMesh.Vertices().GetElementIDs())
-	{
-		VertexPositions[VertexID] = InTransform.TransformPosition(VertexPositions[VertexID]);
-	}
-
-	FMatrix Matrix   = InTransform.ToMatrixWithScale();
-	FMatrix AdjointT = Matrix.TransposeAdjoint();
-	AdjointT.RemoveScaling();
-
-	const float MulBy = Matrix.Determinant() < 0.f ? -1.f : 1.f;
-	auto TransformNormal = 
-		[&AdjointT, MulBy](FVector& Normal) 
-		{
-			Normal = AdjointT.TransformVector(Normal) * MulBy;
-		};
-
-	for (const FVertexInstanceID VertexInstanceID : OutRawMesh.VertexInstances().GetElementIDs())
-	{
-		FVector TangentY = FVector::CrossProduct(VertexInstanceNormals[VertexInstanceID], VertexInstanceTangents[VertexInstanceID]).GetSafeNormal() * VertexInstanceBinormalSigns[VertexInstanceID];
-		TransformNormal(VertexInstanceTangents[VertexInstanceID]);
-		TransformNormal(TangentY);
-		TransformNormal(VertexInstanceNormals[VertexInstanceID]);
-		VertexInstanceBinormalSigns[VertexInstanceID] = GetBasisDeterminantSign(VertexInstanceTangents[VertexInstanceID], TangentY, VertexInstanceNormals[VertexInstanceID]);
-	}
-
-	const bool bIsMirrored = InTransform.GetDeterminant() < 0.f;
-	if (bIsMirrored)
-	{
-		//Reverse the vertex instance
-		OutRawMesh.ReverseAllPolygonFacing();
-	}
-}
-
 void FMeshMergeHelpers::RetrieveCullingLandscapeAndVolumes(UWorld* InWorld, const FBoxSphereBounds& EstimatedMeshProxyBounds, const TEnumAsByte<ELandscapeCullingPrecision::Type> PrecisionType, TArray<FMeshDescription*>& CullingRawMeshes)
 {
 	// Extract landscape proxies and cull volumes from the world
@@ -1072,7 +1031,7 @@ bool FMeshMergeHelpers::PropagatePaintedColorsToRawMesh(const UStaticMeshCompone
 		StaticMeshComponent->LODData[LODIndex].OverrideVertexColors != nullptr)
 	{
 		FColorVertexBuffer& ColorVertexBuffer = *StaticMeshComponent->LODData[LODIndex].OverrideVertexColors;
-		FStaticMeshLODResources& RenderModel = StaticMesh->RenderData->LODResources[LODIndex];
+		FStaticMeshLODResources& RenderModel = StaticMesh->GetRenderData()->LODResources[LODIndex];
 
 		if (ColorVertexBuffer.GetNumVertices() == RenderModel.GetNumVertices())
 		{	

@@ -1,217 +1,77 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DMXProtocolModule.h"
+
+#include "DMXProtocolLog.h"
+#include "DMXProtocolSettings.h"
 #include "Interfaces/IDMXProtocol.h"
 #include "Interfaces/IDMXProtocolFactory.h"
-#include "DMXProtocolSettings.h"
+#include "IO/DMXPortManager.h"
 
 #if WITH_EDITOR
 #include "ISettingsModule.h"
-#include "IDetailCustomization.h"
-#include "DetailLayoutBuilder.h"
-#include "DetailCategoryBuilder.h"
-#include "IDetailPropertyRow.h"
-#include "DetailWidgetRow.h"
-#include "SocketSubsystem.h"
+#endif // WITH_EDITOR
 
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SComboBox.h"
-#endif
+#include "Interfaces/IPluginManager.h"
+
 
 IMPLEMENT_MODULE( FDMXProtocolModule, DMXProtocol );
-DEFINE_LOG_CATEGORY(LogDMXProtocol);
 
 #define LOCTEXT_NAMESPACE "DMXProtocolModule"
 
-/**  IDMXProtocol.h static declarations */
-FOnNetworkInterfaceChanged IDMXProtocol::OnNetworkInterfaceChanged;
+const FName FDMXProtocolModule::DefaultProtocolArtNetName = "Art-Net";
+const FName FDMXProtocolModule::DefaultProtocolSACNName = "sACN";
 
-const TCHAR* FDMXProtocolModule::BaseModuleName = TEXT("DMXProtocol");
-const FString FDMXProtocolModule::LocalHostIpAddress = TEXT("127.0.0.1");
+FDMXProtocolModule::FDMXOnRequestProtocolRegistrationEvent FDMXProtocolModule::OnRequestProtocolRegistrationEvent;
+FDMXProtocolModule::FDMXOnRequestProtocolBlocklistEvent FDMXProtocolModule::OnRequestProtocolBlocklistEvent;
 
-const TMap<FName, IDMXProtocolPtr>& FDMXProtocolModule::GetProtocols() const
+FDMXProtocolModule::FDMXOnRequestProtocolRegistrationEvent& FDMXProtocolModule::GetOnRequestProtocolRegistration()
 {
-	return DMXProtocols;
+	return OnRequestProtocolRegistrationEvent;
 }
 
-#if WITH_EDITOR
-class FDMXProtocolSettingsCustomization : public IDetailCustomization
+FDMXProtocolModule::FDMXOnRequestProtocolBlocklistEvent& FDMXProtocolModule::GetOnRequestProtocolBlocklist()
 {
-public:
-	FDMXProtocolSettingsCustomization()
-	{
-		LocalIpAddresses.Add(MakeShared<FString>(DefaultAddress));
-		TArray<TSharedPtr<FInternetAddr>> Addresses;
-		ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetLocalAdapterAddresses(Addresses);
-		bool bFoundLocalHost = false;
-		for (TSharedPtr<FInternetAddr> Address : Addresses)
-		{
-			LocalIpAddresses.Add(MakeShared<FString>(Address->ToString(false)));
-			if (Address->ToString(false) == FDMXProtocolModule::LocalHostIpAddress)
-			{
-				bFoundLocalHost = true;
-			}
-		}
-		if (!bFoundLocalHost)
-		{
-			LocalIpAddresses.Add(MakeShared<FString>(FDMXProtocolModule::LocalHostIpAddress));
-		}
-	}
-
-	// IDetailCustomization interface
-	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override
-	{
-		
-		InterfaceIpAddressProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, InterfaceIPAddress));
-		DetailBuilder.EditDefaultProperty(InterfaceIpAddressProperty)->CustomWidget()
-			.NameContent()
-			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("DMXProtocolSettingsCustomization", "Interface IP address"))
-			]
-			.ValueContent()
-			[
-				SNew(SComboBox<TSharedRef<FString>>)
-				.OptionsSource(&LocalIpAddresses)
-				.OnGenerateWidget(this, &FDMXProtocolSettingsCustomization::GenerateComboWidget)
-				.InitiallySelectedItem(GetCurrentlySelectedIpAddress())
-				.OnSelectionChanged(this, &FDMXProtocolSettingsCustomization::OnChangeSelection)
-				.Content()
-				[
-					SNew(STextBlock).Text(this, &FDMXProtocolSettingsCustomization::GetTextAddressFromSettings)
-				]
-			];
-	}
-	//
-
-	static TSharedRef<IDetailCustomization> MakeInstance()
-	{
-		return MakeShared<FDMXProtocolSettingsCustomization>();
-	}
-
-	TSharedRef<SWidget> GenerateComboWidget(TSharedRef<FString> InAddress)
-	{
-		return SNew(STextBlock).Text(FText::FromString(*InAddress));
-	}
-
-	void OnChangeSelection(TSharedPtr<FString> InAddress, ESelectInfo::Type InType)
-	{
-		InterfaceIpAddressProperty->SetValue(*InAddress);
-	}
-
-	FText GetTextAddressFromSettings() const
-	{
-		FString CurrentIpAddress = GetMutableDefault<UDMXProtocolSettings>()->InterfaceIPAddress;
-		return FText::FromString(CurrentIpAddress);
-	}
-
-	TSharedPtr<FString> GetCurrentlySelectedIpAddress()
-	{
-		FString CurrentIpAddress = GetMutableDefault<UDMXProtocolSettings>()->InterfaceIPAddress;
-		
-		for (TSharedRef<FString> LocalIpAddress : LocalIpAddresses)
-		{
-			if (*LocalIpAddress == CurrentIpAddress)
-			{
-				return LocalIpAddress;
-			}
-		}
-
-		return LocalIpAddresses[0];
-	}
-
-	TArray<TSharedRef<FString>> LocalIpAddresses;
-	const FString DefaultAddress = TEXT("0.0.0.0");
-
-	TSharedPtr<IPropertyHandle> InterfaceIpAddressProperty;
-};
-#endif
-
-void FDMXProtocolModule::StartupModule()
-{
-
-#if WITH_EDITOR
-	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
-
-	// Register DMX Protocol global settings
-	if (SettingsModule != nullptr)
-	{	
-		SettingsModule->RegisterSettings("Project", "Plugins", "DMX Plugin",
-			LOCTEXT("ProjectSettings_Label", "DMX Plugin"),
-			LOCTEXT("ProjectSettings_Description", "Configure DMX plugin global settings"),
-			GetMutableDefault<UDMXProtocolSettings>()
-		);
-
-		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-		PropertyModule.RegisterCustomClassLayout(UDMXProtocolSettings::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FDMXProtocolSettingsCustomization::MakeInstance));
-		PropertyModule.NotifyCustomizationModuleChanged();
-	}
-#endif // WITH_EDITOR
-
+	return OnRequestProtocolBlocklistEvent;
 }
 
-void FDMXProtocolModule::ShutdownModule()
+void FDMXProtocolModule::RegisterProtocol(const FName& ProtocolName, IDMXProtocolFactory* Factory)
 {
-	ShutdownAllDMXProtocols();
-
-#if WITH_EDITOR
-	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	PropertyModule.UnregisterCustomClassLayout(UDMXProtocolSettings::StaticClass()->GetFName());
-	// Unregister DMX Protocol global settings
-	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
-	if (SettingsModule)
+	// DEPRECATED 4.27
+	if (!DMXProtocolFactories.Contains(ProtocolName))
 	{
-		SettingsModule->UnregisterSettings("Project", "Plugins", "DMX Protocol");
-	}
-#endif // WITH_EDITOR
-
-}
-
-static FName GetProtocolModuleName(const FString& ProtocolName)
-{
-	FName ModuleName;
-	if (!ProtocolName.StartsWith(FDMXProtocolModule::BaseModuleName, ESearchCase::CaseSensitive))
-	{
-		ModuleName = FName(*(FDMXProtocolModule::BaseModuleName + ProtocolName));
+		// Add a factory for the protocol
+		DMXProtocolFactories.Add(ProtocolName, Factory);
 	}
 	else
 	{
-		ModuleName = FName(*ProtocolName);
+		UE_LOG_DMXPROTOCOL(Verbose, TEXT("Trying to add existing protocol %s"), *ProtocolName.ToString());
 	}
 
-	return ModuleName;
-}
-
-static IModuleInterface* GetProtocolModule(const FString& SubsystemName)
-{
-	const FName ModuleName = GetProtocolModuleName(SubsystemName);
-	FModuleManager& ModuleManager = FModuleManager::Get();
-	check(ModuleManager.IsModuleLoaded(ModuleName));
-	return ModuleManager.GetModule(ModuleName);
-}
-
-void FDMXProtocolModule::RegisterProtocol(const FName& FactoryName, IDMXProtocolFactory* Factory)
-{
-	if (!DMXFactories.Contains(FactoryName))
+	IDMXProtocolPtr NewProtocol = Factory->CreateProtocol(ProtocolName);
+	if (NewProtocol.IsValid())
 	{
-		DMXFactories.Add(FactoryName, Factory);
+		DMXProtocols.Add(ProtocolName, NewProtocol);
+
+		UE_LOG_DMXPROTOCOL(Log, TEXT("Creating protocol instance for: %s"), *ProtocolName.ToString());
 	}
 	else
 	{
-		UE_LOG_DMXPROTOCOL(Verbose, TEXT("Trying to add existing protocol %s"), *FactoryName.ToString());
+		UE_LOG_DMXPROTOCOL(Verbose, TEXT("Unable to create Protocol %s"), *ProtocolName.ToString());
 	}
 }
 
-void FDMXProtocolModule::UnregisterProtocol(const FName& FactoryName)
+void FDMXProtocolModule::UnregisterProtocol(const FName& ProtocolName)
 {
-	if (DMXFactories.Contains(FactoryName))
+	if (DMXProtocolFactories.Contains(ProtocolName))
 	{
-		DMXFactories.Remove(FactoryName);
-		ShutdownDMXProtocol(FactoryName);
+		// Destroy the factory and shut down the protocol
+		DMXProtocolFactories.Remove(ProtocolName);
+		ShutdownDMXProtocol(ProtocolName);
 	}
 	else
 	{
-		UE_LOG_DMXPROTOCOL(Verbose, TEXT("Trying to remove unexisting protocol %s"), *FactoryName.ToString());
+		UE_LOG_DMXPROTOCOL(Verbose, TEXT("Trying to remove unexisting protocol %s"), *ProtocolName.ToString());
 	}
 }
 
@@ -220,46 +80,112 @@ FDMXProtocolModule& FDMXProtocolModule::Get()
 	return FModuleManager::GetModuleChecked<FDMXProtocolModule>("DMXProtocol");
 }
 
-
 IDMXProtocolPtr FDMXProtocolModule::GetProtocol(const FName InProtocolName)
 {
-	IDMXProtocolPtr* DMXProtocolPtr = nullptr;
-	if (!InProtocolName.IsNone())
-	{
-		DMXProtocolPtr = DMXProtocols.Find(InProtocolName);
-		if (DMXProtocolPtr == nullptr)
-		{
-			IDMXProtocolFactory** DMXProtocolFactory = DMXFactories.Find(InProtocolName);
+	IDMXProtocolPtr* ProtocolPtr = DMXProtocols.Find(InProtocolName);
 
-			if (DMXProtocolFactory != nullptr)
-			{
-				UE_LOG_DMXPROTOCOL(Log, TEXT("Creating protocol instance for: %s"), *InProtocolName.ToString());
-
-				IDMXProtocolPtr NewProtocol = (*DMXProtocolFactory)->CreateProtocol(InProtocolName);
-				if (NewProtocol.IsValid())
-				{
-					DMXProtocols.Add(InProtocolName, NewProtocol);
-					DMXProtocolPtr = DMXProtocols.Find(InProtocolName);
-				}
-				else
-				{
-					bool* bNotedPreviously = DMXProtocolFailureNotes.Find(InProtocolName);
-					if (!bNotedPreviously || !(*bNotedPreviously))
-					{
-						UE_LOG_DMXPROTOCOL(Verbose, TEXT("Unable to create Protocol %s"), *InProtocolName.ToString());
-						DMXProtocolFailureNotes.Add(InProtocolName, true);
-					}
-				}
-			}
-		}
-	}
-
-	return (DMXProtocolPtr == nullptr) ? nullptr : *DMXProtocolPtr;
+	return ProtocolPtr ? *ProtocolPtr : nullptr;
 }
 
 const TMap<FName, IDMXProtocolFactory*>& FDMXProtocolModule::GetProtocolFactories() const
 {
-	return DMXFactories;
+	return DMXProtocolFactories;
+}
+
+const TMap<FName, IDMXProtocolPtr>& FDMXProtocolModule::GetProtocols() const
+{
+	return DMXProtocols;
+}
+
+void FDMXProtocolModule::StartupModule()
+{
+#if WITH_EDITOR
+	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
+
+	// Register DMX Protocol global settings
+	if (SettingsModule != nullptr)
+	{
+		SettingsModule->RegisterSettings("Project", "Plugins", "DMX Plugin",
+			LOCTEXT("ProjectSettings_Label", "DMX Plugin"),
+			LOCTEXT("ProjectSettings_Description", "Configure DMX plugin global settings"),
+			GetMutableDefault<UDMXProtocolSettings>()
+		);
+	}
+#endif // WITH_EDITOR
+
+	IPluginManager& PluginManager = IPluginManager::Get();
+	PluginManager.OnLoadingPhaseComplete().AddRaw(this, &FDMXProtocolModule::OnPluginLoadingPhaseComplete);
+}
+
+void FDMXProtocolModule::ShutdownModule()
+{
+	IPluginManager& PluginManager = IPluginManager::Get();
+	PluginManager.OnLoadingPhaseComplete().RemoveAll(this);
+
+	FDMXPortManager::ShutdownManager();
+
+	// Now Shutdown the protocols
+	ShutdownAllDMXProtocols();
+
+#if WITH_EDITOR
+	// Unregister DMX Protocol global settings
+	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
+	if (SettingsModule)
+	{
+		SettingsModule->UnregisterSettings("Project", "Plugins", "DMX Protocol");
+	}
+#endif // WITH_EDITOR
+}
+
+void FDMXProtocolModule::OnPluginLoadingPhaseComplete(ELoadingPhase::Type LoadingPhase, bool bPhaseSuccessful)
+{
+	if (bPhaseSuccessful && LoadingPhase == ELoadingPhase::PreDefault)
+	{
+		// Request other plugins to provide their blocked protocols
+		TArray<FName> ProtocolBlocklist;
+		GetOnRequestProtocolBlocklist().Broadcast(ProtocolBlocklist);
+
+		// Request protocols to register themselves
+		TArray<FDMXProtocolRegistrationParams> ProtocolRegistrationParamsArray;
+		GetOnRequestProtocolRegistration().Broadcast(ProtocolRegistrationParamsArray);
+
+		// Sort to make the default protocols show topmost
+		ProtocolRegistrationParamsArray.Sort([](const FDMXProtocolRegistrationParams& ParamsA, const FDMXProtocolRegistrationParams& ParamsB) {
+			return
+				(ParamsA.ProtocolName == DefaultProtocolArtNetName) ||													// Art-Net first if available
+				(ParamsB.ProtocolName != DefaultProtocolArtNetName && ParamsA.ProtocolName == DefaultProtocolSACNName);	// sACN 2nd if available
+			});
+
+		// Register all protocols that joined in
+		for (const FDMXProtocolRegistrationParams& RegistrationParams : ProtocolRegistrationParamsArray)
+		{
+			if (ProtocolBlocklist.Contains(RegistrationParams.ProtocolName))
+			{
+				UE_LOG_DMXPROTOCOL(Log, TEXT("Blocked registration of DMX Protocol %s as requested per Protocol Blocklist."), *RegistrationParams.ProtocolName.ToString());
+			}
+			else if (ensureMsgf(RegistrationParams.ProtocolFactory, TEXT("No Protocol Factory provided for Protocol %s, protocol cannot be loaded."), *RegistrationParams.ProtocolName.ToString()))
+			{
+				IDMXProtocolPtr NewProtocol = RegistrationParams.ProtocolFactory->CreateProtocol(RegistrationParams.ProtocolName);
+				if (NewProtocol.IsValid())
+				{
+					DMXProtocolFactories.Add(RegistrationParams.ProtocolName, RegistrationParams.ProtocolFactory);
+					DMXProtocols.Add(RegistrationParams.ProtocolName, NewProtocol);
+				}
+				else
+				{
+					UE_LOG_DMXPROTOCOL(Verbose, TEXT("Unable to create Protocol %s"), *RegistrationParams.ProtocolName.ToString());
+				}
+			}
+		}
+
+		// Startup and update the manager, alike  in the Default loading phase the manager is fully available, including Ports from Project Settings.
+		FDMXPortManager::StartupManager();
+		FDMXPortManager::Get().UpdateFromProtocolSettings();
+
+		// Don't let the binding fire twice for whatever reason
+		IPluginManager& PluginManager = IPluginManager::Get();
+		PluginManager.OnLoadingPhaseComplete().RemoveAll(this);
+	}
 }
 
 void FDMXProtocolModule::ShutdownDMXProtocol(const FName& ProtocolName)

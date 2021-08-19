@@ -73,12 +73,40 @@ public:
 	FHashTable ShaderHashTable;
 
 #if WITH_EDITOR
-	/** Mapping from shadermap hashes to an array of asset names. */
+	/** Mapping from shadermap hashes to an array of asset names - this is used for on-disk storage as it is shorter. */
 	TMap<FSHAHash, FShaderMapAssetPaths> ShaderCodeToAssets;
 
 	enum class EAssetInfoVersion : uint8
 	{
-		CurrentVersion = 1
+		CurrentVersion = 2
+	};
+
+	struct FDebugStats
+	{
+		int32 NumAssets;
+		int64 ShadersSize;
+		int64 ShadersUniqueSize;
+		int32 NumShaders;
+		int32 NumUniqueShaders;
+		int32 NumShaderMaps;
+	};
+
+	struct FExtendedDebugStats
+	{
+		/** Textual contents, should match the binary layout in terms of order */
+		FString TextualRepresentation;
+
+		/** Minimum number of shaders in any given shadermap */
+		uint32 MinNumberOfShadersPerSM;
+
+		/** Median number of shaders in shadermaps */
+		uint32 MedianNumberOfShadersPerSM;
+
+		/** Maximum number of shaders in any given shadermap */
+		uint32 MaxNumberofShadersPerSM;
+
+		/** For the top shaders (descending), number of shadermaps in which they are used. Expected to be limited to a small number (10) */
+		TArray<int32> TopShaderUsages;
 	};
 #endif
 
@@ -138,6 +166,9 @@ public:
 #if WITH_EDITOR
 	void SaveAssetInfo(FArchive& Ar);
 	bool LoadAssetInfo(const FString& Filename);
+	void CreateAsChunkFrom(const FSerializedShaderArchive& Parent, const TSet<FName>& PackagesInChunk, TArray<int32>& OutShaderCodeEntriesNeeded);
+	void CollectStatsAndDebugInfo(FDebugStats& OutDebugStats, FExtendedDebugStats* OutExtendedDebugStats);
+	void DumpContentsInPlaintext(FString& OutText) const;
 #endif
 
 	friend FArchive& operator<<(FArchive& Ar, FSerializedShaderArchive& Ref)

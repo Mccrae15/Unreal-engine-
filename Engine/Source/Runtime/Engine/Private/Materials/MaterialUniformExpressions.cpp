@@ -72,21 +72,6 @@ static FGuid GetExternalTextureGuid(const FMaterialRenderContext& Context, const
 	return GuidToLookup;
 }
 
-static bool HasMaterialLayers(const FMaterial& InMaterial)
-{
-	const UMaterialInterface* MI = InMaterial.GetMaterialInterface();
-	if (!MI)
-	{
-		return false;
-	}
-	const UMaterial* Material = MI->GetMaterial_Concurrent();
-	if (!Material)
-	{
-		return false;
-	}
-	return Material->GetCachedExpressionData().DefaultLayers.Num() > 0;
-}
-
 static void GetTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, int32 TextureIndex, const FMaterialRenderContext& Context, const UTexture*& OutValue)
 {
 	if (ParameterInfo.Name.IsNone())
@@ -97,7 +82,7 @@ static void GetTextureParameterValue(const FHashedMaterialParameterInfo& Paramet
 	{
 		UTexture* Value = nullptr;
 
-		if (HasMaterialLayers(Context.Material))
+		if (Context.Material.HasMaterialLayers())
 		{
 			UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
 			if (!Interface || !Interface->GetTextureParameterDefaultValue(ParameterInfo, Value))
@@ -124,7 +109,7 @@ static void GetTextureParameterValue(const FHashedMaterialParameterInfo& Paramet
 	{
 		URuntimeVirtualTexture* Value = nullptr;
 
-		if (HasMaterialLayers(Context.Material))
+		if (Context.Material.HasMaterialLayers())
 		{
 			UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
 			if (!Interface || !Interface->GetRuntimeVirtualTextureParameterDefaultValue(ParameterInfo, Value))
@@ -662,7 +647,7 @@ static void GetVectorParameter(const FUniformExpressionSet& UniformExpressionSet
 	{
 		const bool bOveriddenParameterOnly = Parameter.ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter;
 
-		if (HasMaterialLayers(Context.Material))
+		if (Context.Material.HasMaterialLayers())
 		{
 			UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
 			if (!Interface || !Interface->GetVectorParameterDefaultValue(Parameter.ParameterInfo, OutValue, bOveriddenParameterOnly))
@@ -698,7 +683,7 @@ static void GetScalarParameter(const FUniformExpressionSet& UniformExpressionSet
 	{
 		const bool bOveriddenParameterOnly = Parameter.ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter;
 
-		if (HasMaterialLayers(Context.Material))
+		if (Context.Material.HasMaterialLayers())
 		{
 			UMaterialInterface* Interface = Context.Material.GetMaterialInterface();
 			if (!Interface || !Interface->GetScalarParameterDefaultValue(Parameter.ParameterInfo, OutValue.A, bOveriddenParameterOnly))
@@ -851,24 +836,32 @@ static const UTexture* GetTextureParameter(const FMaterialRenderContext& Context
 static void EvaluateTextureSize(const FMaterialRenderContext& Context, FPreshaderStack& Stack, FPreshaderDataContext& RESTRICT Data)
 {
 	const UTexture* Texture = GetTextureParameter(Context, Data);
-	if (Texture)
+	if (Texture && Texture->Resource)
 	{
 		const uint32 SizeX = Texture->Resource->GetSizeX();
 		const uint32 SizeY = Texture->Resource->GetSizeY();
 		const uint32 SizeZ = Texture->Resource->GetSizeZ();
 		Stack.Add(FLinearColor((float)SizeX, (float)SizeY, (float)SizeZ, 0.0f));
 	}
+	else
+	{
+		Stack.Add(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+	}
 }
 
 static void EvaluateTexelSize(const FMaterialRenderContext& Context, FPreshaderStack& Stack, FPreshaderDataContext& RESTRICT Data)
 {
 	const UTexture* Texture = GetTextureParameter(Context, Data);
-	if (Texture)
+	if (Texture && Texture->Resource)
 	{
 		const uint32 SizeX = Texture->Resource->GetSizeX();
 		const uint32 SizeY = Texture->Resource->GetSizeY();
 		const uint32 SizeZ = Texture->Resource->GetSizeZ();
 		Stack.Add(FLinearColor(1.0f / (float)SizeX, 1.0f / (float)SizeY, (SizeZ > 0 ? 1.0f / (float)SizeZ : 0.0f), 0.0f));
+	}
+	else
+	{
+		Stack.Add(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
 	}
 }
 
@@ -1119,7 +1112,8 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 
 	if (UniformBufferLayout.ConstantBufferSize > 0)
 	{
-		QUICK_SCOPE_CYCLE_COUNTER(STAT_FUniformExpressionSet_FillUniformBuffer);
+		// stat disabled by default due to low-value/high-frequency
+		//QUICK_SCOPE_CYCLE_COUNTER(STAT_FUniformExpressionSet_FillUniformBuffer);
 
 		void* BufferCursor = TempBuffer;
 		check(BufferCursor <= TempBuffer + TempBufferSize);
@@ -1826,7 +1820,7 @@ void FMaterialTextureParameterInfo::GetGameThreadTextureValue(const UMaterialInt
 {
 	if (!ParameterInfo.Name.IsNone())
 	{
-		const bool bOverrideValuesOnly = !HasMaterialLayers(Material);
+		const bool bOverrideValuesOnly = !Material.HasMaterialLayers();
 		if (!MaterialInterface->GetTextureParameterValue(ParameterInfo, OutValue, bOverrideValuesOnly))
 		{
 			OutValue = GetIndexedTexture<UTexture>(Material, TextureIndex);

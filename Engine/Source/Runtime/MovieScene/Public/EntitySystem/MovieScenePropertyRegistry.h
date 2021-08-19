@@ -11,11 +11,14 @@
 #include "EntitySystem/IMovieScenePropertyComponentHandler.h"
 
 #include "Misc/InlineValue.h"
+#include "Misc/TVariant.h"
 #include <initializer_list>
 
+struct FMovieScenePropertyBinding;
 
 class UMovieSceneBlenderSystem;
 class UMovieSceneEntitySystemLinker;
+class FTrackInstancePropertyBindings;
 
 namespace UE
 {
@@ -47,36 +50,61 @@ struct FPropertyStats
 struct FPropertyDefinition
 {
 	FPropertyDefinition() = default;
+
+	FPropertyDefinition(
+			uint16 InVariableSizeCompositeOffset, uint16 InSizeofStorageType, uint16 InAlignofStorageType,
+			FComponentTypeID InPropertyType, FComponentTypeID InInitialValueType)
+		: CustomPropertyRegistration(nullptr)
+		, FloatCompositeMask(0)
+		, VariableSizeCompositeOffset(InVariableSizeCompositeOffset)
+		, CompositeSize(0)
+		, StorageType{ InSizeofStorageType, InAlignofStorageType }
+		, PropertyType(InPropertyType)
+		, InitialValueType(InInitialValueType)
+	{
+	}
+
 	FPropertyDefinition(FPropertyDefinition&&) = default;
 	FPropertyDefinition(const FPropertyDefinition&) = delete;
 
+	/**
+	 * Return a typed component ID for the meta data at the specified index.
+	 * Care should obviously be taken here to ensure that the meta data type being used
+	 * matches the TPropertyComponents traits that constructed this property definition.
+	 */
+	template<typename T>
+	TComponentTypeID<T> GetMetaDataComponent(int32 Index) const
+	{
+		return MetaDataTypes[Index].ReinterpretCast<T>();
+	}
+
 	/** Pointer to a custom getter/setter registry for short circuiting the UObject VM. Must outlive this definitions lifetime (usually these are static or singletons) */
-	ICustomPropertyRegistration* CustomPropertyRegistration;
+	ICustomPropertyRegistration* CustomPropertyRegistration = nullptr;
 
 	/** A mask of which composite indices pertain to floats */
-	uint32 FloatCompositeMask;
+	uint32 FloatCompositeMask = 0;
 
 	/** The number of channels that this property comprises */
-	uint16 VariableSizeCompositeOffset;
+	uint16 VariableSizeCompositeOffset = INDEX_NONE;
 
 	/** The number of channels that this property comprises */
-	uint16 CompositeSize;
+	uint16 CompositeSize = 0;
 
 	/** Operational type meta-data */
 	struct
 	{
-		uint16 Sizeof;
-		uint16 Alignof;
-	} OperationalType;
+		uint16 Sizeof = 0;
+		uint16 Alignof = 0;
+	} StorageType;
 
 	/** The component type or tag of the property itself */
 	FComponentTypeID PropertyType;
 
-	/** (OPTIONAL) The component type for the property's pre-animated value */
-	FComponentTypeID PreAnimatedValue;
-
 	/** The component type for this property's inital value (used for relative and/or additive blending) */
 	FComponentTypeID InitialValueType;
+
+	/** MetaData types */
+	TArrayView<const FComponentTypeID> MetaDataTypes;
 
 	/** Implementation of type specific property actions such as applying properties from entities or recomposing values */
 	TInlineValue<IPropertyComponentHandler, 32> Handler;
@@ -95,8 +123,13 @@ struct FPropertyCompositeDefinition
 	uint16 CompositeOffset;
 };
 
-template<typename PropertyType, typename OperationalType> struct TPropertyDefinitionBuilder;
-template<typename PropertyType, typename OperationalType, typename... Composites> struct TCompositePropertyDefinitionBuilder;
+/** Type aliases for a property that resolved to either a fast pointer offset (type index 0), or a custom property index (specific to the path of the property - type index 1) */
+using FResolvedFastProperty = TVariant<uint16, UE::MovieScene::FCustomPropertyIndex>;
+/** Type aliases for a property that resolved to either a fast pointer offset (type index 0), or a custom property index (specific to the path of the property - type index 1) with a fallback to a slow property binding (type index 2) */
+using FResolvedProperty = TVariant<uint16, UE::MovieScene::FCustomPropertyIndex, TSharedPtr<FTrackInstancePropertyBindings>>;
+
+template<typename PropertyTraits> struct TPropertyDefinitionBuilder;
+template<typename PropertyTraits, typename... Composites> struct TCompositePropertyDefinitionBuilder;
 
 /**
  * Central registry of all property types animatable by sequencer.
@@ -112,17 +145,37 @@ public:
 	FPropertyRegistry(const FPropertyRegistry&) = delete;
 
 	/**
+	 * Resolve a property to either a fast ptr offset, or a custom property accessor based on the specified array
+	 *
+	 * @param Object          The object to resolve the property for
+	 * @param PropertyBinding The property binding to resolve
+	 * @param CustomAccessors A view to an array of custom accessors (as retrieved from ICustomPropertyRegistration::GetAccessors)
+	 * @return An optional variant specifying the resolved property if it resolved successfully
+	 */
+	static TOptional< FResolvedFastProperty > ResolveFastProperty(UObject* Object, const FMovieScenePropertyBinding& PropertyBinding, FCustomAccessorView CustomAccessors);
+
+	/**
+	 * Resolve a property to either a fast ptr offset, or a custom property accessor based on the specified array falling back to a slow instance binding if possible
+	 *
+	 * @param Object          The object to resolve the property for
+	 * @param PropertyBinding The property binding to resolve
+	 * @param CustomAccessors A view to an array of custom accessors (as retrieved from ICustomPropertyRegistration::GetAccessors)
+	 * @return An optional variant specifying the resolved property if it resolved successfully
+	 */
+	static TOptional< FResolvedProperty > ResolveProperty(UObject* Object, const FMovieScenePropertyBinding& PropertyBinding, FCustomAccessorView CustomAccessors);
+
+	/**
 	 * Define a new animatable composite property type from its components.
 	 * 
 	 * @param InOutPropertyComponents  The property's components that are used for animating this property. TPropertyComponents::CompositeID is written to.
 	 * @return A builder class that should be used to define the composites that contribute to this property
 	 */
-	template<typename PropertyType, typename OperationalType>
-	TCompositePropertyDefinitionBuilder<PropertyType, OperationalType> DefineCompositeProperty(TPropertyComponents<PropertyType, OperationalType>& InOutPropertyComponents)
+	template<typename PropertyTraits>
+	TCompositePropertyDefinitionBuilder<PropertyTraits> DefineCompositeProperty(TPropertyComponents<PropertyTraits>& InOutPropertyComponents)
 	{
 		DefinePropertyImpl(InOutPropertyComponents);
 		FPropertyDefinition* Property = &Properties[InOutPropertyComponents.CompositeID.AsIndex()];
-		return TCompositePropertyDefinitionBuilder<PropertyType, OperationalType>(Property, this);
+		return TCompositePropertyDefinitionBuilder<PropertyTraits>(Property, this);
 	}
 
 	/**
@@ -131,12 +184,12 @@ public:
 	 * @param InOutPropertyComponents  The property's components that are used for animating this property. TPropertyComponents::CompositeID is written to.
 	 * @return A builder class that should be used to define the composites that contribute to this property
 	 */
-	template<typename PropertyType, typename OperationalType>
-	TPropertyDefinitionBuilder<PropertyType, OperationalType> DefineProperty(TPropertyComponents<PropertyType, OperationalType>& InOutPropertyComponents)
+	template<typename PropertyTraits>
+	TPropertyDefinitionBuilder<PropertyTraits> DefineProperty(TPropertyComponents<PropertyTraits>& InOutPropertyComponents)
 	{
 		DefinePropertyImpl(InOutPropertyComponents);
 		FPropertyDefinition* Property = &Properties[InOutPropertyComponents.CompositeID.AsIndex()];
-		return TPropertyDefinitionBuilder<PropertyType, OperationalType>(Property, this);
+		return TPropertyDefinitionBuilder<PropertyTraits>(Property, this);
 	}
 
 	/**
@@ -175,10 +228,10 @@ public:
 
 private:
 
-	template<typename PropertyType, typename OperationalType>
+	template<typename PropertyTraits>
 	friend struct TPropertyDefinitionBuilder;
 	
-	template<typename PropertyType, typename OperationalType, typename... Composites>
+	template<typename PropertyTraits, typename... Composites>
 	friend struct TCompositePropertyDefinitionBuilder;
 
 	/**
@@ -187,24 +240,23 @@ private:
 	 * @param InOutPropertyComponents  The property's components that are used for animating this property. TPropertyComponents::CompositeID is written to.
 	 * @return A builder class that should be used to define the composites that contribute to this property
 	 */
-	template<typename PropertyType, typename OperationalType>
-	void DefinePropertyImpl(TPropertyComponents<PropertyType, OperationalType>& InOutPropertyComponents)
+	template<typename PropertyTraits>
+	void DefinePropertyImpl(TPropertyComponents<PropertyTraits>& InOutPropertyComponents)
 	{
-		static_assert( TIsBitwiseConstructible<OperationalType, OperationalType>::Value && TIsTriviallyDestructible<OperationalType>::Value, TEXT("OperationalType must be trivially TIsTriviallyCopyConstructible") );
+		using StorageType = typename PropertyTraits::StorageType;
+		static_assert( TIsBitwiseConstructible<StorageType, StorageType>::Value && TIsTriviallyDestructible<StorageType>::Value, "StorageType must be trivially TIsTriviallyCopyConstructible" );
 
 		const int32 CompositeOffset = CompositeDefinitions.Num();
 		checkf(CompositeOffset <= MAX_uint16, TEXT("Maximum number of composite definitions reached"));
 
-		FPropertyDefinition NewDefinition = {
-			nullptr,
-			0,
-			static_cast<uint16>(CompositeOffset),
-			0,
-			{ sizeof(OperationalType), alignof(OperationalType) },
+		FPropertyDefinition NewDefinition(
+			CompositeOffset, 
+			sizeof(StorageType), alignof(StorageType),
 			InOutPropertyComponents.PropertyTag,
-			InOutPropertyComponents.PreAnimatedValue,
-			InOutPropertyComponents.InitialValue,
-		};
+			InOutPropertyComponents.InitialValue);
+
+		NewDefinition.MetaDataTypes = InOutPropertyComponents.MetaDataComponents.GetTypes();
+		checkf(!NewDefinition.MetaDataTypes.Contains(FComponentTypeID()), TEXT("Property meta-data component is not defined"));
 
 		const int32 NewPropertyIndex = Properties.Add(MoveTemp(NewDefinition));
 

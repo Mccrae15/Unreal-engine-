@@ -9,11 +9,20 @@
 class AWaterBody;
 class UGerstnerWaterWaves;
 
-class FGerstnerWaterWaveViewExtension : public FSceneViewExtensionBase
+struct FWaveGPUResources
+{
+	FStructuredBufferRHIRef DataBuffer;
+	FShaderResourceViewRHIRef DataSRV;
+
+	FStructuredBufferRHIRef IndirectionBuffer;
+	FShaderResourceViewRHIRef IndirectionSRV;
+};
+
+class FGerstnerWaterWaveViewExtension : public FWorldSceneViewExtension
 {
 public:
 
-	FGerstnerWaterWaveViewExtension(const FAutoRegister& AutoReg);
+	FGerstnerWaterWaveViewExtension(const FAutoRegister& AutoReg, UWorld* InWorld);
 	~FGerstnerWaterWaveViewExtension();
 
 	// FSceneViewExtensionBase implementation : 
@@ -27,10 +36,5 @@ public:
 
 	bool bRebuildGPUData = false;
 
-	FStructuredBufferRHIRef DataBuffer;
-	FShaderResourceViewRHIRef DataSRV;
-
-	FStructuredBufferRHIRef IndirectionBuffer;
-	FShaderResourceViewRHIRef IndirectionSRV;
-
+	TSharedRef<FWaveGPUResources, ESPMode::ThreadSafe> WaveGPUData;
 };

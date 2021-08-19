@@ -9,6 +9,7 @@
 #if USE_USD_SDK
 
 #include "USDIncludesStart.h"
+	#include "pxr/base/gf/quatf.h"
 	#include "pxr/base/gf/vec2f.h"
 	#include "pxr/base/gf/vec3f.h"
 	#include "pxr/base/gf/vec4f.h"
@@ -20,7 +21,7 @@
 
 FUsdStageInfo::FUsdStageInfo( const pxr::UsdStageRefPtr& Stage )
 {
-	pxr::TfToken UsdStageAxis = UsdUtils::GetUsdStageAxis( Stage );
+	pxr::TfToken UsdStageAxis = UsdUtils::GetUsdStageUpAxis( Stage );
 
 	if ( UsdStageAxis == pxr::UsdGeomTokens->y )
 	{
@@ -34,7 +35,7 @@ FUsdStageInfo::FUsdStageInfo( const pxr::UsdStageRefPtr& Stage )
 	MetersPerUnit = UsdUtils::GetUsdStageMetersPerUnit( Stage );
 }
 
-namespace UsdTypesConversion
+namespace UsdUtils
 {
 	FTransform ConvertAxes( const bool bZUp, const FTransform Transform )
 	{
@@ -169,7 +170,7 @@ namespace UsdToUnreal
 		FMatrix Matrix = ConvertMatrix( InMatrix );
 		FTransform Transform( Matrix );
 
-		Transform = UsdTypesConversion::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, Transform );
+		Transform = UsdUtils::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, Transform );
 
 		const float UEMetersPerUnit = 0.01f;
 		if ( !FMath::IsNearlyEqual( StageInfo.MetersPerUnit, UEMetersPerUnit ) )
@@ -180,10 +181,8 @@ namespace UsdToUnreal
 		return Transform;
 	}
 
-	float ConvertDistance( const FUsdStageInfo& StageInfo, const float InValue )
+	float ConvertDistance( const FUsdStageInfo& StageInfo, float Value )
 	{
-		float Value = InValue;
-
 		const float UEMetersPerUnit = 0.01f;
 		if ( !FMath::IsNearlyEqual( StageInfo.MetersPerUnit, UEMetersPerUnit ) )
 		{
@@ -223,7 +222,7 @@ namespace UnrealToUsd
 
 	pxr::GfVec4f ConvertColor( const FColor& InValue )
 	{
-		return ConvertColor( InValue.ReinterpretAsLinear() );
+		return ConvertColor( FLinearColor( InValue ) );
 	}
 
 	pxr::GfVec2f ConvertVector( const FVector2D& InValue )
@@ -241,9 +240,9 @@ namespace UnrealToUsd
 		pxr::GfVec3f Value = ConvertVector( InValue );
 
 		const float UEMetersPerUnit = 0.01f;
-		if ( !FMath::IsNearlyEqual( StageInfo.MetersPerUnit, UEMetersPerUnit ) )
+		if ( !FMath::IsNearlyEqual( StageInfo.MetersPerUnit, UEMetersPerUnit ) && !FMath::IsNearlyZero( StageInfo.MetersPerUnit ) )
 		{
-			Value *= StageInfo.MetersPerUnit * UEMetersPerUnit;
+			Value *= UEMetersPerUnit / StageInfo.MetersPerUnit;
 		}
 
 		const bool bIsZUp = ( StageInfo.UpAxis == EUsdUpAxis::ZAxis );
@@ -272,27 +271,32 @@ namespace UnrealToUsd
 		return UsdMatrix;
 	}
 
+	pxr::GfQuatf ConvertQuat( const FQuat& InValue )
+	{
+		pxr::GfQuatf UsdQuat( InValue.W, InValue.X, InValue.Y, InValue.Z );
+
+		return UsdQuat;
+	}
+
 	pxr::GfMatrix4d ConvertTransform( const FUsdStageInfo& StageInfo, const FTransform& Transform )
 	{
-		FTransform TransformInUsdSpace = UsdTypesConversion::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, Transform );
+		FTransform TransformInUsdSpace = UsdUtils::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, Transform );
 
 		const float UEMetersPerUnit = 0.01f;
 		if ( !FMath::IsNearlyEqual( StageInfo.MetersPerUnit, UEMetersPerUnit ) )
 		{
-			TransformInUsdSpace.ScaleTranslation( StageInfo.MetersPerUnit * UEMetersPerUnit );
+			TransformInUsdSpace.ScaleTranslation( UEMetersPerUnit / StageInfo.MetersPerUnit );
 		}
 
 		return ConvertMatrix( TransformInUsdSpace.ToMatrixWithScale() );
 	}
 
-	float ConvertDistance( const FUsdStageInfo& StageInfo, const float& InValue )
+	float ConvertDistance( const FUsdStageInfo& StageInfo, float Value )
 	{
-		float Value = InValue;
-
 		const float UEMetersPerUnit = 0.01f;
 		if ( !FMath::IsNearlyEqual( StageInfo.MetersPerUnit, UEMetersPerUnit ) )
 		{
-			Value *= StageInfo.MetersPerUnit * UEMetersPerUnit;
+			Value *= UEMetersPerUnit / StageInfo.MetersPerUnit;
 		}
 
 		return Value;

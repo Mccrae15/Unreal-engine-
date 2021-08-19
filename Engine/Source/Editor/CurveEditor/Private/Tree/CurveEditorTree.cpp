@@ -113,6 +113,7 @@ FScopedCurveEditorTreeEventGuard::~FScopedCurveEditorTreeEventGuard()
 	{
 		if (Tree->Events.OnItemsChanged.SerialNumber != CachedItemSerialNumber)
 		{
+			Tree->SortTreeItems();
 			Tree->Compact();
 			Tree->Events.OnItemsChanged.Broadcast();
 		}
@@ -242,6 +243,11 @@ void FCurveEditorTree::Compact()
 {
 	Items.Compact();
 	ChildItemIDs.Compact();
+}
+
+void FCurveEditorTree::ToggleExpansionState(bool bRecursive)
+{
+	ToggleExpansionStateDelegate.Broadcast(bRecursive);
 }
 
 bool FCurveEditorTree::PerformFilterPass(TArrayView<const FCurveEditorTreeFilter* const> FilterPtrs, TArrayView<const FCurveEditorTreeItemID> ItemsToFilter, ECurveEditorTreeFilterState InheritedState)
@@ -392,6 +398,49 @@ ECurveEditorTreeFilterState FCurveEditorTree::GetFilterState(FCurveEditorTreeIte
 	return FilterStates.Get(InTreeItemID);
 }
 
+void FCurveEditorTree::SetSortPredicate(FTreeItemSortPredicate InSortPredicate)
+{
+	SortPredicate = InSortPredicate;
+}
+
+void FCurveEditorTree::SortTreeItems()
+{
+	if (RootItems.ChildIDs.Num() > 0 && SortPredicate.IsBound())
+	{
+		SortTreeItems(RootItems);
+	}
+}
+
+void FCurveEditorTree::SortTreeItems(FSortedCurveEditorTreeItems& TreeItemIDsToSort)
+{
+	// First collect the items for the IDs.
+	TArray<FCurveEditorTreeItem*> TreeItemsToSort;
+	for (const FCurveEditorTreeItemID& TreeItemID : TreeItemIDsToSort.ChildIDs)
+	{
+		TreeItemsToSort.Add(&Items[TreeItemID]);
+	}
+
+	// If there is more than one item, sort the items and then repopulate the ChildIDs from the sorted list of items.
+	if (TreeItemIDsToSort.bRequiresSort && TreeItemsToSort.Num() > 1)
+	{
+		TreeItemsToSort.Sort([=](const FCurveEditorTreeItem& ItemA, const FCurveEditorTreeItem& ItemB) { return SortPredicate.Execute(ItemA.GetItem().Get(), ItemB.GetItem().Get()); });
+		for (int32 i = 0; i < TreeItemsToSort.Num(); ++i)
+		{
+			TreeItemIDsToSort.ChildIDs[i] = TreeItemsToSort[i]->GetID();
+		}
+	}
+	TreeItemIDsToSort.bRequiresSort = false;
+
+	// Sort the children of the child items.
+	for (FCurveEditorTreeItem* TreeItemToSort : TreeItemsToSort)
+	{
+		if (TreeItemToSort != nullptr && TreeItemToSort->Children.ChildIDs.Num() != 0)
+		{
+			SortTreeItems(TreeItemToSort->Children);
+		}
+	}
+}
+
 void FCurveEditorTree::SetDirectSelection(TArray<FCurveEditorTreeItemID>&& TreeItems, FCurveEditor* InCurveEditor)
 {
 	FScopedCurveEditorTreeEventGuard EventGuard(this);
@@ -449,6 +498,32 @@ void FCurveEditorTree::SetDirectSelection(TArray<FCurveEditorTreeItemID>&& TreeI
 
 
 	if (!PreviousSelection.OrderIndependentCompareEqual(Selection))
+	{
+		++Events.OnSelectionChanged.SerialNumber;
+	}
+}
+
+void FCurveEditorTree::RemoveFromSelection(TArrayView<const FCurveEditorTreeItemID> TreeItems, FCurveEditor* InCurveEditor)
+{
+	FScopedCurveEditorTreeEventGuard EventGuard(this);
+
+	bool bAnyRemoved = false;
+	for (const FCurveEditorTreeItemID& ItemID : TreeItems)
+	{
+		FCurveEditorTreeItem* TreeItem = Items.Find(ItemID);
+		if (!ensureAlwaysMsgf(TreeItem, TEXT("Selected tree item does not exist. This must have bee applied externally.")))
+		{
+			continue;
+		}
+
+		if (Selection.Remove(ItemID) > 0)
+		{
+			bAnyRemoved = true;
+			TreeItem->DestroyUnpinnedCurves(InCurveEditor);
+		}
+	}
+
+	if (bAnyRemoved)
 	{
 		++Events.OnSelectionChanged.SerialNumber;
 	}

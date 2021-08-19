@@ -7,6 +7,7 @@
 #include "PixelFormat.h"
 #include "SceneTypes.h"
 #include "IMaterialBakingModule.h"
+#include "MaterialPropertyEx.h"
 
 class UTextureRenderTarget2D;
 class UMaterialOptions;
@@ -30,15 +31,24 @@ public:
 	/** Bakes out material properties according to MaterialSettings using MeshSettings and stores the output in Output */
 	virtual void BakeMaterials(const TArray<FMaterialData*>& MaterialSettings, const TArray<FMeshData*>& MeshSettings, TArray<FBakeOutput>& Output) override;
 
+	/** Bakes out material properties according to extended MaterialSettings using MeshSettings and stores the output in Output */
+	virtual void BakeMaterials(const TArray<FMaterialDataEx*>& MaterialSettings, const TArray<FMeshData*>& MeshSettings, TArray<FBakeOutputEx>& Output) override;
+
 	/** Promps a slate window to allow the user to populate specific material baking settings used while baking out materials */
 	virtual bool SetupMaterialBakeSettings(TArray<TWeakObjectPtr<UObject>>& OptionObjects, int32 NumLODs) override;
+
+	/** Outputs true HDR version of emissive color */
+	virtual void SetEmissiveHDR(bool bHDR) override;
+
+	/** Bakes all material properties to linear textures, except for colors */
+	virtual void SetLinearBake(bool bCorrectLinear) override;
 
 protected:
 	/* Creates and adds or reuses a RenderTarget from the pool */
 	UTextureRenderTarget2D* CreateRenderTarget(bool bInForceLinearGamma, EPixelFormat InPixelFormat, const FIntPoint& InTargetSize);
 
 	/* Creates and adds (or reuses a ExportMaterialProxy from the pool if MaterialBaking.UseMaterialProxyCaching is set to 1) */
-	FExportMaterialProxy* CreateMaterialProxy(UMaterialInterface* Material, const EMaterialProperty Property );
+	FExportMaterialProxy* CreateMaterialProxy(UMaterialInterface* Material, const FMaterialPropertyEx& Property);
 
 	/** Helper for emissive color conversion to Output */
 	static void ProcessEmissiveOutput(const FFloat16Color* Color16, int32 Color16Pitch, const FIntPoint& OutputSize, TArray<FColor>& Output, float& EmissiveScale);
@@ -49,18 +59,28 @@ protected:
 	/** Callback for modified objects which should be removed from MaterialProxyPool in that case */
 	void OnObjectModified(UObject* Object);
 private:
+	enum EPropertyColorSpace
+	{
+		Linear,
+		sRGB,
+	};
+
 	/** Pool of available render targets, cached for re-using on consecutive property rendering */
 	TArray<UTextureRenderTarget2D*> RenderTargetPool;
 
 	/** Pool of cached material proxies to optimize material baking workflow, stays resident when MaterialBaking.UseMaterialProxyCaching is set to 1 */
 	typedef TWeakObjectPtr<UMaterialInterface>				FMaterialPoolKey;
-	typedef TPair<EMaterialProperty, FExportMaterialProxy*> FMaterialPoolValue;
+	typedef TPair<FMaterialPropertyEx, FExportMaterialProxy*> FMaterialPoolValue;
 	typedef TMultiMap<FMaterialPoolKey, FMaterialPoolValue, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<FMaterialPoolKey, FMaterialPoolValue, true /*bInAllowDuplicateKeys*/>> FMaterialPoolMap;
 	FMaterialPoolMap MaterialProxyPool;
 
 	/** Pixel formats to use for baking out specific material properties */
-	EPixelFormat PerPropertyFormat[MP_MAX];
+	TMap<FMaterialPropertyEx, EPixelFormat> PerPropertyFormat;
 
 	/** Whether or not to enforce gamma correction while baking out specific material properties */
-	bool PerPropertyGamma[MP_MAX];
+	TMap<FMaterialPropertyEx, EPropertyColorSpace> PerPropertyColorSpace;
+
+	EPropertyColorSpace DefaultColorSpace;
+
+	bool bEmissiveHDR;
 };

@@ -5,6 +5,7 @@
 #include "AudioDeviceManager.h"
 #include "Components/AudioComponent.h"
 #include "CoreMinimal.h"
+#include "DSP/MultithreadedPatching.h"
 #include "DSP/SpectrumAnalyzer.h"
 #include "Engine/Engine.h"
 #include "EngineGlobals.h"
@@ -19,8 +20,10 @@
 #include "Sound/SoundSubmix.h"
 #include "Sound/SoundSubmixSend.h"
 #include "Sound/SoundSourceBus.h"
+#include "Sound/SoundModulationDestination.h"
 #include "AudioVirtualLoop.h"
 #include "AudioMixer.h"
+#include "UObject/StrongObjectPtr.h"
 
 /**
  * Forward declares
@@ -45,6 +48,7 @@ class USoundEffectSourcePreset;
 class USoundEffectSubmixPreset;
 class USoundMix;
 class USoundSubmixBase;
+class USoundModulatorBase;
 class USoundSourceBus;
 class USoundWave;
 class UWorld;
@@ -412,6 +416,9 @@ public:
 	//End FExec Interface
 
 #if !UE_BUILD_SHIPPING
+	UAudioComponent* GetTestComponent(UWorld* InWorld);
+	void StopTestComponent();
+
 private:
 	/**
 	 * Exec command handlers
@@ -437,8 +444,6 @@ private:
 	bool HandleListAudioComponentsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleListSoundDurationsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleSoundTemplateInfoCommand(const TCHAR* Cmd, FOutputDevice& Ar);
-	bool HandlePlaySoundCueCommand(const TCHAR* Cmd, FOutputDevice& Ar);
-	bool HandlePlaySoundWaveCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleSetBaseSoundMixCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleIsolateDryAudioCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleIsolateReverbCommand(const TCHAR* Cmd, FOutputDevice& Ar);
@@ -696,6 +701,7 @@ public:
 		bool bStopWhenOwnerDestroyed;
 
 		void SetLocation(FVector Location);
+		bool ShouldUseAttenuation() const;
 
 	private:
 		UWorld* World;
@@ -820,6 +826,7 @@ protected:
 	 */
 	void InitSoundSources();
 
+
 public:
 	/**
 	 * Registers a sound class with the audio device
@@ -834,11 +841,17 @@ public:
 	*/
 	void UnregisterSoundClass(USoundClass* SoundClass);
 
+	/* Initialized audio buses marked as default that are to be enabled for the duration of the application. */
+	virtual void InitDefaultAudioBuses() {}
+
+	/* Shutdown all audio buses marked as default. */
+	virtual void ShutdownDefaultAudioBuses() {}
+
 	/** Initializes sound submixes. */
 	virtual void InitSoundSubmixes() {}
 
 	/** Registers the sound submix */
-	virtual void RegisterSoundSubmix(const USoundSubmixBase* SoundSubmix, bool bInit) {}
+	virtual void RegisterSoundSubmix(USoundSubmixBase* SoundSubmix, bool bInit) {}
 
 	/** Unregisters the sound submix */
 	virtual void UnregisterSoundSubmix(const USoundSubmixBase* SoundSubmix) {}
@@ -859,6 +872,12 @@ public:
 	virtual void UnregisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* SoundSubmix = nullptr)
 	{
 		UE_LOG(LogAudio, Error, TEXT("Submix buffer listener only works with the audio mixer. Please run with audio mixer enabled."));
+	}
+
+	virtual Audio::FPatchOutputStrongPtr AddPatchForSubmix(uint32 InObjectId, float InPatchGain)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submix patching only works with the audio mixer. Please run with audio mixer enabled."));
+		return nullptr;
 	}
 
 	virtual void InitSoundEffectPresets() {}
@@ -1322,6 +1341,16 @@ public:
 		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
 	}
 
+	virtual void UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, USoundModulatorBase* InOutputModulation, USoundModulatorBase* InWetLevelModulation, USoundModulatorBase* InDryLevelModulation)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
+	}
+
+	virtual void SetSubmixModulationBaseLevels(USoundSubmix* InSoundSubmix, float InVolumeModBase, float InWetModBase, float InDryModBase)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
+	}
+
 	/** Sets a submix effect chain override for the given submix */
 	virtual void SetSubmixEffectChainOverride(USoundSubmix* InSoundSubmix, const TArray<FSoundEffectSubmixPtr>& InSubmixEffectChain, float InCrossfadeTime)
 	{
@@ -1748,6 +1777,9 @@ public:
 
 	const TMap<FWaveInstance*, FSoundSource*>& GetWaveInstanceSourceMap() const;
 
+	FName GetAudioStateProperty(const FName& PropertyName) const;
+	void SetAudioStateProperty(const FName& PropertyName, const FName& PropertyValue);
+
 public:
 
 	/** The number of sources to reserve for stopping sounds. */
@@ -1798,7 +1830,7 @@ private:
 	uint64 CurrentTick;
 
 	/** An AudioComponent to play test sounds on */
-	TWeakObjectPtr<UAudioComponent> TestAudioComponent;
+	TStrongObjectPtr<UAudioComponent> TestAudioComponent;
 
 	/** The debug state of the audio device */
 	TEnumAsByte<enum EDebugState> DebugState;
@@ -1997,6 +2029,9 @@ private:
 
 	/** List of passive SoundMixes active last frame */
 	TArray<USoundMix*> PrevPassiveSoundMixModifiers;
+
+	/** A generic mapping of FNames, used to store and retrieve tokens across the engine boundary. */
+	TMap<FName, FName> AudioStateProperties;
 
 	friend class FSoundConcurrencyManager;
 	FSoundConcurrencyManager ConcurrencyManager;

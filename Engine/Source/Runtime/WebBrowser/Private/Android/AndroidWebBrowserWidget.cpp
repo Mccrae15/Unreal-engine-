@@ -22,6 +22,7 @@
 #include "WebBrowserTextureSample.h"
 #include "WebBrowserModule.h"
 #include "IWebBrowserSingleton.h"
+#include "Misc/ConfigCacheIni.h"
 
 // For UrlDecode
 #include "Http.h"
@@ -113,10 +114,14 @@ void SAndroidWebBrowserWidget::Construct(const FArguments& Args)
 
 	HistorySize = 0;
 	HistoryPosition = 0;
-	
+
+	// Check if DOM storage should be enabled
+	bool bEnableDomStorage = false;
+	GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bEnableDomStorage"), bEnableDomStorage, GEngineIni);
+
 	FIntPoint viewportSize = WebBrowserWindowPtr.Pin()->GetViewportSize();
 	JavaWebBrowser = MakeShared<FJavaAndroidWebBrowser, ESPMode::ThreadSafe>(false, FAndroidMisc::ShouldUseVulkan(), viewportSize.X, viewportSize.Y,
-		reinterpret_cast<jlong>(this), !(UE_BUILD_SHIPPING || UE_BUILD_TEST), Args._UseTransparency);
+		reinterpret_cast<jlong>(this), !(UE_BUILD_SHIPPING || UE_BUILD_TEST), Args._UseTransparency, bEnableDomStorage);
 
 	TextureSamplePool = new FWebBrowserTextureSamplePool();
 	WebBrowserTextureSamplesQueue = MakeShared<FWebBrowserTextureSampleQueue, ESPMode::ThreadSafe>();
@@ -621,7 +626,11 @@ void SAndroidWebBrowserWidget::HandleReceivedTitle(jstring JTitle)
 		TSharedPtr<FAndroidWebBrowserWindow> BrowserWindow = WebBrowserWindowPtr.Pin();
 		if (BrowserWindow.IsValid())
 		{
-			BrowserWindow->SetTitle(Title);
+			FGraphEventRef OnSetTitle = FFunctionGraphTask::CreateAndDispatchWhenReady([&]()
+			{
+				BrowserWindow->SetTitle(Title);
+			}, TStatId(), NULL, ENamedThreads::GameThread);
+			FTaskGraphInterface::Get().WaitUntilTaskCompletes(OnSetTitle);
 		}
 	}
 }
@@ -639,7 +648,11 @@ void SAndroidWebBrowserWidget::HandlePageLoad(jstring JUrl, bool bIsLoading, int
 		TSharedPtr<FAndroidWebBrowserWindow> BrowserWindow = WebBrowserWindowPtr.Pin();
 		if (BrowserWindow.IsValid())
 		{
-			BrowserWindow->NotifyDocumentLoadingStateChange(Url, bIsLoading);
+			FGraphEventRef OnNotifyDocumentLoadingStateChange = FFunctionGraphTask::CreateAndDispatchWhenReady([&]()
+			{
+				BrowserWindow->NotifyDocumentLoadingStateChange(Url, bIsLoading);
+			}, TStatId(), NULL, ENamedThreads::GameThread);
+			FTaskGraphInterface::Get().WaitUntilTaskCompletes(OnNotifyDocumentLoadingStateChange);
 		}
 	}
 }
@@ -654,7 +667,11 @@ void SAndroidWebBrowserWidget::HandleReceivedError(jint ErrorCode, jstring /* ig
 		TSharedPtr<FAndroidWebBrowserWindow> BrowserWindow = WebBrowserWindowPtr.Pin();
 		if (BrowserWindow.IsValid())
 		{
-			BrowserWindow->NotifyDocumentError(Url, ErrorCode);
+			FGraphEventRef OnNotifyDocumentError = FFunctionGraphTask::CreateAndDispatchWhenReady([&]()
+			{
+				BrowserWindow->NotifyDocumentError(Url, ErrorCode);
+			}, TStatId(), NULL, ENamedThreads::GameThread);
+			FTaskGraphInterface::Get().WaitUntilTaskCompletes(OnNotifyDocumentError);
 		}
 	}
 }

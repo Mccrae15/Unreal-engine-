@@ -10,6 +10,7 @@
 #include "Serialization/CustomVersion.h"
 #include "Misc/ScopeTryLock.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ScopedSlowTask.h"
 #include "Engine/Engine.h"
 #include "LatentActions.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -17,6 +18,7 @@
 #include "Engine/CollisionProfile.h"
 #include "EngineUtils.h"
 #include "Components/BrushComponent.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #if WITH_EDITOR
 #include "IContentBrowserSingleton.h"
@@ -31,10 +33,63 @@
 #define IS_PROPERTY(Name) PropertyChangedEvent.MemberProperty->GetName().Equals(#Name)
 
 const FGuid ULidarPointCloud::PointCloudFileGUID('P', 'C', 'P', 'F');
-const int32 ULidarPointCloud::PointCloudFileVersion(19);
+const int32 ULidarPointCloud::PointCloudFileVersion(20);
 FCustomVersionRegistration PCPFileVersion(ULidarPointCloud::PointCloudFileGUID, ULidarPointCloud::PointCloudFileVersion, TEXT("LiDAR Point Cloud File Version"));
 
 #define LOCTEXT_NAMESPACE "LidarPointCloud"
+
+#if WITH_EDITOR
+#include "PackageTools.h"
+
+/* Registers for the package modified callback to catch point clouds that have been saved and automatically reloads the asset to release the bulk data */
+class FLidarPackageReloader : public FTickableGameObject
+{
+	TArray<TWeakObjectPtr<UPackage>> PackagesToReload;
+
+public:
+	FLidarPackageReloader() { UPackage::PackageSavedEvent.AddRaw(this, &FLidarPackageReloader::OnPackageSaved); }
+	virtual ~FLidarPackageReloader() { UPackage::PackageSavedEvent.RemoveAll(this); }
+	virtual TStatId GetStatId() const override { RETURN_QUICK_DECLARE_CYCLE_STAT(LidarPackageReloader, STATGROUP_Tickables); }
+	virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Always; }
+	virtual bool IsTickableInEditor() const override { return true; }
+
+	virtual void Tick(float DeltaTime) override
+	{
+		TArray<UPackage*> TopLevelPackages;
+
+		for (TWeakObjectPtr<UPackage> Package : PackagesToReload)
+		{
+			if (UPackage* PackagePtr = Package.Get())
+			{
+				TopLevelPackages.Add(PackagePtr);
+			}
+		}
+
+		if (TopLevelPackages.Num() > 0)
+		{
+			UPackageTools::ReloadPackages(TopLevelPackages);
+		}
+
+		PackagesToReload.Reset();
+	}
+
+private:
+	void OnPackageSaved(const FString& Filename, UObject* Obj)
+	{
+		if (GetDefault<ULidarPointCloudSettings>()->bReleaseAssetAfterSaving)
+		{
+			UPackage* Package = Cast<UPackage>(Obj);
+			if (Cast<ULidarPointCloud>(Package->FindAssetInPackage()))
+			{
+				PackagesToReload.Add(Package);
+			}
+		}
+	}
+};
+#endif
+
+/////////////////////////////////////////////////
+// FPointCloudLatentAction
 
 class FPointCloudLatentAction : public FPendingLatentAction
 {
@@ -68,121 +123,147 @@ public:
 /////////////////////////////////////////////////
 // FLidarPointCloudNotification
 
-FLidarPointCloudNotification::FLidarPointCloudNotification(UObject* Owner)
-	: Owner(Owner)
-	, CurrentText("")
-	, CurrentProgress(-1)
+/** Wrapper around a NotificationItem to make the notification handling more centralized */
+class FLidarPointCloudNotification
 {
-}
+	/** Stores the pointer to the actual notification item */
+	TSharedPtr<SNotificationItem> NotificationItem;
 
-void FLidarPointCloudNotification::Create(const FString& Text, FThreadSafeBool* bCancelPtr, const FString& Icon)
-{
-	SetTextWithProgress(Text, -1);
+	FString CurrentText;
+	int8 CurrentProgress;
 
+public:
+	FLidarPointCloudNotification(const FString& Text, TWeakObjectPtr<ULidarPointCloud> Owner, FThreadSafeBool* bCancelPtr, const FString& Icon)
+		: CurrentText(Text)
+		, CurrentProgress(-1)
+	{
 #if WITH_EDITOR
-	if (Owner && !IsValid() && GIsEditor)
-	{
-		// Build the notification widget
-		FNotificationInfo Info(FText::FromString(CurrentText));
-		Info.bFireAndForget = false;
-		Info.Image = FSlateStyleRegistry::FindSlateStyle("LidarPointCloudStyle")->GetBrush(*Icon);
-
-		if (Owner->HasAnyFlags(RF_Public | RF_Standalone))
+		if (GIsEditor)
 		{
-			Info.Hyperlink = FSimpleDelegate::CreateLambda([this] {
-				// Select the cloud in Content Browser when the hyperlink is clicked
-				TArray<FAssetData> AssetData;
-				AssetData.Add(FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get().GetAssetByObjectPath(FSoftObjectPath(Owner).GetAssetPathName()));
-				FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get().SyncBrowserToAssets(AssetData);
-			});
-			Info.HyperlinkText = FText::FromString(FPaths::GetBaseFilename(FSoftObjectPath(Owner).ToString()));
-		}
+			// Build the notification widget
+			FNotificationInfo Info(FText::FromString(CurrentText));
+			Info.bFireAndForget = false;
+			Info.Image = FSlateStyleRegistry::FindSlateStyle("LidarPointCloudStyle")->GetBrush(*Icon);
 
-		if (bCancelPtr)
-		{
-			Info.ButtonDetails.Emplace(
-				LOCTEXT("OpCancel", "Cancel"),
-				LOCTEXT("OpCancelToolTip", "Cancels the point cloud operation in progress."),
-				FSimpleDelegate::CreateLambda([bCancelPtr] { *bCancelPtr = true; })
-			);
-		}
-
-		NotificationItem = FSlateNotificationManager::Get().AddNotification(Info);
-		if (IsValid())
-		{
-			NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
-		}
-	}
-#endif
-}
-
-void FLidarPointCloudNotification::SetText(const FString& Text)
-{
-	CurrentText = Text;
-	UpdateStatus();
-}
-
-void FLidarPointCloudNotification::SetProgress(int8 Progress)
-{
-	CurrentProgress = Progress;
-	UpdateStatus();
-}
-
-void FLidarPointCloudNotification::SetTextWithProgress(const FString& Text, int8 Progress)
-{
-	CurrentText = Text;
-	CurrentProgress = Progress;
-	UpdateStatus();
-}
-
-void FLidarPointCloudNotification::Close(bool bSuccess)
-{
-#if WITH_EDITOR
-	if (Owner && IsValid())
-	{
-		// Do not use fadeout if the engine is shutting down
-		if (!GEditor->HasAnyFlags(RF_BeginDestroyed))
-		{
-			CurrentText.Append(bSuccess ? " Complete" : " Failed");
-			CurrentProgress = -1;
-			UpdateStatus();
-			NotificationItem->SetCompletionState(bSuccess ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
-			NotificationItem->ExpireAndFadeout();
-		}
-		NotificationItem.Reset();
-	}
-#endif
-}
-
-void FLidarPointCloudNotification::UpdateStatus()
-{
-	if (!Owner || !IsValid())
-	{
-		return;
-	}
-
-	if (IsInGameThread())
-	{
-		// Update Text
-		{
-			FString Message;
-
-			if (CurrentProgress >= 0)
+			if (ULidarPointCloud* OwnerPtr = Owner.Get())
 			{
-				Message = FString::Printf(TEXT("%s: %d%%"), *CurrentText, CurrentProgress);
+				const FSoftObjectPath SoftObjectPath(OwnerPtr);
+
+				Info.Hyperlink = FSimpleDelegate::CreateLambda([SoftObjectPath] {
+					// Select the cloud in Content Browser when the hyperlink is clicked
+					TArray<FAssetData> AssetData;
+					AssetData.Add(FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get().GetAssetByObjectPath(SoftObjectPath.GetAssetPathName()));
+					FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get().SyncBrowserToAssets(AssetData);
+					});
+				Info.HyperlinkText = FText::FromString(FPaths::GetBaseFilename(SoftObjectPath.ToString()));
+			}
+
+			if (bCancelPtr)
+			{
+				Info.ButtonDetails.Emplace(
+					LOCTEXT("OpCancel", "Cancel"),
+					LOCTEXT("OpCancelToolTip", "Cancels the point cloud operation in progress."),
+					FSimpleDelegate::CreateLambda([bCancelPtr] { *bCancelPtr = true; })
+				);
+			}
+
+			NotificationItem = FSlateNotificationManager::Get().AddNotification(Info);
+			if (NotificationItem.IsValid())
+			{
+				NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
+			}
+		}
+#endif
+	}
+	~FLidarPointCloudNotification()
+	{
+		Close(false);
+	}
+
+	void SetText(const FString& Text)
+	{
+#if WITH_EDITOR
+		CurrentText = Text;
+		UpdateStatus();
+#endif
+	}
+	void SetProgress(int8 Progress)
+	{
+#if WITH_EDITOR
+		CurrentProgress = Progress;
+		UpdateStatus();
+#endif
+	}
+	void SetTextWithProgress(const FString& Text, int8 Progress)
+	{
+#if WITH_EDITOR
+		CurrentText = Text;
+		CurrentProgress = Progress;
+		UpdateStatus();
+#endif
+	}
+	void Close(bool bSuccess)
+	{
+#if WITH_EDITOR
+		if (NotificationItem.IsValid())
+		{
+			// Do not use fadeout if the engine is shutting down
+			if(FSlateApplication::IsInitialized())
+			{
+				CurrentText.Append(bSuccess ? " Complete" : " Failed");
+				CurrentProgress = -1;
+				UpdateStatus();
+				NotificationItem->SetCompletionState(bSuccess ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
+				NotificationItem->ExpireAndFadeout();
+			}
+			NotificationItem.Reset();
+		}
+#endif
+	}
+
+private:
+	void UpdateStatus()
+	{
+#if WITH_EDITOR
+		if (NotificationItem.IsValid())
+		{
+			if (IsInGameThread())
+			{
+				FString Message;
+
+				if (CurrentProgress >= 0)
+				{
+					Message = FString::Printf(TEXT("%s: %d%%"), *CurrentText, CurrentProgress);
+				}
+				else
+				{
+					Message = FString::Printf(TEXT("%s"), *CurrentText);
+				}
+
+				NotificationItem->SetText(FText::FromString(Message));
 			}
 			else
 			{
-				Message = FString::Printf(TEXT("%s"), *CurrentText);
+				AsyncTask(ENamedThreads::GameThread, [this] { UpdateStatus(); });
 			}
-
-			NotificationItem->SetText(FText::FromString(Message));
 		}
+#endif
 	}
-	else
+};
+
+TSharedRef<FLidarPointCloudNotification, ESPMode::ThreadSafe> ULidarPointCloud::FLidarPointCloudNotificationManager::Create(const FString& Text, FThreadSafeBool* bCancelPtr, const FString& Icon)
+{
+	return Notifications[Notifications.Add(MakeShared<FLidarPointCloudNotification, ESPMode::ThreadSafe>(Text, Owner, bCancelPtr, Icon))];
+}
+
+void ULidarPointCloud::FLidarPointCloudNotificationManager::CloseAll()
+{
+	for (TSharedRef<FLidarPointCloudNotification, ESPMode::ThreadSafe> Notification : Notifications)
 	{
-		AsyncTask(ENamedThreads::GameThread, [this] { UpdateStatus(); });
+		Notification->Close(false);
 	}
+
+	Notifications.Empty();
 }
 
 /////////////////////////////////////////////////
@@ -192,15 +273,20 @@ ULidarPointCloud::ULidarPointCloud()
 	: MaxCollisionError(100)
 	, NormalsQuality(40)
 	, NormalsNoiseTolerance(1)
+	, bOptimizedForDynamicData(false)
 	, Octree(this)
 	, OriginalCoordinates(FDoubleVector::ZeroVector)
 	, LocationOffset(FDoubleVector::ZeroVector)
-	, Notification(this)
+	, Notifications(this)
 	, BodySetup(nullptr)
 	, bCollisionBuildInProgress(false)
 {
 	// Make sure we are transactional to allow undo redo
 	this->SetFlags(RF_Transactional);
+
+#if WITH_EDITOR
+	static FLidarPackageReloader LidarPackageReloader;
+#endif
 }
 
 void ULidarPointCloud::Serialize(FArchive& Ar)
@@ -272,13 +358,13 @@ void ULidarPointCloud::BeginDestroy()
 	FScopeLock LockImport(&ProcessingLock);
 
 	// Hide any notifications, if still present
-	Notification.Close(false);
+	Notifications.CloseAll();
 
 	// Wait for ongoing data access to finish
 	FScopeLock LockOctree(&Octree.DataLock);
 
-	// Release any collision rendering data, if present
-	ReleaseCollisionRendering();
+	// Release and destroy any collision rendering data, if present
+	ReleaseCollisionRendering(true);
 }
 
 void ULidarPointCloud::PreSave(const class ITargetPlatform* TargetPlatform)
@@ -288,6 +374,14 @@ void ULidarPointCloud::PreSave(const class ITargetPlatform* TargetPlatform)
 }
 
 #if WITH_EDITOR
+void ULidarPointCloud::ClearAllCachedCookedPlatformData()
+{
+	if (GetDefault<ULidarPointCloudSettings>()->bReleaseAssetAfterCooking)
+	{
+		UPackageTools::ReloadPackages({ GetOutermost() });
+	}
+}
+
 void ULidarPointCloud::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	if (PropertyChangedEvent.MemberProperty)
@@ -295,6 +389,11 @@ void ULidarPointCloud::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 		if (IS_PROPERTY(SourcePath))
 		{
 			SetSourcePath(SourcePath.FilePath);
+		}
+
+		if (IS_PROPERTY(bOptimizedForDynamicData))
+		{
+			SetOptimizedForDynamicData(bOptimizedForDynamicData);
 		}
 
 		if (IS_PROPERTY(MaxCollisionError))
@@ -318,9 +417,70 @@ int32 ULidarPointCloud::GetDataSize() const
 	return (OctreeSize + CollisionSize) >> 20;
 }
 
+void ULidarPointCloud::RefreshBounds()
+{
+	Octree.RefreshBounds();
+}
+
 bool ULidarPointCloud::HasCollisionData() const
 {
 	return Octree.HasCollisionData();
+}
+
+void ULidarPointCloud::RefreshRendering()
+{
+	Octree.MarkRenderDataDirty();
+	OnPointCloudRebuiltEvent.Broadcast();
+}
+
+void ULidarPointCloud::GetPoints(TArray64<FLidarPointCloudPoint*>& Points, int64 StartIndex /*= 0*/, int64 Count /*= -1*/)
+{
+	GetPoints_Internal(Points, StartIndex, Count);
+}
+
+void ULidarPointCloud::GetPoints(TArray<FLidarPointCloudPoint*>& Points, int64 StartIndex /*= 0*/, int64 Count /*= -1*/)
+{
+	GetPoints_Internal(Points, StartIndex, Count);
+}
+
+void ULidarPointCloud::GetPointsInSphere(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly)
+{
+	GetPointsInSphere_Internal(SelectedPoints, Sphere, bVisibleOnly);
+}
+
+void ULidarPointCloud::GetPointsInSphere(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly)
+{
+	GetPointsInSphere_Internal(SelectedPoints, Sphere, bVisibleOnly);
+}
+
+void ULidarPointCloud::GetPointsInBox(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly)
+{
+	GetPointsInBox_Internal(SelectedPoints, Box, bVisibleOnly);
+}
+
+void ULidarPointCloud::GetPointsInBox(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly)
+{
+	GetPointsInBox_Internal(SelectedPoints, Box, bVisibleOnly);
+}
+
+void ULidarPointCloud::GetPointsInConvexVolume(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FConvexVolume& ConvexVolume, const bool& bVisibleOnly)
+{
+	GetPointsInConvexVolume_Internal(SelectedPoints, ConvexVolume, bVisibleOnly);
+}
+
+void ULidarPointCloud::GetPointsInConvexVolume(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FConvexVolume& ConvexVolume, const bool& bVisibleOnly)
+{
+	GetPointsInConvexVolume_Internal(SelectedPoints, ConvexVolume, bVisibleOnly);
+}
+
+void ULidarPointCloud::GetPointsInFrustum(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FConvexVolume& Frustum, const bool& bVisibleOnly)
+{
+	GetPointsInConvexVolume_Internal(SelectedPoints, Frustum, bVisibleOnly);
+}
+
+void ULidarPointCloud::GetPointsInFrustum(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FConvexVolume& Frustum, const bool& bVisibleOnly)
+{
+	GetPointsInConvexVolume_Internal(SelectedPoints, Frustum, bVisibleOnly);
 }
 
 TArray<FLidarPointCloudPoint> ULidarPointCloud::GetPointsAsCopies(bool bReturnWorldSpace, int32 StartIndex, int32 Count) const
@@ -330,6 +490,16 @@ TArray<FLidarPointCloudPoint> ULidarPointCloud::GetPointsAsCopies(bool bReturnWo
 	return Points;
 }
 
+void ULidarPointCloud::GetPointsAsCopies(TArray64<FLidarPointCloudPoint>& Points, bool bReturnWorldSpace, int64 StartIndex /*= 0*/, int64 Count /*= -1*/) const
+{
+	GetPointsAsCopies_Internal(Points, bReturnWorldSpace, StartIndex, Count);
+}
+
+void ULidarPointCloud::GetPointsAsCopies(TArray<FLidarPointCloudPoint>& Points, bool bReturnWorldSpace, int64 StartIndex /*= 0*/, int64 Count /*= -1*/) const
+{
+	GetPointsAsCopies_Internal(Points, bReturnWorldSpace, StartIndex, Count);
+}
+
 TArray<FLidarPointCloudPoint> ULidarPointCloud::GetPointsInSphereAsCopies(FVector Center, float Radius, bool bVisibleOnly, bool bReturnWorldSpace)
 {
 	TArray<FLidarPointCloudPoint> Points;
@@ -337,11 +507,31 @@ TArray<FLidarPointCloudPoint> ULidarPointCloud::GetPointsInSphereAsCopies(FVecto
 	return Points;
 }
 
+void ULidarPointCloud::GetPointsInSphereAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly, bool bReturnWorldSpace) const
+{
+	GetPointsInSphereAsCopies_Internal(SelectedPoints, Sphere, bVisibleOnly, bReturnWorldSpace);
+}
+
+void ULidarPointCloud::GetPointsInSphereAsCopies(TArray<FLidarPointCloudPoint>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly, bool bReturnWorldSpace) const
+{
+	GetPointsInSphereAsCopies_Internal(SelectedPoints, Sphere, bVisibleOnly, bReturnWorldSpace);
+}
+
 TArray<FLidarPointCloudPoint> ULidarPointCloud::GetPointsInBoxAsCopies(FVector Center, FVector Extent, bool bVisibleOnly, bool bReturnWorldSpace)
 {
 	TArray<FLidarPointCloudPoint> Points;
 	GetPointsInBoxAsCopies(Points, FBox(Center - Extent, Center + Extent), bVisibleOnly, bReturnWorldSpace);
 	return Points;
+}
+
+void ULidarPointCloud::GetPointsInBoxAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, bool bReturnWorldSpace) const
+{
+	GetPointsInBoxAsCopies_Internal(SelectedPoints, Box, bVisibleOnly, bReturnWorldSpace);
+}
+
+void ULidarPointCloud::GetPointsInBoxAsCopies(TArray<FLidarPointCloudPoint>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, bool bReturnWorldSpace) const
+{
+	GetPointsInBoxAsCopies_Internal(SelectedPoints, Box, bVisibleOnly, bReturnWorldSpace);
 }
 
 bool ULidarPointCloud::LineTraceSingle(FVector Origin, FVector Direction, float Radius, bool bVisibleOnly, FLidarPointCloudPoint& PointHit)
@@ -377,6 +567,25 @@ void ULidarPointCloud::SetSourcePath(const FString& NewSourcePath)
 	}
 }
 
+void ULidarPointCloud::SetOptimizedForDynamicData(bool bNewOptimizedForDynamicData)
+{
+#if WITH_EDITOR
+	FScopedSlowTask ProgressDialog(1, LOCTEXT("Optimize", "Optimizing Point Clouds..."));
+	ProgressDialog.MakeDialog();
+#endif
+
+	bOptimizedForDynamicData = bNewOptimizedForDynamicData;
+
+	if (bOptimizedForDynamicData)
+	{
+		Octree.OptimizeForDynamicData();
+	}
+	else
+	{
+		Octree.OptimizeForStaticData();
+	}
+}
+
 void ULidarPointCloud::BuildCollision()
 {
 	if (bCollisionBuildInProgress)
@@ -385,7 +594,7 @@ void ULidarPointCloud::BuildCollision()
 		return;
 	}
 
-	Notification.Create("Building Collision", nullptr, "LidarPointCloudEditor.BuildCollision");
+	TSharedRef<FLidarPointCloudNotification, ESPMode::ThreadSafe> Notification = Notifications.Create("Building Collision", nullptr, "LidarPointCloudEditor.BuildCollision");
 	
 	bCollisionBuildInProgress = true;
 	MarkPackageDirty();
@@ -395,17 +604,17 @@ void ULidarPointCloud::BuildCollision()
 	NewBodySetup->CollisionTraceFlag = CTF_UseComplexAsSimple;
 	NewBodySetup->bHasCookedCollisionData = true;
 
-	Async(EAsyncExecution::Thread, [this, NewBodySetup]{
+	Async(EAsyncExecution::Thread, [this, Notification, NewBodySetup]{
 		Octree.BuildCollision(MaxCollisionError, true);
 
 		FBenchmarkTimer::Reset();
 #if WITH_PHYSX  && PHYSICS_INTERFACE_PHYSX
-		AsyncTask(ENamedThreads::GameThread, [this, NewBodySetup] {
-			NewBodySetup->CreatePhysicsMeshesAsync(FOnAsyncPhysicsCookFinished::CreateUObject(this, &ULidarPointCloud::FinishPhysicsAsyncCook, NewBodySetup));
+		AsyncTask(ENamedThreads::GameThread, [this, NewBodySetup, Notification] {
+			NewBodySetup->CreatePhysicsMeshesAsync(FOnAsyncPhysicsCookFinished::CreateUObject(this, &ULidarPointCloud::FinishPhysicsAsyncCook, NewBodySetup, Notification));
 		});
 #elif WITH_CHAOS
 		NewBodySetup->CreatePhysicsMeshes();
-		AsyncTask(ENamedThreads::GameThread, [this, NewBodySetup] { FinishPhysicsAsyncCook(true, NewBodySetup); });
+		AsyncTask(ENamedThreads::GameThread, [this, NewBodySetup, Notification] { FinishPhysicsAsyncCook(true, NewBodySetup, Notification); });
 #endif		
 	});
 }
@@ -425,7 +634,7 @@ void ULidarPointCloud::RemoveCollision()
 	Octree.RemoveCollision();
 
 	BodySetup = NewObject<UBodySetup>(this);
-	ReleaseCollisionRendering();
+	ReleaseCollisionRendering(false);
 	InitializeCollisionRendering();
 	OnPointCloudUpdateCollisionEvent.Broadcast();
 
@@ -452,12 +661,15 @@ void ULidarPointCloud::Reimport(const FLidarPointCloudAsyncParameters& AsyncPara
 		}
 
 		bAsyncCancelled = false;
-		Notification.Create("Importing Point Cloud", &bAsyncCancelled);
+		TSharedRef<FLidarPointCloudNotification, ESPMode::ThreadSafe> Notification = Notifications.Create("Importing Point Cloud", &bAsyncCancelled);
 
 		const bool bCenter = GetDefault<ULidarPointCloudSettings>()->bAutoCenterOnImport;
 
+		// Reset the data optimization flag on import
+		bOptimizedForDynamicData = false;
+
 		// The actual import function to be executed
-		auto ImportFunction = [this, AsyncParameters, bCenter]
+		auto ImportFunction = [this, Notification, AsyncParameters, bCenter]
 		{
 			// This will take over the lock
 			FScopeLock Lock(&ProcessingLock);
@@ -475,9 +687,9 @@ void ULidarPointCloud::Reimport(const FLidarPointCloudAsyncParameters& AsyncPara
 				PC_LOG("Using Concurrent Insertion");
 
 				ImportResults = FLidarPointCloudImportResults(&bAsyncCancelled,
-				[this, AsyncParameters](float Progress)
+				[this, Notification, AsyncParameters](float Progress)
 				{
-					Notification.SetProgress(100.0f * Progress);
+					Notification->SetProgress(100.0f * Progress);
 					if (AsyncParameters.ProgressCallback)
 					{
 						AsyncParameters.ProgressCallback(100.0f * Progress);
@@ -496,9 +708,9 @@ void ULidarPointCloud::Reimport(const FLidarPointCloudAsyncParameters& AsyncPara
 			}
 			else
 			{
-				ImportResults = FLidarPointCloudImportResults(&bAsyncCancelled, [this, AsyncParameters](float Progress)
+				ImportResults = FLidarPointCloudImportResults(&bAsyncCancelled, [this, Notification, AsyncParameters](float Progress)
 				{
-					Notification.SetProgress(50.0f * Progress);
+					Notification->SetProgress(50.0f * Progress);
 					if (AsyncParameters.ProgressCallback)
 					{
 						AsyncParameters.ProgressCallback(50.0f * Progress);
@@ -512,9 +724,9 @@ void ULidarPointCloud::Reimport(const FLidarPointCloudAsyncParameters& AsyncPara
 
 					FScopeBenchmarkTimer BenchmarkTimer("Octree Build-Up");
 
-					bSuccess = InsertPoints_NoLock(ImportResults.Points.GetData(), ImportResults.Points.Num(), GetDefault<ULidarPointCloudSettings>()->DuplicateHandling, false, -LocationOffset.ToVector(), &bAsyncCancelled, [this, AsyncParameters](float Progress)
+					bSuccess = InsertPoints_NoLock(ImportResults.Points.GetData(), ImportResults.Points.Num(), GetDefault<ULidarPointCloudSettings>()->DuplicateHandling, false, -LocationOffset.ToVector(), &bAsyncCancelled, [this, Notification, AsyncParameters](float Progress)
 					{
-						Notification.SetProgress(50.0f + 50.0f * Progress);
+						Notification->SetProgress(50.0f + 50.0f * Progress);
 						if (AsyncParameters.ProgressCallback)
 						{
 							AsyncParameters.ProgressCallback(50.0f + 50.0f * Progress);
@@ -537,6 +749,9 @@ void ULidarPointCloud::Reimport(const FLidarPointCloudAsyncParameters& AsyncPara
 
 				// Show the cloud at its original location, if selected
 				LocationOffset = bCenter ? FDoubleVector::ZeroVector : OriginalCoordinates;
+
+				// Adjust default max collision error
+				MaxCollisionError = FMath::CeilToInt(Octree.GetEstimatedPointSpacing() * 300) * 0.01f;
 			}
 			else
 			{
@@ -552,10 +767,26 @@ void ULidarPointCloud::Reimport(const FLidarPointCloudAsyncParameters& AsyncPara
 			// Only process those if not being destroyed
 			if (!HasAnyFlags(RF_BeginDestroyed))
 			{
-				auto PostFunction = [this, bSuccess]() {
+				auto PostFunction = [this, Notification, bSuccess]() {
 					MarkPackageDirty();
-					Notification.Close(bSuccess);
+					Notification->Close(bSuccess);
 					OnPointCloudRebuiltEvent.Broadcast();
+
+					if (bSuccess)
+					{
+						FScopeLock Lock(&ProcessingLock);
+
+						if (GetDefault<ULidarPointCloudSettings>()->bAutoCalculateNormalsOnImport)
+						{
+							CalculateNormals(nullptr, nullptr);
+						}
+						
+						if (GetDefault<ULidarPointCloudSettings>()->bAutoBuildCollisionOnImport)
+						{
+							BuildCollision();
+						}
+
+					}
 				};
 
 				// Make sure the call is executed on the correct thread if using async
@@ -640,79 +871,123 @@ void ULidarPointCloud::InsertPoint(const FLidarPointCloudPoint& Point, ELidarPoi
 	PointCloudAssetRegistryCache.PointCount = FString::FromInt(Octree.GetNumPoints());
 }
 
-template<typename T>
-bool ULidarPointCloud::InsertPoints_NoLock(T InPoints, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation, FThreadSafeBool* bCanceled, TFunction<void(float)> ProgressCallback)
+bool ULidarPointCloud::InsertPoints(FLidarPointCloudPoint* InPoints, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation, FThreadSafeBool* bCanceled /*= nullptr*/, TFunction<void(float)> ProgressCallback /*= TFunction<void(float)>()*/)
 {
-	const int32 MaxBatchSize = GetDefault<ULidarPointCloudSettings>()->MultithreadingInsertionBatchSize;
-	
-	// Minimum amount of points to progress to count as 1%
-	int64 RefreshStatusFrequency = Count * 0.01f;
-	FThreadSafeCounter64 ProcessedPoints(0);
-	int64 TotalProcessedPoints = 0;
+	return InsertPoints_Internal(InPoints, Count, DuplicateHandling, bRefreshPointsBounds, Translation, bCanceled, MoveTemp(ProgressCallback));
+}
 
-	const int32 NumThreads = FMath::Min(FPlatformMisc::NumberOfCoresIncludingHyperthreads() - 1, (int32)(Count / MaxBatchSize) + 1);
-	TArray<TFuture<void>>ThreadResults;
-	ThreadResults.Reserve(NumThreads);
-	const int64 NumPointsPerThread = Count / NumThreads + 1;
+bool ULidarPointCloud::InsertPoints(const FLidarPointCloudPoint* InPoints, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation, FThreadSafeBool* bCanceled /*= nullptr*/, TFunction<void(float)> ProgressCallback /*= TFunction<void(float)>()*/)
+{
+	return InsertPoints_Internal(InPoints, Count, DuplicateHandling, bRefreshPointsBounds, Translation, bCanceled, MoveTemp(ProgressCallback));
+}
 
-	FCriticalSection ProgressCallbackLock;
+bool ULidarPointCloud::InsertPoints(FLidarPointCloudPoint** InPoints, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation, FThreadSafeBool* bCanceled /*= nullptr*/, TFunction<void(float)> ProgressCallback /*= TFunction<void(float)>()*/)
+{
+	return InsertPoints_Internal(InPoints, Count, DuplicateHandling, bRefreshPointsBounds, Translation, bCanceled, MoveTemp(ProgressCallback));
+}
 
-	// Fire threads
-	for (int32 ThreadID = 0; ThreadID < NumThreads; ThreadID++)
-	{
-		ThreadResults.Add(Async(EAsyncExecution::Thread, [this, ThreadID, DuplicateHandling, bRefreshPointsBounds, MaxBatchSize, NumPointsPerThread, RefreshStatusFrequency, &ProcessedPoints, &TotalProcessedPoints, InPoints, Count, &ProgressCallback, &ProgressCallbackLock, &bCanceled, &Translation]
-		{
-			int64 Idx = ThreadID * NumPointsPerThread;
-			int64 MaxIdx = FMath::Min(Idx + NumPointsPerThread, Count);
-			T DataPointer = InPoints + Idx;
+bool ULidarPointCloud::InsertPoints_NoLock(FLidarPointCloudPoint* InPoints, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation, FThreadSafeBool* bCanceled /*= nullptr*/, TFunction<void(float)> ProgressCallback /*= TFunction<void(float)>()*/)
+{
+	return InsertPoints_NoLock_Internal(InPoints, Count, DuplicateHandling, bRefreshPointsBounds, Translation, bCanceled, MoveTemp(ProgressCallback));
+}
 
-			while (Idx < MaxIdx)
-			{
-				int32 BatchSize = FMath::Min(MaxIdx - Idx, (int64)MaxBatchSize);
+bool ULidarPointCloud::InsertPoints_NoLock(const FLidarPointCloudPoint* InPoints, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation, FThreadSafeBool* bCanceled /*= nullptr*/, TFunction<void(float)> ProgressCallback /*= TFunction<void(float)>()*/)
+{
+	return InsertPoints_NoLock_Internal(InPoints, Count, DuplicateHandling, bRefreshPointsBounds, Translation, bCanceled, MoveTemp(ProgressCallback));
+}
 
-				Octree.InsertPoints(DataPointer, BatchSize, DuplicateHandling, bRefreshPointsBounds, Translation);
-
-				if (ProgressCallback)
-				{
-					ProcessedPoints.Add(BatchSize);
-					if (ProcessedPoints.GetValue() > RefreshStatusFrequency)
-					{
-						FScopeLock Lock(&ProgressCallbackLock);
-						TotalProcessedPoints += ProcessedPoints.GetValue();
-						ProcessedPoints.Reset();
-						ProgressCallback((double)TotalProcessedPoints / Count);
-					}
-				}
-
-				if (bCanceled && *bCanceled)
-				{
-					break;
-				}
-
-				Idx += BatchSize;
-				DataPointer += BatchSize;
-			}
-		}));
-	}
-
-	// Sync
-	for (const TFuture<void>& ThreadResult : ThreadResults)
-	{
-		ThreadResult.Get();
-	}
-
-	// Do not attempt to touch Render Data if being destroyed
-	if (!HasAnyFlags(RF_BeginDestroyed))
-	{
-		// Update PointCloudAssetRegistryCache
-		PointCloudAssetRegistryCache.PointCount = FString::FromInt(Octree.GetNumPoints());
-	}
-
-	return !bCanceled || !(*bCanceled);
+bool ULidarPointCloud::InsertPoints_NoLock(FLidarPointCloudPoint** InPoints, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation, FThreadSafeBool* bCanceled /*= nullptr*/, TFunction<void(float)> ProgressCallback /*= TFunction<void(float)>()*/)
+{
+	return InsertPoints_NoLock_Internal(InPoints, Count, DuplicateHandling, bRefreshPointsBounds, Translation, bCanceled, MoveTemp(ProgressCallback));
 }
 
 template<typename T>
-bool ULidarPointCloud::SetData(T Points, const int64& Count, TFunction<void(float)> ProgressCallback)
+bool ULidarPointCloud::InsertPoints_NoLock_Internal(T InPoints, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation, FThreadSafeBool* bCanceled, TFunction<void(float)> ProgressCallback)
+{
+	if (bOptimizedForDynamicData)
+	{
+		Octree.InsertPoints(InPoints, Count, DuplicateHandling, bRefreshPointsBounds, Translation);
+		
+		if (ProgressCallback)
+		{
+			ProgressCallback(1.0);
+		}
+		
+		return true;
+	}
+	else
+	{
+		const int32 MaxBatchSize = GetDefault<ULidarPointCloudSettings>()->MultithreadingInsertionBatchSize;
+
+		// Minimum amount of points to progress to count as 1%
+		int64 RefreshStatusFrequency = Count * 0.01f;
+		FThreadSafeCounter64 ProcessedPoints(0);
+		int64 TotalProcessedPoints = 0;
+
+		const int32 NumThreads = FMath::Min(FPlatformMisc::NumberOfCoresIncludingHyperthreads() - 1, (int32)(Count / MaxBatchSize) + 1);
+		TArray<TFuture<void>>ThreadResults;
+		ThreadResults.Reserve(NumThreads);
+		const int64 NumPointsPerThread = Count / NumThreads + 1;
+
+		FCriticalSection ProgressCallbackLock;
+
+		// Fire threads
+		for (int32 ThreadID = 0; ThreadID < NumThreads; ThreadID++)
+		{
+			ThreadResults.Add(Async(EAsyncExecution::Thread, [this, ThreadID, DuplicateHandling, bRefreshPointsBounds, MaxBatchSize, NumPointsPerThread, RefreshStatusFrequency, &ProcessedPoints, &TotalProcessedPoints, InPoints, Count, &ProgressCallback, &ProgressCallbackLock, &bCanceled, &Translation]
+				{
+					int64 Idx = ThreadID * NumPointsPerThread;
+					int64 MaxIdx = FMath::Min(Idx + NumPointsPerThread, Count);
+					T DataPointer = InPoints + Idx;
+
+					while (Idx < MaxIdx)
+					{
+						int32 BatchSize = FMath::Min(MaxIdx - Idx, (int64)MaxBatchSize);
+
+						Octree.InsertPoints(DataPointer, BatchSize, DuplicateHandling, bRefreshPointsBounds, Translation);
+
+						if (ProgressCallback)
+						{
+							ProcessedPoints.Add(BatchSize);
+							if (ProcessedPoints.GetValue() > RefreshStatusFrequency)
+							{
+								FScopeLock Lock(&ProgressCallbackLock);
+								TotalProcessedPoints += ProcessedPoints.GetValue();
+								ProcessedPoints.Reset();
+								ProgressCallback((double)TotalProcessedPoints / Count);
+							}
+						}
+
+						if (bCanceled && *bCanceled)
+						{
+							break;
+						}
+
+						Idx += BatchSize;
+						DataPointer += BatchSize;
+					}
+				}));
+		}
+
+		// Sync
+		for (const TFuture<void>& ThreadResult : ThreadResults)
+		{
+			ThreadResult.Get();
+		}
+
+		// Do not attempt to touch Render Data if being destroyed
+		if (!HasAnyFlags(RF_BeginDestroyed))
+		{
+			// Update PointCloudAssetRegistryCache
+			PointCloudAssetRegistryCache.PointCount = FString::FromInt(Octree.GetNumPoints());
+		}
+
+		return !bCanceled || !(*bCanceled);
+	}
+}
+
+template<typename T>
+bool ULidarPointCloud::SetData_Internal(T Points, const int64& Count, TFunction<void(float)> ProgressCallback)
 {
 	// Lock the point cloud
 	FScopeLock Lock(&ProcessingLock);
@@ -743,7 +1018,6 @@ bool ULidarPointCloud::SetData(T Points, const int64& Count, TFunction<void(floa
 		{
 			auto PostFunction = [this, bSuccess]() {
 				MarkPackageDirty();
-				Notification.Close(bSuccess);
 				OnPointCloudRebuiltEvent.Broadcast();
 			};
 
@@ -765,6 +1039,16 @@ bool ULidarPointCloud::SetData(T Points, const int64& Count, TFunction<void(floa
 	}
 
 	return bSuccess;
+}
+
+bool ULidarPointCloud::SetData(const FLidarPointCloudPoint* Points, const int64& Count, TFunction<void(float)> ProgressCallback /*= TFunction<void(float)>()*/)
+{
+	return SetData_Internal(Points, Count, MoveTemp(ProgressCallback));
+}
+
+bool ULidarPointCloud::SetData(FLidarPointCloudPoint** Points, const int64& Count, TFunction<void(float)> ProgressCallback /*= TFunction<void(float)>()*/)
+{
+	return SetData_Internal(Points, Count, MoveTemp(ProgressCallback));
 }
 
 void ULidarPointCloud::Merge(TArray<ULidarPointCloud*> PointCloudsToMerge, TFunction<void(void)> ProgressCallback)
@@ -898,7 +1182,7 @@ void ULidarPointCloud::CalculateNormals(TArray64<FLidarPointCloudPoint*>* Points
 	}
 
 	bAsyncCancelled = false;
-	Notification.Create("Calculating Normals", &bAsyncCancelled);
+	TSharedRef<FLidarPointCloudNotification, ESPMode::ThreadSafe> Notification = Notifications.Create("Calculating Normals", &bAsyncCancelled);
 	Async(EAsyncExecution::Thread,
 	[this, Points]
 	{
@@ -910,12 +1194,12 @@ void ULidarPointCloud::CalculateNormals(TArray64<FLidarPointCloudPoint*>* Points
 
 		Octree.CalculateNormals(&bAsyncCancelled, NormalsQuality, NormalsNoiseTolerance, Points);
 	},
-	[this, _CompletionCallback = MoveTemp(CompletionCallback)]
+	[this, Notification, _CompletionCallback = MoveTemp(CompletionCallback)]
 	{
-		AsyncTask(ENamedThreads::GameThread, [this]
+		AsyncTask(ENamedThreads::GameThread, [this, Notification]
 		{
 			MarkPackageDirty();
-			Notification.Close(!bAsyncCancelled);
+			Notification->Close(!bAsyncCancelled);
 		});
 
 		if (_CompletionCallback)
@@ -1020,6 +1304,46 @@ ULidarPointCloud* ULidarPointCloud::CreateFromData(T Points, const int64& Count,
 	return PC;
 }
 
+ULidarPointCloud* ULidarPointCloud::CreateFromData(const TArray<FLidarPointCloudPoint>& Points, const bool& bUseAsync)
+{
+	return CreateFromData(Points.GetData(), Points.Num(), FLidarPointCloudAsyncParameters(bUseAsync));
+}
+
+ULidarPointCloud* ULidarPointCloud::CreateFromData(const TArray64<FLidarPointCloudPoint>& Points, const bool& bUseAsync)
+{
+	return CreateFromData(Points.GetData(), Points.Num(), FLidarPointCloudAsyncParameters(bUseAsync));
+}
+
+ULidarPointCloud* ULidarPointCloud::CreateFromData(const TArray<FLidarPointCloudPoint>& Points, const FLidarPointCloudAsyncParameters& AsyncParameters)
+{
+	return CreateFromData(Points.GetData(), Points.Num(), AsyncParameters);
+}
+
+ULidarPointCloud* ULidarPointCloud::CreateFromData(const TArray64<FLidarPointCloudPoint>& Points, const FLidarPointCloudAsyncParameters& AsyncParameters)
+{
+	return CreateFromData(Points.GetData(), Points.Num(), AsyncParameters);
+}
+
+ULidarPointCloud* ULidarPointCloud::CreateFromData(TArray<FLidarPointCloudPoint*>& Points, const bool& bUseAsync)
+{
+	return CreateFromData(Points.GetData(), Points.Num(), FLidarPointCloudAsyncParameters(bUseAsync));
+}
+
+ULidarPointCloud* ULidarPointCloud::CreateFromData(TArray64<FLidarPointCloudPoint*>& Points, const bool& bUseAsync)
+{
+	return CreateFromData(Points.GetData(), Points.Num(), FLidarPointCloudAsyncParameters(bUseAsync));
+}
+
+ULidarPointCloud* ULidarPointCloud::CreateFromData(TArray<FLidarPointCloudPoint*>& Points, const FLidarPointCloudAsyncParameters& AsyncParameters)
+{
+	return CreateFromData(Points.GetData(), Points.Num(), AsyncParameters);
+}
+
+ULidarPointCloud* ULidarPointCloud::CreateFromData(TArray64<FLidarPointCloudPoint*>& Points, const FLidarPointCloudAsyncParameters& AsyncParameters)
+{
+	return CreateFromData(Points.GetData(), Points.Num(), AsyncParameters);
+}
+
 FBox ULidarPointCloud::CalculateBoundsFromPoints(const FLidarPointCloudPoint* Points, const int64& Count)
 {
 	FBox Bounds(EForceInit::ForceInit);
@@ -1052,20 +1376,74 @@ FBox ULidarPointCloud::CalculateBoundsFromPoints(FLidarPointCloudPoint** Points,
 	return Bounds;
 }
 
-void ULidarPointCloud::FinishPhysicsAsyncCook(bool bSuccess, UBodySetup* NewBodySetup)
+void ULidarPointCloud::FinishPhysicsAsyncCook(bool bSuccess, UBodySetup* NewBodySetup, TSharedRef<FLidarPointCloudNotification, ESPMode::ThreadSafe> Notification)
 {
 	FBenchmarkTimer::Log("CookingCollision");
-	Notification.Close(bSuccess);
+	Notification->Close(bSuccess);
 
 	if (bSuccess)
 	{
 		BodySetup = NewBodySetup;
-		ReleaseCollisionRendering(); 
+		ReleaseCollisionRendering(false); 
 		InitializeCollisionRendering();
 		OnPointCloudUpdateCollisionEvent.Broadcast();
 	}
 
 	bCollisionBuildInProgress = false;
+}
+
+template <typename T>
+void ULidarPointCloud::GetPoints_Internal(TArray<FLidarPointCloudPoint*, T>& Points, int64 StartIndex /*= 0*/, int64 Count /*= -1*/)
+{
+	Octree.GetPoints(Points, StartIndex, Count);
+}
+
+template <typename T>
+void ULidarPointCloud::GetPointsInSphere_Internal(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, FSphere Sphere, const bool& bVisibleOnly)
+{
+	Sphere.Center -= LocationOffset.ToVector();
+	Octree.GetPointsInSphere(SelectedPoints, Sphere, bVisibleOnly);
+}
+
+template <typename T>
+void ULidarPointCloud::GetPointsInBox_Internal(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly)
+{
+	Octree.GetPointsInBox(SelectedPoints, Box.ShiftBy(-LocationOffset.ToVector()), bVisibleOnly);
+}
+
+template <typename T>
+void ULidarPointCloud::GetPointsInConvexVolume_Internal(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FConvexVolume& ConvexVolume, const bool& bVisibleOnly)
+{
+	Octree.GetPointsInConvexVolume(SelectedPoints, ConvexVolume, bVisibleOnly);
+}
+
+template <typename T>
+void ULidarPointCloud::GetPointsAsCopies_Internal(TArray<FLidarPointCloudPoint, T>& Points, bool bReturnWorldSpace, int64 StartIndex /*= 0*/, int64 Count /*= -1*/) const
+{
+	FTransform LocalToWorld(LocationOffset.ToVector());
+	Octree.GetPointsAsCopies(Points, bReturnWorldSpace ? &LocalToWorld : nullptr, StartIndex, Count);
+}
+
+template <typename T>
+void ULidarPointCloud::GetPointsInSphereAsCopies_Internal(TArray<FLidarPointCloudPoint, T>& SelectedPoints, FSphere Sphere, const bool& bVisibleOnly, bool bReturnWorldSpace) const
+{
+	FTransform LocalToWorld(LocationOffset.ToVector());
+	Sphere.Center -= LocationOffset.ToVector();
+	Octree.GetPointsInSphereAsCopies(SelectedPoints, Sphere, bVisibleOnly, bReturnWorldSpace ? &LocalToWorld : nullptr);
+}
+
+template <typename T>
+void ULidarPointCloud::GetPointsInBoxAsCopies_Internal(TArray<FLidarPointCloudPoint, T>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, bool bReturnWorldSpace) const
+{
+	FTransform LocalToWorld(LocationOffset.ToVector());
+	Octree.GetPointsInBoxAsCopies(SelectedPoints, Box.ShiftBy(-LocationOffset.ToVector()), bVisibleOnly, bReturnWorldSpace ? &LocalToWorld : nullptr);
+}
+
+template<typename T>
+bool ULidarPointCloud::InsertPoints_Internal(T InPoints, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation, FThreadSafeBool* bCanceled /*= nullptr*/, TFunction<void(float)> ProgressCallback /*= TFunction<void(float)>()*/)
+{
+	FScopeLock Lock(&Octree.DataLock);
+	return InsertPoints_NoLock_Internal(InPoints, Count, DuplicateHandling, bRefreshPointsBounds, Translation, bCanceled, MoveTemp(ProgressCallback));
 }
 
 /*********************************************************************************************** ULidarPointCloudBlueprintLibrary */
@@ -1370,29 +1748,5 @@ ALidarClippingVolume::ALidarClippingVolume()
 
 	SetActorScale3D(FVector(50));
 }
-
-/*********************************************************************************************** Templates */
-
-template bool ULidarPointCloud::InsertPoints_NoLock<FLidarPointCloudPoint*>(FLidarPointCloudPoint*, const int64&, ELidarPointCloudDuplicateHandling, bool, const FVector&, FThreadSafeBool*, TFunction<void(float)>);
-template bool ULidarPointCloud::InsertPoints_NoLock<const FLidarPointCloudPoint*>(const FLidarPointCloudPoint*, const int64&, ELidarPointCloudDuplicateHandling, bool, const FVector&, FThreadSafeBool*, TFunction<void(float)>);
-template bool ULidarPointCloud::InsertPoints_NoLock<FLidarPointCloudPoint**>(FLidarPointCloudPoint**, const int64&, ELidarPointCloudDuplicateHandling, bool, const FVector&, FThreadSafeBool*, TFunction<void(float)>);
-template bool ULidarPointCloud::SetData<const FLidarPointCloudPoint*>(const FLidarPointCloudPoint*, const int64&, TFunction<void(float)>);
-template bool ULidarPointCloud::SetData<FLidarPointCloudPoint**>(FLidarPointCloudPoint**, const int64&, TFunction<void(float)>);
-template void ULidarPointCloud::GetPoints(TArray<FLidarPointCloudPoint*>&, int64, int64);
-template void ULidarPointCloud::GetPoints(TArray64<FLidarPointCloudPoint*>&, int64, int64);
-template void ULidarPointCloud::GetPointsInSphere(TArray<FLidarPointCloudPoint*>&, FSphere, const bool&);
-template void ULidarPointCloud::GetPointsInSphere(TArray64<FLidarPointCloudPoint*>&, FSphere, const bool&);
-template void ULidarPointCloud::GetPointsInBox(TArray<FLidarPointCloudPoint*>&, const FBox&, const bool&);
-template void ULidarPointCloud::GetPointsInBox(TArray64<FLidarPointCloudPoint*>&, const FBox&, const bool&);
-template void ULidarPointCloud::GetPointsAsCopies(TArray<FLidarPointCloudPoint>&, bool, int64, int64) const;
-template void ULidarPointCloud::GetPointsAsCopies(TArray64<FLidarPointCloudPoint>&, bool, int64, int64) const;
-template void ULidarPointCloud::GetPointsInSphereAsCopies(TArray<FLidarPointCloudPoint>&, FSphere, const bool&, bool) const;
-template void ULidarPointCloud::GetPointsInSphereAsCopies(TArray64<FLidarPointCloudPoint>&, FSphere, const bool&, bool) const;
-template void ULidarPointCloud::GetPointsInBoxAsCopies(TArray<FLidarPointCloudPoint>&, const FBox&, const bool&, bool) const;
-template void ULidarPointCloud::GetPointsInBoxAsCopies(TArray64<FLidarPointCloudPoint>&, const FBox&, const bool&, bool) const;
-template FBox ULidarPointCloud::CalculateBoundsFromPoints(TArray<FLidarPointCloudPoint*>&);
-template FBox ULidarPointCloud::CalculateBoundsFromPoints(TArray64<FLidarPointCloudPoint*>&);
-template FBox ULidarPointCloud::CalculateBoundsFromPoints(TArray<const FLidarPointCloudPoint>&);
-template FBox ULidarPointCloud::CalculateBoundsFromPoints(TArray64<const FLidarPointCloudPoint>&);
 
 #undef LOCTEXT_NAMESPACE

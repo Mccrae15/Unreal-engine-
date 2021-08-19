@@ -254,7 +254,7 @@ bool FWinHttpHttpRequest::ProcessRequest()
 		{
 			// Could not create session
 			UE_LOG(LogHttp, Warning, TEXT("Unable to create WinHttp Session, failing request"));
-			StrongThis->FinishRequest();
+			StrongThis->FinishRequestOnGameThread();
 			return;
 		}
 
@@ -265,7 +265,7 @@ bool FWinHttpHttpRequest::ProcessRequest()
 		if (!Connection.IsValid())
 		{
 			UE_LOG(LogHttp, Warning, TEXT("Unable to create WinHttp Connection, failing request"));
-			StrongThis->FinishRequest();
+			StrongThis->FinishRequestOnGameThread();
 			return;
 		}
 
@@ -276,16 +276,16 @@ bool FWinHttpHttpRequest::ProcessRequest()
 		Connection->SetRequestCompletedHandler(FWinHttpConnectionHttpOnRequestComplete::CreateThreadSafeSP(StrongThisRef, &FWinHttpHttpRequest::HandleRequestComplete));
 
 		// Start request!
-		StrongThis->RequestStartTimeSeconds = FPlatformTime::Seconds();
+		StrongThisRef->RequestStartTimeSeconds = FPlatformTime::Seconds();
 		if (!Connection->StartRequest())
 		{
 			UE_LOG(LogHttp, Warning, TEXT("Unable to start WinHttp Connection, failing request"));
-			StrongThis->FinishRequest();
+			StrongThisRef->FinishRequestOnGameThread();
 			return;
 		}
 
 		// Save object
-		StrongThis->Connection = MoveTemp(Connection);
+		StrongThisRef->Connection = MoveTemp(Connection);
 	}));
 
 	// Store our request so it doesn't die if the requester doesn't store it (common use case)
@@ -310,20 +310,7 @@ void FWinHttpHttpRequest::CancelRequest()
 
 	bRequestCancelled = true;
 
-
-	// FinishRequest will cleanup connection
-	if (!IsInGameThread())
-	{
-		// Always finish on the game thread
-		FHttpModule::Get().GetHttpManager().AddGameThreadTask([StrongThis = StaticCastSharedRef<FWinHttpHttpRequest>(AsShared())]()
-		{
-			StrongThis->FinishRequest();
-		});
-	}
-	else
-	{
-		FinishRequest();
-	}
+	FinishRequestOnGameThread();
 }
 
 EHttpRequestStatus::Type FWinHttpHttpRequest::GetStatus() const
@@ -371,12 +358,24 @@ bool FWinHttpHttpRequest::StartThreadedRequest()
 
 bool FWinHttpHttpRequest::IsThreadedRequestComplete()
 {
-	return EHttpRequestStatus::IsFinished(State);
+	if(bRequestCancelled)
+	{
+		return true;
+	}
+
+	if (EHttpRequestStatus::IsFinished(State))
+	{
+		if(RequestStartTimeSeconds.IsSet())
+		{
+			return (FPlatformTime::Seconds() - RequestStartTimeSeconds.GetValue()) >= FHttpModule::Get().GetHttpDelayTime();
+		}		
+	}
+	return false;	
 }
 
 void FWinHttpHttpRequest::TickThreadedRequest(float DeltaSeconds)
 {
-	TSharedPtr<IWinHttpConnection, ESPMode::ThreadSafe> LocalConnection = Connection;
+	TSharedPtr<FWinHttpConnectionHttp, ESPMode::ThreadSafe> LocalConnection = Connection;
 	if (LocalConnection.IsValid())
 	{
 		LocalConnection->PumpStates();
@@ -384,8 +383,24 @@ void FWinHttpHttpRequest::TickThreadedRequest(float DeltaSeconds)
 	}
 }
 
+void FWinHttpHttpRequest::FinishRequestOnGameThread()
+{	
+	if (!IsInGameThread())
+	{
+		FHttpModule::Get().GetHttpManager().AddGameThreadTask([StrongThis = StaticCastSharedRef<FWinHttpHttpRequest>(AsShared())]()
+		{
+			StrongThis->FinishRequest();
+		});
+	}
+	else
+	{
+		FinishRequest();
+	}
+}
+
 void FWinHttpHttpRequest::FinishRequest()
 {
+	UE_LOG(LogHttp, Verbose, TEXT("FWinHttpHttpRequest::FinishRequest()  req %p State==[%s]"), this,  EHttpRequestStatus::ToString(State));
 	if (RequestFinishTimeSeconds.IsSet())
 	{
 		// Already finished
@@ -394,11 +409,15 @@ void FWinHttpHttpRequest::FinishRequest()
 	RequestFinishTimeSeconds = FPlatformTime::Seconds();
 
 	// Set our final state if it's not set yet
-	if (!EHttpRequestStatus::IsFinished(State))
+	if (!EHttpRequestStatus::IsFinished(State) && !EHttpRequestStatus::IsFinished(CompletionStatus))
 	{
 		State = EHttpRequestStatus::Failed;
 	}
-
+	else if(!EHttpRequestStatus::IsFinished(State))
+	{
+		State = CompletionStatus;
+	}
+	UE_LOG(LogHttp, Verbose, TEXT("FWinHttpHttpRequest::FinishRequest() req %p State becomes %s]"), this, EHttpRequestStatus::ToString(State));
 	// Shutdown our connection
 	if (Connection.IsValid())
 	{
@@ -419,6 +438,10 @@ void FWinHttpHttpRequest::HandleDataTransferred(int32 BytesSent, int32 BytesRece
 
 	if (BytesSent > 0 || BytesReceived > 0)
 	{
+		if (BytesReceived > 0)
+		{
+			UpdateResponseBody();
+		}
 		TotalBytesSent += BytesSent;
 		TotalBytesReceived += BytesReceived;
 		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> KeepAlive = AsShared();
@@ -430,23 +453,54 @@ void FWinHttpHttpRequest::HandleHeaderReceived(const FString& HeaderKey, const F
 {
 	check(IsInGameThread());
 
+	if (Response.IsValid())
+	{
+		Response->AppendHeader(HeaderKey, HeaderValue);
+	}
+	else if (Connection.IsValid())
+	{
+		Response = MakeShared<FWinHttpHttpResponse, ESPMode::ThreadSafe>(RequestData.Url, Connection->GetResponseCode(), CopyTemp(Connection->GetHeadersReceived()), TArray<uint8>());
+	}
+
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> KeepAlive = AsShared();
 	OnHeaderReceived().ExecuteIfBound(AsShared(), HeaderKey, HeaderValue);
 }
 
-void FWinHttpHttpRequest::HandleRequestComplete(EHttpRequestStatus::Type CompletionStatus, EHttpResponseCodes::Type HttpStatusCode, FStringKeyValueMap& InHeaders, TArray<uint8>& InContents)
+void FWinHttpHttpRequest::HandleRequestComplete(EHttpRequestStatus::Type CompletionStatusUpdate)
 {
 	check(IsInGameThread());
-	check(EHttpRequestStatus::IsFinished(CompletionStatus));
+	check(EHttpRequestStatus::IsFinished(CompletionStatusUpdate));
 
-	State = CompletionStatus;
+	CompletionStatus = CompletionStatusUpdate;
 
 	if (CompletionStatus == EHttpRequestStatus::Succeeded)
 	{
-		Response = MakeShared<FWinHttpHttpResponse, ESPMode::ThreadSafe>(RequestData.Url, HttpStatusCode, MoveTemp(InHeaders), MoveTemp(InContents));
+		UpdateResponseBody(true);
 	}
 
-	FinishRequest();
+	FinishRequestOnGameThread();
+}
+
+void FWinHttpHttpRequest::UpdateResponseBody(bool bForceResponseExist)
+{
+	if (Connection.IsValid())
+	{
+		TArray<uint8> NewChunk(MoveTemp(Connection->GetLastChunk()));
+		if (NewChunk.Num() > 0 || bForceResponseExist)
+		{
+			if (Response.IsValid())
+			{
+				if (NewChunk.Num() > 0)
+				{
+					Response->AppendPayload(NewChunk);
+				}
+			}
+			else
+			{
+				Response = MakeShared<FWinHttpHttpResponse, ESPMode::ThreadSafe>(RequestData.Url, Connection->GetResponseCode(), CopyTemp(Connection->GetHeadersReceived()), MoveTemp(NewChunk));
+			}
+		}
+	}
 }
 
 #endif // WITH_WINHTTP

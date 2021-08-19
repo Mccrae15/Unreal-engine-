@@ -31,13 +31,16 @@ struct FElementOffset
 struct FNDIPhysicsAssetArrays
 {
 	FElementOffset ElementOffsets;
+	TStaticArray<FVector4, 3 * PHYSICS_ASSET_MAX_TRANSFORMS> WorldTransform;
+	TStaticArray<FVector4, 3 * PHYSICS_ASSET_MAX_TRANSFORMS> InverseTransform;
 	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> CurrentTransform;
-	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> InverseTransform;
+	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> CurrentInverse;
 	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> PreviousTransform;
 	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> PreviousInverse;
 	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> RestTransform;
 	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> RestInverse;
 	TStaticArray<FVector4, PHYSICS_ASSET_MAX_PRIMITIVES> ElementExtent;
+	TStaticArray<uint32, PHYSICS_ASSET_MAX_PRIMITIVES> PhysicsType;
 };
 
 /** Render buffers that will be used in hlsl functions */
@@ -52,26 +55,17 @@ struct FNDIPhysicsAssetBuffer : public FRenderResource
 	/** Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FNDIPhysicsAssetBuffer"); }
 
-	/** Current transform buffer */
-	FRWBuffer CurrentTransformBuffer;
-
-	/** Previous transform buffer */
-	FRWBuffer PreviousTransformBuffer;
-
-	/** Previous inverse buffer */
-	FRWBuffer PreviousInverseBuffer;
+	/** World transform buffer */
+	FRWBuffer WorldTransformBuffer;
 
 	/** Inverse transform buffer*/
 	FRWBuffer InverseTransformBuffer;
 
-	/** Rest transform buffer */
-	FRWBuffer RestTransformBuffer;
-
-	/** Rest transform buffer */
-	FRWBuffer RestInverseBuffer;
-
 	/** Element extent buffer */
 	FRWBuffer ElementExtentBuffer;
+
+	/** Physics type buffer */
+	FRWBuffer PhysicsTypeBuffer;
 };
 
 /** Data stored per physics asset instance*/
@@ -96,7 +90,10 @@ struct FNDIPhysicsAssetData
 	FVector BoxExtent;
 
 	/** Physics asset Cpu arrays */
-	FNDIPhysicsAssetArrays AssetArrays;
+	FNDIPhysicsAssetArrays AssetArrays;  
+
+	/** The instance ticking group */
+	ETickingGroup TickingGroup;
 };
 
 /** Data Interface for the strand base */
@@ -136,12 +133,16 @@ public:
 	virtual int32 PerInstanceDataSize()const override { return sizeof(FNDIPhysicsAssetData); }
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 	virtual bool HasPreSimulateTick() const override { return true; }
+	virtual bool HasTickGroupPrereqs() const override { return true; }
+	virtual ETickingGroup CalculateTickGroup(const void* PerInstanceData) const override;
 
 	/** GPU simulation  functionality */
+#if WITH_EDITORONLY_DATA
+	virtual void GetCommonHLSL(FString& OutHLSL) override;
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
+#endif
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override;
-	virtual void GetCommonHLSL(FString& OutHLSL) override;
 
 	/** Extract the source component */
 	void ExtractSourceComponent(FNiagaraSystemInstance* SystemInstance);
@@ -179,26 +180,17 @@ public:
 	/** Name of element offsets */
 	static const FString ElementOffsetsName;
 
-	/** Name of the current transform buffer */
-	static const FString CurrentTransformBufferName;
-
-	/** Name of the previous transform buffer */
-	static const FString PreviousTransformBufferName;
-
-	/** Name of the previous inverse buffer */
-	static const FString PreviousInverseBufferName;
+	/** Name of the world transform buffer */
+	static const FString WorldTransformBufferName;
 
 	/** Name of the inverse transform buffer */
 	static const FString InverseTransformBufferName;
 
-	/** Name of the rest transform buffer */
-	static const FString RestTransformBufferName;
-
-	/** Name of the rest inverse transform buffer */
-	static const FString RestInverseBufferName;
-
 	/** Name of the element extent buffer */
 	static const FString ElementExtentBufferName;
+
+	/** Name of the physics type buffer */
+	static const FString PhysicsTypeBufferName;
 
 	/** Init Box Origin */
 	static const FString BoxOriginName;

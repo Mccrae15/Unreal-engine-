@@ -16,17 +16,19 @@ namespace Chaos
 {
 template<class T, int d>
 class TAABB;
-template<class T>
-class TCylinder;
+class FCylinder;
 template<class T, int d>
 class TSphere;
 template<class T, int d>
 class TPlane;
 template<class T, int d>
 class TParticles;
-template<class T, int d>
-class TBVHParticles;
+
+class FBVHParticles;
 class FImplicitObject;
+
+using FAABB3 = TAABB<FReal, 3>;
+using FParticles = TParticles<FReal, 3>;
 
 namespace ImplicitObjectType
 {
@@ -49,6 +51,7 @@ namespace ImplicitObjectType
 		DEPRECATED_Scaled,	//needed for serialization of existing data
 		Triangle,
 		UnionClustered,
+		TaperedCapsule,
 
 		//Add entries above this line for serialization
 		IsInstanced = 1 << 6,
@@ -196,8 +199,25 @@ public:
 
 	// Explicitly non-virtual.  Must cast to derived types to target their implementation.
 	FVec3 Normal(const FVec3& x) const;
+
+	// Find the closest point on the surface, and return the separating distance and axis
 	virtual FReal PhiWithNormal(const FVec3& x, FVec3& Normal) const = 0;
-	virtual const class TAABB<FReal, 3> BoundingBox() const;
+
+	// Find the closest point on the surface, and return the separating distance and axis
+	virtual FReal PhiWithNormalScaled(const FVec3& Pos, const FVec3& Scale, FVec3& Normal) const
+	{
+		// @todo(chaos): implement for all derived types - this is not a valid solution
+		const FVec3 UnscaledX = Pos / Scale;
+		FVec3 UnscaledNormal;
+		const FReal UnscaledPhi = PhiWithNormal(UnscaledX, UnscaledNormal);
+		Normal = Scale * UnscaledNormal;
+		const FReal ScaleFactor = Normal.SafeNormalize();
+		const FReal ScaledPhi = UnscaledPhi * ScaleFactor;
+		return ScaledPhi;
+	}
+
+	virtual const FAABB3 BoundingBox() const;
+
 	bool HasBoundingBox() const { return bHasBoundingBox; }
 
 	bool IsConvex() const { return bIsConvex; }
@@ -217,8 +237,8 @@ public:
 		return FString::Printf(TEXT("ImplicitObject - No Performance String"));
 	};
 
-	Pair<FVec3, bool> FindDeepestIntersection(const FImplicitObject* Other, const TBVHParticles<FReal, 3>* Particles, const FMatrix33& OtherToLocalTransform, const FReal Thickness) const;
-	Pair<FVec3, bool> FindDeepestIntersection(const FImplicitObject* Other, const TParticles<FReal, 3>* Particles, const FMatrix33& OtherToLocalTransform, const FReal Thickness) const;
+	Pair<FVec3, bool> FindDeepestIntersection(const FImplicitObject* Other, const FBVHParticles* Particles, const FMatrix33& OtherToLocalTransform, const FReal Thickness) const;
+	Pair<FVec3, bool> FindDeepestIntersection(const FImplicitObject* Other, const FParticles* Particles, const FMatrix33& OtherToLocalTransform, const FReal Thickness) const;
 	Pair<FVec3, bool> FindClosestIntersection(const FVec3& StartPoint, const FVec3& EndPoint, const FReal Thickness) const;
 
 	//This gives derived types a way to avoid calling PhiWithNormal todo: this api is confusing
@@ -247,6 +267,22 @@ public:
 	{
 		//Many objects have no concept of a face
 		return INDEX_NONE;
+	}
+
+	virtual int32 FindMostOpposingFaceScaled(const FVec3& Position, const FVec3& UnitDir, int32 HintFaceIndex, FReal SearchDist, const FVec3& Scale) const
+	{
+		// For now, this is the implementation that used to be in FImplicitObjectScaled to use as a default.
+		// @todo(chaos): implement FindMostOpposingFaceScaled for all types that can be wrapped in ImplicitObjectScaled
+		// NOTE: this isn't strictly correct. The distance check does not account for non-uniforms scales, but also the algorithm is finding the
+		// face which has the most opposing normal. The scaled-space normal for a face i is Ns_i = (N_i / S) / |(N_i / S)|
+		// We want to find i with the minimum F_i = (D . Ns_i), where D is the unit direction we are interested in.
+		// F_i = D . (N_i / S) / |(N_i / S)|
+		// Below we are effectively testing F_i = ((D / S) . N_i) and ignoring the |(N_i / S)| which is dependent on i and therefore cannot 
+		// be ignored in the minimum check.
+		const FReal UnscaledSearchDist = SearchDist / Scale.Min();	//this is not quite right since it's no longer a sphere, but the whole thing is fuzzy anyway
+		const FVec3 UnscaledPosition = Position / Scale;
+		const FVec3 UnscaledNormal = GetInnerUnscaledNormal(UnitDir, Scale);
+		return FindMostOpposingFace(UnscaledPosition, UnscaledNormal, HintFaceIndex, UnscaledSearchDist);
 	}
 
 
@@ -291,7 +327,7 @@ public:
 		Out.Add(MakePair(This, ParentTM));
 	}
 
-	virtual void FindAllIntersectingObjects(TArray < Pair<const FImplicitObject*, FRigidTransform3>>& Out, const TAABB<FReal, 3>& LocalBounds) const;
+	virtual void FindAllIntersectingObjects(TArray < Pair<const FImplicitObject*, FRigidTransform3>>& Out, const FAABB3& LocalBounds) const;
 
 	virtual FString ToString() const
 	{
@@ -323,6 +359,29 @@ public:
 	virtual uint16 GetMaterialIndex(uint32 HintIndex) const { return 0; }
 
 protected:
+
+	// Safely scale a normal - used with both scale and inverse scale
+	FVec3 ScaledNormalHelper(const FVec3& Normal, const FVec3& Scale) const
+	{
+		const FVec3 ScaledNormal = Scale * Normal;
+		const float ScaledNormalLen = ScaledNormal.Size();
+		return ensure(ScaledNormalLen > TNumericLimits<FReal>::Min())
+			? ScaledNormal / ScaledNormalLen
+			: FVec3(0.f, 0.f, 1.f);
+	}
+
+	// Convert a normal in the inner unscaled object space into a normal in the outer scaled object space.
+	// Note: INverse scale is passed in, not the scale
+	FVec3 GetOuterScaledNormal(const FVec3& InnerNormal, const FVec3& Scale) const
+	{
+		return ScaledNormalHelper(InnerNormal, FVec3(1.0f / Scale.X, 1.0f / Scale.Y, 1.0f / Scale.Z));
+	}
+
+	// Convert a normal in the outer scaled object space into a normal in the inner unscaled object space
+	FVec3 GetInnerUnscaledNormal(const FVec3& OuterNormal, const FVec3& Scale) const
+	{
+		return ScaledNormalHelper(OuterNormal, Scale);
+	}
 
 	// Not all derived types support a margin, and for some it represents some other
 	// property (the radius of a sphere for example), so the setter should only be exposed 

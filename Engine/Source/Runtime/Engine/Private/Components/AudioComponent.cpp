@@ -30,8 +30,7 @@ static int32 PrimeSoundOnAudioComponentSpawnCVar = 0;
 FAutoConsoleVariableRef CVarPrimeSoundOnAudioComponentSpawn(
 	TEXT("au.streamcaching.PrimeSoundOnAudioComponents"),
 	PrimeSoundOnAudioComponentSpawnCVar,
-	TEXT("When set to 1, automatically primes a USoundBase when a UAudioComponent is spawned with that sound, or when UAudioComponent::SetSound is called.\n")
-	TEXT("Value: The time in seconds to shift the timeline."),
+	TEXT("When set to 1, automatically primes a USoundBase when a UAudioComponent is spawned with that sound, or when UAudioComponent::SetSound is called.\n"),
 	ECVF_Default);
 
 
@@ -411,6 +410,7 @@ void UAudioComponent::PlayQuantized(
 	if (InClockHandle != nullptr)
 	{
 		Data.QuantizedRequestData = InClockHandle->GetQuartzSubsystem()->CreateDataDataForSchedulePlaySound(InClockHandle, InDelegate, InQuantizationBoundary);
+		UGameplayStatics::PrimeSound(Sound);
 	}
 
 	// validate clock existence 
@@ -1501,6 +1501,32 @@ void UAudioComponent::SetLowPassFilterFrequency(float InLowPassFilterFrequency)
 				ActiveSound->LowPassFilterFrequency = InLowPassFilterFrequency;
 			}
 		}, GET_STATID(STAT_AudioSetLowPassFilterFrequency));
+	}
+}
+
+void UAudioComponent::SetOutputToBusOnly(bool bInOutputToBusOnly)
+{
+	if (FAudioDevice* AudioDevice = GetAudioDevice())
+	{
+		DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.SetOutputToBusOnly"), STAT_AudioSetOutputToBusOnly, STATGROUP_AudioThreadCommands);
+
+		const uint64 MyAudioComponentID = AudioComponentID;
+		FAudioThread::RunCommandOnAudioThread([AudioDevice, MyAudioComponentID, bInOutputToBusOnly]()
+		{
+			FActiveSound* ActiveSound = AudioDevice->FindActiveSound(MyAudioComponentID);
+			if (ActiveSound)
+			{
+				ActiveSound->bHasActiveMainSubmixOutputOverride = true;
+				ActiveSound->bHasActiveSubmixSendRoutingOverride = true;
+				if (bInOutputToBusOnly)
+				{
+					ActiveSound->bHasActiveBusSendRoutingOverride = true;
+					ActiveSound->bEnableBusSendRoutingOverride = true;
+				}
+				ActiveSound->bEnableMainSubmixOutputOverride = !bInOutputToBusOnly;
+				ActiveSound->bEnableSubmixSendRoutingOverride = !bInOutputToBusOnly;
+			}
+		}, GET_STATID(STAT_AudioSetOutputToBusOnly));
 	}
 }
 

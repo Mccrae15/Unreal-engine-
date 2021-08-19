@@ -12,9 +12,11 @@
 #include "NiagaraDataSetAccessor.h"
 #include "NiagaraEmitterInstance.h"
 #include "NiagaraEmitterHandle.h"
+#include "NiagaraBakerSettings.h"
 #include "NiagaraParameterCollection.h"
 #include "NiagaraUserRedirectionParameterStore.h"
 #include "NiagaraEffectType.h"
+#include "NiagaraParameterDefinitionsSubscriber.h"
 
 #include "NiagaraSystem.generated.h"
 
@@ -71,10 +73,10 @@ struct FNiagaraParameterDataSetBinding
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	int32 ParameterOffset;
+	int32 ParameterOffset = 0;
 
 	UPROPERTY()
-	int32 DataSetComponentOffset;
+	int32 DataSetComponentOffset = 0;
 };
 
 USTRUCT()
@@ -154,6 +156,7 @@ struct FEmitterCompiledScriptPair
 	uint32 PendingJobID = INDEX_NONE; // this is the ID for any active shader compiler worker job
 	FNiagaraVMExecutableDataId CompileId;
 	TSharedPtr<FNiagaraVMExecutableData> CompileResults;
+	int32 ParentIndex = INDEX_NONE;
 };
 
 USTRUCT()
@@ -185,9 +188,19 @@ struct FNiagaraEmitterExecutionIndex
 	uint32 EmitterIndex : 31;
 };
 
+struct FNiagaraRendererExecutionIndex
+{
+	/** The index of the emitter */
+	uint32 EmitterIndex = INDEX_NONE;
+	/** The index of the renderer in the emitter's list */
+	uint32 EmitterRendererIndex = INDEX_NONE;
+	/** The index of the renderer in the entire system */
+	uint32 SystemRendererIndex = INDEX_NONE;
+};
+
 /** Container for multiple emitters that combine together to create a particle system effect.*/
 UCLASS(BlueprintType)
-class NIAGARA_API UNiagaraSystem : public UFXSystemAsset
+class NIAGARA_API UNiagaraSystem : public UFXSystemAsset, public INiagaraParameterDefinitionsSubscriber
 {
 	GENERATED_UCLASS_BODY()
 
@@ -210,6 +223,7 @@ public:
 	virtual void PreEditChange(FProperty* PropertyThatWillChange)override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override; 
 	virtual void BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPlatform) override;
+	//~ End UObject interface
 
 	/** Helper method to handle when an internal variable has been renamed. Renames any downstream dependencies in the emitters or exposed variables.*/
 	void HandleVariableRenamed(const FNiagaraVariable& InOldVariable, const FNiagaraVariable& InNewVariable, bool bUpdateContexts);
@@ -217,12 +231,34 @@ public:
 	void HandleVariableRemoved(const FNiagaraVariable& InOldVariable, bool bUpdateContexts);
 #endif
 
+#if WITH_EDITORONLY_DATA
+	//~ Begin INiagaraParameterDefinitionsSubscriber interface
+	virtual const TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() const override { return ParameterDefinitionsSubscriptions; };
+	virtual TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() override { return ParameterDefinitionsSubscriptions; };
+
+	/** Get all UNiagaraScriptSourceBase of this subscriber. */
+	virtual TArray<UNiagaraScriptSourceBase*> GetAllSourceScripts() override;
+
+	/** Get the path to the UObject of this subscriber. */
+	virtual FString GetSourceObjectPathName() const override;
+
+	/** Get All adapters to editor only script vars owned directly by this subscriber. */
+	virtual TArray<UNiagaraEditorParametersAdapterBase*> GetEditorOnlyParametersAdapters() override;
+
+	/** Get all subscribers that are owned by this subscriber.
+	 *  Note: Implemented for synchronizing UNiagaraSystem. UNiagaraSystem returns all UNiagaraEmitters it owns to call SynchronizeWithParameterDefinitions for each.
+	 */
+	virtual TArray<INiagaraParameterDefinitionsSubscriber*> GetOwnedParameterDefinitionsSubscribers() override;
+	//~ End INiagaraParameterDefinitionsSubscriber interface
+#endif 
+
 	/** Gets an array of the emitter handles. */
 	const TArray<FNiagaraEmitterHandle>& GetEmitterHandles();
 	const TArray<FNiagaraEmitterHandle>& GetEmitterHandles()const;
 
 private:
 	bool IsValidInternal() const;
+	
 public:
 	/** Returns true if this system is valid and can be instanced. False otherwise. */
 	bool IsValid() const { return FPlatformProperties::RequiresCookedData() ? bIsValidCached : IsValidInternal(); }
@@ -231,6 +267,9 @@ public:
 	/** Adds a new emitter handle to this System.  The new handle exposes an Instance value which is a copy of the
 		original asset. */
 	FNiagaraEmitterHandle AddEmitterHandle(UNiagaraEmitter& SourceEmitter, FName EmitterName);
+
+	/** Adds a new emitter handle to this system without copying the original asset. This should only be used for temporary systems and never for live assets. */
+	void AddEmitterHandleDirect(FNiagaraEmitterHandle& EmitterHandleToAdd);
 
 	/** Duplicates an existing emitter handle and adds it to the System.  The new handle will reference the same source asset,
 		but will have a copy of the duplicated Instance value. */
@@ -269,6 +308,8 @@ public:
 	/** Gets the System script which is used to populate the System parameters and parameter bindings. */
 	UNiagaraScript* GetSystemSpawnScript();
 	UNiagaraScript* GetSystemUpdateScript();
+	const UNiagaraScript* GetSystemSpawnScript() const;
+	const UNiagaraScript* GetSystemUpdateScript() const;
 
 	TOptional<float> GetMaxDeltaTime() const { return MaxDeltaTime; }
 	const FNiagaraDataSetAccessor<ENiagaraExecutionState>& GetSystemExecutionStateAccessor() const { return SystemExecutionStateAccessor; }
@@ -282,7 +323,6 @@ public:
 private:
 	bool IsReadyToRunInternal() const;
 
-	void PostLoadPrimePools();
 public:
 	bool IsReadyToRun() const { return FPlatformProperties::RequiresCookedData() ? bIsReadyToRunCached : IsReadyToRunInternal(); }
 
@@ -290,6 +330,7 @@ public:
 	FORCEINLINE float GetWarmupTime()const { return WarmupTime; }
 	FORCEINLINE int32 GetWarmupTickCount()const { return WarmupTickCount; }
 	FORCEINLINE float GetWarmupTickDelta()const { return WarmupTickDelta; }
+	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags)  const override;
 
 #if STATS
 	FNiagaraStatDatabase& GetStatData() { return StatDatabase; }
@@ -329,6 +370,9 @@ public:
 	/** Gets editor specific data stored with this system. */
 	UNiagaraEditorDataBase* GetEditorData();
 
+	/** Gets editor specific parameters stored with this system */
+	UNiagaraEditorParametersAdapterBase* GetEditorParameters();
+
 	/** Gets editor specific data stored with this system. */
 	const UNiagaraEditorDataBase* GetEditorData() const;
 
@@ -344,8 +388,11 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
 	bool bExposeToLibrary;
 
+	UPROPERTY()
+	bool bIsTemplateAsset_DEPRECATED;
+
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
-	bool bIsTemplateAsset;
+	ENiagaraScriptTemplateSpecification TemplateSpecification;;
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
 	FText TemplateAssetDescription;
@@ -362,6 +409,9 @@ public:
 	UPROPERTY(transient)
 	FNiagaraSystemUpdateContext UpdateContext;
 #endif
+
+	void UpdateSystemAfterLoad();
+	void EnsureFullyLoaded() const;
 
 	bool ShouldAutoDeactivate() const { return bAutoDeactivate; }
 	bool IsLooping() const;
@@ -401,6 +451,13 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta = (SkipSystemResetOnChange = "true"))
 	uint32 bTrimAttributesOnCook : 1;
 
+	/** If true, forcefully disables all debug switches */
+	UPROPERTY(meta = (SkipSystemResetOnChange = "true"))
+	uint32 bDisableAllDebugSwitches : 1;
+	/** Subscriptions to definitions of parameters. */
+	UPROPERTY()
+	TArray<FParameterDefinitionsSubscription> ParameterDefinitionsSubscriptions;
+
 #endif
 
 	/** Computes emitter priorities based on the dependency information. */
@@ -422,6 +479,8 @@ public:
 	void CacheFromCompiledData();
 
 	FORCEINLINE TConstArrayView<FNiagaraEmitterExecutionIndex> GetEmitterExecutionOrder() const { return MakeArrayView(EmitterExecutionOrder); }
+	FORCEINLINE TConstArrayView<FNiagaraRendererExecutionIndex> GetRendererPostTickOrder() const { return MakeArrayView(RendererPostTickOrder); }
+	FORCEINLINE TConstArrayView<FNiagaraRendererExecutionIndex> GetRendererCompletionOrder() const { return MakeArrayView(RendererCompletionOrder); }
 
 	FORCEINLINE TConstArrayView<int32> GetRendererDrawOrder() const { return MakeArrayView(RendererDrawOrder); }
 
@@ -445,6 +504,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Debug")
 	bool bDumpDebugEmitterInfo;
 
+	bool bFullyLoaded = false;
 
 	/** When enabled, we follow the settings on the UNiagaraComponent for tick order. When this option is disabled, we ignore any dependencies from data interfaces or other variables and instead fire off the simulation as early in the frame as possible. This greatly
 	reduces overhead and allows the game thread to run faster, but comes at a tradeoff if the dependencies might leave gaps or other visual artifacts.*/
@@ -454,12 +514,12 @@ public:
 	bool HasSystemScriptDIsWithPerInstanceData() const;
 	FORCEINLINE bool HasDIsWithPostSimulateTick()const{ return bHasDIsWithPostSimulateTick; }
 	FORCEINLINE bool HasAnyGPUEmitters()const{ return bHasAnyGPUEmitters; }
+	FORCEINLINE bool NeedsGPUContextInitForDataInterfaces() const { return bNeedsGPUContextInitForDataInterfaces; }
 
 	const TArray<FName>& GetUserDINamesReadInSystemScripts() const;
 
 	FBox GetFixedBounds() const;
-
-	FORCEINLINE int32* GetCycleCounter(bool bGameThread, bool bConcurrent);
+	FORCEINLINE void SetFixedBounds(const FBox& Box) { FixedBounds = Box;  }
 
 #if WITH_EDITOR
 	void SetEffectType(UNiagaraEffectType* EffectType);
@@ -496,7 +556,12 @@ public:
 	FORCEINLINE void RegisterActiveInstance();
 	FORCEINLINE void UnregisterActiveInstance();
 	FORCEINLINE int32& GetActiveInstancesCount() { return ActiveInstances; }
-	FORCEINLINE int32& GetActiveInstancesTempCount() { return ActiveInstancesTemp; }
+
+#if WITH_EDITORONLY_DATA
+	UNiagaraBakerSettings* GetBakerSettings();
+	const UNiagaraBakerSettings* GetBakerGeneratedSettings() const { return BakerGeneratedSettings; }
+	void SetBakerGeneratedSettings(UNiagaraBakerSettings* Settings) { BakerGeneratedSettings = Settings; }
+#endif
 
 private:
 #if WITH_EDITORONLY_DATA
@@ -510,7 +575,7 @@ private:
 
 	bool ProcessCompilationResult(FEmitterCompiledScriptPair& ScriptPair, bool bWait, bool bDoNotApply);
 
-	bool CompilationResultsValid(const FNiagaraSystemCompileRequest& CompileRequest) const;
+	bool CompilationResultsValid(FNiagaraSystemCompileRequest& CompileRequest) const;
 
 	void InitEmitterCompiledData();
 
@@ -586,6 +651,10 @@ protected:
 	UPROPERTY()
 	UNiagaraEditorDataBase* EditorData;
 
+	/** Wrapper for editor only parameters. */
+	UPROPERTY()
+	UNiagaraEditorParametersAdapterBase* EditorParameters;
+
 	bool bIsolateEnabled;
 
 	/** A multicast delegate which is called whenever the script has been compiled (successfully or not). */
@@ -614,8 +683,22 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Warmup)
 	float WarmupTickDelta;
 
+#if WITH_EDITORONLY_DATA
+	/** Settings used inside the baker */
+	UPROPERTY(Export)
+	UNiagaraBakerSettings* BakerSettings;
+
+	/** Generated data baker settings, will be null until we have generated at least once. */
+	UPROPERTY(Export)
+	UNiagaraBakerSettings* BakerGeneratedSettings;
+#endif
+
 	UPROPERTY()
 	bool bHasSystemScriptDIsWithPerInstanceData;
+
+	UPROPERTY()
+	bool bNeedsGPUContextInitForDataInterfaces;
+
 
 	UPROPERTY()
 	TArray<FName> UserDINamesReadInSystemScripts;
@@ -624,6 +707,11 @@ protected:
 	* to indicate synchronization points in parallel execution, so mask it out before using the values as indices in the emitters array.
 	*/
 	TArray<FNiagaraEmitterExecutionIndex> EmitterExecutionOrder;
+
+	/** Array of renderer indices to notify system PostTick, in order of execution */
+	TArray<FNiagaraRendererExecutionIndex> RendererPostTickOrder;
+	/** Array of renderer indices to notify system Completion, in order of execution */
+	TArray<FNiagaraRendererExecutionIndex> RendererCompletionOrder;
 
 	/** Precomputed emitter renderer draw order, since emitters & renderers are not dynamic we can do this. */
 	TArray<int32> RendererDrawOrder;
@@ -666,23 +754,7 @@ protected:
 
 	/** Total active instances of this system. */
 	int32 ActiveInstances;
-
-	/** 
-	Temp working value used by the scalability manager when tracking sorted instance count culling. 
-	Systems who are tracking their instance culling separately need an easily accessible working value.
-	*/
-	int32 ActiveInstancesTemp;
 };
-
-extern int32 GEnableNiagaraRuntimeCycleCounts;
-FORCEINLINE int32* UNiagaraSystem::GetCycleCounter(bool bGameThread, bool bConcurrent)
-{
-	if (GEnableNiagaraRuntimeCycleCounts && EffectType)
-	{
-		return EffectType->GetCycleCounter(bGameThread, bConcurrent);
-	}
-	return nullptr;
-}
 
 FORCEINLINE void UNiagaraSystem::RegisterActiveInstance()
 {

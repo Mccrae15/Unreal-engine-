@@ -77,28 +77,6 @@ FXRSwapChain::FXRSwapChain(TArray<FTextureRHIRef>&& InRHITextureSwapChain, const
 }
 
 
-FXRSwapChain::~FXRSwapChain()
-{
-	if (IsInGameThread())
-	{
-		ExecuteOnRenderThread([this]()
-		{
-			ExecuteOnRHIThread([this]()
-			{
-				ReleaseResources_RHIThread();
-			});
-		});
-	}
-	else
-	{
-		ExecuteOnRHIThread([this]()
-		{
-			ReleaseResources_RHIThread();
-		});
-	}
-}
-
-
 void FXRSwapChain::GenerateMips_RenderThread(FRHICommandListImmediate& RHICmdList)
 {
 	CheckInRenderThread();
@@ -112,7 +90,7 @@ void FXRSwapChain::GenerateMips_RenderThread(FRHICommandListImmediate& RHICmdLis
 }
 
 
-void FXRSwapChain::IncrementSwapChainIndex_RHIThread(int64 /* TimeoutNanoseconds */)
+void FXRSwapChain::IncrementSwapChainIndex_RHIThread()
 {
 	CheckInRHIThread();
 

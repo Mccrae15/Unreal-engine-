@@ -928,6 +928,9 @@ void FWidgetBlueprintEditor::DestroyPreview()
 	{
 		check(PreviewScene.GetWorld());
 
+		// Establish the widget as being in design time before destroying it
+		PreviewUserWidget->SetDesignerFlags(GetCurrentDesignerFlags());
+		
 		// Immediately release the preview ptr to let people know it's gone.
 		PreviewWidgetPtr.Reset();
 
@@ -1463,7 +1466,7 @@ void FWidgetBlueprintEditor::RemoveWidgetsFromTrack(const TArray<FWidgetReferenc
 			UWidget* PreviewWidget = Widget.GetPreview();
 			WidgetAnimation->RemoveBinding(*PreviewWidget);
 
-			Sequencer->RestorePreAnimatedState(*PreviewWidget);
+			Sequencer->PreAnimatedState.RestorePreAnimatedState(*PreviewWidget);
 		}
 
 		UpdateTrackName(ObjectId);
@@ -1490,7 +1493,7 @@ void FWidgetBlueprintEditor::RemoveAllWidgetsFromTrack(FGuid ObjectId)
 	{
 		if (UObject* Obj = WeakObject.Get())
 		{
-			Sequencer->RestorePreAnimatedState(*Obj);
+			Sequencer->PreAnimatedState.RestorePreAnimatedState(*Obj);
 		}
 	}
 

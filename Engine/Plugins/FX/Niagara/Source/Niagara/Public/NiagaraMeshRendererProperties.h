@@ -22,7 +22,7 @@ enum class ENiagaraMeshFacingMode : uint8
 	/** The mesh aligns it's local-space X-axis with the particle's Particles.Velocity vector.*/
 	Velocity,
 	/** Has the mesh local-space X-axis point towards the camera's position.*/
-	CameraPosition, 
+	CameraPosition,
 	/** Has the mesh local-space X-axis point towards the closest point on the camera view plane.*/
 	CameraPlane
 };
@@ -50,22 +50,27 @@ enum class ENiagaraMeshLockedAxisSpace : uint8 {
 };
 
 USTRUCT()
-struct NIAGARA_API FNiagaraMeshMaterialOverride 
+struct NIAGARA_API FNiagaraMeshMaterialOverride
 {
 	GENERATED_USTRUCT_BODY()
-public:	
+public:
 	FNiagaraMeshMaterialOverride();
-	
+
 	/** Used to upgrade a serialized FNiagaraParameterStore property to our own struct */
 	bool SerializeFromMismatchedTag(const struct FPropertyTag& Tag, FStructuredArchive::FSlot Slot);
 
 	/** Use this UMaterialInterface if set to a valid value. This will be subordinate to UserParamBinding if it is set to a valid user variable.*/
-	UPROPERTY(EditAnywhere, Category = "Mesh Rendering")
+	UPROPERTY(EditAnywhere, Category = "Mesh Rendering", meta = (EditCondition = "bOverrideMaterials"))
 	UMaterialInterface* ExplicitMat;
 
 	/** Use the UMaterialInterface bound to this user variable if it is set to a valid value. If this is bound to a valid value and ExplicitMat is also set, UserParamBinding wins.*/
-	UPROPERTY(EditAnywhere, Category = "Mesh Rendering")
+	UPROPERTY(EditAnywhere, Category = "Mesh Rendering", meta = (EditCondition = "bOverrideMaterials"))
 	FNiagaraUserParameterBinding UserParamBinding;
+
+	bool operator==(const FNiagaraMeshMaterialOverride& Other)const
+	{
+		return UserParamBinding == Other.UserParamBinding && ExplicitMat == Other.ExplicitMat;
+	}	
 };
 
 template<>
@@ -74,6 +79,7 @@ struct TStructOpsTypeTraits<FNiagaraMeshMaterialOverride> : public TStructOpsTyp
 	enum
 	{
 		WithStructuredSerializeFromMismatchedTag = true,
+		WithIdenticalViaEquality = true
 	};
 };
 
@@ -85,7 +91,7 @@ namespace ENiagaraMeshVFLayout
 		Velocity,
 		Color,
 		Scale,
-		Transform,
+		Rotation,
 		MaterialRandom,
 		NormalizedAge,
 		CustomSorting,
@@ -96,8 +102,41 @@ namespace ENiagaraMeshVFLayout
 		DynamicParam3,
 		CameraOffset,
 
-		Num,
+		Num_Default,
+
+		// The remaining layout params aren't needed unless accurate motion vectors are required
+		PrevPosition = Num_Default,
+		PrevScale,
+		PrevRotation,
+		PrevCameraOffset,
+		PrevVelocity,
+
+		Num_Max,
 	};
+};
+
+USTRUCT()
+struct NIAGARA_API FNiagaraMeshRendererMeshProperties
+{
+	GENERATED_BODY()
+
+	FNiagaraMeshRendererMeshProperties();
+
+	/** The mesh to use when rendering this slot */
+	UPROPERTY(EditAnywhere, Category = "Mesh")
+	UStaticMesh* Mesh;
+
+	/** Scale of the mesh */
+	UPROPERTY(EditAnywhere, Category = "Mesh")
+	FVector Scale;
+
+	/** Offset of the mesh pivot */
+	UPROPERTY(EditAnywhere, Category = "Mesh")
+	FVector PivotOffset;
+
+	/** What space is the pivot offset in? */
+	UPROPERTY(EditAnywhere, Category = "Mesh")
+	ENiagaraMeshPivotOffsetSpace PivotOffsetSpace;
 };
 
 UCLASS(editinlinenew, meta = (DisplayName = "Mesh Renderer"))
@@ -116,6 +155,8 @@ public:
 	virtual void BeginDestroy() override;
 	virtual void PreEditChange(class FProperty* PropertyThatWillChange) override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const UNiagaraEmitter* InEmitter) override;
+	virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const UNiagaraEmitter* InEmitter) override;
 #endif// WITH_EDITORONLY_DATA
 	//UObject Interface END
 
@@ -126,41 +167,82 @@ public:
 	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return true; };
-
+	virtual bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore) override;
 #if WITH_EDITORONLY_DATA
 	virtual bool IsMaterialValidForRenderer(UMaterial* Material, FText& InvalidMessage) override;
 	virtual void FixMaterial(UMaterial* Material) override;
 	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
+	virtual void GetAdditionalVariables(TArray<FNiagaraVariableBase>& OutArray) const override;
 	virtual	void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual	void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual void GetRendererFeedback(const UNiagaraEmitter* InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const override;
 	void OnMeshChanged();
 	void OnMeshPostBuild(UStaticMesh*);
+	void OnAssetReimported(UObject*);
 	void CheckMaterialUsage();
 #endif // WITH_EDITORONLY_DATA
 	virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
+
+#if WITH_EDITORONLY_DATA
+	bool IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const;
+#endif
+
+	virtual ENiagaraRendererSourceDataMode GetCurrentSourceMode() const override { return SourceMode; }
 	//UNiagaraRendererProperties Interface END
 
-	virtual uint32 GetNumIndicesPerInstance() const final override;
-	void GetIndexInfoPerSection(int32 LODIndex, TArray<TPair<int32, int32>>& InfoPerSection) const;
+	void GetUsedMeshMaterials(int32 MeshIndex, const FNiagaraEmitterInstance* Emitter, TArray<UMaterialInterface*>& OutMaterials) const;	
 
-	/** The static mesh to be instanced when rendering mesh particles. If OverrideMaterial is not specified, the mesh's material is used. Note that the material must have the Niagara Mesh Particles flag checked.*/
+	/**
+	 * The static mesh(es) to be instanced when rendering mesh particles.
+	 *
+	 * NOTES:
+	 * - If "Override Material" is not specified, the mesh's material is used. Override materials must have the Niagara Mesh Particles flag checked.
+	 * - If "Enable Mesh Flipbook" is specified, this mesh is assumed to be the first frame of the flipbook.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Mesh Rendering", meta = (EditCondition = "!bEnableMeshFlipbook"))
+	TArray<FNiagaraMeshRendererMeshProperties> Meshes;
+
+	/** Whether or not to draw a single element for the Emitter or to draw the particles.*/
 	UPROPERTY(EditAnywhere, Category = "Mesh Rendering")
-	UStaticMesh *ParticleMesh;
+	ENiagaraRendererSourceDataMode SourceMode;
 
 	/** Determines how we sort the particles prior to rendering.*/
 	UPROPERTY(EditAnywhere, Category = "Sorting")
 	ENiagaraSortMode SortMode;
 
 	/** Whether or not to use the OverrideMaterials array instead of the mesh's existing materials.*/
-	UPROPERTY(EditAnywhere, Category = "Mesh Rendering", meta = (InlineEditConditionToggle))
+	UPROPERTY(EditAnywhere, Category = "Mesh Rendering", DisplayName="Enable Material Overrides")
 	uint32 bOverrideMaterials : 1;
 
 	/** If true, the particles are only sorted when using a translucent material. */
 	UPROPERTY(EditAnywhere, Category = "Sorting")
 	uint32 bSortOnlyWhenTranslucent : 1;
 
-	/** The materials to be used instead of the StaticMesh's materials. Note that each material must have the Niagara Mesh Particles flag checked. If the ParticleMesh 
+	/**
+	If true and a GPU emitter, we will use the current frames data to render with regardless of where the batcher may execute the dispatches.
+	If you have other emitters that are not translucent and using data that forces it to be a frame latent (i.e. view uniform buffer) you may need to disable
+	on renderers with translucent materials if you need the frame they are reading to match exactly.
+	*/
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Rendering")
+	uint32 bGpuLowLatencyTranslucency : 1;
+
+	/** If true, blends the sub-image UV lookup with its next adjacent member using the fractional part of the SubImageIndex float value as the linear interpolation factor.*/
+	UPROPERTY(EditAnywhere, Category = "SubUV", meta = (DisplayName = "Sub UV Blending Enabled"))
+	uint32 bSubImageBlend : 1;
+
+	/** Enables frustum culling of individual mesh particles */
+	UPROPERTY(EditAnywhere, Category = "Visibility")
+	uint32 bEnableFrustumCulling : 1;
+
+	/** Enables frustum culling of individual mesh particles */
+	UPROPERTY(EditAnywhere, Category = "Visibility")
+	uint32 bEnableCameraDistanceCulling : 1;
+
+	/** When checked, will treat 'ParticleMesh' as the first frame of the flipbook, and will use the other mesh flipbook options to find the other frames */
+	UPROPERTY(EditAnywhere, Category = "Mesh Flipbook")
+	uint32 bEnableMeshFlipbook : 1;
+
+	/** The materials to be used instead of the StaticMesh's materials. Note that each material must have the Niagara Mesh Particles flag checked. If the ParticleMesh
 	requires more materials than exist in this array or any entry in this array is set to None, we will use the ParticleMesh's existing Material instead.*/
 	UPROPERTY(EditAnywhere, Category = "Mesh Rendering", meta = (EditCondition = "bOverrideMaterials"))
 	TArray<FNiagaraMeshMaterialOverride> OverrideMaterials;
@@ -168,10 +250,6 @@ public:
 	/** When using SubImage lookups for particles, this variable contains the number of columns in X and the number of rows in Y.*/
 	UPROPERTY(EditAnywhere, Category = "SubUV")
 	FVector2D SubImageSize;
-
-	/** If true, blends the sub-image UV lookup with its next adjacent member using the fractional part of the SubImageIndex float value as the linear interpolation factor.*/
-	UPROPERTY(EditAnywhere, Category = "SubUV", meta = (DisplayName = "Sub UV Blending Enabled"))
-	uint32 bSubImageBlend : 1;
 
 	/** Determines how the mesh orients itself relative to the camera. */
 	UPROPERTY(EditAnywhere, Category = "Mesh Rendering")
@@ -189,32 +267,16 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Mesh Rendering", meta = (EditCondition = "bLockedAxisEnable"))
 	ENiagaraMeshLockedAxisSpace LockedAxisSpace;
 
-	/** Offset of the mesh pivot */
-	UPROPERTY(EditAnywhere, Category = "Mesh Rendering")
-	FVector PivotOffset;
-
-	/** What space is the pivot offset in? */
-	UPROPERTY(EditAnywhere, Category = "Mesh Rendering")
-	ENiagaraMeshPivotOffsetSpace PivotOffsetSpace;
-	
-	/** Enables frustum culling of individual mesh particles */
-	UPROPERTY(EditAnywhere, Category = "Visibility")
-	uint32 bEnableFrustumCulling : 1;
-
-	/** Enables frustum culling of individual mesh particles */
-	UPROPERTY(EditAnywhere, Category = "Visibility")
-	uint32 bEnableCameraDistanceCulling : 1;
-
-	UPROPERTY(EditAnywhere, Category = "Visibility", meta = (EditCondition = "bEnableCameraDistanceCulling", UIMin = 0.0f))
+	UPROPERTY(EditAnywhere, Category = "Visibility", meta = (EditCondition = "bEnableCameraDistanceCulling", ClampMin = 0.0f))
 	float MinCameraDistance;
-	
-	UPROPERTY(EditAnywhere, Category = "Visibility", meta = (EditCondition = "bEnableCameraDistanceCulling", UIMin = 0.0f))
+
+	UPROPERTY(EditAnywhere, Category = "Visibility", meta = (EditCondition = "bEnableCameraDistanceCulling", ClampMin = 0.0f))
 	float MaxCameraDistance = 1000.0f;
 
 	/** If a render visibility tag is present, particles whose tag matches this value will be visible in this renderer. */
 	UPROPERTY(EditAnywhere, Category = "Visibility")
 	uint32 RendererVisibility = 0;
-	
+
 	/** Which attribute should we use for position when generating instanced meshes?*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding PositionBinding;
@@ -234,7 +296,7 @@ public:
 	/** Which attribute should we use for scale when generating instanced meshes?*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding ScaleBinding;
-	
+
 	/** Which attribute should we use for sprite sub-image indexing when generating sprites?*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding SubImageIndexBinding;
@@ -250,7 +312,7 @@ public:
 	/** Which attribute should we use for dynamic material parameters when generating instanced meshes?*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding DynamicMaterial2Binding;
-	
+
 	/** Which attribute should we use for dynamic material parameters when generating instanced meshes?*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding DynamicMaterial3Binding;
@@ -275,14 +337,85 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding RendererVisibilityTagBinding;
 
+	/** Which attribute should we use to pick the element in the mesh array on the mesh renderer? */
+	UPROPERTY(EditAnywhere, Category = "Bindings")
+	FNiagaraVariableAttributeBinding MeshIndexBinding;
+
+	/** If this array has entries, we will create a MaterialInstanceDynamic per Emitter instance from Material and set the Material parameters using the Niagara simulation variables listed.*/
+	UPROPERTY(EditAnywhere, Category = "Bindings")
+	TArray<FNiagaraMaterialAttributeBinding> MaterialParameterBindings;
+
+	// The following bindings are not provided by the user, but are filled based on what other bindings are set to, and the value of bGenerateAccurateMotionVectors
+
+	UPROPERTY(Transient)
+	FNiagaraVariableAttributeBinding PrevPositionBinding;
+	UPROPERTY(Transient)
+	FNiagaraVariableAttributeBinding PrevScaleBinding;
+	UPROPERTY(Transient)
+	FNiagaraVariableAttributeBinding PrevMeshOrientationBinding;
+	UPROPERTY(Transient)
+	FNiagaraVariableAttributeBinding PrevCameraOffsetBinding;
+	UPROPERTY(Transient)
+	FNiagaraVariableAttributeBinding PrevVelocityBinding;
+	
+#if WITH_EDITORONLY_DATA
+	/**
+	 * The static mesh to use for the first frame of the flipbook. Its name will also be used to find subsequent frames of a similar name.
+	 * NOTE: The subsequent frames are expected to exist in the same content directory as the first frame of the flipbook, otherwise they
+	 * will not be found or used.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Mesh Flipbook", meta = (EditCondition = "bEnableMeshFlipbook"))
+	UStaticMesh* FirstFlipbookFrame;
+
+	/**
+	 * Provides the format of the suffix of the names of the static meshes when searching for flipbook frames. "{frame_number}" is used to mark
+	 * where the frame number should appear in the suffix. If "Particle Mesh" contains this suffix, the number in its name will be treated as
+	 * the starting frame index. Otherwise, it will assume "Particle Mesh" is frame number 0, and that subsequent frames follow this format,
+	 * starting with frame number 1.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Mesh Flipbook", meta = (EditCondition = "bEnableMeshFlipbook && FirstFlipbookFrame != nullptr"))
+	FString FlipbookSuffixFormat;
+
+	/**
+	* The number of digits to expect in the frame number of the flipbook page. A value of 1 will expect no leading zeros in the package names,
+	* and can also be used for names with frame numbers that extend to 10 and beyond (Example: Frame_1, Frame_2, ..., Frame_10, Frame_11, etc.)
+	*/
+	UPROPERTY(EditAnywhere, Category = "Mesh Flipbook", meta = (EditCondition = "bEnableMeshFlipbook && FirstFlipbookFrame != nullptr", ClampMin = 1, ClampMax = 10, NoSpinbox = true))
+	uint32 FlipbookSuffixNumDigits;
+
+	/** The number of frames (static meshes) to be included in the flipbook. */
+	UPROPERTY(EditAnywhere, Category = "Mesh Flipbook", meta = (EditCondition = "bEnableMeshFlipbook && FirstFlipbookFrame != nullptr", ClampMin = 1, NoSpinbox = true))
+	uint32 NumFlipbookFrames;
+#endif
+
 	uint32 MaterialParamValidMask = 0;
 	FNiagaraRendererLayout RendererLayoutWithCustomSorting;
 	FNiagaraRendererLayout RendererLayoutWithoutCustomSorting;
 
 protected:
-	bool FindBinding(const FNiagaraUserParameterBinding& InBinding, const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials);
 	void InitBindings();
+	void SetPreviousBindings(const UNiagaraEmitter* SrcEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	virtual void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit = false) override;
+	virtual bool NeedsMIDsForMaterials() const override { return MaterialParameterBindings.Num() > 0; }	
+#if WITH_EDITORONLY_DATA
+	bool ChangeRequiresMeshListRebuild(const FProperty* Property);
+	void RebuildMeshList();
+
+	virtual FNiagaraVariable GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const override;
+#endif
 
 private:
 	static TArray<TWeakObjectPtr<UNiagaraMeshRendererProperties>> MeshRendererPropertiesToDeferredInit;
+
+	// These properties are deprecated and moved to FNiagaraMeshRendererMeshProperties
+	UPROPERTY()
+	UStaticMesh* ParticleMesh_DEPRECATED;
+
+	UPROPERTY()
+	FVector PivotOffset_DEPRECATED;
+
+	UPROPERTY()
+	ENiagaraMeshPivotOffsetSpace PivotOffsetSpace_DEPRECATED;
+
+
 };

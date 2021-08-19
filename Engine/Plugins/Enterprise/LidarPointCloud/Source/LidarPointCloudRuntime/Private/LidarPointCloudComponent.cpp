@@ -19,8 +19,9 @@
 
 ULidarPointCloudComponent::ULidarPointCloudComponent()
 	: CustomMaterial(nullptr)
-	, MinScreenSize(0.05f)
 	, PointSize(1.0f)
+	, ScalingMethod(ELidarPointCloudScalingMethod::PerNodeAdaptive)
+	, GapFillingStrength(0)
 	, ColorSource(ELidarPointCloudColorationMode::Data)
 	, PointShape(ELidarPointCloudSpriteShape::Square)
 	, PointOrientation(ELidarPointCloudSpriteOrientation::PreferFacingCamera)
@@ -34,6 +35,7 @@ ULidarPointCloudComponent::ULidarPointCloudComponent()
 	, Offset(FVector::ZeroVector)
 	, ColorTint(FLinearColor::White)
 	, IntensityInfluence(0.0f)
+	, bUseFrustumCulling(true)
 	, MinDepth(0)
 	, MaxDepth(-1)
 	, bDrawNodeBounds(false)
@@ -144,11 +146,18 @@ void ULidarPointCloudComponent::SetPointCloud(ULidarPointCloud *InPointCloud)
 	}
 }
 
+void ULidarPointCloudComponent::SetPointShape(ELidarPointCloudSpriteShape NewPointShape)
+{
+	PointShape = NewPointShape;
+	UpdateMaterial();
+}
+
 void ULidarPointCloudComponent::ApplyRenderingParameters()
 {
 	if (UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(Material))
 	{
 		DynMaterial->SetVectorParameterValue("PC__Gain", FVector(Gain.X, Gain.Y, Gain.Z) * Gain.W);
+		DynMaterial->SetScalarParameterValue("PC__GapFillerFactor", GapFillingStrength);
 	}
 }
 
@@ -218,9 +227,14 @@ void ULidarPointCloudComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 			ApplyRenderingParameters();
 		}
 
+		if (IS_PROPERTY(GapFillingStrength))
+		{
+			ApplyRenderingParameters();
+		}
+
 		if (IS_PROPERTY(PointShape))
 		{
-			UpdateMaterial();
+			SetPointShape(PointShape);
 		}
 	}
 
@@ -228,11 +242,46 @@ void ULidarPointCloudComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 }
 #endif
 
-template void ULidarPointCloudComponent::GetPointsInSphere(TArray<FLidarPointCloudPoint*>&, const FSphere&, const bool&);
-template void ULidarPointCloudComponent::GetPointsInSphere(TArray64<FLidarPointCloudPoint*>&, const FSphere&, const bool&);
-template void ULidarPointCloudComponent::GetPointsInBox(TArray<FLidarPointCloudPoint*>&, const FBox&, const bool&);
-template void ULidarPointCloudComponent::GetPointsInBox(TArray64<FLidarPointCloudPoint*>&, const FBox&, const bool&);
-template void ULidarPointCloudComponent::GetPointsInSphereAsCopies(TArray<FLidarPointCloudPoint>&, const FSphere&, const bool&, const bool&);
-template void ULidarPointCloudComponent::GetPointsInSphereAsCopies(TArray64<FLidarPointCloudPoint>&, const FSphere&, const bool&, const bool&);
-template void ULidarPointCloudComponent::GetPointsInBoxAsCopies(TArray<FLidarPointCloudPoint>&, const FBox&, const bool&, const bool&);
-template void ULidarPointCloudComponent::GetPointsInBoxAsCopies(TArray64<FLidarPointCloudPoint>&, const FBox&, const bool&, const bool&);
+void FLidarPointCloudComponentRenderParams::UpdateFromComponent(ULidarPointCloudComponent* Component)
+{
+	MinDepth = Component->MinDepth;
+	MaxDepth = Component->MaxDepth;
+
+	BoundsScale = Component->BoundsScale;
+	BoundsSize = Component->GetPointCloud()->GetBounds().GetSize();
+
+	// Make sure to apply minimum bounds size
+	BoundsSize.X = FMath::Max(BoundsSize.X, 0.001f);
+	BoundsSize.Y = FMath::Max(BoundsSize.Y, 0.001f);
+	BoundsSize.Z = FMath::Max(BoundsSize.Z, 0.001f);
+
+	LocationOffset = Component->GetPointCloud()->GetLocationOffset().ToVector();
+	ComponentScale = Component->GetComponentScale().GetAbsMax();
+
+	PointSize = Component->PointSize;
+	PointSizeBias = Component->PointSizeBias;
+	GapFillingStrength = Component->GapFillingStrength;
+
+	bOwnedByEditor = Component->IsOwnedByEditor();
+	bDrawNodeBounds = Component->bDrawNodeBounds;
+	bShouldRenderFacingNormals = Component->ShouldRenderFacingNormals();
+	bUseFrustumCulling = Component->bUseFrustumCulling;
+
+	ScalingMethod = Component->ScalingMethod;
+
+	ColorSource = Component->ColorSource;
+	PointShape = Component->GetPointShape();
+
+	Offset = Component->Offset;
+	Contrast = Component->Contrast;
+	Saturation = Component->Saturation;
+	Gamma = Component->Gamma;
+	ColorTint = FVector(Component->ColorTint);
+	IntensityInfluence = Component->IntensityInfluence;
+
+	ClassificationColors = Component->ClassificationColors;
+	ElevationColorBottom = Component->ElevationColorBottom;
+	ElevationColorTop = Component->ElevationColorTop;
+
+	Material = Component->GetMaterial(0);
+}

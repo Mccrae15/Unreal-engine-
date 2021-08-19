@@ -178,6 +178,7 @@ public:
 
 	LAYOUT_FIELD_INITIALIZED(bool, bFastBuild, false);
 	LAYOUT_FIELD_INITIALIZED(bool, bAllowUpdate, false);
+	LAYOUT_FIELD_INITIALIZED(bool, bDiscardOfflineData, true);
 
 	LAYOUT_FIELD(FName, DebugName);
 };
@@ -771,18 +772,6 @@ public:
 	virtual void RHICopySharedMips(FRHITexture2D* DestTexture2D, FRHITexture2D* SrcTexture2D) = 0;
 
 	/**
-	* Synchronizes the content of a texture resource between two GPUs using a copy operation.
-	* @param Texture - the texture to synchronize.
-	* @param Rect - the rectangle area to update.
-	* @param SrcGPUIndex - the index of the gpu which content will be red from
-	* @param DestGPUIndex - the index of the gpu which content will be updated.
-	* @param PullData - whether the source writes the data to the dest, or the dest reads the data from the source.
-	*/
-	// FlushType: Flush RHI Thread
-	virtual void RHITransferTexture(FRHITexture2D* Texture, FIntRect Rect, uint32 SrcGPUIndex, uint32 DestGPUIndex, bool PullData) { unimplemented(); };
-	virtual void RHITransferTextures(const TArrayView<const FTransferTextureParams> Params) { unimplemented(); };
-
-	/**
 	* Creates a Array RHI texture resource
 	* @param SizeX - width of the texture to create
 	* @param SizeY - height of the texture to create
@@ -1198,7 +1187,6 @@ public:
 
 	// FlushType: Flush Immediate
 	virtual bool RHIEnqueueDecompress(uint8_t* SrcBuffer, uint8_t* DestBuffer, int CompressedSize, void* ErrorCodeBuffer) { return false; }
-	virtual bool RHIEnqueueCompress(uint8_t* SrcBuffer, uint8_t* DestBuffer, int UnCompressedSize, void* ErrorCodeBuffer) { return false; }
 
 	/**
 	*	Retrieve available screen resolutions.
@@ -1255,10 +1243,47 @@ public:
 	virtual void* RHIGetNativeDevice() = 0;
 
 	/**
+	* Provides access to the native device. Generally this should be avoided but is useful for third party plugins.
+	*/
+	// FlushType: Flush RHI Thread
+	virtual void* RHIGetNativePhysicalDevice() 
+	{
+		// Currently only exists on Vulkan, so no need to force every backend to implement this.
+		return nullptr;
+	}
+
+	/**
+	* Provides access to the native graphics command queue. Generally this should be avoided but is useful for third party plugins.
+	*/
+	// FlushType: Flush RHI Thread
+	virtual void* RHIGetNativeGraphicsQueue() 
+	{
+		return nullptr;
+	}
+
+	/**
+	* Provides access to the native compute command queue. Generally this should be avoided but is useful for third party plugins.
+	*/
+	// FlushType: Flush RHI Thread
+	virtual void* RHIGetNativeComputeQueue() 
+	{
+		return nullptr;
+	}
+
+	/**
 	* Provides access to the native instance. Generally this should be avoided but is useful for third party plugins.
 	*/
 	// FlushType: Flush RHI Thread
 	virtual void* RHIGetNativeInstance() = 0;
+
+	/**
+	* Provides access to the native command buffer. Generally this should be avoided but is useful for third party plugins.
+	*/
+	// FlushType: Not Thread Safe!
+	virtual void* RHIGetNativeCommandBuffer() 
+	{
+		return nullptr;
+	}
 
 
 	// FlushType: Thread safe

@@ -2588,7 +2588,7 @@ bool FPipelineFileCache::IsPipelineFileCacheEnabled()
 		bCmdLineForce = FParse::Param(FCommandLine::Get(), TEXT("psocache"));
 		UE_CLOG(bCmdLineForce, LogRHI, Warning, TEXT("****************************** Forcing PSO cache from command line"));
 	}
-	return FileCacheEnabled && (bCmdLineForce || CVarPSOFileCacheEnabled.GetValueOnAnyThread() == 1);
+	return GRHISupportsPipelineFileCache && FileCacheEnabled && (bCmdLineForce || CVarPSOFileCacheEnabled.GetValueOnAnyThread() == 1);
 }
 
 bool FPipelineFileCache::LogPSOtoFileCache()
@@ -2797,6 +2797,11 @@ bool FPipelineFileCache::OpenPipelineFileCache(FString const& Name, EShaderPlatf
 			
 			bOk = FileCache->OpenPipelineFileCache(Name, Platform, OutGameFileGuid);
 			
+			if (!bOk && !LogPSOtoFileCache()) // don't delete the FileCache if we couldn't open and we are trying to log it as that leads to no file cache at all, NOTE: we might need to also check to see if there is a cache file on the system at all here
+			{
+				delete FileCache;
+				FileCache = nullptr;
+			}
 			// File Cache now exists - these caches should be empty for this file otherwise will have false positives from any previous file caching - if not something has been caching when it should not be
 			check(NewPSOs.Num() == 0);
 			check(NewPSOHashes.Num() == 0);
@@ -3083,7 +3088,7 @@ void FPipelineFileCache::CacheRayTracingPSO(const FRayTracingPipelineStateInitia
 
 					if (!FileCache->IsPSOEntryCached(NewEntry, &CurrentUsageData))
 					{
-						CSV_EVENT(PSO, TEXT("Encountered new ray tracing PSO"));
+						//CSV_EVENT(PSO, TEXT("Encountered new ray tracing PSO"));
 						UE_LOG(LogRHI, Display, TEXT("Encountered a new ray tracing PSO: %u"), PSOHash);
 						if (GPSOFileCachePrintNewPSODescriptors > 0)
 						{

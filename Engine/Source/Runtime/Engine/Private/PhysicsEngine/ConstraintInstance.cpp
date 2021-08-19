@@ -46,6 +46,9 @@ TAutoConsoleVariable<float> CVarConstraintAngularStiffnessScale(
 	TEXT("The multiplier of constraint angular stiffness in simulation. Default: 100000"),
 	ECVF_ReadOnly);
 
+bool bEnableSkeletalMeshConstraints = true;
+FAutoConsoleVariableRef CVarEnableSkeletalMeshConstraints(TEXT("p.EnableSkeletalMeshConstraints"), bEnableSkeletalMeshConstraints, TEXT("Enable skeletal mesh constraints defined within the Physics Asset Editor"));
+
 /** Handy macro for setting BIT of VAR based on the bool CONDITION */
 #define SET_DRIVE_PARAM(VAR, CONDITION, BIT)   (VAR) = (CONDITION) ? ((VAR) | (BIT)) : ((VAR) & ~(BIT))
 
@@ -126,13 +129,17 @@ FConstraintProfileProperties::FConstraintProfileProperties()
 	, ProjectionLinearAlpha(1.0f)
 	, ProjectionAngularAlpha(0.0f)
 	, LinearBreakThreshold(300.f)
+	, LinearPlasticityThreshold(10.f)
 	, AngularBreakThreshold(500.f)
+	, AngularPlasticityThreshold(10.f)
 	, bDisableCollision(false)
 	, bParentDominates(false)
 	, bEnableProjection(true)
 	, bEnableSoftProjection(false)
 	, bAngularBreakable(false)
+	, bAngularPlasticity(false)
 	, bLinearBreakable(false)
+	, bLinearPlasticity(false)
 {
 }
 
@@ -167,6 +174,24 @@ void FConstraintProfileProperties::UpdateBreakable_AssumesLocked(const FPhysicsC
 	const float AngularBreakForce = bAngularBreakable ? AngularBreakThreshold : MAX_FLT;
 
 	FPhysicsInterface::SetBreakForces_AssumesLocked(InConstraintRef, LinearBreakForce, AngularBreakForce);
+}
+
+void FConstraintInstance::UpdatePlasticity()
+{
+	FPhysicsInterface::ExecuteOnUnbrokenConstraintReadWrite(ConstraintHandle, [&](const FPhysicsConstraintHandle& InUnbrokenConstraint)
+		{
+			ProfileInstance.UpdatePlasticity_AssumesLocked(InUnbrokenConstraint);
+		});
+}
+
+void FConstraintProfileProperties::UpdatePlasticity_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef) const
+{
+	const float LinearPlasticityLimit = bLinearPlasticity ? LinearPlasticityThreshold : FLT_MAX;
+	const float AngularPlasticityLimit = bAngularPlasticity ? FMath::DegreesToRadians(AngularPlasticityThreshold) : MAX_FLT;
+
+#if WITH_CHAOS
+	FPhysicsInterface::SetPlasticityLimits_AssumesLocked(InConstraintRef, LinearPlasticityLimit, AngularPlasticityLimit);
+#endif
 }
 
 void FConstraintInstance::UpdateDriveTarget()
@@ -386,8 +411,10 @@ bool FConstraintInstance::CreateJoint_AssumesLocked(const FPhysicsActorHandle& I
 	
 	checkf(Local2.IsValid() && !Local2.ContainsNaN(), TEXT("%s"), *Local2.ToString());
 
-	ConstraintHandle = FPhysicsInterface::CreateConstraint(InActorRef1, InActorRef2, Local1, Local2);
-
+	if (bEnableSkeletalMeshConstraints)
+	{
+		ConstraintHandle = FPhysicsInterface::CreateConstraint(InActorRef1, InActorRef2, Local1, Local2);
+	}
 	if(!ConstraintHandle.IsValid())
 	{
 		UE_LOG(LogPhysics, Log, TEXT("FConstraintInstance::CreatePxJoint_AssumesLocked - Invalid 6DOF joint (%s)"), *JointName.ToString());
@@ -501,6 +528,7 @@ void FConstraintProfileProperties::Update_AssumesLocked(const FPhysicsConstraint
 	TwistLimit.UpdateTwistLimit_AssumesLocked(InConstraintRef, AverageMass);
 
 	UpdateBreakable_AssumesLocked(InConstraintRef);
+	UpdatePlasticity_AssumesLocked(InConstraintRef);
 
 	// Motors
 	FPhysicsInterface::UpdateLinearDrive_AssumesLocked(InConstraintRef, LinearDrive);

@@ -3,150 +3,77 @@
 #include "DatasmithMaterialElementsImpl.h"
 
 
-IDatasmithMaterialExpression* FDatasmithUEPbrInternalHelper::ConvertElementToMaterialExpression( IDatasmithElement* InElement, EDatasmithMaterialExpressionType ExpressionType )
-{
-	switch (ExpressionType)
-	{
-	case EDatasmithMaterialExpressionType::ConstantBool:
-		return static_cast<FDatasmithMaterialExpressionElement< IDatasmithMaterialExpressionBool >*>(InElement);
-		break;
-	case EDatasmithMaterialExpressionType::ConstantColor:
-		return static_cast<FDatasmithMaterialExpressionElement< IDatasmithMaterialExpressionColor >*>(InElement);
-		break;
-	case EDatasmithMaterialExpressionType::ConstantScalar:
-		return static_cast<FDatasmithMaterialExpressionElement< IDatasmithMaterialExpressionScalar >*>(InElement);
-		break;
-	case EDatasmithMaterialExpressionType::FlattenNormal:
-		return static_cast<FDatasmithMaterialExpressionElement< IDatasmithMaterialExpressionFlattenNormal >*>(InElement);
-		break;
-	case EDatasmithMaterialExpressionType::FunctionCall:
-		return static_cast<FDatasmithMaterialExpressionElement< IDatasmithMaterialExpressionFunctionCall >*>(InElement);
-		break;
-	case EDatasmithMaterialExpressionType::Generic:
-		return static_cast<FDatasmithMaterialExpressionElement< IDatasmithMaterialExpressionGeneric >*>(InElement);
-		break;
-	case EDatasmithMaterialExpressionType::Texture:
-		return static_cast<FDatasmithMaterialExpressionElement< IDatasmithMaterialExpressionTexture >*>(InElement);
-		break;
-	case EDatasmithMaterialExpressionType::TextureCoordinate:
-		return static_cast<FDatasmithMaterialExpressionElement< IDatasmithMaterialExpressionTextureCoordinate >*>(InElement);
-		break;
-	default:
-		return nullptr;
-		break;
-	}
-}
-
-TSharedPtr<IDatasmithElement> FDatasmithUEPbrInternalHelper::ConvertMaterialExpressionToElementSharedPtr( IDatasmithMaterialExpression* InExpression )
-{
-	if (InExpression)
-	{
-		EDatasmithMaterialExpressionType InExpressionType = InExpression->GetType();
-		switch (InExpressionType)
-		{
-		case EDatasmithMaterialExpressionType::ConstantBool:
-			return static_cast<FDatasmithMaterialExpressionImpl<IDatasmithMaterialExpressionBool>*>(InExpression)->AsShared();
-			break;
-		case EDatasmithMaterialExpressionType::ConstantColor:
-			return static_cast<FDatasmithMaterialExpressionImpl<IDatasmithMaterialExpressionColor>*>(InExpression)->AsShared();
-			break;
-		case EDatasmithMaterialExpressionType::ConstantScalar:
-			return static_cast<FDatasmithMaterialExpressionImpl<IDatasmithMaterialExpressionScalar>*>(InExpression)->AsShared();
-			break;
-		case EDatasmithMaterialExpressionType::FlattenNormal:
-			return static_cast<FDatasmithMaterialExpressionImpl<IDatasmithMaterialExpressionFlattenNormal>*>(InExpression)->AsShared();
-			break;
-		case EDatasmithMaterialExpressionType::FunctionCall:
-			return static_cast<FDatasmithMaterialExpressionImpl<IDatasmithMaterialExpressionFunctionCall>*>(InExpression)->AsShared();
-			break;
-		case EDatasmithMaterialExpressionType::Generic:
-			return static_cast<FDatasmithMaterialExpressionImpl<IDatasmithMaterialExpressionGeneric>*>(InExpression)->AsShared();
-			break;
-		case EDatasmithMaterialExpressionType::Texture:
-			return static_cast<FDatasmithMaterialExpressionImpl<IDatasmithMaterialExpressionTexture>*>(InExpression)->AsShared();
-			break;
-		case EDatasmithMaterialExpressionType::TextureCoordinate:
-			return static_cast<FDatasmithMaterialExpressionImpl<IDatasmithMaterialExpressionTextureCoordinate>*>(InExpression)->AsShared();
-			break;
-		default:
-			break;
-		}
-	}
-
-	return nullptr;
-}
-
-TSharedPtr< IDatasmithMaterialExpression > FDatasmithUEPbrInternalHelper::CreateMaterialExpression( EDatasmithMaterialExpressionType MaterialExpression )
-{
-	TSharedPtr<IDatasmithMaterialExpression> Expression;
-
-	switch (MaterialExpression)
-	{
-	case EDatasmithMaterialExpressionType::ConstantBool:
-		Expression = MakeShared<FDatasmithMaterialExpressionBoolImpl>();
-		break;
-	case EDatasmithMaterialExpressionType::ConstantColor:
-		Expression = MakeShared<FDatasmithMaterialExpressionColorImpl>();
-		break;
-	case EDatasmithMaterialExpressionType::ConstantScalar:
-		Expression = MakeShared<FDatasmithMaterialExpressionScalarImpl>();
-		break;
-	case EDatasmithMaterialExpressionType::FlattenNormal:
-		Expression = MakeShared<FDatasmithMaterialExpressionFlattenNormalImpl>();
-		break;
-	case EDatasmithMaterialExpressionType::FunctionCall:
-		Expression = MakeShared<FDatasmithMaterialExpressionFunctionCallImpl>();
-		break;
-	case EDatasmithMaterialExpressionType::Generic:
-		Expression = MakeShared<FDatasmithMaterialExpressionGenericImpl>();
-		break;
-	case EDatasmithMaterialExpressionType::Texture:
-		Expression = MakeShared<FDatasmithMaterialExpressionTextureImpl>();
-		break;
-	case EDatasmithMaterialExpressionType::TextureCoordinate:
-		Expression = MakeShared<FDatasmithMaterialExpressionTextureCoordinateImpl>();
-		break;
-	default:
-		check( false );
-		break;
-	}
-
-	return Expression;
-}
-
 FDatasmithExpressionInputImpl::FDatasmithExpressionInputImpl( const TCHAR* InInputName )
-	: FDatasmithElementImpl< FDatasmithExpressionInputElement >( InInputName, static_cast< EDatasmithElementType >(FDatasmithUEPbrInternalHelper::MaterialExpressionInputType ) )
+	: FDatasmithElementImpl< IDatasmithExpressionInput >( InInputName, EDatasmithElementType::MaterialExpressionInput )
 	, Expression()
 	, OutputIndex( 0 )
 {
 	RegisterReferenceProxy( Expression, "Expression" );
 
-	Store.RegisterParameter( ExpressionType, "ExpressionType" );
 	Store.RegisterParameter( OutputIndex, "OutputIndex" );
-}
-
-IDatasmithMaterialExpression* FDatasmithExpressionInputImpl::GetExpression() 
-{ 
-	return FDatasmithUEPbrInternalHelper::ConvertElementToMaterialExpression(Expression.View().Get(), ExpressionType);
-}
-
-const IDatasmithMaterialExpression* FDatasmithExpressionInputImpl::GetExpression() const
-{
-	return FDatasmithUEPbrInternalHelper::ConvertElementToMaterialExpression(Expression.View().Get(), ExpressionType);
 }
 
 void FDatasmithExpressionInputImpl::SetExpression( IDatasmithMaterialExpression* InExpression )
 {
-	if (InExpression)
+	if ( InExpression )
 	{
-		Expression.Edit() = FDatasmithUEPbrInternalHelper::ConvertMaterialExpressionToElementSharedPtr( InExpression );
-		ExpressionType = InExpression->GetType();
+		switch ( InExpression->GetExpressionType() )
+		{
+		case EDatasmithMaterialExpressionType::ConstantBool:
+			Expression.Edit() = static_cast<FDatasmithMaterialExpressionBoolImpl*>(InExpression)->AsShared();
+			break;
+		case EDatasmithMaterialExpressionType::ConstantColor:
+			Expression.Edit() = static_cast<FDatasmithMaterialExpressionColorImpl*>(InExpression)->AsShared();
+			break;
+		case EDatasmithMaterialExpressionType::ConstantScalar:
+			Expression.Edit() = static_cast<FDatasmithMaterialExpressionScalarImpl*>(InExpression)->AsShared();
+			break;
+		case EDatasmithMaterialExpressionType::FlattenNormal:
+			Expression.Edit() = static_cast<FDatasmithMaterialExpressionFlattenNormalImpl*>(InExpression)->AsShared();
+			break;
+		case EDatasmithMaterialExpressionType::FunctionCall:
+			Expression.Edit() = static_cast<FDatasmithMaterialExpressionFunctionCallImpl*>(InExpression)->AsShared();
+			break;
+		case EDatasmithMaterialExpressionType::Generic:
+			Expression.Edit() = static_cast<FDatasmithMaterialExpressionGenericImpl*>(InExpression)->AsShared();
+			break;
+		case EDatasmithMaterialExpressionType::Texture:
+			Expression.Edit() = static_cast<FDatasmithMaterialExpressionTextureImpl*>(InExpression)->AsShared();
+			break;
+		case EDatasmithMaterialExpressionType::TextureCoordinate:
+			Expression.Edit() = static_cast<FDatasmithMaterialExpressionTextureCoordinateImpl*>(InExpression)->AsShared();
+			break;
+		case EDatasmithMaterialExpressionType::Custom:
+			Expression.Edit() = static_cast<FDatasmithMaterialExpressionCustomImpl*>(InExpression)->AsShared();
+			break;
+		case EDatasmithMaterialExpressionType::None:
+		default:
+			check( false );
+			break;
+		}
 	}
 	else
 	{
 		Expression.Edit() = nullptr;
+		OutputIndex = 0;
 	}
 }
+
+void FDatasmithExpressionInputImpl::CustomSerialize(DirectLink::FSnapshotProxy& Ar)
+{
+	// [4.26.1 .. 4.27.0[ compatibility
+	if (Ar.IsSaving())
+	{
+		// In 4.26, an ExpressionType info was used alongside the expression itself.
+		// namely: TReflected<EDatasmithMaterialExpressionType, int32> ExpressionType;
+		// This field was required. In order to be readable by 4.26, it is recreated here.
+		// Without it, a 4.26 DirectLink receiver could crash on 4.27 data usage.
+		const EDatasmithMaterialExpressionType ExpressionTypeEnum = Expression.View().IsValid() ? Expression.View()->GetExpressionType() : EDatasmithMaterialExpressionType::None;
+		int32 ExpressionType = int32(ExpressionTypeEnum);
+		Ar.TagSerialize("ExpressionType", ExpressionType);
+	}
+}
+
 
 FDatasmithMaterialExpressionBoolImpl::FDatasmithMaterialExpressionBoolImpl()
 	: FDatasmithExpressionParameterImpl( EDatasmithMaterialExpressionType::ConstantBool )
@@ -236,11 +163,11 @@ TSharedPtr< IDatasmithKeyValueProperty >& FDatasmithMaterialExpressionGenericImp
 
 const TSharedPtr< IDatasmithKeyValueProperty >& FDatasmithMaterialExpressionGenericImpl::GetPropertyByName( const TCHAR* InName ) const
 {
-	const TSharedPtr< IDatasmithKeyValueProperty >* FindResult = Properties.View().FindByPredicate( [&InName]( const TSharedPtr<IDatasmithKeyValueProperty>& CurrentKeyValue ) 
-		{ 
-			return FCString::Strcmp( CurrentKeyValue->GetName(), InName ) == 0; 
+	const TSharedPtr< IDatasmithKeyValueProperty >* FindResult = Properties.View().FindByPredicate( [&InName]( const TSharedPtr<IDatasmithKeyValueProperty>& CurrentKeyValue )
+		{
+			return FCString::Strcmp( CurrentKeyValue->GetName(), InName ) == 0;
 		});
-	
+
 	return FindResult ? *FindResult : NullPropertyPtr;
 }
 
@@ -275,7 +202,7 @@ FDatasmithUEPbrMaterialElementImpl::FDatasmithUEPbrMaterialElementImpl( const TC
 	, Refraction(         MakeShared< FDatasmithExpressionInputImpl >( TEXT("Refraction") ) )
 	, AmbientOcclusion(   MakeShared< FDatasmithExpressionInputImpl >( TEXT("AmbientOcclusion") ) )
 	, MaterialAttributes( MakeShared< FDatasmithExpressionInputImpl >( TEXT("MaterialAttributes") ) )
-    , BlendMode(0)
+	, BlendMode(0)
 	, bTwoSided( false )
 	, bUseMaterialAttributes( false )
 	, bMaterialFunctionOnly ( false )
@@ -294,26 +221,65 @@ FDatasmithUEPbrMaterialElementImpl::FDatasmithUEPbrMaterialElementImpl( const TC
 	RegisterReferenceProxy( AmbientOcclusion, "AmbientOcclusion" );
 	RegisterReferenceProxy( MaterialAttributes, "MaterialAttributes" );
 
-
 	RegisterReferenceProxy( Expressions, "Expressions" );
-	Store.RegisterParameter( ExpressionTypes, "ExpressionTypes" );
 
 	Store.RegisterParameter( BlendMode, "BlendMode" );
 	Store.RegisterParameter( bTwoSided, "bTwoSided" );
 	Store.RegisterParameter( bUseMaterialAttributes, "bUseMaterialAttributes" );
 	Store.RegisterParameter( bMaterialFunctionOnly, "bMaterialFunctionOnly" );
-
 	Store.RegisterParameter( OpacityMaskClipValue, "OpacityMaskClipValue" );
 
 	Store.RegisterParameter( ParentLabel, "ParentLabel" );
 	Store.RegisterParameter( ShadingModel, "ShadingModel" );
 }
 
-IDatasmithMaterialExpression* FDatasmithUEPbrMaterialElementImpl::GetExpression( int32 Index )
+FMD5Hash FDatasmithUEPbrMaterialElementImpl::CalculateElementHash(bool bForce)
 {
-	return Expressions.IsValidIndex( Index ) ? FDatasmithUEPbrInternalHelper::ConvertElementToMaterialExpression( Expressions[Index].Get(), ExpressionTypes.Get( Store )[Index] ) : nullptr;
+	if (ElementHash.IsValid() && !bForce)
+	{
+		return ElementHash;
+	}
+
+	FMD5 MD5;
+	MD5.Update(reinterpret_cast<const uint8*>(&BlendMode), sizeof(BlendMode));
+	MD5.Update(reinterpret_cast<const uint8*>(&bTwoSided), sizeof(bTwoSided));
+	MD5.Update(reinterpret_cast<const uint8*>(&bUseMaterialAttributes), sizeof(bUseMaterialAttributes));
+	MD5.Update(reinterpret_cast<const uint8*>(&bMaterialFunctionOnly), sizeof(bMaterialFunctionOnly));
+	MD5.Update(reinterpret_cast<const uint8*>(&OpacityMaskClipValue), sizeof(OpacityMaskClipValue));
+	MD5.Update(reinterpret_cast<const uint8*>(&ShadingModel), sizeof(ShadingModel));
+
+	const FString& NativeParentLabel = ParentLabel.Get(Store);
+	if (!NativeParentLabel.IsEmpty())
+	{
+		MD5.Update(reinterpret_cast<const uint8*>(*NativeParentLabel), NativeParentLabel.Len() * sizeof(TCHAR));
+	}
+
+	TFunction<void(FDatasmithExpressionInputImpl&)> UpdateMD5 = [&](FDatasmithExpressionInputImpl& Input) -> void
+	{
+		const FMD5Hash& InputHashValue = Input.CalculateElementHash(bForce);
+		MD5.Update(InputHashValue.GetBytes(), InputHashValue.GetSize());
+	};
+
+	UpdateMD5(*BaseColor.Edit());
+	UpdateMD5(*Metallic.Edit());
+	UpdateMD5(*Specular.Edit());
+	UpdateMD5(*Roughness.Edit());
+	UpdateMD5(*EmissiveColor.Edit());
+	UpdateMD5(*Opacity.Edit());
+	UpdateMD5(*Normal.Edit());
+	UpdateMD5(*WorldDisplacement.Edit());
+	UpdateMD5(*Refraction.Edit());
+	UpdateMD5(*AmbientOcclusion.Edit());
+	UpdateMD5(*MaterialAttributes.Edit());
+
+	ElementHash.Set(MD5);
+	return ElementHash;
 }
 
+IDatasmithMaterialExpression* FDatasmithUEPbrMaterialElementImpl::GetExpression( int32 Index )
+{
+	return Expressions.IsValidIndex( Index ) ? Expressions[Index].Get() : nullptr;
+}
 
 int32 FDatasmithUEPbrMaterialElementImpl::GetExpressionIndex( const IDatasmithMaterialExpression* Expression ) const
 {
@@ -321,7 +287,7 @@ int32 FDatasmithUEPbrMaterialElementImpl::GetExpressionIndex( const IDatasmithMa
 
 	for ( int32 Index = 0; Index < Expressions.Num(); ++Index )
 	{
-		IDatasmithMaterialExpression* CurrentElement = FDatasmithUEPbrInternalHelper::ConvertElementToMaterialExpression( Expressions[Index].Get(), ExpressionTypes.Get( Store )[Index] );
+		IDatasmithMaterialExpression* CurrentElement = Expressions[Index].Get();
 		if ( Expression == CurrentElement)
 		{
 			ExpressionIndex = Index;
@@ -335,84 +301,148 @@ int32 FDatasmithUEPbrMaterialElementImpl::GetExpressionIndex( const IDatasmithMa
 IDatasmithMaterialExpression* FDatasmithUEPbrMaterialElementImpl::AddMaterialExpression( const EDatasmithMaterialExpressionType ExpressionType )
 {
 	TSharedPtr<IDatasmithMaterialExpression> Expression = nullptr;
-	TSharedPtr<IDatasmithElement> ExpressionAsElement = nullptr;
 
 	switch ( ExpressionType )
 	{
 	case EDatasmithMaterialExpressionType::ConstantBool:
-	{
-		TSharedPtr<FDatasmithMaterialExpressionBoolImpl> ExpressionImpl = MakeShared< FDatasmithMaterialExpressionBoolImpl >();
-		Expression = ExpressionImpl;
-		ExpressionAsElement = ExpressionImpl;
+		Expression = MakeShared< FDatasmithMaterialExpressionBoolImpl >();
 		break;
-	}
 	case EDatasmithMaterialExpressionType::ConstantColor:
-	{
-		TSharedPtr<FDatasmithMaterialExpressionColorImpl> ExpressionImpl = MakeShared < FDatasmithMaterialExpressionColorImpl>();
-		Expression = ExpressionImpl;
-		ExpressionAsElement = ExpressionImpl;
+		Expression = MakeShared< FDatasmithMaterialExpressionColorImpl >();
 		break;
-	}
 	case EDatasmithMaterialExpressionType::ConstantScalar:
-	{
-		TSharedPtr<FDatasmithMaterialExpressionScalarImpl> ExpressionImpl = MakeShared < FDatasmithMaterialExpressionScalarImpl>();
-		Expression = ExpressionImpl;
-		ExpressionAsElement = ExpressionImpl;
+		Expression = MakeShared< FDatasmithMaterialExpressionScalarImpl >();
 		break;
-	}
 	case EDatasmithMaterialExpressionType::FlattenNormal:
-	{
-		TSharedPtr<FDatasmithMaterialExpressionFlattenNormalImpl> ExpressionImpl = MakeShared < FDatasmithMaterialExpressionFlattenNormalImpl>();
-		Expression = ExpressionImpl;
-		ExpressionAsElement = ExpressionImpl;
+		Expression = MakeShared< FDatasmithMaterialExpressionFlattenNormalImpl >();
 		break;
-	}
 	case EDatasmithMaterialExpressionType::FunctionCall:
-	{
-		TSharedPtr<FDatasmithMaterialExpressionFunctionCallImpl> ExpressionImpl = MakeShared < FDatasmithMaterialExpressionFunctionCallImpl>();
-		Expression = ExpressionImpl;
-		ExpressionAsElement = ExpressionImpl;
+		Expression = MakeShared< FDatasmithMaterialExpressionFunctionCallImpl >();
 		break;
-	}
 	case EDatasmithMaterialExpressionType::Generic:
-	{
-		TSharedPtr<FDatasmithMaterialExpressionGenericImpl> ExpressionImpl = MakeShared < FDatasmithMaterialExpressionGenericImpl>();
-		Expression = ExpressionImpl;
-		ExpressionAsElement = ExpressionImpl;
+		Expression = MakeShared< FDatasmithMaterialExpressionGenericImpl >();
 		break;
-	}
 	case EDatasmithMaterialExpressionType::Texture:
-	{
-		TSharedPtr<FDatasmithMaterialExpressionTextureImpl> ExpressionImpl = MakeShared < FDatasmithMaterialExpressionTextureImpl>();
-		Expression = ExpressionImpl;
-		ExpressionAsElement = ExpressionImpl;
+		Expression = MakeShared< FDatasmithMaterialExpressionTextureImpl >();
 		break;
-	}
 	case EDatasmithMaterialExpressionType::TextureCoordinate:
-	{
-		TSharedPtr<FDatasmithMaterialExpressionTextureCoordinateImpl> ExpressionImpl = MakeShared < FDatasmithMaterialExpressionTextureCoordinateImpl>();
-		Expression = ExpressionImpl;
-		ExpressionAsElement = ExpressionImpl;
+		Expression = MakeShared< FDatasmithMaterialExpressionTextureCoordinateImpl >();
 		break;
-	}
+	case EDatasmithMaterialExpressionType::Custom:
+		Expression = MakeShared < FDatasmithMaterialExpressionCustomImpl>();
+		break;
 	default:
 		check( false );
 		break;
 	}
-	Expressions.Add( ExpressionAsElement );
-	ExpressionTypes.Edit( Store ).Add( ExpressionType );
+
+	Expressions.Add( Expression );
 
 	return Expression.Get();
 }
 
+void FDatasmithUEPbrMaterialElementImpl::ResetExpressionGraph( bool bRemoveAllExpressions )
+{
+	if (bRemoveAllExpressions)
+	{
+		Expressions.Edit().Reset();
+	}
+	else
+	{
+		for ( const TSharedPtr<IDatasmithMaterialExpression>& MaterialExpression : Expressions.View() )
+		{
+			MaterialExpression->ResetExpression();
+		}
+	}
+
+	//Reset material inputs.
+	BaseColor.Edit()->SetExpression(nullptr);
+	Metallic.Edit()->SetExpression(nullptr);
+	Specular.Edit()->SetExpression(nullptr);
+	Roughness.Edit()->SetExpression(nullptr);
+	EmissiveColor.Edit()->SetExpression(nullptr);
+	Opacity.Edit()->SetExpression(nullptr);
+	Normal.Edit()->SetExpression(nullptr);
+	WorldDisplacement.Edit()->SetExpression(nullptr);
+	Refraction.Edit()->SetExpression(nullptr);
+	AmbientOcclusion.Edit()->SetExpression(nullptr);
+	MaterialAttributes.Edit()->SetExpression(nullptr);
+}
+
 const TCHAR* FDatasmithUEPbrMaterialElementImpl::GetParentLabel() const
 {
-	if ( ParentLabel.Get(Store).IsEmpty() )
+	if ( ParentLabel.Get( Store ).IsEmpty() )
 	{
 		return GetLabel();
 	}
 	else
 	{
-		return *ParentLabel.Get(Store);
+		return *ParentLabel.Get( Store );
 	}
 }
+
+
+void FDatasmithUEPbrMaterialElementImpl::CustomSerialize(class DirectLink::FSnapshotProxy& Ar)
+{
+	// [4.26.1 .. 4.27.0[ compatibility
+	if (Ar.IsSaving())
+	{
+		// In 4.26, an ExpressionTypes array was used alongside the expressions array.
+		// namely: TReflected<TArray<EDatasmithMaterialExpressionType>, TArray<int32>> FDatasmithUEPbrMaterialElementImpl::ExpressionTypes;
+		// This field was required. In order to be readable by 4.26, that array is recreated here.
+		// Without it, a 4.26 DirectLink receiver could crash on 4.27 data usage.
+		TArray<int32> ExpressionTypes;
+		for (const TSharedPtr<IDatasmithMaterialExpression>& Expression : Expressions.View() )
+		{
+			EDatasmithMaterialExpressionType ExpressionType = Expression.IsValid() ? Expression->GetExpressionType() : EDatasmithMaterialExpressionType::None;
+			ExpressionTypes.Add(int32(ExpressionType));
+		}
+		Ar.TagSerialize("ExpressionTypes", ExpressionTypes);
+	}
+}
+
+
+FDatasmithMaterialExpressionCustomImpl::FDatasmithMaterialExpressionCustomImpl() : FDatasmithMaterialExpressionImpl< IDatasmithMaterialExpressionCustom >(EDatasmithMaterialExpressionType::Custom)
+{
+	RegisterReferenceProxy(Inputs, "Inputs");
+	Store.RegisterParameter(Code, "Code");
+	Store.RegisterParameter(Description, "Description");
+	Store.RegisterParameter(OutputType, "OutputType");
+	Store.RegisterParameter(IncludeFilePaths, "IncludeFilePaths");
+	Store.RegisterParameter(Defines, "Defines");
+	Store.RegisterParameter(ArgNames, "ArgNames");
+}
+
+
+IDatasmithExpressionInput* FDatasmithMaterialExpressionCustomImpl::GetInput(int32 Index)
+{
+	if (!ensure(Index >= 0))
+	{
+		return nullptr;
+	}
+
+	while (!Inputs.IsValidIndex(Index))
+	{
+		Inputs.Add(MakeShared< FDatasmithExpressionInputImpl >(*FString::FromInt(Inputs.Num())));
+	}
+
+	return Inputs[Index].Get();
+}
+
+
+void FDatasmithMaterialExpressionCustomImpl::SetArgumentName(int32 ArgIndex, const TCHAR* ArgName)
+{
+	if (!ensure(ArgIndex >= 0))
+	{
+		return;
+	}
+
+	auto& Names = ArgNames.Edit(Store);
+	while (!Names.IsValidIndex(ArgIndex))
+	{
+		int32 CurrentIndex = Names.Num();
+		Names.Add(FString::Printf(TEXT("Arg%d"), CurrentIndex));
+	}
+	Names[ArgIndex] = ArgName;
+}
+

@@ -3,6 +3,7 @@
 #include "Shared/DataprepCorePrivateUtils.h"
 
 #include "DataprepAsset.h"
+#include "DataprepAssetInstance.h"
 #include "DataprepCoreUtils.h"
 #include "IDataprepProgressReporter.h"
 
@@ -11,8 +12,10 @@
 #include "Engine/Blueprint.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "EngineAnalytics.h"
 #include "GameFramework/WorldSettings.h"
 #include "IMessageLogListing.h"
+#include "Interfaces/IAnalyticsProvider.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "MeshDescription.h"
 #include "MessageLogModule.h"
@@ -76,7 +79,7 @@ void DataprepCorePrivateUtils::BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshe
 	{
 		for(UStaticMesh* StaticMesh : StaticMeshes)
 		{
-			if(StaticMesh && (!StaticMesh->RenderData.IsValid() || !StaticMesh->RenderData->IsInitialized()))
+			if(StaticMesh && (!StaticMesh->GetRenderData() || !StaticMesh->GetRenderData()->IsInitialized()))
 			{
 				BuiltMeshes.Add( StaticMesh );
 			}
@@ -128,6 +131,7 @@ void DataprepCorePrivateUtils::BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshe
 
 					SourceModel.BuildSettings.bRecomputeNormals = !(Attributes.GetVertexInstanceNormals().IsValid() && Attributes.GetVertexInstanceNormals().GetNumIndices() > 0);
 					SourceModel.BuildSettings.bRecomputeTangents = false;
+					SourceModel.BuildSettings.DistanceFieldResolutionScale = 0;
 					//SourceModel.BuildSettings.bBuildAdjacencyBuffer = false;
 					//SourceModel.BuildSettings.bBuildReversedIndexBuffer = false;
 				}
@@ -157,7 +161,7 @@ void DataprepCorePrivateUtils::BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshe
 				SourceModels[SourceModelIndex].BuildSettings = PrevBuildSettings[SourceModelIndex];
 			}
 
-			if(FStaticMeshRenderData* RenderData = StaticMesh->RenderData.Get())
+			if(FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData())
 			{
 				for ( FStaticMeshLODResources& LODResources : RenderData->LODResources )
 				{
@@ -175,7 +179,7 @@ void DataprepCorePrivateUtils::ClearAssets(const TArray<TWeakObjectPtr<UObject>>
 		if(UStaticMesh* StaticMesh = Cast<UStaticMesh>(ObjectPtr.Get()))
 		{
 			StaticMesh->PreEditChange( nullptr );
-			StaticMesh->RenderData.Reset(nullptr);
+			StaticMesh->SetRenderData( nullptr );
 		}
 	}
 }
@@ -217,6 +221,101 @@ void DataprepCorePrivateUtils::CompileMaterial(UMaterialInterface* MaterialInter
 
 	MaterialInterface->PreEditChange( nullptr );
 	MaterialInterface->PostEditChange();
+}
+
+void DataprepCorePrivateUtils::Analytics::RecipeExecuted( UDataprepAssetInterface* InDataprepAsset )
+{
+	if ( FEngineAnalytics::IsAvailable() )
+	{
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+
+		EventAttributes.Emplace( TEXT("EpicAccountID"), FPlatformMisc::GetEpicAccountId() );
+		EventAttributes.Emplace( TEXT("EngineVersion"), FEngineVersion::Current().ToString( EVersionComponent::Patch ) );
+		
+		const TArray<UDataprepActionAsset*>& Actions = InDataprepAsset->GetActions();
+		int32 NumStepsTotal = 0;
+
+		for( const UDataprepActionAsset* Action : Actions )
+		{
+			NumStepsTotal += Action->GetStepsCount();
+		}
+
+		EventAttributes.Emplace( TEXT("ActionsCount"), Actions.Num() );
+		EventAttributes.Emplace( TEXT("StepsCount"), NumStepsTotal );
+
+		const bool bIsDataprepInstance = InDataprepAsset->IsA<UDataprepAssetInstance>();
+		const FString EventText = bIsDataprepInstance ? TEXT("Editor.Dataprep.Executed.Instance") : TEXT("Editor.Dataprep.Executed.Asset");
+
+		FEngineAnalytics::GetProvider().RecordEvent( EventText, EventAttributes );
+	}
+}
+
+void DataprepCorePrivateUtils::Analytics::DataprepAssetCreated( UDataprepAssetInterface* InDataprepAsset )
+{
+	if ( FEngineAnalytics::IsAvailable() )
+	{
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+
+		EventAttributes.Emplace( TEXT("EpicAccountID"), FPlatformMisc::GetEpicAccountId() );
+		EventAttributes.Emplace( TEXT("EngineVersion"), FEngineVersion::Current().ToString( EVersionComponent::Patch ) );
+
+		const bool bIsDataprepInstance = InDataprepAsset->IsA<UDataprepAssetInstance>();
+		const FString EventText = bIsDataprepInstance ? TEXT("Editor.Dataprep.Created.Instance") : TEXT("Editor.Dataprep.Created.Asset");
+
+		FEngineAnalytics::GetProvider().RecordEvent( EventText, EventAttributes );
+	}
+}
+
+void DataprepCorePrivateUtils::Analytics::DataprepEditorOpened( UDataprepAssetInterface* InDataprepAsset )
+{
+	if ( FEngineAnalytics::IsAvailable() )
+	{
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+
+		EventAttributes.Emplace( TEXT("EpicAccountID"), FPlatformMisc::GetEpicAccountId() );
+		EventAttributes.Emplace( TEXT("EngineVersion"), FEngineVersion::Current().ToString( EVersionComponent::Patch ) );
+
+		FEngineAnalytics::GetProvider().RecordEvent( TEXT("Editor.Dataprep.EditorOpened"), EventAttributes );
+	}
+}
+
+void DataprepCorePrivateUtils::Analytics::ExecuteTriggered( UDataprepAssetInterface* InDataprepAsset )
+{
+	if ( FEngineAnalytics::IsAvailable() )
+	{
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+
+		EventAttributes.Emplace( TEXT("EpicAccountID"), FPlatformMisc::GetEpicAccountId() );
+		EventAttributes.Emplace( TEXT("EngineVersion"), FEngineVersion::Current().ToString( EVersionComponent::Patch ) );
+
+		FEngineAnalytics::GetProvider().RecordEvent( TEXT("Editor.Dataprep.ExecuteTriggered"), EventAttributes );
+	}
+}
+
+void DataprepCorePrivateUtils::Analytics::ImportTriggered( UDataprepAssetInterface* InDataprepAsset )
+{
+	if ( FEngineAnalytics::IsAvailable() )
+	{
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+
+		EventAttributes.Emplace( TEXT("EpicAccountID"), FPlatformMisc::GetEpicAccountId() );
+		EventAttributes.Emplace( TEXT("EngineVersion"), FEngineVersion::Current().ToString( EVersionComponent::Patch ) );
+
+		FEngineAnalytics::GetProvider().RecordEvent( TEXT("Editor.Dataprep.ImportTriggered"), EventAttributes );
+	}
+}
+
+void DataprepCorePrivateUtils::Analytics::CommitTriggered( UDataprepAssetInterface* InDataprepAsset )
+{
+	if ( FEngineAnalytics::IsAvailable() )
+	{
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+
+		EventAttributes.Emplace( TEXT("EpicAccountID"), FPlatformMisc::GetEpicAccountId() );
+		EventAttributes.Emplace( TEXT("EngineVersion"), FEngineVersion::Current().ToString( EVersionComponent::Patch ) );
+
+		FEngineAnalytics::GetProvider().RecordEvent( TEXT("Editor.Dataprep.CommitTriggered"), EventAttributes );
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

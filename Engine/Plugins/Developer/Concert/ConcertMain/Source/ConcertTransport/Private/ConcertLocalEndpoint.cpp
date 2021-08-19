@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertLocalEndpoint.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "ConcertLogGlobal.h"
 
 #include "MessageEndpoint.h"
@@ -9,6 +10,7 @@
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
 #include "Containers/Ticker.h"
+#include "Misc/DateTime.h"
 #include "Stats/Stats.h"
 
 class FConcertLocalEndpointKeepAliveRunnable : public FRunnable
@@ -87,7 +89,7 @@ FConcertLocalEndpoint::FConcertLocalEndpoint(const FString& InEndpointFriendlyNa
 
 	const FString MessageEndpointName = FString::Printf(TEXT("Concert%sEndpoint"), *InEndpointFriendlyName);
 	MessageEndpoint = FMessageEndpoint::Builder(*MessageEndpointName)
-		.ReceivingOnThread(ENamedThreads::GameThread)
+		.ReceivingOnAnyThread()
 		.WithCatchall(this, &FConcertLocalEndpoint::InternalHandleMessage)
 		.NotificationHandling(FOnBusNotification::CreateRaw(this, &FConcertLocalEndpoint::InternalHandleBusNotification));
 	check(MessageEndpoint.IsValid());
@@ -214,7 +216,7 @@ void FConcertLocalEndpoint::InternalQueueResponse(const TSharedRef<IConcertRespo
 	}
 }
 
-void FConcertLocalEndpoint::InternalQueueEvent(const TSharedRef<IConcertEvent>& Event, const FGuid& Endpoint, EConcertMessageFlags Flags, const TMap<FName, FString>& Annotations)
+void FConcertLocalEndpoint::InternalQueueEvent(const TSharedRef<IConcertEvent>& Event, const FGuid& Endpoint, EConcertMessageFlags Flags)
 {
 	// Fill sending info
 	SetMessageSendingInfo(Event);
@@ -238,7 +240,7 @@ void FConcertLocalEndpoint::InternalQueueEvent(const TSharedRef<IConcertEvent>& 
 		}
 	}
 
-	SendMessage(Event, RemoteEndpoint.ToSharedRef(), Event->GetCreationDate(), Annotations);
+	SendMessage(Event, RemoteEndpoint.ToSharedRef(), Event->GetCreationDate(), Flags);
 }
 
 void FConcertLocalEndpoint::InternalPublishEvent(const TSharedRef<IConcertEvent>& Event)
@@ -290,9 +292,8 @@ FConcertRemoteEndpointPtr FConcertLocalEndpoint::FindRemoteEndpoint(const FMessa
 
 bool FConcertLocalEndpoint::HandleTick(float DeltaTime)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FConcertLocalEndpoint_HandleTick2);
+	SCOPED_CONCERT_TRACE(FConcertLocalEndpoint_HandleTick);
 
-	const FDateTime UtcNow = FDateTime::UtcNow();
 
 	// Flush the task graph to grab any pending messages
 	// We put a dummy fence task into the queue to avoid potentially waiting indefinitely if other threads keep adding game thread events
@@ -302,6 +303,9 @@ bool FConcertLocalEndpoint::HandleTick(float DeltaTime)
 		FGraphEventRef FenceHandle = FSimpleDelegateGraphTask::CreateAndDispatchWhenReady(FSimpleDelegateGraphTask::FDelegate(), GET_STATID(STAT_FConcertLocalEndpoint_HandleTick), nullptr, ENamedThreads::GameThread);
 		FTaskGraphInterface::Get().WaitUntilTaskCompletes(FenceHandle, ENamedThreads::GameThread);
 	}
+
+	const FDateTime UtcNow = FDateTime::UtcNow();
+	HandleInboundMessages(UtcNow);
 
 	ProcessQueuedReceivedMessages(UtcNow);
 	TimeoutRemoteEndpoints(UtcNow);
@@ -430,7 +434,7 @@ void FConcertLocalEndpoint::PublishMessage(const TSharedRef<IConcertMessage>& Me
 	);
 }
 
-void FConcertLocalEndpoint::SendMessage(const TSharedRef<IConcertMessage>& Message, const FConcertRemoteEndpointRef& RemoteEndpoint, const FDateTime& UtcNow, const TMap<FName, FString>& Annotations)
+void FConcertLocalEndpoint::SendMessage(const TSharedRef<IConcertMessage>& Message, const FConcertRemoteEndpointRef& RemoteEndpoint, const FDateTime& UtcNow, EConcertMessageFlags Flags)
 {
 	if (!MessageEndpoint.IsValid())
 	{
@@ -438,6 +442,7 @@ void FConcertLocalEndpoint::SendMessage(const TSharedRef<IConcertMessage>& Messa
 		return;
 	}
 
+	SCOPED_CONCERT_TRACE(FConcertLocalEndpoint_SendMessage);
 	// Update the last sent message time to this endpoint
 	RemoteEndpoint->SetLastSentMessageTime(UtcNow);
 
@@ -446,7 +451,7 @@ void FConcertLocalEndpoint::SendMessage(const TSharedRef<IConcertMessage>& Messa
 		Message->ConstructMessage(), // Should be deleted by MessageBus
 		Message->GetMessageType(),
 		Message->IsReliable() ? EMessageFlags::Reliable : EMessageFlags::None,
-		Annotations, 
+		Message->GetAnnotations(),
 		nullptr, // No Attachment
 		TArrayBuilder<FMessageAddress>().Add(RemoteEndpoint->GetAddress()),
 		FTimespan::Zero(), // No Delay
@@ -454,8 +459,65 @@ void FConcertLocalEndpoint::SendMessage(const TSharedRef<IConcertMessage>& Messa
 	);
 }
 
+void FConcertLocalEndpoint::HandleInboundMessages(const FDateTime& UtcNow)
+{
+	TSharedPtr<IMessageContext, ESPMode::ThreadSafe> InContext;
+	while(InboundMessages.Dequeue(InContext))
+	{
+		const TSharedRef<IMessageContext, ESPMode::ThreadSafe> Context = InContext.ToSharedRef();
+		const UScriptStruct* MessageTypeInfo = Context->GetMessageTypeInfo().Get();
+
+		// Setup Context
+		const FConcertMessageData* Message = (const FConcertMessageData*)Context->GetMessage();
+		const FConcertMessageContext ConcertContext(Message->ConcertEndpointId, UtcNow, Message, MessageTypeInfo, Context->GetAnnotations());
+		Logger.LogMessageReceived(ConcertContext, EndpointContext.EndpointId);
+
+		// Special endpoint discovery message handling, process discovery before passing down the message
+		if (MessageTypeInfo->IsChildOf(FConcertEndpointDiscoveryEvent::StaticStruct()))
+		{
+			ProcessEndpointDiscovery(ConcertContext, Context->GetSender());
+		}
+
+		if (MessageTypeInfo->IsChildOf(FConcertSendResendPending::StaticStruct()))
+		{
+			ForcePendingResend();
+			continue;
+		}
+
+		// Special reliable handshake message handling, process then discard
+		if (MessageTypeInfo->IsChildOf(FConcertReliableHandshakeData::StaticStruct()))
+		{
+			ProcessReliableHandshake(ConcertContext);
+			continue;
+		}
+
+		QueueReceivedMessage(ConcertContext);
+	}
+}
+
+void FConcertLocalEndpoint::ForcePendingResend()
+{
+	FScopeLock RemoteEndpointsLock(&RemoteEndpointsCS);
+	for (auto It = RemoteEndpoints.CreateIterator(); It; ++It)
+	{
+		FConcertRemoteEndpointPtr RemoteEndpoint = It->Value;
+		check(RemoteEndpoint.IsValid());
+		RemoteEndpoint->MarkForResend();
+	}
+}
+
+void FConcertLocalEndpoint::ProcessKeepAliveMessage(const TSharedPtr<IMessageContext, ESPMode::ThreadSafe>& Context, const FDateTime& UtcNow)
+{
+	FConcertRemoteEndpointPtr RemoteEndpoint = FindRemoteEndpoint(Context->GetSender());
+	if (RemoteEndpoint)
+	{
+		RemoteEndpoint->UpdateLastMessageReceivedTime(UtcNow);
+	}
+}
+
 void FConcertLocalEndpoint::InternalHandleMessage(const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
+	SCOPED_CONCERT_TRACE(FConcertLocalEndpoint_InternalHandleMessage);
 	const UScriptStruct* MessageTypeInfo = Context->GetMessageTypeInfo().Get();
 
 	if (!MessageTypeInfo)
@@ -470,27 +532,14 @@ void FConcertLocalEndpoint::InternalHandleMessage(const TSharedRef<IMessageConte
 		return;
 	}
 
-	const FDateTime UtcNow = FDateTime::UtcNow();
-
-	// Setup Context
-	const FConcertMessageData* Message = (const FConcertMessageData*)Context->GetMessage();
-	const FConcertMessageContext ConcertContext(Message->ConcertEndpointId, UtcNow, Message, MessageTypeInfo, Context->GetAnnotations());
-	Logger.LogMessageReceived(ConcertContext, EndpointContext.EndpointId);
-
-	// Special endpoint discovery message handling, process discovery before passing down the message
-	if (MessageTypeInfo->IsChildOf(FConcertEndpointDiscoveryEvent::StaticStruct()))
+	TSharedPtr<IMessageContext, ESPMode::ThreadSafe> ContextPtr(Context);
+	if (MessageTypeInfo->IsChildOf(FConcertKeepAlive::StaticStruct()))
 	{
-		ProcessEndpointDiscovery(ConcertContext, Context->GetSender());
+		const FDateTime UtcNow = FDateTime::UtcNow();
+		ProcessKeepAliveMessage(Context, UtcNow);
 	}
 
-	// Special reliable handshake message handling, process then discard
-	if (MessageTypeInfo->IsChildOf(FConcertReliableHandshakeData::StaticStruct()))
-	{
-		ProcessReliableHandshake(ConcertContext);
-		return;
-	}
-
-	QueueReceivedMessage(ConcertContext);
+	InboundMessages.Enqueue(MoveTemp(ContextPtr));
 }
 
 void FConcertLocalEndpoint::InternalHandleBusNotification(const FMessageBusNotification& Notification)
@@ -542,6 +591,7 @@ void FConcertLocalEndpoint::ProcessEndpointDiscovery(const FConcertMessageContex
 
 void FConcertLocalEndpoint::ProcessReliableHandshake(const FConcertMessageContext& ConcertContext)
 {
+	SCOPED_CONCERT_TRACE(FConcertLocalEndpoint_ProcessReliableHandshake);
 	const FConcertReliableHandshakeData* Message = ConcertContext.GetMessage<FConcertReliableHandshakeData>();
 
 	// This should always exist as FConcertReliableHandshakeData is also a FConcertEndpointDiscoveryEvent message, so should have added the endpoint in ProcessEndpointDiscovery
@@ -731,6 +781,7 @@ void FConcertLocalEndpoint::SendKeepAlive(const FConcertRemoteEndpointRef& Remot
 
 void FConcertLocalEndpoint::SendKeepAlives(const FDateTime& UtcNow)
 {
+	SCOPED_CONCERT_TRACE(FConcertLocalEndpoint_SendKeepAlives);
 	FScopeLock RemoteEndpointsLock(&RemoteEndpointsCS);
 
 	for (const auto& RemoteEndpointPair : RemoteEndpoints)
@@ -759,7 +810,6 @@ void FConcertLocalEndpoint::TimeoutRemoteEndpoints(const FDateTime& UtcNow)
 		{
 			const FGuid EndpointId = It->Key;
 			FConcertRemoteEndpointPtr RemoteEndpoint = It->Value;
-
 			check(RemoteEndpoint.IsValid());
 			if (RemoteEndpoint->GetLastReceivedMessageTime() + RemoteEndpointTimeoutSpan <= UtcNow)
 			{

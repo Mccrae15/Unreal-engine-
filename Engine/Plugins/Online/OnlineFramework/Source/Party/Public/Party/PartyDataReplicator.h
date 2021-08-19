@@ -7,6 +7,7 @@
 #include "Containers/Ticker.h"
 #include "Interfaces/OnlinePartyInterface.h"
 #include "Stats/Stats.h"
+#include "PartyPackage.h"
 
 /** Util exclusively for use by TPartyDataReplicator to circumvent circular include header issues (we can't include SocialParty.h or PartyMember.h here) */
 class FPartyDataReplicatorHelper
@@ -56,6 +57,15 @@ public:
 
 		RepDataCopy = (ChildRepDataT*)FMemory::Malloc(RepDataType->GetCppStructOps()->GetSize());
 		RepDataType->GetCppStructOps()->Construct(RepDataCopy);
+	}
+
+	void Flush()
+	{
+		// If we had a scheduled update run it now.
+		if (UpdateTickerHandle.IsValid())
+		{
+			DeferredHandleReplicateChanges(0.f);
+		}
 	}
 
 PACKAGE_SCOPE:

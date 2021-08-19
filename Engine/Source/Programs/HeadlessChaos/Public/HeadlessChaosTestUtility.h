@@ -17,54 +17,15 @@
 #include "Chaos/Utilities.h"
 #include "Chaos/ParticleHandleFwd.h"
 #include "Chaos/PBDRigidsEvolutionFwd.h"
-#include "Chaos/EvolutionTraits.h"
 
 namespace Chaos
 {
-	template <typename T, int d> class TPBDRigidsSOAs;
+	class FPBDRigidsSOAs;
 }
 
 namespace ChaosTest {
 	
 	using namespace Chaos;
-
-	template <typename... T>
-	struct TTypesWithoutVoid
-	{
-		using Types = ::testing::Types<T...>;
-	};
-
-	template <typename... T>
-	struct TTypesWithoutVoid<void,T...>
-	{
-		using Types = ::testing::Types<T...>;
-	};
-
-	//should be TAllEvolutions, but used in macros and logs and this makes it more readable
-	template <typename T>
-	class AllEvolutions : public ::testing::Test {};
-
-#define EVOLUTION_TRAIT(Trait) ,TPBDRigidsEvolutionGBF<Trait>
-	using AllEvolutionTypesTmp = TTypesWithoutVoid <
-		void
-#include "Chaos/EvolutionTraits.inl"
-	>;
-	using AllEvolutionTypes = AllEvolutionTypesTmp::Types;
-#undef EVOLUTION_TRAIT
-	TYPED_TEST_SUITE(AllEvolutions,AllEvolutionTypes);
-
-	//should be TAllTraits, but used in macros and logs and this makes it more readable
-	template <typename T>
-	class AllTraits : public ::testing::Test {};
-
-#define EVOLUTION_TRAIT(Trait) ,Trait
-	using AllTraitsTypesTmp = TTypesWithoutVoid <
-		void
-#include "Chaos/EvolutionTraits.inl"
-	>;
-	using AllTraitsTypes = AllTraitsTypesTmp::Types;
-#undef EVOLUTION_TRAIT
-	TYPED_TEST_SUITE(AllTraits,AllTraitsTypes);
 
 	MATCHER_P2(VectorNear, V, Tolerance, "") { return arg.Equals(V, Tolerance); }
 
@@ -81,85 +42,62 @@ namespace ChaosTest {
 #define EXPECT_VECTOR_FLOAT_EQ_ERR(A, B, E) EXPECT_FLOAT_EQ(A.X, B.X) << *E; EXPECT_FLOAT_EQ(A.Y, B.Y) << *E; EXPECT_FLOAT_EQ(A.Z, B.Z) << *E;
 
 	/**/
-	template<class T>
-	int32 AppendAnalyticSphere(TPBDRigidParticles<T, 3> & InParticles, T Scale = (T)1);
+	int32 AppendAnalyticSphere(FPBDRigidParticles& InParticles, FReal Scale = (FReal)1);
 
 	/**/
-	template<class T>
-	int32 AppendAnalyticBox(TPBDRigidParticles<T, 3>& InParticles, TVector<T, 3> Scale = TVector<T, 3>(1));
+	int32 AppendAnalyticBox(FPBDRigidParticles& InParticles, FVec3 Scale = FVec3(1));
 
 	/**/
-	template<class T>
-	int32 AppendParticleBox(TPBDRigidParticles<T, 3>& InParticles, TVector<T, 3> Scale = TVector<T, 3>(1), TArray<TVector<int32, 3>>* OutElements = nullptr);
+	int32 AppendParticleBox(FPBDRigidParticles& InParticles, FVec3 Scale = FVec3(1), TArray<TVec3<int32>>* OutElements = nullptr);
 
-	template<class T>
-	TPBDRigidParticleHandle<T, 3>* AppendDynamicParticleBox(TPBDRigidsSOAs<T, 3>& SOAs, const TVector<T, 3>& Scale = TVector<T, 3>(1), TArray<TVector<int32, 3>>* OutElements = nullptr);
+	FPBDRigidParticleHandle* AppendDynamicParticleBox(FPBDRigidsSOAs& SOAs, const FVec3& Scale = FVec3(1), TArray<TVec3<int32>>* OutElements = nullptr);
 
-	template<class T>
-	TPBDRigidParticleHandle<T, 3>* AppendDynamicParticleBoxMargin(TPBDRigidsSOAs<T, 3>& SOAs, const TVector<T, 3>& Scale, FReal Margin, TArray<TVector<int32, 3>>* OutElements = nullptr);
+	FPBDRigidParticleHandle* AppendDynamicParticleBoxMargin(FPBDRigidsSOAs& SOAs, const FVec3& Scale, FReal Margin, TArray<TVec3<int32>>* OutElements = nullptr);
 
-	template<class T>
-	TPBDRigidParticleHandle<T, 3>* AppendDynamicParticleSphere(TPBDRigidsSOAs<T, 3>& SOAs, const TVector<T, 3>& Scale = TVector<T, 3>(1), TArray<TVector<int32, 3>>* OutElements = nullptr);
+	FPBDRigidParticleHandle* AppendDynamicParticleSphere(FPBDRigidsSOAs& SOAs, const FVec3& Scale = FVec3(1), TArray<TVec3<int32>>* OutElements = nullptr);
 
-	template<class T>
-	TPBDRigidParticleHandle<T, 3>* AppendDynamicParticleCylinder(TPBDRigidsSOAs<T, 3>& SOAs, const TVector<T, 3>& Scale = TVector<T, 3>(1), TArray<TVector<int32, 3>>* OutElements = nullptr);
+	FPBDRigidParticleHandle* AppendDynamicParticleCylinder(FPBDRigidsSOAs& SOAs, const FVec3& Scale = FVec3(1), TArray<TVec3<int32>>* OutElements = nullptr);
 	
-	template<class T>
-	TPBDRigidParticleHandle<T, 3>* AppendDynamicParticleTaperedCylinder(TPBDRigidsSOAs<T, 3>& SOAs, const TVector<T, 3>& Scale = TVector<T, 3>(1), TArray<TVector<int32, 3>>* OutElements = nullptr);
+	FPBDRigidParticleHandle* AppendDynamicParticleTaperedCylinder(FPBDRigidsSOAs& SOAs, const FVec3& Scale = FVec3(1), TArray<TVec3<int32>>* OutElements = nullptr);
 
-	template<class T>
-	TGeometryParticleHandle<T, 3>* AppendStaticParticleBox(TPBDRigidsSOAs<T, 3>& SOAs, const TVector<T, 3>& Scale = TVector<T, 3>(1), TArray<TVector<int32, 3>>* OutElements = nullptr);
+	FGeometryParticleHandle* AppendStaticParticleBox(FPBDRigidsSOAs& SOAs, const FVec3& Scale = FVec3(1), TArray<TVec3<int32>>* OutElements = nullptr);
 
-	template<class T>
-	TPBDRigidParticleHandle<T, 3>* AppendClusteredParticleBox(TPBDRigidsSOAs<T, 3>& SOAs, const TVector<T, 3>& Scale = TVector<T, 3>(1), TArray<TVector<int32, 3>>* OutElements = nullptr);
+	FPBDRigidParticleHandle* AppendClusteredParticleBox(FPBDRigidsSOAs& SOAs, const FVec3& Scale = FVec3(1), TArray<TVec3<int32>>* OutElements = nullptr);
 		
 	/**/
-	template<class T>
-	int32 AppendStaticAnalyticFloor(TPBDRigidParticles<T, 3>& InParticles);
+	int32 AppendStaticAnalyticFloor(FPBDRigidParticles& InParticles);
 
-	template<class T>
-	TKinematicGeometryParticleHandle<T, 3>* AppendStaticAnalyticFloor(TPBDRigidsSOAs<T, 3>& SOAs);
+	FKinematicGeometryParticleHandle* AppendStaticAnalyticFloor(FPBDRigidsSOAs& SOAs);
 
-	template<class T>
-	TKinematicGeometryParticleHandle<T, 3>* AppendStaticConvexFloor(TPBDRigidsSOAs<T, 3>& SOAs);
+	FKinematicGeometryParticleHandle* AppendStaticConvexFloor(FPBDRigidsSOAs& SOAs);
 		
 	/**/
-	template<class T>
-	TLevelSet<T, 3> ConstructLevelset(TParticles<T, 3> & SurfaceParticles, TArray<TVector<int32, 3>> & Elements);
+	FLevelSet ConstructLevelset(FParticles& SurfaceParticles, TArray<TVec3<int32>> & Elements);
 
 	/**/
-	template<class T>
-	void AppendDynamicParticleConvexBox(TPBDRigidParticleHandle<T, 3> & InParticles, const TVector<T, 3>& Scale, FReal Margin);
+	void AppendDynamicParticleConvexBox(FPBDRigidParticleHandle& InParticles, const FVec3& Scale, FReal Margin);
 	
-	template<class T>
-	TPBDRigidParticleHandle<T, 3>* AppendDynamicParticleConvexBox(TPBDRigidsSOAs<T, 3>& SOAs, const TVector<T, 3>& Scale = TVector<T, 3>(1));
+	FPBDRigidParticleHandle* AppendDynamicParticleConvexBox(FPBDRigidsSOAs& SOAs, const FVec3& Scale = FVec3(1));
 
-	template<class T>
-	TPBDRigidParticleHandle<T, 3>* AppendDynamicParticleConvexBoxMargin(TPBDRigidsSOAs<T, 3>& SOAs, const TVector<T, 3>& Scale, FReal Margin);
+	FPBDRigidParticleHandle* AppendDynamicParticleConvexBoxMargin(FPBDRigidsSOAs& SOAs, const FVec3& Scale, FReal Margin);
 
 	/**/
-	template<class T>
-	TVector<T,3>  ObjectSpacePoint(TPBDRigidParticles<T, 3> & InParticles, const int32 Index, const TVector<T, 3>& WorldSpacePoint);
+	FVec3 ObjectSpacePoint(FPBDRigidParticles& InParticles, const int32 Index, const FVec3& WorldSpacePoint);
 
 	/**/
-	template<class T>
-	T PhiWithNormal(TPBDRigidParticles<T, 3> & InParticles, const int32 Index, const TVector<T, 3>& WorldSpacePoint, TVector<T, 3>& Normal);
+	FReal PhiWithNormal(FPBDRigidParticles& InParticles, const int32 Index, const FVec3& WorldSpacePoint, FVec3& Normal);
 
 	/**/
-	template<class T>
-	T SignedDistance(TPBDRigidParticles<T, 3> & InParticles, const int32 Index, const TVector<T, 3>& WorldSpacePoint);
+	FReal SignedDistance(FPBDRigidParticles& InParticles, const int32 Index, const FVec3& WorldSpacePoint);
 
 	/**/
-	template<class T>
-	TVector<T, 3>  ObjectSpacePoint(TGeometryParticleHandle<T, 3> & Particle, const TVector<T, 3>& WorldSpacePoint);
+	FVec3  ObjectSpacePoint(FGeometryParticleHandle& Particle, const FVec3& WorldSpacePoint);
 
 	/**/
-	template<class T>
-	T PhiWithNormal(TGeometryParticleHandle<T, 3> & Particle, const TVector<T, 3>& WorldSpacePoint, TVector<T, 3>& Normal);
+	FReal PhiWithNormal(FGeometryParticleHandle& Particle, const FVec3& WorldSpacePoint, FVec3& Normal);
 
 	/**/
-	template<class T>
-	T SignedDistance(TGeometryParticleHandle<T, 3> & Particle, const TVector<T, 3>& WorldSpacePoint);
+	FReal SignedDistance(FGeometryParticleHandle& Particle, const FVec3& WorldSpacePoint);
 
 	/**
 	 * Return a random normalized axis.
@@ -197,8 +135,8 @@ namespace ChaosTest {
 	}
 
 	/**/
-	void SetParticleSimDataToCollide(TArray< Chaos::TGeometryParticle<float, 3>* > ParticleArray);
-	void SetParticleSimDataToCollide(TArray< Chaos::TGeometryParticleHandle<float, 3>* > ParticleArray);
+	void SetParticleSimDataToCollide(TArray< Chaos::FGeometryParticle* > ParticleArray);
+	void SetParticleSimDataToCollide(TArray< Chaos::FGeometryParticleHandle* > ParticleArray);
 
 
 	/**
@@ -209,9 +147,10 @@ namespace ChaosTest {
 	{
 		// Settings used for unit tests
 		const float CullDistance = 0.0f;
-		Evolution.GetCollisionConstraints().SetCullDistance(CullDistance);
 		Evolution.GetBroadPhase().SetCullDistance(CullDistance);
 		Evolution.GetBroadPhase().SetBoundsThickness(CullDistance);
+		Evolution.GetCollisionDetector().GetNarrowPhase().GetContext().bDeferUpdate = false;
+		Evolution.GetCollisionDetector().GetNarrowPhase().GetContext().bAllowManifolds = true;
 	}
 
 	template<typename T_SOLVER>
@@ -220,4 +159,9 @@ namespace ChaosTest {
 		InitEvolutionSettings(*Solver->GetEvolution());
 	}
 
+
+	extern FImplicitConvex3 CreateConvexBox(const FVec3& BoxSize, const FReal Margin);
+	extern FImplicitConvex3 CreateConvexBox(const FVec3& BoxMin, const FVec3& BoxMax, const FReal Margin);
+	extern TImplicitObjectInstanced<FImplicitConvex3> CreateInstancedConvexBox(const FVec3& BoxSize, const FReal Margin);
+	extern TImplicitObjectScaled<FImplicitConvex3> CreateScaledConvexBox(const FVec3& BoxSize, const FVec3 BoxScale, const FReal Margin);
 }

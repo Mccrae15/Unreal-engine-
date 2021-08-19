@@ -41,6 +41,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = General)
 	EGPULightmassMode Mode;
 
+	// If enabled, denoise the results on the CPU after rendering. On Completion denoises the entire lightmap when it is finished.
+	// During Interactive Preview denoises each tile as it finishes, which is useful for previewing but less efficient.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = General, DisplayName = "Denoise")
+	EGPULightmassDenoisingOptions DenoisingOptions = EGPULightmassDenoisingOptions::OnCompletion;
+
+	// Whether to compress lightmap textures.  Disabling lightmap texture compression will reduce artifacts but increase memory and disk size by 4x.
+	// Use caution when disabling this.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = General)
+	bool bCompressLightmaps = true;
+
 	// Total number of ray paths executed per texel across all bounces.
 	// Set this to the lowest value that gives artifact-free results with the denoiser.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = GlobalIllumination, DisplayName = "GI Samples", meta = (ClampMin = "32", ClampMax = "65536", UIMax = "8192"))
@@ -53,7 +63,7 @@ public:
 	// Irradiance Caching should be enabled with interior scenes to achieve more physically correct GI intensities,
 	// albeit with some biasing. Without IC the results may be darker than expected. It should be disabled for exterior scenes.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = GlobalIllumination)
-	bool bUseIrradianceCaching = false;
+	bool bUseIrradianceCaching = true;
 
 	// If Irradiance Caching is enabled, First Bounce Ray Guiding will search the hemisphere over
 	// each first bounce sample to find the brightest directions to weigh the rest of the samples towards.
@@ -62,10 +72,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = GlobalIllumination, meta = (EditCondition = "bUseIrradianceCaching"))
 	bool bUseFirstBounceRayGuiding = false;
 
-	// If enabled, denoise the results on the CPU after rendering. On Completion denoises the entire lightmap when it is finished.
-	// During Interactive Preview denoises each tile as it finishes, which is useful for previewing but less efficient.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = General, DisplayName = "Denoise")
-	EGPULightmassDenoisingOptions DenoisingOptions = EGPULightmassDenoisingOptions::OnCompletion;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = VolumetricLightmap, DisplayName = "Quality Multiplier", meta = (ClampMin = "1", ClampMax = "256", UIMax = "32"))
+	int32 VolumetricLightmapQualityMultiplier = 4;
+
+	// Size of an Volumetric Lightmap voxel at the highest density (used around geometry), in world space units.
+	// This setting has a large impact on build times and memory, use with caution.
+	// Halving the DetailCellSize can increase memory by up to a factor of 8x.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = VolumetricLightmap, DisplayName = "Detail Cell Size", meta = (ClampMin = "1", ClampMax = "20000", UIMax = "2000"))
+	int32 VolumetricLightmapDetailCellSize = 200;
 
 	// Number of samples per Irradiance Cache cell.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = IrradianceCaching, DisplayName = "Quality", meta = (EditCondition = "bUseIrradianceCaching", ClampMin = "4", ClampMax = "65536", UIMax = "8192"))
@@ -90,17 +104,17 @@ public:
 
 	// Baking speed multiplier when Realtime is enabled in the viewer.
 	// Setting this too high can cause the editor to become unresponsive with heavy scenes.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = System, DisplayName = "Slow Mode Speed", meta = (ClampMin = "1", ClampMax = "64"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = System, DisplayName = "Realtime Workload Factor", meta = (ClampMin = "1", ClampMax = "64"))
 	int32 TilePassesInSlowMode = 1;
 
 	// Baking speed multiplier when Realtime is disabled in the viewer.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = System, DisplayName = "Full Speed", meta = (ClampMin = "1", ClampMax = "64"))
-	int32 TilePassesInFullSpeedMode = 16;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = System, DisplayName = "Non-Realtime Workload Factor", meta = (ClampMin = "1", ClampMax = "64"))
+	int32 TilePassesInFullSpeedMode = 8;
 
 	// GPU Lightmass manages a pool for calculations of visible tiles. The pool size should be set based on the size of the
 	// viewport and how many tiles will be visible on screen at once. Increasing this number increases GPU memory usage.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = System, meta = (ClampMin = "16", ClampMax = "128"))
-	int32 LightmapTilePoolSize = 40;
+	int32 LightmapTilePoolSize = 55;
 
 public:
 	void GatherSettingsFromCVars();
@@ -147,6 +161,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = GPULightmass)
 	void EndRecordingVisibleTiles();
 
+	UFUNCTION(BlueprintCallable, Category = GPULightmass)
+	int32 GetPercentage();
+
+	UFUNCTION(BlueprintCallable, Category = GPULightmass)
+	void SetRealtime(bool bInRealtime);
+
+	UFUNCTION(BlueprintCallable, Category = GPULightmass)
+	void Save();
+
+	/* Accessor for the delegate called when the light build finishes successfully or is cancelled */
+	FSimpleMulticastDelegate& OnLightBuildEnded()
+	{
+		return LightBuildEnded;
+	}
+
 private:
 	AGPULightmassSettingsActor* GetSettingsActor();
+
+private:
+	/* Called when the light build finishes successfully or is cancelled */
+	FSimpleMulticastDelegate LightBuildEnded;
 };

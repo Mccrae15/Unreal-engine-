@@ -1374,7 +1374,7 @@ void USceneComponent::SetRelativeScale3D(FVector NewScale3D)
 	{
 		if (NewScale3D.ContainsNaN())
 		{
-			UE_LOG(LogBlueprint, Warning, TEXT("SetRelativeScale3D : Invalid Scale entered (%s). Resetting to 1.f."), *NewScale3D.ToString());
+			UE_LOG(LogBlueprint, Warning, TEXT("SetRelativeScale3D : Invalid Scale (%s) set for '%s'. Resetting to 1.f."), *NewScale3D.ToString(), *GetFullName());
 			NewScale3D = FVector(1.f);
 		}
 
@@ -1747,7 +1747,7 @@ void USceneComponent::SetRelativeRotationCache(const FRotationConversionCache& I
 
 void USceneComponent::SetupAttachment(class USceneComponent* InParent, FName InSocketName)
 {
-	if (ensureMsgf(!bRegistered, TEXT("SetupAttachment should only be used to initialize AttachParent and AttachSocketName for a future AttachToComponent. Once a component is registered you must use AttachToComponent.")))
+	if (ensureMsgf(!bRegistered, TEXT("SetupAttachment should only be used to initialize AttachParent and AttachSocketName for a future AttachToComponent. Once a component is registered you must use AttachToComponent. Owner [%s], InParent [%s], InSocketName [%s]"), *GetPathNameSafe(GetOwner()), *GetNameSafe(InParent), *InSocketName.ToString()))
 	{
 		if (ensureMsgf(InParent != this, TEXT("Cannot attach a component to itself.")))
 		{
@@ -3300,7 +3300,7 @@ void USceneComponent::PostRepNotifies()
 
 	if (bNetUpdateTransform)
 	{
-		UpdateComponentToWorld(EUpdateTransformFlags::SkipPhysicsUpdate);
+		UpdateComponentToWorld();
 		bNetUpdateTransform = false;
 	}
 }

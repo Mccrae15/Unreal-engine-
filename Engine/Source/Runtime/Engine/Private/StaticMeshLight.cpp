@@ -52,10 +52,10 @@ static void GetStaticLightingVertex(
 /** Initialization constructor. */
 FStaticMeshStaticLightingMesh::FStaticMeshStaticLightingMesh(const UStaticMeshComponent* InPrimitive,int32 InLODIndex,const TArray<ULightComponent*>& InRelevantLights):
 	FStaticLightingMesh(
-		InPrimitive->GetStaticMesh()->RenderData->LODResources[InLODIndex].GetNumTriangles(),
-		InPrimitive->GetStaticMesh()->RenderData->LODResources[InLODIndex].GetNumTriangles(),
-		InPrimitive->GetStaticMesh()->RenderData->LODResources[InLODIndex].GetNumVertices(),
-		InPrimitive->GetStaticMesh()->RenderData->LODResources[InLODIndex].GetNumVertices(),
+		InPrimitive->GetStaticMesh()->GetRenderData()->LODResources[InLODIndex].GetNumTriangles(),
+		InPrimitive->GetStaticMesh()->GetRenderData()->LODResources[InLODIndex].GetNumTriangles(),
+		InPrimitive->GetStaticMesh()->GetRenderData()->LODResources[InLODIndex].GetNumVertices(),
+		InPrimitive->GetStaticMesh()->GetRenderData()->LODResources[InLODIndex].GetNumVertices(),
 		0,
 		!!(InPrimitive->CastShadow | InPrimitive->bCastHiddenShadow),
 		false,
@@ -67,7 +67,7 @@ FStaticMeshStaticLightingMesh::FStaticMeshStaticLightingMesh(const UStaticMeshCo
 	LODIndex(InLODIndex),
 	StaticMesh(InPrimitive->GetStaticMesh()),
 	Primitive(InPrimitive),
-	LODRenderData(InPrimitive->GetStaticMesh()->RenderData->LODResources[InLODIndex]),
+	LODRenderData(InPrimitive->GetStaticMesh()->GetRenderData()->LODResources[InLODIndex]),
 	bReverseWinding(InPrimitive->GetComponentTransform().GetDeterminant() < 0.0f)
 {
 	LODIndexBuffer = LODRenderData.IndexBuffer.GetArrayView();
@@ -319,15 +319,15 @@ void UStaticMeshComponent::GetStaticLightingInfo(FStaticLightingPrimitiveInfo& O
 
 		TArray<FStaticMeshStaticLightingMesh*> StaticLightingMeshes;
 		bool bCanLODsShareStaticLighting = GetStaticMesh()->CanLODsShareStaticLighting();
-		int32 NumLODs = bCanLODsShareStaticLighting ? 1 : GetStaticMesh()->RenderData->LODResources.Num();
+		int32 NumLODs = bCanLODsShareStaticLighting ? 1 : GetStaticMesh()->GetRenderData()->LODResources.Num();
 		for(int32 LODIndex = 0;LODIndex < NumLODs;LODIndex++)
 		{
-			const FStaticMeshLODResources& LODRenderData = GetStaticMesh()->RenderData->LODResources[LODIndex];
+			const FStaticMeshLODResources& LODRenderData = GetStaticMesh()->GetRenderData()->LODResources[LODIndex];
 			// Figure out whether we are storing the lighting/ shadowing information in a texture or vertex buffer.
 			bool bValidTextureMap;
 			if( (BaseLightMapWidth > 0) && (BaseLightMapHeight > 0) 
-				&& GetStaticMesh()->LightMapCoordinateIndex >= 0
-				&& (uint32)GetStaticMesh()->LightMapCoordinateIndex < LODRenderData.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords())
+				&& GetStaticMesh()->GetLightMapCoordinateIndex() >= 0
+				&& (uint32)GetStaticMesh()->GetLightMapCoordinateIndex() < LODRenderData.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords())
 			{
 				bValidTextureMap = true;
 			}
@@ -350,13 +350,13 @@ void UStaticMeshComponent::GetStaticLightingInfo(FStaticLightingPrimitiveInfo& O
 				if (LightmapType == ELightmapType::ForceVolumetric)
 				{
 					OutPrimitiveInfo.Mappings.Add(new FStaticLightingGlobalVolumeMapping(
-						StaticLightingMesh,this,LightMapWidth,LightMapHeight, GetStaticMesh()->LightMapCoordinateIndex));
+						StaticLightingMesh,this,LightMapWidth,LightMapHeight, GetStaticMesh()->GetLightMapCoordinateIndex()));
 				}
 				else
 				{
 					// Create a static lighting texture mapping for the LOD.
 					OutPrimitiveInfo.Mappings.Add(new FStaticMeshStaticLightingTextureMapping(
-						this,LODIndex,StaticLightingMesh,LightMapWidth,LightMapHeight, GetStaticMesh()->LightMapCoordinateIndex,true));
+						this,LODIndex,StaticLightingMesh,LightMapWidth,LightMapHeight, GetStaticMesh()->GetLightMapCoordinateIndex(),true));
 				}
 			}
 		}
@@ -399,9 +399,9 @@ ELightMapInteractionType UStaticMeshComponent::GetStaticLightingType() const
 		else
 		{
 			// Process each LOD separately.
-			for(int32 LODIndex = 0;LODIndex < GetStaticMesh()->RenderData->LODResources.Num();LODIndex++)
+			for(int32 LODIndex = 0;LODIndex < GetStaticMesh()->GetRenderData()->LODResources.Num();LODIndex++)
 			{
-				const FStaticMeshLODResources& LODRenderData = GetStaticMesh()->RenderData->LODResources[LODIndex];
+				const FStaticMeshLODResources& LODRenderData = GetStaticMesh()->GetRenderData()->LODResources[LODIndex];
 
 				// Figure out whether we are storing the lighting/ shadowing information in a texture or vertex buffer.
 				int32		LightMapWidth	= 0;
@@ -409,8 +409,8 @@ ELightMapInteractionType UStaticMeshComponent::GetStaticLightingType() const
 				GetLightMapResolution( LightMapWidth, LightMapHeight );
 
 				if ((LightMapWidth > 0) && (LightMapHeight > 0) &&	
-					(GetStaticMesh()->LightMapCoordinateIndex >= 0) &&
-					((uint32)GetStaticMesh()->LightMapCoordinateIndex < LODRenderData.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords())
+					(GetStaticMesh()->GetLightMapCoordinateIndex() >= 0) &&
+					((uint32)GetStaticMesh()->GetLightMapCoordinateIndex() < LODRenderData.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords())
 					)
 				{
 					InteractionType = LMIT_Texture;
@@ -510,7 +510,7 @@ bool UStaticMeshComponent::SetStaticLightingMapping(bool bTextureMapping, int32 
 					if (OverriddenLightMapRes == 0)
 					{
 						// See if the static mesh has a valid setting
-						if (GetStaticMesh()->LightMapResolution != 0)
+						if (GetStaticMesh()->GetLightMapResolution() != 0)
 						{
 							// Simply uncheck the override...
 							bOverrideLightMapRes = false;
@@ -533,7 +533,7 @@ bool UStaticMeshComponent::SetStaticLightingMapping(bool bTextureMapping, int32 
 				else
 				{
 					// See if the static mesh has a valid setting
-					if (GetStaticMesh()->LightMapResolution == 0)
+					if (GetStaticMesh()->GetLightMapResolution() == 0)
 					{
 						// See if the static mesh has a valid setting
 						if (OverriddenLightMapRes != 0)
@@ -574,7 +574,7 @@ bool UStaticMeshComponent::SetStaticLightingMapping(bool bTextureMapping, int32 
 				if (OverriddenLightMapRes != 0)
 				{
 					// See if the static mesh has a valid setting
-					if (GetStaticMesh()->LightMapResolution == 0)
+					if (GetStaticMesh()->GetLightMapResolution() == 0)
 					{
 						// Simply uncheck the override...
 						bOverrideLightMapRes = false;
@@ -595,7 +595,7 @@ bool UStaticMeshComponent::SetStaticLightingMapping(bool bTextureMapping, int32 
 			else
 			{
 				// See if the static mesh has a valid setting
-				if (GetStaticMesh()->LightMapResolution != 0)
+				if (GetStaticMesh()->GetLightMapResolution() != 0)
 				{
 					// Set it to the default value from the ini
 					OverriddenLightMapRes = 0;

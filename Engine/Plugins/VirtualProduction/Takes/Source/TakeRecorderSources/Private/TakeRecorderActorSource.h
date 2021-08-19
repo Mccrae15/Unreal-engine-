@@ -44,7 +44,6 @@ public:
 	/**
 	 * Should this actor be recorded as a Possessable in Sequencer? If so the resulting Object Binding	
 	 * will not create a Spawnable copy of this object and instead will possess this object in the level.
-	 * This 
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Actor Source")
 	ETakeRecorderActorRecordType RecordType;
@@ -121,7 +120,7 @@ public:
 	
 	// UTakeRecorderSource Interface
 	virtual bool IsValid()const override;
-	virtual TArray<UTakeRecorderSource*> PreRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence, FManifestSerializer* InManifestSerializer) override;
+	virtual TArray<UTakeRecorderSource*> PreRecording(ULevelSequence* InSequence, FMovieSceneSequenceID InSequenceID, ULevelSequence* InMasterSequence, FManifestSerializer* InManifestSerializer) override;
 	virtual void StartRecording(const FTimecode& InSectionStartTimecode, const FFrameNumber& InSectionFirstFrame, class ULevelSequence* InSequence) override;
 	virtual void TickRecording(const FQualifiedFrameTime& CurrentSequenceTime) override;
 	virtual void StopRecording(class ULevelSequence* InSequence) override;
@@ -130,6 +129,8 @@ public:
 	virtual FString GetSubsceneTrackName(ULevelSequence* InSequence) const override;
 	virtual FString GetSubsceneAssetName(ULevelSequence* InSequence) const override;
 	virtual void AddContentsToFolder(class UMovieSceneFolder* InFolder) override;
+	virtual FMovieSceneSequenceID GetSequenceID() const override { return TargetSequenceID; }
+
 	// ~UTakeRecorderSource Interface
 
 	/** Set the Target actor that we are going to record. Will reset the Recorded Property Map to defaults. */
@@ -147,13 +148,6 @@ public:
 
 	/** Get the record type. If set to project default, gets the type from the project settings */
 	bool GetRecordToPossessable() const;
-
-	TOptional<FMovieSceneSequenceID> GetSequenceID() const
-	{
-		return SequenceID;
-	}
-
-	void SetSequenceID(FMovieSceneSequenceID InSequenceID) { SequenceID = InSequenceID; }
 
 protected:
 
@@ -181,11 +175,10 @@ protected:
 	* This is called when recording starts to generate the Section Recorders for the actor and all components that it currently has,
 	* as well as again during runtime for any newly added components.
 	*/
-	void CreateSectionRecordersRecursive(UObject* ObjectToRecord, UActorRecorderPropertyMap* PropertyMap);
+	void CreateSectionRecordersRecursive(UObject* ObjectToRecord, UActorRecorderPropertyMap* PropertyMap, TArray<UObject*>& TraversedObjects);
 
 	/** Update our cached properties for what will be recorded. Done here so the UI doesn't have to iterate through map every frame. */
 	void UpdateCachedNumberOfRecordedProperties();
-	void UpdateCachedNumberOfRecordedPropertiesRecursive(UActorRecorderPropertyMap* PropertyMap, int32& NumRecordedProperties, int32& NumRecordedComponents);
 
 	/** Returns the Guid of the Spawnable/Possessable in the specified sequence that represents the given actor, or an invalid Guid if the actor has no object binding in the sequence. */
 	FGuid ResolveActorFromSequence(AActor* InActor, ULevelSequence* CurrentSequence) const;
@@ -273,8 +266,8 @@ protected:
 public:
 	// UObject Interface
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent) override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
+	virtual void PostEditUndo() override;
 	// ~UObject Interface
 private:
 
@@ -288,10 +281,7 @@ private:
 private:
 	/** Object Binding guid that is created in the Level Sequence when recording starts.*/
 	FGuid CachedObjectBindingGuid;
-	/** The number of properties (both on actor + components) that we are recording. */
-	int32 CachedNumberOfRecordedProperties;
-	/** The number of components that belong to the target actor that we are recording. */
-	int32 CachedNumberOfRecordedComponents;
+
 	/** Array of actors that have some sort of referenced link to our actor (such as an object attached to our hierarchy) that need Actor Source recorders initialized for them. List is emptied after sources are created. */
 	TSet<class AActor*> NewReferencedActors;
 	/** Array of Actor Sources that we ended up creating that we need to clean up when we stop recording. */
@@ -310,9 +300,9 @@ private:
 	TSet<class UActorComponent*> CachedComponentList;
 
 	/**
-	* Optional ID of the TargetLevelSequence. Cached since calculating this can be heavy. 
+	* ID of the TargetLevelSequence.
 	*/
-	TOptional<FMovieSceneSequenceID> SequenceID;
+	FMovieSceneSequenceID TargetSequenceID;
 
 	/**
 	*  Serializer

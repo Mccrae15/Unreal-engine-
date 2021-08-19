@@ -16,7 +16,7 @@
 #include "USDPrimTwin.generated.h"
 
 /** The Unreal equivalent (twin) of a USD prim */
-UCLASS( Transient )
+UCLASS( Transient, MinimalAPI )
 class UUsdPrimTwin final : public UObject
 {
 	GENERATED_BODY()
@@ -24,6 +24,9 @@ class UUsdPrimTwin final : public UObject
 public:
 	UUsdPrimTwin& AddChild( const FString& InPrimPath );
 	void RemoveChild( const TCHAR* InPrimPath );
+	const TMap< FString, UUsdPrimTwin* >& GetChildren() const { return Children; }
+
+	UUsdPrimTwin* GetParent() const { return Parent.Get(); }
 
 	void Clear();
 
@@ -52,6 +55,9 @@ public:
 	FOnUsdPrimTwinDestroyed OnDestroyed;
 
 public:
+	const static FName GetChildrenPropertyName() { return GET_MEMBER_NAME_CHECKED( UUsdPrimTwin, Children ); }
+
+public:
 	UPROPERTY()
 	FString PrimPath;
 
@@ -62,6 +68,9 @@ public:
 	TWeakObjectPtr< class USceneComponent > SceneComponent;
 
 private:
-	UPROPERTY()
+	UPROPERTY( Transient )
 	TMap< FString, UUsdPrimTwin* > Children;
+
+	UPROPERTY( Transient )
+	TWeakObjectPtr< UUsdPrimTwin > Parent;
 };

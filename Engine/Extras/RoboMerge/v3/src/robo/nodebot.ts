@@ -1,21 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 import * as Sentry from '@sentry/node';
-import { setDefault, _nextTick } from '../common/helper';
+import { _nextTick } from '../common/helper';
 import { ContextualLogger } from '../common/logger';
 import { Mailer, MailParams, Recipients } from '../common/mailer';
-import { Change, ConflictedResolveNFile, PerforceContext, ResolveResult, RoboWorkspace } from '../common/perforce';
-import { IPCControls, NodeBotInterface, QueuedChange, ReconsiderArgs } from './bot-interfaces';
-import { AlreadyIntegrated, Blockage, Branch, BranchArg, BranchGraphInterface, BranchStatus, ChangeInfo, Failure } from './branch-interfaces';
-import { MergeAction,MergeMode, OperationResult, PendingChange, resolveBranchArg, StompedRevision, StompVerification, StompVerificationFile, Target, TargetInfo }  from './branch-interfaces';
+import { Change, ConflictedResolveNFile, PerforceContext, RoboWorkspace } from '../common/perforce';
+import { IPCControls, NodeBotInterface } from './bot-interfaces';
+import { BlockagePauseInfo, BranchStatus, QueuedChange, ReconsiderArgs } from './status-types';
+import { AlreadyIntegrated, Blockage, Branch, BranchArg, BranchGraphInterface, ChangeInfo, Failure } from './branch-interfaces';
+import { MergeAction, OperationResult, PendingChange, resolveBranchArg, StompedRevision, StompVerification, StompVerificationFile }  from './branch-interfaces';
 import { Conflicts } from './conflicts';
-import { EdgeBot } from './edgebot';
+import { EdgeBot, EdgeIntegrationResult } from './edgebot';
 import { BotEventTriggers } from './events';
-import { PerforceRequestResult, PerforceStatefulBot } from './perforce-stateful-bot';
+import { PerforceStatefulBot } from './perforce-stateful-bot';
 import { BlockageNodeOpUrls, OperationUrlHelper } from './roboserver';
 import { Context } from './settings';
-import { BlockagePauseInfo, PauseState } from './state-interfaces';
+import { PauseState } from './state-interfaces';
 import { newTickJournal, TickJournal } from './tick-journal';
+import { computeTargets, parseDescriptionLines, processOtherBotTargets, getIntegrationOwner, getNodeBotFullName, getNodeBotFullNameForLogging } from './targets';
+import { GraphAPI } from '../new/graph';
 
 /**********************************
  * Bot monitoring a single stream
@@ -27,45 +30,6 @@ const NAG_EMAIL_MIN_TIME_DESCRIPTION = 'an hour'
 const SYNTAX_ERROR_PAUSE_TIMEOUT_SECONDS = 10 * 60
 
 const MAX_CHANGES_TO_PROCESS_BEFORE_YIELDING = 50 // when catching up, we seem to get through 10 changes a minute
-
-
-type ChangeFlag = 'review' | 'manual' | 'null' | 'ignore' | 'disregardexcludedauthors'
-
-// mapping of #ROBOMERGE: flags to canonical names
-// use these with a pound like #ROBOMERGE: #stage
-const FLAGMAP: {[name: string]: ChangeFlag} = {
-	// force a codereview to be sent to the owner as commits flow down the automerge chain
-	review: 'review',
-	forcereview: 'review',
-	cr: 'review',
-
-	// don't merge, only shelf this change and review the owner
-	manual: 'manual',
-	nosubmit: 'manual',
-	stage: 'manual',
-
-	// expand any automerge targets as null merges
-	'null': 'null',
-
-	// ignore this commit, do not merge anywhere (special "#ROBOMERGE: ignore" syntax without pound also triggers this)
-	ignore: 'ignore',
-	deadend: 'ignore',
-
-	// process this change even if the author is on the excluded list
-	disregardexcludedauthors: 'disregardexcludedauthors',
-};
-
-const ALLOWED_RAW_FLAGS = ['null','ignore','deadend'];
-
-// #commands in commit messages we should neuter so they don't spam (use only UPPERCASE)
-const NEUTER_COMMANDS = [
-	"CODEREVIEW",
-	"FYI",
-	"QAREVIEW",
-	"RN",
-	"DESIGNCHANGE",
-	"REVIEW",
-];
 
 const ALLOWED_STOMPABLE_NONBINARY = [
 	/\.collection$/
@@ -83,9 +47,46 @@ function isStompableNonBinary(filename: string) {
 
 type InfoResult = { info?: ChangeInfo, errors: any[] }
 
-interface EdgeMergeResults extends PerforceRequestResult {
-	skippedEdges?: Set<string>
+type EdgeMerge = 'ok' | 'skipped' | 'error'
+
+/** results from integrating along available outgoing edges */
+class EdgeMergeResults {
+	// trying out making this purely per edge
+
+	addIntegrationResult(action: MergeAction, result: EdgeIntegrationResult) {
+		if ((result as Change).change) {
+			this.edges.set(action.branch.name, {merge: 'ok', change: result as Change})
+		}
+		else {
+			this.edges.set(action.branch.name, {merge: 'error'})
+			this.errors = [...this.errors, ...(result as string[])]
+		}
+	}
+
+	allChanges() {
+		return [...this.edges].map(([_, v]) => v.change).filter(Boolean) as Change[]
+	}
+
+	markSkipped(target: Branch) {
+		this.edges.set(target.name, {merge: 'skipped'})
+	}
+
+	wasSkipped(target: Branch) {
+		return this.edges.has(target.name) && this.edges.get(target.name)!.merge === 'skipped'
+	}
+
+	/** shelved or committed cl */
+	getTargetCl(target: Branch) {
+		const val = this.edges.get(target.name)
+		return val && val.change && val.change.change
+	}
+
+	// tuples of target name, result, opt change
+	edges = new Map<string, {merge: EdgeMerge, change?: Change}>()
+	// accumulated errors for all edges
+	errors: string[] = []
 }
+
 
 export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 	readonly graphBotName: string
@@ -122,7 +123,8 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		mailer: Mailer, 
 		externalUrl: string, 
 		private readonly eventTriggers: BotEventTriggers,
-		settings: Context
+		settings: Context,
+		private readonly ubergraph: GraphAPI
 	) {
 		// Node initial CL used when creating new (sub-)graph: should be able to set initial CL of source node and have that apply to edges
 		super(settings, branchDef.config.initialCL)
@@ -228,13 +230,14 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 	private async getChanges(startingCl: number) {
 		const path = this.branch.rootPath
-		this._log_action(`checking for changes in ${path}`, 'silly');
+		this._log_action(`checking for changes in ${path}`, 'silly')
 
 		try {
 			if (startingCl <= 0) {
-				const change = await this.p4.latestChange(path);
+				// new bot with no initial CL set: start with latest change
+				const change = await this.p4.latestChange(path)
 				if (change) {
-					return [change];
+					return [change]
 				}
 			}
 			else if (this.lastCl === startingCl) {
@@ -248,14 +251,14 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 				return result
 			}
 			else {
-				return await this.p4.changes(path, startingCl);
+				return await this.p4.changes(path, startingCl)
 			}
 		}
 		catch (err) {
 			this.nodeBotLogger.printException(err, `${this.fullName} Error while querying P4 for changes`)
 		}
 
-		return [];
+		return []
 	}
 
 	public initTickJournal() {
@@ -416,7 +419,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 		// prep the change
 		const change : Change = changeResult.changes[0]
-		change.isManual = true
+		change.isUserRequest = true
 
 		const additionalFlags = fromQueue.additionalFlags || []
 		// By default, we'll submit any changes as a result of processing the CL. In some cases, such as
@@ -445,22 +448,13 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		return this.branch.name
 	}
 	get fullName() {
-		return NodeBot.getNodeBotFullName(this.graphBotName, this.branch.name)
-	}
-	static getNodeBotFullName(botname: string, branchName: string) {
-		return `${botname} ${branchName}`
+		return getNodeBotFullName(this.graphBotName, this.branch.name)
 	}
 	get fullNameForLogging() {
-		return NodeBot.getNodeBotFullNameForLogging(this.graphBotName, this.branch.name)
-	}
-	static getNodeBotFullNameForLogging(botname: string, branchName: string) {
-		return `${botname}:${branchName}`
+		return getNodeBotFullNameForLogging(this.graphBotName, this.branch.name)
 	}
 	protected get logger() {
 		return this.nodeBotLogger
-	}
-	get maxFilesPerIntegration() {
-		return this.branch.maxFilesPerIntegration
 	}
 
 	forceSetLastClWithContext(value: number, culprit: string, reason: string) {
@@ -497,8 +491,13 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		if (targetBranchName) {
 			logMessage += ', target: ' + targetBranchName
 		}
-		if (additionalArgs && additionalArgs.commandOverride) {
-			logMessage += ', with command ' + additionalArgs.commandOverride
+		if (additionalArgs) {
+			if (additionalArgs.additionalFlags) {
+				logMessage += `, (${additionalArgs.additionalFlags.join(', ')})`
+			}
+			if (additionalArgs.commandOverride) {
+				logMessage += ', with command ' + additionalArgs.commandOverride
+			}
 		}
 		this.nodeBotLogger.info(logMessage);
 		this.queuedChanges.push({cl: changenum, who: instigator, ...(additionalArgs || {})});
@@ -608,18 +607,15 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		const blockageChange = blockageChangeRetrieval.changes[0]
 
 		// Set a variety of flags on the change before processing
-		blockageChange.isManual = true
+		blockageChange.isUserRequest = true
 		blockageChange.forceCreateAShelf = true // We don't want to submit this
 		blockageChange.sendNoShelfEmail = true // Don't send any shelf creation emails for this
 
 		// Process and attempt the integration
 		const edgeMap = new Map<string, EdgeBot>([[edge.targetBranch.upperName, edge]])
-		let processResult: InfoResult
-		let mergeResult: PerforceRequestResult | undefined // Set to possible undefines as we use this in the finally clause
-		let integratedCl: Change
-		let resolveResult: ResolveResult
+		let mergeResult: EdgeMergeResults | undefined // Set to possible undefines as we use this in the finally clause
 		try {
-			processResult = await this._createChangeInfo(blockageChange, edgeMap, this.p4.username, targetBranch.workspace, targetBranch)
+			const processResult = await this._createChangeInfo(blockageChange, edgeMap, this.p4.username, targetBranch.workspace, targetBranch)
 			if (!processResult.info) {
 				return {
 					success: false, 
@@ -629,8 +625,9 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 			mergeResult = await this._mergeClViaEdges(edgeMap, processResult.info, true)
 
 			// If we don't have a change returned, we ran into an error processing the CL
-			if (!mergeResult.changes || mergeResult.changes.length !== 1) { // Encountered when we get errors back
-				let message = `Got incorrect number of entries back from integrating CL ${changeCl} (length = ${mergeResult.changes ? mergeResult.changes.length : 'null'}, should be 1)`
+			const changes = mergeResult.allChanges()
+			if (changes.length !== 1) { // Encountered when we get errors back
+				let message = `Got incorrect number of entries back from integrating CL ${changeCl} (length = ${changes.length}, should be 1)`
 				if (mergeResult.errors.length > 0) {
 					message = `${message}\nErrors: ${mergeResult.errors}`
 				}
@@ -640,7 +637,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 				}
 			}
 
-			integratedCl = mergeResult.changes[0]
+			const integratedCl = changes[0]!
 			if (!integratedCl.change) {
 				return { 
 					success: false, 
@@ -657,7 +654,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 			}
 
 			// Get what is left to resolve out of the changelist
-			resolveResult = await this.p4.resolve(integratedCl.client, integratedCl.change, 'normal')
+			const resolveResult = await this.p4.resolve(integratedCl.client, integratedCl.change, 'normal')
 
 			if (!resolveResult.hasConflict()) {
 				return { 
@@ -844,9 +841,9 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		finally {
 			// Delete the CL, including any remaining shelved files
 			this.nodeBotLogger.info(`${this.fullName} - Cleaning up after verifyStompRequest()`)
-			if (mergeResult && mergeResult.changes && mergeResult.changes.length > 0) {
-				for (let processResultChange of mergeResult.changes) {
-					edge.revertPendingCLWithShelf(processResultChange.client, processResultChange.change, "Stomp Verify")
+			if (mergeResult) {
+				for (const processResultChange of mergeResult.allChanges()) {
+					await edge.revertPendingCLWithShelf(processResultChange.client, processResultChange.change, "Stomp Verify")
 				}
 			}
 		}
@@ -984,7 +981,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 		const maybePendingChange = arg as PendingChange
 		const info = maybePendingChange.change || (arg as ChangeInfo)
-		const owner = (maybePendingChange.action ? PerforceStatefulBot.getIntegrationOwner(maybePendingChange) : info.owner) || info.author
+		const owner = (maybePendingChange.action ? getIntegrationOwner(maybePendingChange) : info.owner) || info.author
 
 		const pauseInfo: BlockagePauseInfo = {
 			startedAt, owner, type: 'branch-stop',
@@ -1220,7 +1217,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		// Get branch referenced by blockage object
 		const conflictBranch : Branch = blockage.change.branch
 
-		// Only email for our branch, if the branch is configured to recieve emails
+		// Only email for our branch, if the branch is configured to receive emails
 		if (this.branch.name !== conflictBranch.name) {
 			return
 		}
@@ -1238,7 +1235,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		// Get branch referenced by blockage object
 		const shelfBranch : Branch = pendingChange.change.branch
 
-		// Only email for our branch, if the branch is configured to recieve emails
+		// Only email for our branch, if the branch is configured to receive emails
 		if (this.branch.name !== shelfBranch.name) {
 			return
 		}
@@ -1266,7 +1263,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 		// process manual changes even if paused or above the lastGoodCL
 		for (const change of allChanges) {
-			if (change.isManual) {
+			if (change.isUserRequest) {
 				this.nodeBotLogger.debug(`Processing manual change CL ${change.change}`)
 				await this._processAndMergeCl(availableEdges, change, true)
 			}
@@ -1286,12 +1283,11 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		// make sure the list is sorted in ascending order
 		changes.sort((a, b) => a.change - b.change)
 
-		let doneCount = 0
-
-		for (const change of changes) {
+		for (let changeIndex = 0; changeIndex < changes.length; ++changeIndex) {
+			const change = changes[changeIndex]
 			const changeResult = await this._processAndMergeCl(availableEdges, change, false)
 
-			// If the integration failed, exit immediately.
+			// Exit immediately on syntax errors
 			if (this.isBlocked) {
 				return
 			}
@@ -1303,21 +1299,21 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 			// Every edge that was available at the start of the tick that is still available had the chance to receive this change, even if they weren't a target
 			// Count this as processed to keep them up-to-date
 			for (const edgeBot of availableEdges.values()) {
-				if (edgeBot.isAvailable && edgeBot.lastCl < change.change && !(changeResult.skippedEdges && changeResult.skippedEdges.has(edgeBot.targetBranch.name))) {
-					edgeBot.lastCl = change.change
+				if (edgeBot.isAvailable && edgeBot.lastCl < change.change && !changeResult.wasSkipped(edgeBot.targetBranch)) {
+					edgeBot.updateLastCl(changes, changeIndex, changeResult.getTargetCl(edgeBot.targetBranch))
 				}
 			}
 
 			// yield if necessary - might be better to make this time-based
-			++doneCount;
-			if (maxChangesToProcess > 0 && doneCount === maxChangesToProcess) {
-				this.nodeBotLogger.info(`${this.branch.name} (${this.graphBotName}) yielding after ${doneCount} revisions`)
+			if (maxChangesToProcess > 0 && changeIndex === maxChangesToProcess) {
+				this.nodeBotLogger.info(`${this.branch.name} (${this.graphBotName}) yielding after ${maxChangesToProcess} revisions`)
 				return
 			}
 
 			// If we've been paused (or blocked?) while the previous change was being processed, stop now
+			// seems either very rare on impossible in practice
 			if (!this.isAvailable) {
-				this.nodeBotLogger.info(`Node is no longer available to process further changes. Yielding after ${doneCount} revisions`)
+				this.nodeBotLogger.info(`Node is no longer available to process further changes. Revisions processed: ${changeIndex}`)
 				return
 			}
 		}
@@ -1328,13 +1324,15 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 	 */
 	private async _processAndMergeCl(
 		availableEdges: Map<string, EdgeBot>, change: Change, ignoreEdgePauseState: boolean,
-		optOwnerOverride?: string, optWorkspaceOverride?: RoboWorkspace, optTargetBranch?: Branch | null)
-		: Promise<EdgeMergeResults> {
-			const result = await this._createChangeInfo(change, availableEdges, optOwnerOverride, optWorkspaceOverride, optTargetBranch)
-			if (result.info) {
-				return await this._mergeClViaEdges(availableEdges, result.info, ignoreEdgePauseState)
-			}
-			return { errors: result.errors }
+		optOwnerOverride?: string, optWorkspaceOverride?: RoboWorkspace, optTargetBranch?: Branch | null
+	) : Promise<EdgeMergeResults> {
+		const result = await this._createChangeInfo(change, availableEdges, optOwnerOverride, optWorkspaceOverride, optTargetBranch)
+		if (result.info) {
+			return await this._mergeClViaEdges(availableEdges, result.info, ignoreEdgePauseState)
+		}
+		const emResult = new EdgeMergeResults()
+		emResult.errors = result.errors
+		return emResult
 	}
 
 	private async _createChangeInfo(
@@ -1371,7 +1369,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 								throw new Error('Missing edge! ' + action.branch.name)
 							}
 
-							if (info.isManual || info.cl > edge.lastCl) {
+							if (info.userRequest || info.cl > edge.lastCl) {
 								blockAssetEdges.push([edge, action])
 							}
 							break
@@ -1380,36 +1378,9 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 				}
 			}
 
-			const maxFilesPerIntegration = this.maxFilesPerIntegration
-			const describeResult = blockAssetEdges.length > 0 || maxFilesPerIntegration > 0
-				? await this.p4.describe(change.change, maxFilesPerIntegration > 0 ? maxFilesPerIntegration : undefined)
-				: null
-
-			if (!change.isManual) {
-				if (maxFilesPerIntegration > 0 && describeResult!.entries.length >= maxFilesPerIntegration) {
-					for (const action of info.targets) {
-						if (action.mergeMode !== 'skip' && availableEdges.has(action.branch.upperName)) {
-							const failure: Failure = {kind: 'Too many files', description: 'Please request shelf'}
-							const pending: PendingChange = {change: info, action, newCl: -1}
-
-							// Run per-edge handling ...
-							const edge = this.getImmediateEdge(action.branch)
-							if (!edge) {
-								throw new Error('Missing edge! ' + action.branch.name)
-							}
-
-							await edge.block(this.createEdgeBlockageInfo(action.branch, failure, pending))
-
-							// ... then let node do facilitate notification handling
-							await this.handleMergeFailure(failure, pending)
-						}
-					}
-					// errors should be ignored, since this is not a 'manual' change (e.g. stomp)
-					return {errors: []}
-				}
-			}
-
 			if (blockAssetEdges.length > 0) {
+				const describeResult = await this.p4.describe(change.change)
+
 				let changeContainsAssets = false
 				for (const entry of describeResult!.entries) {
 					const fileExtIndex = entry.depotFile.lastIndexOf('.')
@@ -1440,15 +1411,8 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		}
 
 		if (info.targets) {
-			// check incognito mode compliance: we don't allow explicit targets
-			// to be specified to avoid exposing, e.g. [FORTNITE] bot name
-
 			for (const target of info.targets) {
 				if (this.getImmediateEdge(target.branch)!.incognitoMode) {
-					if (target.furtherMerges.length !== 0) {
-						info.errors = info.errors || []
-						info.errors.push(`Target ${target.branch.name} has explicit targets - not allowed in incognito mode`)
-					}
 
 					if (target.flags.has('review')) {
 						info.errors = info.errors || []
@@ -1522,12 +1486,12 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 	}
 	private _sendBlockageEmail(blockage: Blockage) {
 		const recipients = new Recipients(blockage.owner)
-		const subject = `Change ${blockage.change.source_cl} caused blockage in ${this.fullName}`
-		const intro = `Robomerge encountered an error merging change ${blockage.change.source_cl} from branch ${blockage.change.branch.name}.`
+		const subject = `Change ${blockage.change.cl} caused blockage in ${this.fullName}`
+		const intro = `Robomerge encountered an error merging change ${blockage.change.cl} from branch ${blockage.change.branch.name}.`
 		const urls = this.getBlockageUrls(blockage)
 
 		// Begin contructing email message
-		let emailPreformattedText = `${blockage.failure.kind}!\n\nCL #${blockage.change.source_cl}: ${blockage.change.description}`
+		let emailPreformattedText = `${blockage.failure.kind}!\n\nCL #${blockage.change.cl}: ${blockage.change.description}`
 		if (blockage.failure.description) {
 			emailPreformattedText += `\n\n${blockage.failure.description}`
 		}
@@ -1567,7 +1531,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 	_emailNoActionIfRequested(info: ChangeInfo, _msg: string) {
 
-		if (info.isManual) {
+		if (info.userRequest) {
 			// this._sendEmail(new Recipients(info.owner!), msg, `Just an FYI that RoboMerge (${this.botname}) did not perform an integration for this changelist`, info.description);
 		}
 	}
@@ -1579,151 +1543,45 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		this._sendGenericEmail(recipients, subject, errorPreface, message);
 	}
 
-	private static _parseTargetList(targetString: string) {
-		return targetString.split(/[ ,]/).filter(Boolean)
-	}
-
 	private parseChange(change: Change, optTargetBranch?: Branch | null): ChangeInfo {
-		let source: string | null = null
-		let source_cl = -1
-		let owner: string | null = null
-		let authorTag: string | null = null
 
 		// parse the description
-		const descFinal: string[] = []
 		if (change.desc && typeof(change.desc.split) !== 'function') {
 			this.nodeBotLogger.warn(`Unrecognised description type: ${typeof(change.desc)}, CL#${change.change}`)
 			change.desc = '<description not available>'
 		}
+
+		const parse = (lines: string[]) => parseDescriptionLines(
+			lines,
+			this.branch.isDefaultBot,
+			this.graphBotName,
+			change.change,
+			(this.branchGraph.config.alias || '').toUpperCase(),
+			this.branchGraph.config.macros,
+			this.nodeBotLogger
+		)
+
+		const parsedLines = parse(change.desc.split('\n'))
+
 		const commandOverride = (change.commandOverride || '').trim()
-		const descLines = commandOverride ? commandOverride.split('|') :
-							change.desc ? change.desc.split('\n') : []
-		let propagatingNullMerge = false
-		let hasOkForGithubTag = false
-
-		// flag to check whether default targets have been overridden
-		let useDefaultFlow = true
-
-		let requestedTargetNames: string[] = []
-		for (const line of descLines) {
-			// trim end - keep any initial whitespace
-			const comp = line.replace(/\s+$/, '')
-
-			// check for control hashes
-			const match = comp.match(/^(\s*)#([-\w[\]]+)[:\s]*(.*)$/)
-			if (!match) {
-				// strip beginning blanks
-				if (descFinal.length > 0 || comp !== '') {
-					if (comp.indexOf('[NULL MERGE]') !== -1) {
-						propagatingNullMerge = true
-					}
-					descFinal.push(line)
-				}
-				continue
-			}
-
-			const ws = match[1] 
-			const command = match[2].toUpperCase()
-			const value = match[3].trim()
-
-			// #robomerge tags are required to be at the start of the line
-			if (ws && command === 'ROBOMERGE' && value.match(/\bnone\b/i)) {
-				// completely skip #robomerge nones that might come in from GraphBot branch integrations, so we don't
-				// get impaled on our own commit hook
-				continue
-			}
-			
-			if (ws || !command.startsWith('ROBOMERGE')) {
-				// check for commands to neuter
-				if (NEUTER_COMMANDS.indexOf(command) >= 0) {
-					// neuter codereviews so they don't spam out again
-					descFinal.push(`${ws}[${command}] ${value}`)
-				}
-				
-				else if (command.indexOf('REVIEW-') === 0) {
-					// remove swarm review numbers entirely (The can't be neutered and generate emails)
-					if (value !== '') {
-						descFinal.push(value)
-					}
-				}
-				else if (command === 'OKFORGITHUB') {
-					hasOkForGithubTag = true
-					descFinal.push(line)
-				}
-				else {
-
-					// default behavior is to keep any hashes we don't recognize
-					descFinal.push(line)
-				}
-				continue
-			}
-
-			// Handle commands
-			if (command === 'ROBOMERGE') {
-
-				// completely ignore bare ROBOMERGE tags if we're not the default bot (should not affect default flow)
-				if (this.branch.isDefaultBot) {
-					useDefaultFlow = false
-					requestedTargetNames = [...requestedTargetNames, ...NodeBot._parseTargetList(value)]
-				}
-				continue
-			}
-			
-			// Look for a specified bot and other defined tags
-			const specificBotMatch = command.match(/ROBOMERGE\[([-_a-z0-9]+)\]/i)
-
-			if (specificBotMatch) {
-				const specificBot = specificBotMatch[1].toUpperCase()
-				if (specificBot === this.graphBotName ||
-					specificBot === (this.branchGraph.config.alias || '').toUpperCase() || 
-					specificBot === 'ALL') {
-					useDefaultFlow = false
-
-					requestedTargetNames = [...requestedTargetNames, ...NodeBot._parseTargetList(value)]
-				}
-				else {
-					// allow commands to other bots to propagate!
-					descFinal.push(line)
-				}
-			}
-			else if (command === 'ROBOMERGE-AUTHOR') {
-				// tag intended to be purely for propagating
-				// currently using it to set owner if not already set
-				authorTag = value
-			}
-			else if (command === 'ROBOMERGE-OWNER') {
-				owner = value.toLowerCase()
-			}
-			else if (command === 'ROBOMERGE-SOURCE') {
-				source = `${value} via CL ${change.change}`
-			}
-			else if (command === 'ROBOMERGE-BOT') {
-				// if matches description written in _mergeCl
-				if (value.startsWith(this.graphBotName + ' (')) {
-					useDefaultFlow = false
-				}
-			}
-			else if (command !== 'ROBOMERGE-EDIGRATE' &&
-					 command !== 'ROBOMERGE-COMMAND') {
-				// add unknown command as a branch name to force a syntax error
-				requestedTargetNames = [command]
-			}
-
+		if (commandOverride) {
+			parsedLines.override(parse(commandOverride.split('|').map(s => s.trim())))
 		}
-
-		// make the end description (without any robomerge tags or 'at' references)
-		const description = descFinal.join('\n').replace(/@/g, '[at]').trim()
 
 		// Author is always CL user
 		const author = (change.user || 'robomerge').toLowerCase()
 
+		let source_cl = change.change
+
+		// make the end description (without any robomerge tags or 'at' references)
+		const description = parsedLines.descFinal.join('\n').replace(/@/g, '[at]').trim()
+
 		// default source to current
-		if (source === null) {
-			source = `CL ${change.change} in ${this.branch.rootPath}`
-			source_cl = change.change
+		if (!parsedLines.source) {
+			parsedLines.source = `CL ${change.change} in ${this.branch.rootPath}`
 		}
 		else {
-			let m = source.match(/^CL (\d+)/)
+			let m = parsedLines.source.match(/^CL (\d+)/)
 			let num = m ? (parseInt(m[1]) || 0) : 0
 			source_cl = num > 0 ? num : change.change
 		}
@@ -1740,30 +1598,57 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 			branch: this.branch,
 			cl: change.change,
 			source_cl: source_cl,
-			isManual: !!change.isManual,
-			author, source, description, propagatingNullMerge, forceCreateAShelf, sendNoShelfEmail, 
-			forceStompChanges, additionalDescriptionText, hasOkForGithubTag,
-			numFiles: -1, // calculate later if there are any targets
-			overriddenCommand: commandOverride
+			author,
+			source: parsedLines.source,
+			description,
+			propagatingNullMerge: parsedLines.propagatingNullMerge,
+			forceCreateAShelf,
+			sendNoShelfEmail,
+
+			forceStompChanges, additionalDescriptionText,
+			hasOkForGithubTag: parsedLines.hasOkForGithubTag,
+			overriddenCommand: commandOverride,
+			macros: parsedLines.expandedMacros
 		}
 
-		if (authorTag) {
-			info.authorTag = authorTag
+		if (change.isUserRequest) {
+			info.userRequest = optTargetBranch ? 'edge-reconsider' : 'node-reconsider'
 		}
 
-		if (owner) {
-			info.owner = owner
+		if (parsedLines.authorTag) {
+			info.authorTag = parsedLines.authorTag
+		}
+
+		if (parsedLines.owner) {
+			info.owner = parsedLines.owner
+		}
+
+		if (parsedLines.errors.length > 0) {
+			info.errors = parsedLines.errors
+			return info
 		}
 
 		// compute targets if list is not empty
 		const defaultTargets = commandOverride ? [] :
-								useDefaultFlow ? this.branch.defaultFlow :
+								parsedLines.useDefaultFlow ? this.branch.defaultFlow :
 								this.branch.forceFlowTo
 
-		if (optTargetBranch || (requestedTargetNames.length + defaultTargets.length) > 0) {
-			this._computeTargets(info, requestedTargetNames, defaultTargets, optTargetBranch)
+		const args = parsedLines.arguments
+		if (optTargetBranch || (args.length + defaultTargets.length) > 0) {
+			computeTargets(this.branch, this.ubergraph, change.change, info, args, defaultTargets, this.nodeBotLogger, !this.branch.config.disallowDeadend, optTargetBranch)
 		}
 
+		if (!info.errors) {
+			const errors: string[] = []
+			const actions = info.targets || []
+			processOtherBotTargets(parsedLines, this.branch, this.ubergraph, actions, errors)
+			if (actions.length > 0) {
+				info.targets = actions
+			}
+			if (errors.length > 0) {
+				info.errors = errors
+			}
+		}
 		return info
 	}
 
@@ -1771,263 +1656,8 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		return this.branchGraph.getBranch(name) || null;
 	}
 
-	static computeImplicitTargets(
-		sourceBranch: Branch,
-		branchGraph: BranchGraphInterface,
-		outErrors: string[],
-		targets: Set<Branch>,
-		skipBranches: Set<Branch>
-	) {
-		const merges = new Map<Branch, Branch[]>()
-
-		// parallel flood the flowsTo graph to find all specified targets
-
-		// branchPaths is an array of 3-tuples, representing the branches at the current boundary of the flood
-		//	- first entry is the branch
-		//	- second and third entries make up the path to get to that branch
-		//		- second entry, if non-empty, has the path up to the most recent explicit target
-		//		- third entry has any remaining implicit targets
-
-		const branchPaths: [Branch, Branch[], Branch[]][] = [[sourceBranch, [], [sourceBranch]]]
-
-		const seen = new Set([sourceBranch])
-
-		while (targets.size !== 0 && branchPaths.length !== 0) {
-
-			const [sourceBranch, explicit, implicit] = branchPaths.shift()!
-
-			// flood the graph one step to include all unseen direct flowsTo nodes of one branch
-			let anyUnseen = false
-			if (sourceBranch.flowsTo && !skipBranches.has(sourceBranch)) {
-				for (const branchName of sourceBranch.flowsTo) {
-					const branch = branchGraph.getBranch(branchName)
-					if (!branch) {
-						// shouldn't happen: branch map takes care of validating flow graph
-						throw "unknown branch in flowsTo"
-					}
-					if (seen.has(branch))
-						continue
-					seen.add(branch)
-					anyUnseen = true
-					if (targets.has(branch)) {
-						branchPaths.unshift([branch, [...explicit, ...implicit, branch], []])
-					}
-					else {
-						branchPaths.push([branch, explicit, [...implicit, branch]])
-					}
-				}
-			}
-
-			// store the calculated merge data if we've exhausted a sub-tree of the graph
-			if (!anyUnseen && explicit.length > 1) {
-				const directTarget = explicit[1]
-
-				const indirectTargets = setDefault(merges, directTarget, [])
-				targets.delete(directTarget)
-				for (let index = 2; index < explicit.length; ++index) {
-					const indirectTarget = explicit[index]
-					if (indirectTargets.indexOf(indirectTarget) === -1) {
-						indirectTargets.push(indirectTarget)
-					}
-					targets.delete(indirectTarget)
-				}
-			}
-		}
-
-		if (targets.size > 0) {
-			const branchesMonitoringSameStream = branchGraph.getBranchesMonitoringSameStreamAs(sourceBranch)
-
-		targetLoop:
-			for (const unreachableTarget of targets) {
-
-				// don't error if target reachable by another bot monitoring this stream
-				if (branchesMonitoringSameStream) {
-					for (const other of branchesMonitoringSameStream) {
-						if (other.reachable!.indexOf(unreachableTarget.upperName) !== -1) {
-							continue targetLoop
-						}
-					}
-				}
-
-				outErrors.push(`Branch '${unreachableTarget.name}' is not reachable from '${NodeBot.getNodeBotFullName(branchGraph.botname, sourceBranch.name)}'`)
-			}
-		}
-
-		return merges
-	}
-
-	private _computeTargets(info: TargetInfo, requestedTargetNames: string[], defaultTargets: string[], optTargetBranch?: Branch | null) {
-		NodeBot.computeTargets(this.branch, this.branchGraph, info, requestedTargetNames, defaultTargets, this.nodeBotLogger, optTargetBranch)
-	}
-	// public so it can be called from unit tests
-	static computeTargets(sourceBranch: Branch, branchGraph: BranchGraphInterface, info: TargetInfo, requestedTargetNames: string[],
-		defaultTargets: string[], logger: ContextualLogger, optTargetBranch?: Branch | null) {
-		const errors: string[] = []
-		const flags = new Set<string>()
-
-		// list of branch names and merge mode (default targets first, so merge mode gets overwritten if added explicitly)
-		const defaultMergeMode: MergeMode = info.forceStompChanges ? 'clobber' : 'normal'
-		const requestedMerges: [string, MergeMode][] = defaultTargets.map(name => [name, defaultMergeMode] as [string, MergeMode])
-
-		// Parse prefixed branch names and flags
-		for (const rawTargetName of requestedTargetNames) {
-			const rawTargetLower = rawTargetName.toLowerCase()
-
-			// check for 'ignore' and remap to #ignore flag
-			if (ALLOWED_RAW_FLAGS.indexOf(rawTargetLower) >= 0)
-			{
-				flags.add(FLAGMAP[rawTargetLower]);
-				continue;
-			}
-
-			// If forceStompChanges, add the target as a stomp if it isn't a flagged target
-			if (info.forceStompChanges && ['!', '-', '$', '#'].indexOf(rawTargetName.charAt(0)) === -1) {
-				requestedMerges.push([rawTargetName, 'clobber'])
-				continue
-			}
-
-			// see if this has a modifier
-			switch (rawTargetName.charAt(0))
-			{
-			default:
-				requestedMerges.push([rawTargetName, 'normal'])
-				break
-			
-			case '!':
-				requestedMerges.push([rawTargetName.substr(1), 'null'])
-				break;
-
-			case '-':
-				requestedMerges.push([rawTargetName.substr(1), 'skip'])
-				break
-
-			case '$':
-			case '#':
-				// set the flag and continue the loop
-				const flagname = FLAGMAP[rawTargetLower.substr(1)]
-				if (flagname) {
-					flags.add(flagname)
-				}
-				else {
-					logger.warn(`Ignoring unknown flag "${rawTargetName}" from ${info.author}`)
-				}
-				break
-			}
-		}
-
-		if (flags.has('null')) {
-			for (const branchName of sourceBranch.forceFlowTo) {
-				requestedMerges.push([branchName, 'null'])
-			}
-		}
-
-		// compute the targets map
-		const mergeActions: MergeAction[] = []
-		let allDownstream: Set<Branch> | null = null
-		if (!flags.has('ignore')) {
-			const skipBranches = new Set<Branch>()
-			const targets = new Map<Branch, MergeMode>()
-
-			// process parsed targets
-			for (const [targetName, mergeMode] of requestedMerges) {
-				// make sure the target exists
-				const targetBranch = branchGraph.getBranch(targetName)
-				if (!targetBranch) {
-					errors.push(`Unable to find branch "${targetName}"`)
-					continue
-				}
-
-				if (targetBranch === sourceBranch) {
-					// ignore merge to self to prevent indirect target loops
-					continue
-				}
-
-				if (targetBranch.whitelist.length !== 0) {
-					const owner = NodeBot.getIntegrationOwner(targetBranch, info.owner) || info.author
-					if (targetBranch.whitelist.indexOf(owner) < 0) {
-						errors.push(`${owner} is not on the whitelist to merge to "${targetBranch.name}"`)
-						continue
-					}
-				}
-
-				if (mergeMode === 'skip') {
-					skipBranches.add(targetBranch)
-				}
-
-				// note: this allows multiple mentions of same branch, with flag of last mention taking priority. Could be an error instead
-				targets.set(targetBranch, mergeMode)
-			}
-
-			let merges: Map<Branch, Branch[]> | null = null
-			if (targets.size > 0) {
-				merges = NodeBot.computeImplicitTargets(sourceBranch, branchGraph, errors, new Set(targets.keys()), skipBranches)
-			}
-
-			// Now that all targets from original changelist description are computed, compare to requested target branch, if applicable
-			if (optTargetBranch) {
-				// Ensure optTargetBranch is a (possibly indirect) target of this change
-				if (!merges || !merges.has(optTargetBranch)) {
-					errors.push(`Requested target branch ${optTargetBranch.name} not a valid target for this changelist`)
-				}
-				// Ensure we provide informative error around requesting to remerge when it should be null or skipped (though we shouldn't get in this state)
-				else {
-					const targetMergeMode = targets.get(optTargetBranch) || 'normal'
-					if (targetMergeMode === 'null' || targetMergeMode === 'skip') {
-						errors.push(`Invalid request to merge to ${optTargetBranch.name}: Changelist originally specified '${targetMergeMode}' merge for this branch`)
-					}
-					else {
-						// Success!
-						// Override targets with ONLY optTargetBranch
-						merges = new Map([[optTargetBranch, merges.get(optTargetBranch)!]])
-					}
-				}
-			}
-
-			if (merges && merges.size > 0 && errors.length === 0) {
-				// compute final merge modes of all targets
-				allDownstream = new Set<Branch>()
-
-				for (const [direct, indirectTargets] of merges.entries()) {
-					const mergeMode : MergeMode = targets.get(direct) || 'normal'
-					if (mergeMode === 'skip') {
-						continue
-					}
-					allDownstream.add(direct)
-
-					const furtherMerges: Target[] = []
-					for (const branch of indirectTargets) {
-						furtherMerges.push({branch, mergeMode: targets.get(branch) || 'normal'})
-						allDownstream.add(branch)
-					}
-
-					mergeActions.push({branch: direct, mergeMode, furtherMerges, flags})
-				}
-
-				// add indirect forced branches to allDownstream
-				for (const branch of [...allDownstream]) {
-					branchGraph._computeReachableFrom(allDownstream, 'forceFlowTo', branch)
-				}
-			}
-		}
-
-		// send errors if we had any
-		if (errors.length > 0) {
-			info.errors = errors
-		}
-
-		// report targets
-		if (mergeActions.length > 0) {
-			info.targets = mergeActions
-		}
-
-		// provide info on all targets that should eventually be merged too
-		if (allDownstream && allDownstream.size !== 0) {
-			info.allDownstream = [...allDownstream]
-		}
-	}
-
 	private async _mergeClViaEdges(availableEdges: Map<string, EdgeBot>, info: ChangeInfo, ignoreEdgePauseState: boolean) : Promise<EdgeMergeResults> {
-		let mergedChanges : EdgeMergeResults = { skippedEdges: new Set(), changes: [], errors: [] }
+		const mergedChanges = new EdgeMergeResults()
 
 		for (const target of info.targets!) {
 			if (!this.hasEdge(target.branch)) {
@@ -2044,7 +1674,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 				continue
 			}
 
-			if (!info.isManual && !target.flags.has('disregardexcludedauthors') && targetEdge.excludedAuthors.indexOf(info.author) >= 0) {
+			if (!info.userRequest && !target.flags.has('disregardexcludedauthors') && targetEdge.excludedAuthors.indexOf(info.author) >= 0) {
 				// skip this one
 				const skipMessage = `Skipping CL ${info.cl} due to excluded author '${info.author}'`
 				this.nodeBotLogger.info(skipMessage)
@@ -2063,14 +1693,14 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 				// If this edge is paused, skip it but we'll have to report it so the node doesn't advance its lastCl
 				if (!targetEdge.isAvailable) {
-					mergedChanges.skippedEdges!.add(target.branch.name)
+					mergedChanges.markSkipped(target.branch)
 					availableEdges.delete(targetEdge.targetBranch.upperName)
 					continue
 				}
 			}
 
 			// If this is not a manual change, ensure we don't tell an edge that has moved past this point to redo work
-			if (!info.isManual && info.cl <= targetEdge.lastCl) {
+			if (!info.userRequest && info.cl <= targetEdge.lastCl) {
 				this.nodeBotLogger.debug(`${info.cl} is behind ${targetEdge.displayName} lastCL: ${targetEdge.lastCl}`)
 				continue
 			}
@@ -2079,7 +1709,14 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 				++this.tickJournal.merges
 			}
 
-			const integration = await targetEdge.performMerge(info, target, this.branch.convertIntegratesToEdits)
+			const integrationResult = await targetEdge.performMerge(info, target, this.branch.convertIntegratesToEdits)
+
+			// wake up target nodebot, so look for further merges or conflict resolutions
+			const targetNodebot = target.branch.bot as NodeBot
+			if (targetNodebot) {
+				targetNodebot.ticksSinceLastNewP4Commit = 0
+				targetNodebot.skipTickCounter = 0
+			}
 
 			// If the target edge is now blocked after the merge attempt, remove it from future merges this tick
 			if (targetEdge.isBlocked) {
@@ -2087,17 +1724,14 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 				availableEdges.delete(targetEdge.targetBranch.upperName)
 			}
 
-			if (integration.changes) {
-				mergedChanges.changes = mergedChanges.changes!.concat(integration.changes)
-			}
-			mergedChanges.errors = mergedChanges.errors.concat(integration.errors)
+			mergedChanges.addIntegrationResult(target, integrationResult)
 		}
 
 		return mergedChanges
 	}
 
 	handleRoboShelveError(failure: Failure, toShelve: PendingChange) {
-		const owner = NodeBot.getIntegrationOwner(toShelve) || toShelve.change.author
+		const owner = getIntegrationOwner(toShelve) || toShelve.change.author
 		const ownerEmail = this.p4.getEmail(owner)
 		const blockage: Blockage = {change: toShelve.change, failure, owner, ownerEmail,
 										time: new Date, action: toShelve.action}
@@ -2113,7 +1747,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 		const owner: string = change.owner || change.author
 
-		if (change.isManual) {
+		if (change.userRequest) {
 			this.nodeBotLogger.info(shortMessage + ` (reconsider triggered by ${change.owner}):\n${message}.`)
 			this._sendError(new Recipients(owner), shortMessage, message + '\nFull CL description:\n\n' + originalCommitMessage)
 		}
@@ -2138,8 +1772,8 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		const targetBranch = pending.action.branch
 		const shortMessage = `${failure.kind} while merging CL ${pending.change.cl} to ${targetBranch.name}`
 
-		const owner = NodeBot.getIntegrationOwner(pending) || pending.change.author
-		if (pending.change.isManual) {
+		const owner = getIntegrationOwner(pending) || pending.change.author
+		if (pending.change.userRequest) {
 			this.nodeBotLogger.info(shortMessage + ` (reconsider triggered by ${pending.change.owner}):\n${failure.description}.`)
 
 			let message = `While reconsidering CL#${pending.change.cl}\n`

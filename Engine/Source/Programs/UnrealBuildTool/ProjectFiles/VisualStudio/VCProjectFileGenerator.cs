@@ -33,6 +33,7 @@ namespace UnrealBuildTool
 		VisualStudio2015,
 		VisualStudio2017,
 		VisualStudio2019,
+		VisualStudio2022,
 	}
 
 	class VCProjectFileSettings
@@ -139,6 +140,10 @@ namespace UnrealBuildTool
 			{
 				BuildToolOverride = "-2019";
 			}
+			else if (InArguments.HasOption("-2022"))
+			{
+				BuildToolOverride = "-2022";
+			}
 		}
 
 		public override string[] GetTargetArguments(string[] Arguments)
@@ -232,7 +237,9 @@ namespace UnrealBuildTool
 				case VCProjectFileFormat.VisualStudio2017:
 					return "15.0";
 				case VCProjectFileFormat.VisualStudio2019:
-					return "15.0"; // Correct as of VS2019 Preview 1
+					return "16.0";
+				case VCProjectFileFormat.VisualStudio2022:
+					return "17.0";
 			}
 			return string.Empty;
 		}
@@ -251,7 +258,8 @@ namespace UnrealBuildTool
 				case VCProjectFileFormat.VisualStudio2017:
                     return "v141";
 				case VCProjectFileFormat.VisualStudio2019:
-					return "v142"; // Correct as of VS2019 Preview 2
+				case VCProjectFileFormat.VisualStudio2022:
+					return "v142";
 
             }
 			return string.Empty;
@@ -313,6 +321,14 @@ namespace UnrealBuildTool
 					Settings.ProjectFileFormat = VCProjectFileFormat.Default;
 				}
 			}
+			else if (Settings.ProjectFileFormat == VCProjectFileFormat.VisualStudio2022)
+			{
+				if (!WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2022))
+				{
+					Log.TraceWarning("Visual Studio C++ 2022 installation not found - ignoring preferred project file format.");
+					Settings.ProjectFileFormat = VCProjectFileFormat.Default;
+				}
+			}
 
 			// Certain platforms override the project file format because their debugger add-ins may not yet support the latest
 			// version of Visual Studio.  This is their chance to override that.
@@ -328,9 +344,13 @@ namespace UnrealBuildTool
 				{
 					Settings.ProjectFileFormat = VCProjectFileFormat.VisualStudio2017;
 				}
+				else if (WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2022) && WindowsPlatform.HasIDE(WindowsCompiler.VisualStudio2022))
+				{
+					Settings.ProjectFileFormat = VCProjectFileFormat.VisualStudio2022;
+				}
 				else if (WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2015_DEPRECATED) && WindowsPlatform.HasIDE(WindowsCompiler.VisualStudio2015_DEPRECATED))
 				{
-					Settings.ProjectFileFormat = VCProjectFileFormat.VisualStudio2015;
+					Settings.ProjectFileFormat = VCProjectFileFormat.VisualStudio2022;
 				}
 
 				// Allow the SDKs to override
@@ -491,7 +511,15 @@ namespace UnrealBuildTool
 			StringBuilder VCSolutionFileContent = new StringBuilder();
 
 			// Solution file header. Note that a leading newline is required for file type detection to work correclty in the shell.
-			if (Settings.ProjectFileFormat == VCProjectFileFormat.VisualStudio2019)
+			if (Settings.ProjectFileFormat == VCProjectFileFormat.VisualStudio2022)
+			{
+				VCSolutionFileContent.AppendLine();
+				VCSolutionFileContent.AppendLine("Microsoft Visual Studio Solution File, Format Version 12.00");
+				VCSolutionFileContent.AppendLine("# Visual Studio Version 17");
+				VCSolutionFileContent.AppendLine("VisualStudioVersion = 17.0.31314.256");
+				VCSolutionFileContent.AppendLine("MinimumVisualStudioVersion = 10.0.40219.1");
+			}
+			else if (Settings.ProjectFileFormat == VCProjectFileFormat.VisualStudio2019)
 			{
 				VCSolutionFileContent.AppendLine();
 				VCSolutionFileContent.AppendLine("Microsoft Visual Studio Solution File, Format Version 12.00");
@@ -723,6 +751,14 @@ namespace UnrealBuildTool
 						VCSolutionFileContent.AppendLine("	EndGlobalSection");
 					}
 
+					// Embed VisualAssist section, which is parsed by VisualAssist to determine that this is a unreal solution
+					{
+						string VisualAssistGuid = "44630d46-96b5-488c-8df926e21db8c1a3";
+						VCSolutionFileContent.AppendLine("\t# Visual Assist Section");
+						VCSolutionFileContent.AppendLine("\tGlobalSection({0}) = preSolution", VisualAssistGuid);
+						VCSolutionFileContent.AppendLine("\t\tueSolution=true");
+						VCSolutionFileContent.AppendLine("\tEndGlobalSection");
+					}
 
 					// Assign each project's "project configuration" to our "solution platform + configuration" pairs.  This
 					// also sets up which projects are actually built when building the solution.
@@ -841,6 +877,9 @@ namespace UnrealBuildTool
 						break;
 					case VCProjectFileFormat.VisualStudio2019:
 						SolutionOptionsFileName = FileReference.Combine(MasterProjectPath, ".vs", Path.GetFileNameWithoutExtension(SolutionFileName), "v15", ".suo"); // Still uses v15
+						break;
+					case VCProjectFileFormat.VisualStudio2022:
+						SolutionOptionsFileName = FileReference.Combine(MasterProjectPath, ".vs", Path.GetFileNameWithoutExtension(SolutionFileName), "v17", ".suo");
 						break;
 					default:
 						throw new BuildException("Unsupported Visual Studio version");

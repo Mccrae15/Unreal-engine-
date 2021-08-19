@@ -2,21 +2,31 @@
 
 #include "PixelStreamingModule.h"
 #include "FreezeFrame.h"
-#include "Player.h"
 #include "Streamer.h"
 #include "InputDevice.h"
 #include "PixelStreamerInputComponent.h"
 #include "PixelStreamerDelegates.h"
 #include "SignallingServerConnection.h"
+#include "PixelStreamingSettings.h"
 #include "HUDStats.h"
 #include "PixelStreamingPrivate.h"
+#include "PixelStreamingSettings.h"
+#include "PlayerSession.h"
+#include "PixelStreamingAudioSink.h"
+#include "LatencyTester.h"
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectIterator.h"
 #include "Engine/Texture2D.h"
 #include "Slate/SceneViewport.h"
+
+#if PLATFORM_WINDOWS || PLATFORM_XBOXONE
 #include "Windows/WindowsHWrapper.h"
+#elif PLATFORM_LINUX
+#include "CudaModule.h"
+#endif
+
 #include "RenderingThread.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -41,13 +51,9 @@ DEFINE_LOG_CATEGORY(PixelStreaming);
 
 namespace
 {
-	TAutoConsoleVariable<int32> CVarFreezeFrameQuality(
-		TEXT("PixelStreaming.FreezeFrameQuality"),
-		100,
-		TEXT("Compression quality of the freeze frame"),
-		ECVF_Default
-	);
+	
 
+	#if PLATFORM_WINDOWS || PLATFORM_XBOXONE
 	// required for WMF video decoding
 	// some Windows versions don't have Media Foundation preinstalled. We configure MF DLLs as delay-loaded and load them manually here
 	// checking the result and avoiding error message box if failed
@@ -69,18 +75,33 @@ namespace
 				&& FPlatformProcess::GetDllHandle(TEXT("msmpeg2adec.dll"));
 		}
 	}
+	#endif
 }
 
 void FPixelStreamingModule::InitStreamer()
 {
-	FString SignallingServerIP;
-	uint16 SignallingServerPort = 8888;
-	if (!FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingIP="), SignallingServerIP) ||
-		!FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingPort="), SignallingServerPort))
-	{
-		UE_LOG(PixelStreamer, Log, TEXT("PixelStreaming is disabled, provide `PixelStreamingIP` and `PixelStreamingPort` cmd-args to enable it"));
-		return;
+	// Cap the engine framerate to what WebRTC
+	GEngine->SetMaxFPS(PixelStreamingSettings::CVarPixelStreamingWebRTCMaxFps.GetValueOnAnyThread());
+
+	FString StreamerId;
+	FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingID="), StreamerId);
+
+	FString SignallingServerURL;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingURL="), SignallingServerURL)) {
+
+		FString SignallingServerIP;
+		uint16 SignallingServerPort = 8888;
+		if (!FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingIP="), SignallingServerIP) ||
+			!FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingPort="), SignallingServerPort))
+		{
+			UE_LOG(PixelStreamer, Log, TEXT("PixelStreaming is disabled, provide `PixelStreamingIP` and `PixelStreamingPort` cmd-args to enable it"));
+			return;
+		}
+		UE_LOG(PixelStreamer, Warning, TEXT("PixelStreamingIP and PixelStreamingPort are deprecated flags. Use PixelStreamingURL instead. eg. -PixelStreamingURL=ws://%s:%d"), *SignallingServerIP, SignallingServerPort);
+		SignallingServerURL = FString::Printf(TEXT("ws://%s:%d"), *SignallingServerIP, SignallingServerPort);
 	}
+
+	UE_LOG(PixelStreamer, Log, TEXT("PixelStreaming endpoint ID: %s"), *StreamerId);
 
 	if (GIsEditor)
 	{
@@ -107,6 +128,7 @@ void FPixelStreamingModule::InitStreamer()
 	}
 
 	// subscribe to engine delegates here for init / framebuffer creation / whatever
+	// TODO check if there is a better callback to attach so that we can use with editor
 	if (FSlateApplication::IsInitialized())
 	{
 		FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().AddRaw(this, &FPixelStreamingModule::OnBackBufferReady_RenderThread);
@@ -128,70 +150,33 @@ void FPixelStreamingModule::InitStreamer()
 	UFreezeFrame::CreateInstance();
 	verify(FModuleManager::Get().LoadModule(FName("ImageWrapper")));
 
-	Streamer = MakeUnique<FStreamer>(FString::Printf(TEXT("ws://%s:%d"), *SignallingServerIP, SignallingServerPort));
-}
-
-void FPixelStreamingModule::InitPlayer()
-{
-	check(!bPlayerInitialized);
-
-	// Win7+ only
-	if (!IsWindows7Plus())
-	{
-		UE_LOG(PixelPlayer, Log, TEXT("PixelStreamingPlayer plugin is incompatible with Windows prior to 7.0 version: %s"), *FPlatformMisc::GetOSVersion());
-		return;
-	}
-
-	if (!LoadMediaFoundationDLLs())
-	{
-		UE_LOG(PixelPlayer, Log, TEXT("Can't load Media Foundation, %s"), *FPlatformMisc::GetOSVersion());
-		return;
-	}
-
-	HRESULT Res = MFStartup(MF_VERSION);
-	checkf(SUCCEEDED(Res), TEXT("MFStartup failed: %d"), Res);
-	if (GIsClient)
-	{
-		bool bRes = FPlayer::CreateDXManagerAndDevice();
-		if (!bRes)
-		{
-			UE_LOG(PixelPlayer, Warning, TEXT("Failed to create DXGI Manager and Device"));
-		}
-	}
-
-	bPlayerInitialized = true;
-
+	Streamer = MakeUnique<FStreamer>(SignallingServerURL, StreamerId);
 }
 
 /** IModuleInterface implementation */
 void FPixelStreamingModule::StartupModule()
 {
-	FString DynamicRHIName = TEXT("[null]");
-	bool bIsD3D11 = false;
-	bool bIsD3D12 = false;
-	if (GDynamicRHI != nullptr)
+	// Pixel Streaming does not make sense without an RHI so we don't run in commandlets without one.
+	if(IsRunningCommandlet() && !IsAllowCommandletRendering())
 	{
-		DynamicRHIName = GDynamicRHI->GetName();
-		bIsD3D11 = GDynamicRHI->GetName() == FString(TEXT("D3D11"));
-		bIsD3D12 = GDynamicRHI->GetName() == FString(TEXT("D3D12"));
-	}
-	
-	// only D3D11/D3D12 is supported
-	if (!bIsD3D11 && !bIsD3D12)
-	{
-		UE_LOG(PixelStreaming, Log, TEXT("Only D3D11/D3D12 Dynamic RHI is supported. Detected %s"), *DynamicRHIName);
 		return;
 	}
 
-	InitStreamer();
-	if (bIsD3D11)
+	// only D3D11/D3D12 is supported
+	if (GDynamicRHI == nullptr ||
+		!( GDynamicRHI->GetName() == FString(TEXT("D3D11")) || 
+		   GDynamicRHI->GetName() == FString(TEXT("D3D12"))	||
+		   GDynamicRHI->GetName() == FString(TEXT("Vulkan"))))
 	{
-		// The player is currently only supported on DX11.
-		InitPlayer();
+		UE_LOG(PixelStreaming, Warning, TEXT("Only D3D11/D3D12/Vulkan Dynamic RHI is supported. Detected %s"), GDynamicRHI != nullptr ? GDynamicRHI->GetName() : TEXT("[null]"));
+		return;
 	}
-	else
+	else if( GDynamicRHI->GetName() == FString(TEXT("D3D11")) || 
+		   	 GDynamicRHI->GetName() == FString(TEXT("D3D12")) ||
+			 GDynamicRHI->GetName() == FString(TEXT("Vulkan")))
 	{
-		UE_LOG(PixelStreaming, Log, TEXT("Player is supported only on DX11"));
+		// By calling InitStreamer post engine init we can use pixel streaming in standalone editor mode
+		FCoreDelegates::OnFEngineLoopInitComplete.AddRaw(this, &FPixelStreamingModule::InitStreamer);
 	}
 }
 
@@ -204,14 +189,13 @@ void FPixelStreamingModule::ShutdownModule()
 	}
 
 	IModularFeatures::Get().UnregisterModularFeature(GetModularFeatureName(), this);
-
-	FPlayer::DestroyDXManagerAndDevice();
 }
 
 bool FPixelStreamingModule::CheckPlatformCompatibility() const
 {
 	bool bCompatible = true;
 
+	#if PLATFORM_WINDOWS || PLATFORM_XBOXONE
 	bool bWin8OrHigher = FPlatformMisc::VerifyWindowsVersion(6, 2);
 	if (!bWin8OrHigher)
 	{
@@ -222,7 +206,9 @@ bool FPixelStreamingModule::CheckPlatformCompatibility() const
 		UE_LOG(PixelStreamer, Error, TEXT("%s"), *ErrorString);
 		bCompatible = false;
 	}
-	else if (!FStreamer::CheckPlatformCompatibility())
+	#endif
+	
+	if (!FStreamer::CheckPlatformCompatibility())
 	{
 		FText TitleText = FText::FromString(TEXT("Pixel Streaming Plugin"));
 		FString ErrorString = TEXT("No compatible GPU found, or failed to load their respective encoder libraries");
@@ -273,7 +259,7 @@ void FPixelStreamingModule::OnBackBufferReady_RenderThread(SWindow& SlateWindow,
 
 TSharedPtr<class IInputDevice> FPixelStreamingModule::CreateInputDevice(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler)
 {
-	InputDevice = MakeShareable(new FInputDevice(InMessageHandler, InputComponents));
+	InputDevice = MakeShareable(new FInputDevice(InMessageHandler));
 	return InputDevice;
 }
 
@@ -285,6 +271,21 @@ FInputDevice& FPixelStreamingModule::GetInputDevice()
 TSharedPtr<FInputDevice> FPixelStreamingModule::GetInputDevicePtr()
 {
 	return InputDevice;
+}
+
+void FPixelStreamingModule::AddInputComponent(UPixelStreamerInputComponent* InInputComponent)
+{
+	this->InputComponents.Add(InInputComponent);
+}
+
+void FPixelStreamingModule::RemoveInputComponent(UPixelStreamerInputComponent* InInputComponent)
+{
+	this->InputComponents.Remove(InInputComponent);
+}
+
+const TArray<UPixelStreamerInputComponent*> FPixelStreamingModule::GetInputComponents()
+{
+	return this->InputComponents;
 }
 
 void FPixelStreamingModule::FreezeFrame(UTexture2D* Texture)
@@ -333,13 +334,13 @@ void FPixelStreamingModule::AddPlayerConfig(TSharedRef<FJsonObject>& JsonObject)
 	JsonObject->SetBoolField(TEXT("FakingTouchEvents"), InputDevice->IsFakingTouchEvents());
 
 	FString PixelStreamingControlScheme;
-	if (FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingControlScheme="), PixelStreamingControlScheme))
+	if (PixelStreamingSettings::GetControlScheme(PixelStreamingControlScheme))
 	{
 		JsonObject->SetStringField(TEXT("ControlScheme"), PixelStreamingControlScheme);
 	}
 
 	float PixelStreamingFastPan;
-	if (FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingFastPan="), PixelStreamingFastPan))
+	if (PixelStreamingSettings::GetFastPan(PixelStreamingFastPan))
 	{
 		JsonObject->SetNumberField(TEXT("FastPan"), PixelStreamingFastPan);
 	}
@@ -357,38 +358,12 @@ void FPixelStreamingModule::SendCommand(const FString& Descriptor)
 
 void FPixelStreamingModule::OnGameModePostLogin(AGameModeBase* GameMode, APlayerController* NewPlayer)
 {
-	UWorld* NewPlayerWorld = NewPlayer->GetWorld();
-	for (TObjectIterator<UPixelStreamerInputComponent> ObjIt; ObjIt; ++ObjIt)
-	{
-		UPixelStreamerInputComponent* InputComponent = *ObjIt;
-		UWorld* InputComponentWorld = InputComponent->GetWorld();
-		if (InputComponentWorld == NewPlayerWorld)
-		{
-			InputComponents.Push(InputComponent);
-		}
-	}
-	if (InputComponents.Num() == 0)
-	{
-		UPixelStreamerInputComponent* InputComponent = NewObject<UPixelStreamerInputComponent>(NewPlayer);
-		InputComponent->RegisterComponent();
-		InputComponents.Push(InputComponent);
-	}
-	if (InputDevice.IsValid())
-	{
-		for (UPixelStreamerInputComponent* InputComponent : InputComponents)
-		{
-			InputDevice->AddInputComponent(InputComponent);
-		}
-	}
+	
 }
 
 void FPixelStreamingModule::OnGameModeLogout(AGameModeBase* GameMode, AController* Exiting)
 {
-	for (UPixelStreamerInputComponent* InputComponent : InputComponents)
-	{
-		InputDevice->RemoveInputComponent(InputComponent);
-	}
-	InputComponents.Empty();
+	
 }
 
 void FPixelStreamingModule::SendJpeg(TArray<FColor> RawData, const FIntRect& Rect)
@@ -399,7 +374,7 @@ void FPixelStreamingModule::SendJpeg(TArray<FColor> RawData, const FIntRect& Rec
 	if (bSuccess)
 	{
 		// Compress to a JPEG of the maximum possible quality.
-		int32 Quality = CVarFreezeFrameQuality.GetValueOnAnyThread();
+		int32 Quality = PixelStreamingSettings::CVarFreezeFrameQuality.GetValueOnAnyThread();
 		const TArray64<uint8>& JpegBytes = ImageWrapper->GetCompressed(Quality);
 		Streamer->SendFreezeFrame(JpegBytes);
 	}
@@ -422,6 +397,40 @@ bool FPixelStreamingModule::IsTickableInEditor() const
 void FPixelStreamingModule::Tick(float DeltaTime)
 {
 	FHUDStats::Get().Tick();
+
+	// If we are running a latency test then check if we have timing results and if we do transmit them
+	if(FLatencyTester::IsTestRunning() && FLatencyTester::GetTestStage() == FLatencyTester::ELatencyTestStage::RESULTS_READY)
+	{
+		FString LatencyResults;
+		FPlayerId LatencyTestPlayerId;
+		bool bEnded = FLatencyTester::End(LatencyResults, LatencyTestPlayerId);
+		if(bEnded)
+		{
+			FPlayerSession* PlayerSession = Streamer->GetPlayerSession(LatencyTestPlayerId);
+			if(PlayerSession != nullptr)
+			{
+				PlayerSession->SendMessage(PixelStreamingProtocol::EToPlayerMsg::LatencyTest, LatencyResults);
+			}
+		}
+	}
+
+	// Send video encoder averaged QP approx every 1 second
+	if(this->Streamer.IsValid() && this->Streamer->GetNumPlayers() > 0)
+	{
+		double Now = FPlatformTime::Seconds();
+		if (Now - LastVideoEncoderQPReportTime > 1)
+		{
+			TArray<FPlayerSession*> PlayerSessions;
+			Streamer->GetPlayerSessions(PlayerSessions);
+			for(FPlayerSession* PlayerSession : PlayerSessions)
+			{
+				PlayerSession->SendVideoEncoderQP();
+			}
+
+			LastVideoEncoderQPReportTime = FPlatformTime::Seconds();
+		}
+	}
+	
 }
 
 TStatId FPixelStreamingModule::GetStatId() const
@@ -429,9 +438,36 @@ TStatId FPixelStreamingModule::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(FPixelStreamingModule, STATGROUP_Tickables);
 }
 
-TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> FPixelStreamingModule::CreatePlayer(IMediaEventSink& EventSink)
+FPixelStreamingAudioSink* FPixelStreamingModule::GetPeerAudioSink(FPlayerId PlayerId)
 {
-	return bPlayerInitialized ? MakeShareable(new FPlayer(EventSink)) : nullptr;
+	if(!this->Streamer.IsValid())
+	{
+		return nullptr;
+	}
+	FPlayerSession* Session = this->Streamer->GetPlayerSession(PlayerId);
+
+	if(!Session)
+	{
+		return nullptr;
+	}
+
+	return &Session->GetAudioSink();
+}
+
+FPixelStreamingAudioSink* FPixelStreamingModule::GetUnlistenedAudioSink()
+{
+	if(!this->Streamer.IsValid())
+	{
+		return nullptr;
+	}
+	FPlayerSession* Session = this->Streamer->GetUnlistenedPlayerSession();
+
+	if(!Session)
+	{
+		return nullptr;
+	}
+
+	return &Session->GetAudioSink();
 }
 
 IMPLEMENT_MODULE(FPixelStreamingModule, PixelStreaming)

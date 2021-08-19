@@ -35,6 +35,9 @@ public class ApplicationCore : ModuleRules
 			{
 				PublicSystemLibraries.Add("uiautomationcore.lib");
 			}
+
+			// Uses DXGI to query GPU hardware prior to RHI startup
+			PublicSystemLibraries.Add("DXGI.lib");
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
@@ -46,6 +49,8 @@ public class ApplicationCore : ModuleRules
 				string SDKROOT = Utils.RunLocalProcessAndReturnStdOut("/usr/bin/xcrun", "--sdk macosx --show-sdk-path");
 				PublicAdditionalLibraries.Add(SDKROOT + "/System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/Current/MultitouchSupport.tbd");
 			}
+			
+			PublicFrameworks.Add("GameController");
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
 		{
@@ -64,6 +69,7 @@ public class ApplicationCore : ModuleRules
 		else if (Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
 		{
 			PublicIncludePaths.AddRange(new string[] {"Runtime/ApplicationCore/Public/IOS"});
+			PublicIncludePaths.AddRange(new string[] {"Runtime/ApplicationCore/Private/Apple"});
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "SoundSwitch");
 
 			// export ApplicationCore symbols for embedded Dlls

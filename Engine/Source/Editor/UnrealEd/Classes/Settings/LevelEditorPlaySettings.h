@@ -132,6 +132,20 @@ enum EPlayOnLaunchConfiguration
 	LaunchConfig_Shipping UMETA(DisplayName = "Shipping"),
 };
 
+/* Whether to content should be stored in pak files when launching on device. */
+UENUM()
+enum class EPlayOnPakFileMode : uint8
+{
+	/** Do not pack files. */
+	NoPak UMETA(DisplayName="Use loose files"),
+	
+	/** Pack files with UnrealPak. */
+	PakNoCompress UMETA(DisplayName="Use pak files without compression"),
+	
+	/** Compress and pack files with UnrealPak. */
+	PakCompress UMETA(DisplayName="Use compressed pak files"),
+};
+
 /**
  * Holds information about a screen resolution to be used for playing.
  */
@@ -148,11 +162,11 @@ public:
 
 	/** The screen resolution's width (in pixels). */
 	UPROPERTY(config)
-	int32 Width;
+	int32 Width = 1920;
 
 	/** The screen resolution's height (in pixels). */
 	UPROPERTY(config)
-	int32 Height;
+	int32 Height = 1080;
 
 	/** The screen resolution's aspect ratio (as a string). */
 	UPROPERTY(config)
@@ -160,20 +174,20 @@ public:
 
 	/** Whether or not this device supports both landscape and portrait modes */
 	UPROPERTY(config)
-	bool bCanSwapAspectRatio;
+	bool bCanSwapAspectRatio = true;
 	
 	/** The name of the device profile this links to */
 	UPROPERTY(config)
 	FString ProfileName;
 
 	UPROPERTY(transient)
-	float ScaleFactor;
+	float ScaleFactor = 1.0f;
 
 	UPROPERTY(transient)
-	int32 LogicalHeight;
+	int32 LogicalHeight = 1080;
 	
 	UPROPERTY(transient)
-	int32 LogicalWidth;
+	int32 LogicalWidth = 1920;
 
 	void PostInitProperties();
 };
@@ -303,6 +317,10 @@ public:
 	/* Which build configuration to use when launching on device. */
 	UPROPERTY(config, EditAnywhere, Category = PlayOnDevice)
 	TEnumAsByte<EPlayOnLaunchConfiguration> LaunchConfiguration;
+
+	// Whether to content should be stored in pak files when launching on device. */
+	UPROPERTY(config, EditAnywhere, Category = PlayOnDevice)
+	EPlayOnPakFileMode PackFilesForLaunch;
 
 	/** Whether to automatically recompile dirty Blueprints before launching */
 	UPROPERTY(config, EditAnywhere, Category=PlayOnDevice)

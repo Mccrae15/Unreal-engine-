@@ -902,6 +902,11 @@ namespace UnrealBuildTool
 		{
 			return true;
 		}
+		
+		public override bool CanUseFASTBuild()
+		{
+			return true;
+		}
 
 		public bool HasCustomIcons(DirectoryReference ProjectDirectoryName)
 		{

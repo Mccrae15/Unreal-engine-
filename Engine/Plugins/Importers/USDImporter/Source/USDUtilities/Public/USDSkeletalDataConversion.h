@@ -30,16 +30,18 @@ class FSkeletalMeshImportData;
 class UAnimSequence;
 class USkeletalMesh;
 struct FUsdStageInfo;
-
 namespace SkeletalMeshImportData
 {
 	struct FBone;
 	struct FMaterial;
 }
-
 namespace UsdUtils
 {
 	struct FUsdPrimMaterialSlot;
+}
+namespace UE
+{
+	class FUsdStage;
 }
 
 #endif // #if USE_USD_SDK
@@ -103,10 +105,16 @@ namespace UsdUtils
 #if USE_USD_SDK
 	/** Allows creation of a skinning query from the underlying skinned mesh and skeleton. Adapted from the USD SDK implementation */
 	USDUTILITIES_API pxr::UsdSkelSkinningQuery CreateSkinningQuery( const pxr::UsdGeomMesh& SkinnedMesh, const pxr::UsdSkelSkeletonQuery& SkeletonQuery );
+
+	/**
+	 * Sets prim AnimationSource as the animation source for prim Prim.
+	 * Applies the SkelBindingAPI to Prim. See pxr::SkelBindingAPI::GetAnimationSourceRel.
+	 */
+	USDUTILITIES_API void BindAnimationSource( pxr::UsdPrim& Prim, const pxr::UsdPrim& AnimationSource );
 #endif // USE_USD_SDK
 }
 
-#if USE_USD_SDK
+#if USE_USD_SDK && WITH_EDITOR
 namespace UsdToUnreal
 {
 	/**
@@ -168,21 +176,35 @@ namespace UsdToUnreal
 namespace UnrealToUsd
 {
 	/**
-	 * Converts the bone data from Skeleton into UsdSkeleton
-	 * @param Skeleton - USkeleton with the source data
+	 * Converts the bone data from Skeleton into UsdSkeleton.
+	 * WARNING: Sometimes Skeleton->ReferenceSkeleton() has slightly different transforms than USkeletalMesh->GetRefSkeleton(), so make
+	 * sure you're using the correct one for what you wish to do!
+	 *
+	 * @param Skeleton - Source UE data to convert
 	 * @param UsdSkeleton - Previously created prim with the UsdSkelSkeleton schema that will be filled with converted data
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertSkeleton( const USkeleton* Skeleton, pxr::UsdSkelSkeleton& UsdSkeleton);
+	USDUTILITIES_API bool ConvertSkeleton( const USkeleton* Skeleton, pxr::UsdSkelSkeleton& UsdSkeleton );
+	USDUTILITIES_API bool ConvertSkeleton( const FReferenceSkeleton& ReferenceSkeleton, pxr::UsdSkelSkeleton& UsdSkeleton );
 
 	/**
 	 * Converts SkeletalMesh, its skeleton and morph target data into the corresponding USD objects and populates SkelRoot with them, at time TimeCode
 	 * @param SkeletalMesh - Mesh with the source data. If it contains multiple LODs it will lead to the creation of LOD variant sets and variants within SkelRoot
 	 * @param SkelRoot - Root prim of the output source data. Child UsdSkelSkeleton, UsdGeomMesh, and UsdSkelBlendShape will be created as children of it, containing the converted data
 	 * @param TimeCode - TimeCode with which the converted data will be placed in the USD stage
+	 * @param StageForMaterialAssignments - Stage to use when authoring material assignments (we use this when we want to export the mesh to a payload layer, but the material assignments to an asset layer)
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::UsdPrim& SkelRootPrim, const pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::Default() );
+	USDUTILITIES_API bool ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::UsdPrim& SkelRootPrim, const pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::Default(), UE::FUsdStage* StageForMaterialAssignments = nullptr );
+
+	/**
+	 * Converts an AnimSequence to a UsdSkelAnimation. Includes bone transforms and blend shape weights.
+	 * Keys will be baked at the stage TimeCodesPerSecond resolution.
+	 * @param AnimSequence - The AnimSequence to convert
+	 * @param SkelAnimPrim - Expected to be of type UsdkSkelAnimation
+	 * @return Whether the conversion was successful or not.
+	 */
+	USDUTILITIES_API bool ConvertAnimSequence( UAnimSequence* AnimSequence, pxr::UsdPrim& SkelAnimPrim );
 }
 
-#endif // #if USE_USD_SDK
+#endif // #if USE_USD_SDK && WITH_EDITOR

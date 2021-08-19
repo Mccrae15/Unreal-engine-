@@ -346,6 +346,8 @@ FD3D12Texture2D* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelFor
 	FString Name = FString::Printf(TEXT("BackBuffer%d"), BackBufferIndex);
 	SetName(SwapChainTexture->GetResource(), *Name);
 
+	SwapChainTexture->GetResource()->SetIsBackBuffer(true);
+
 	FD3D12TextureStats::D3D12TextureAllocated2D(*SwapChainTexture);
 	return SwapChainTexture;
 }
@@ -1032,7 +1034,11 @@ void FD3D12CommandContextBase::RHIEndDrawingViewport(FRHIViewport* ViewportRHI, 
 	ParentAdapter->SubmissionGapRecorder.SetPresentSlotIdx(CurrentSlotIdx);
 #endif
 
-	const bool bNativelyPresented = Viewport->Present(bLockToVsync);
+	bool bNativelyPresented = false; 
+	if (!RHI.RHIIsRenderingSuspended())
+	{
+		bNativelyPresented = Viewport->Present(bLockToVsync);
+	}
 
 	// Multi-GPU support : here each GPU wait's for it's own frame completion. Note that even in AFR, each GPU renders an (empty) frame.
 	if (bNativelyPresented)

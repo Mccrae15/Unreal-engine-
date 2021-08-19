@@ -53,7 +53,19 @@ public:
 	virtual bool IsAssetModifiedByOtherClients(const FName& AssetName, int32* OutOtherClientsWithModifNum, TArray<FConcertClientInfo>* OutOtherClientsWithModifInfo, int32 OtherClientsWithModifMaxFetchNum) const override;
 	virtual void SetIgnoreOnRestoreFlagForEmittedActivities(bool bIgnore) override;
 
+	virtual void AddWorkspaceFinalizeDelegate(FName InDelegateName, FCanFinalizeWorkspaceDelegate InDelegate) override;
+	virtual void RemoveWorkspaceFinalizeDelegate(FName InDelegateName) override;
+
+	virtual void AddWorkspaceCanProcessPackagesDelegate(FName InDelegateName, FCanProcessPendingPackages Delegate) override;
+	virtual void RemoveWorkspaceCanProcessPackagesDelegate(FName InDelegateName) override;
+
 private:
+	/** Indicates if we can process any pending package updates. */
+	bool CanProcessPendingPackages() const;
+
+	/** Indicates if we can finalize activity sync. */
+	bool CanFinalize() const;
+
 	/** Bind the workspace to this session. */
 	void BindSession(TSharedPtr<FConcertSyncClientLiveSession> InLiveSession, IConcertClientPackageBridge* InPackageBridge, IConcertClientTransactionBridge* InTransactionBridge);
 
@@ -168,6 +180,12 @@ private:
 	 * wasn't required to reconstruct the state of a level.
 	 */
 	bool IsTransactionEventPartiallySynced(const FConcertSyncTransactionEvent& TransactionEvent) const;
+
+	/** A hash map of delegates that provide true/false value for applying pendings during the current end of frame. */
+	TMap<FName, FCanProcessPendingPackages> CanProcessPendingDelegates;
+
+	/** A hash map of delegates that provide true/false value for finalizing an activity sync during the current end of frame. */
+	TMap<FName, FCanFinalizeWorkspaceDelegate> CanFinalizeDelegates;
 
 	/** */
 	TUniquePtr<FConcertClientTransactionManager> TransactionManager;

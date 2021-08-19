@@ -22,16 +22,18 @@
 #include "FbxImporter.h"
 #include "HAL/FileManager.h"
 #include "IContentBrowserSingleton.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Interfaces/ITargetPlatformManagerModule.h"
 #include "JsonObjectConverter.h"
 #include "LODUtilities.h"
 #include "Logging/TokenizedMessage.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreMisc.h"
 #include "Misc/FbxErrors.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
 #include "ObjectTools.h"
-#include "SkelImport.h"
 #include "UObject/UnrealType.h"
 
 #define LOCTEXT_NAMESPACE "FBXFactory"
@@ -562,10 +564,18 @@ UObject* UFbxFactory::FactoryCreateFile
 							}
 							else
 							{
-								FbxImporter->ImportStaticMeshAsSingle(InParent, LODMeshesArray, Name, Flags, ImportUI->StaticMeshImportData, NewStaticMesh, LODIndex);
-								if (NewStaticMesh && NewStaticMesh->IsSourceModelValid(LODIndex))
+								UStaticMesh* ImportedStaticMesh = FbxImporter->ImportStaticMeshAsSingle(InParent, LODMeshesArray, Name, Flags, ImportUI->StaticMeshImportData, NewStaticMesh, LODIndex);
+								if (ImportedStaticMesh)
 								{
-									NewStaticMesh->GetSourceModel(LODIndex).bImportWithBaseMesh = true;
+									check(ImportedStaticMesh == NewStaticMesh);
+									if (NewStaticMesh && NewStaticMesh->IsSourceModelValid(LODIndex))
+									{
+										NewStaticMesh->GetSourceModel(LODIndex).bImportWithBaseMesh = true;
+									}
+								}
+								else
+								{
+									FbxImporter->AddStaticMeshSourceModelGeneratedLOD(NewStaticMesh, LODIndex);
 								}
 							}
 							bOperationCanceled |= FbxImporter->GetImportOperationCancelled() || SlowTask.ShouldCancel();
@@ -728,7 +738,7 @@ UObject* UFbxFactory::FactoryCreateFile
 								LODInfo.ReductionSettings.BaseLOD = 0;
 								LODInfo.bImportWithBaseMesh = true;
 								LODInfo.SourceImportFilename = FString(TEXT(""));
-								FLODUtilities::SimplifySkeletalMeshLOD(UpdateContext, SuccessfulLodIndex);
+								FLODUtilities::SimplifySkeletalMeshLOD(UpdateContext, SuccessfulLodIndex, GetTargetPlatformManagerRef().GetRunningTargetPlatform());
 								ImportedSuccessfulLodIndex = SuccessfulLodIndex;
 								SuccessfulLodIndex++;
 							}
@@ -1375,7 +1385,7 @@ namespace ImportCompareHelper
 					continue;
 				}
 				FbxSurfaceMaterial* SurfaceMaterial = Node->GetMaterial(MaterialIndex);
-				FName SurfaceMaterialName = FName(UTF8_TO_TCHAR(FFbxImporter->MakeName(SurfaceMaterial->GetName())));
+				FName SurfaceMaterialName = FName(*(FFbxImporter->MakeName(SurfaceMaterial->GetName())));
 				if (!NodeMaterialNames.Contains(SurfaceMaterialName))
 				{
 					FMaterialData& MaterialData = MaterialCompareData.ResultAsset.AddDefaulted_GetRef();
@@ -1404,7 +1414,7 @@ namespace ImportCompareHelper
 
 	void FillRecursivelySkeletonCompareData(const FbxNode *ParentNode, FSkeletonTreeNode& SkeletonTreeNode, const UnFbx::FFbxImporter* FFbxImporter)
 	{
-		SkeletonTreeNode.JointName = FName(UTF8_TO_TCHAR(FFbxImporter->MakeName(ParentNode->GetName())));
+		SkeletonTreeNode.JointName = FName(*(FFbxImporter->MakeName(ParentNode->GetName())));
 		for (int32 ChildIndex = 0; ChildIndex < ParentNode->GetChildCount(); ChildIndex++)
 		{
 			FSkeletonTreeNode& ChildNode = SkeletonTreeNode.Childrens.AddDefaulted_GetRef();
@@ -1490,10 +1500,10 @@ namespace ImportCompareHelper
 	void FillStaticMeshCompareData(UnFbx::FFbxImporter* FFbxImporter, UStaticMesh* StaticMesh, UFbxImportUI* ImportUI)
 	{
 		//Fill the currrent asset data
-		ImportUI->MaterialCompareData.CurrentAsset.Reserve(StaticMesh->StaticMaterials.Num());
-		for (int32 MaterialIndex = 0; MaterialIndex < StaticMesh->StaticMaterials.Num(); ++MaterialIndex)
+		ImportUI->MaterialCompareData.CurrentAsset.Reserve(StaticMesh->GetStaticMaterials().Num());
+		for (int32 MaterialIndex = 0; MaterialIndex < StaticMesh->GetStaticMaterials().Num(); ++MaterialIndex)
 		{
-			const FStaticMaterial& Material = StaticMesh->StaticMaterials[MaterialIndex];
+			const FStaticMaterial& Material = StaticMesh->GetStaticMaterials()[MaterialIndex];
 			FMaterialData MaterialData;
 			MaterialData.MaterialIndex = MaterialIndex;
 			MaterialData.ImportedMaterialSlotName = Material.ImportedMaterialSlotName;
@@ -1701,10 +1711,11 @@ namespace ImportCompareHelper
 		if (!bImportSkinningOnly)
 		{
 			//Fill the currrent asset data
-			ImportUI->MaterialCompareData.CurrentAsset.Reserve(SkeletalMesh->Materials.Num());
-			for (int32 MaterialIndex = 0; MaterialIndex < SkeletalMesh->Materials.Num(); ++MaterialIndex)
+			const TArray<FSkeletalMaterial>& SkeletalMeshMaterials = SkeletalMesh->GetMaterials();
+			ImportUI->MaterialCompareData.CurrentAsset.Reserve(SkeletalMeshMaterials.Num());
+			for (int32 MaterialIndex = 0; MaterialIndex < SkeletalMeshMaterials.Num(); ++MaterialIndex)
 			{
-				const FSkeletalMaterial& Material = SkeletalMesh->Materials[MaterialIndex];
+				const FSkeletalMaterial& Material = SkeletalMeshMaterials[MaterialIndex];
 				FMaterialData MaterialData;
 				MaterialData.MaterialIndex = MaterialIndex;
 				MaterialData.ImportedMaterialSlotName = Material.ImportedMaterialSlotName;
@@ -1729,7 +1740,7 @@ namespace ImportCompareHelper
 		if (!bImportGeoOnly)
 		{
 			//Fill the currrent asset data
-			if (ImportUI->Skeleton && SkeletalMesh->Skeleton != ImportUI->Skeleton)
+			if (ImportUI->Skeleton && SkeletalMesh->GetSkeleton() != ImportUI->Skeleton)
 			{
 				//In this case we can't use 
 				const FReferenceSkeleton& ReferenceSkeleton = ImportUI->Skeleton->GetReferenceSkeleton();
@@ -1737,7 +1748,7 @@ namespace ImportCompareHelper
 			}
 			else
 			{
-				FillRecursivelySkeleton(SkeletalMesh->RefSkeleton, 0, ImportUI->SkeletonCompareData.CurrentAssetRoot);
+				FillRecursivelySkeleton(SkeletalMesh->GetRefSkeleton(), 0, ImportUI->SkeletonCompareData.CurrentAssetRoot);
 			}
 			
 			//Fill the result fbx data

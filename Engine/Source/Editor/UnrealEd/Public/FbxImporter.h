@@ -368,12 +368,12 @@ public:
 	UNREALED_API void GetCurveData(const FString& NodeName, const FString& PropertyName, int32 ChannelIndex, int32 CompositeIndex, FInterpCurveFloat& CurveData, bool bNegative) const;
 	
 	//This one should be use only by the sequencer the key tangents data is transform to fit the expected data we have in the old matinee code
-	UNREALED_API void GetCurveDataForSequencer(const FString& NodeName, const FString& PropertyName, int32 ChannelIndex, int32 CompositeIndex, FRichCurve& RichCurve, bool bNegative) const;
+	UNREALED_API void GetCurveDataForSequencer(const FString& NodeName, const FString& PropertyName, int32 ChannelIndex, int32 CompositeIndex, FRichCurve& RichCurve, bool bNegative, float Scale = 1.0f) const;
 
 	UNREALED_API void GetCurveData(const FString& NodeName, const FString& PropertyName, int32 ChannelIndex, int32 CompositeIndex, FRichCurve& CurveData, bool bNegative) const;
 
 	
-	UNREALED_API void GetBakeCurveData(const FString& NodeName, const FString& PropertyName, int32 ChannelIndex, int32 CompositeIndex, TArray<float>& CurveData, float PeriodTime, float StartTime = 0.0f, float StopTime= -1.0f, bool bNegative = false) const;
+	UNREALED_API void GetBakeCurveData(const FString& NodeName, const FString& PropertyName, int32 ChannelIndex, int32 CompositeIndex, TArray<float>& CurveData, float PeriodTime, float StartTime = 0.0f, float StopTime= -1.0f, bool bNegative = false, float Scale = 1.0f) const;
 
 	//Handle API
 	UNREALED_API void GetAllNodePropertyCurveHandles(const FString& NodeName, const FString& PropertyName, TArray<FFbxAnimCurveHandle> &PropertyCurveHandles) const;
@@ -383,11 +383,11 @@ public:
 	UNREALED_API void GetCurveData(const FFbxAnimCurveHandle &CurveHandle, FInterpCurveFloat& CurveData, bool bNegative) const;
 	
 	//This one should be use only by the sequencer the key tangents data is transform to fit the expected data we have in the old matinee code
-	UNREALED_API void GetCurveDataForSequencer(const FFbxAnimCurveHandle &CurveHandle, FRichCurve& RichCurve, bool bNegative) const;
+	UNREALED_API void GetCurveDataForSequencer(const FFbxAnimCurveHandle &CurveHandle, FRichCurve& RichCurve, bool bNegative, float Scale = 1.0f) const;
 
-	UNREALED_API void GetCurveData(const FFbxAnimCurveHandle &CurveHandle, FRichCurve& CurveData, bool bNegative) const;
+	UNREALED_API void GetCurveData(const FFbxAnimCurveHandle &CurveHandle, FRichCurve& CurveData, bool bNegative, float Scale  = 1.0f) const;
 
-	UNREALED_API void GetBakeCurveData(const FFbxAnimCurveHandle &CurveHandle, TArray<float>& CurveData, float PeriodTime, float StartTime = 0.0f, float StopTime = -1.0f, bool bNegative = false) const;
+	UNREALED_API void GetBakeCurveData(const FFbxAnimCurveHandle &CurveHandle, TArray<float>& CurveData, float PeriodTime, float StartTime = 0.0f, float StopTime = -1.0f, bool bNegative = false, float Scale = 1.0f) const;
 
 	//Conversion API
 	UE_DEPRECATED(4.21, "Please use FRichCurve version instead to get tangent weight support")
@@ -399,7 +399,7 @@ public:
 	UNREALED_API void GetConvertedTransformCurveData(const FString& NodeName, FRichCurve& TranslationX, FRichCurve& TranslationY, FRichCurve& TranslationZ,
 		FRichCurve& EulerRotationX, FRichCurve& EulerRotationY, FRichCurve& EulerRotationZ,
 		FRichCurve& ScaleX, FRichCurve& ScaleY, FRichCurve& ScaleZ,
-		FTransform& DefaultTransform, bool bUseSequencerCurve) const;
+		FTransform& DefaultTransform, bool bUseSequencerCurve, float UniformScale = 1.0f) const;
 
 	FbxScene* Scene;
 	TMap<uint64, FFbxAnimNodeHandle> CurvesData;
@@ -428,17 +428,17 @@ struct FbxMeshInfo
 //Node use to store the scene hierarchy transform will be relative to the parent
 struct FbxNodeInfo
 {
-	const char* ObjectName;
+	FString ObjectName;
 	uint64 UniqueId;
 	FbxAMatrix Transform;
 	FbxVector4 RotationPivot;
 	FbxVector4 ScalePivot;
 	
-	const char* AttributeName;
+	FString AttributeName;
 	uint64 AttributeUniqueId;
-	const char* AttributeType;
+	FString AttributeType;
 
-	const char* ParentName;
+	FString ParentName;
 	uint64 ParentUniqueId;
 };
 
@@ -460,6 +460,7 @@ struct FbxSceneInfo
 	
 	/* true if it has animation */
 	bool bHasAnimation;
+	bool bHasAnimationOnSkeletalMesh;
 	double FrameRate;
 	double TotalTime;
 
@@ -473,6 +474,7 @@ struct FbxSceneInfo
 		MeshInfo.Empty();
 		HierarchyInfo.Empty();
 		bHasAnimation = false;
+		bHasAnimationOnSkeletalMesh = false;
 		FrameRate = 0.0;
 		TotalTime = 0.0;
 	}
@@ -961,8 +963,8 @@ public:
 	bool ImportCollisionModels(UStaticMesh* StaticMesh, const FbxString& NodeName);
 
 	//help
-	ANSICHAR* MakeName(const ANSICHAR* name) const;
-	FString MakeString(const ANSICHAR* Name) const;
+	static FString MakeName(const ANSICHAR* name);
+	static FString MakeString(const ANSICHAR* Name);
 	FName MakeNameForMesh(FString InName, FbxObject* FbxObject);
 
 	// meshes
@@ -1018,6 +1020,13 @@ public:
 	* @param outMeshArray return Fbx meshes with no LOD group
 	*/
 	UNREALED_API void FillFbxMeshAndLODGroupArray(FbxNode* Node, TArray<FbxNode*>& outLODGroupArray, TArray<FbxNode*>& outMeshArray);
+
+	/**
+	 * Returns if the passed FbxNode can be used as a skeleton bone in Unreal.
+	 * 
+	 * @return bool
+	 */
+	bool IsUnrealBone(FbxNode* Link);
 
 	/**
 	* Fill FBX skeletons to OutSortedLinks recursively
@@ -1210,6 +1219,14 @@ private:
 	* Node with no name we will name it "ncl1_x" x is a a unique counter.
 	*/
 	void EnsureNodeNameAreValid(const FString& BaseFilename);
+
+	/**
+	 * Remove metadata starting with the FBX_METADATA_PREFIX value associated to the specified UObject.
+	 * This is used to ensure we do not restore old fbx meta data during reimports.
+	 * 
+	 * @param Object	The UObject for which we want the FBX metadata removed.
+	 */
+	static void RemoveFBXMetaData(const UObject* Object);
 
 private:
 	/**

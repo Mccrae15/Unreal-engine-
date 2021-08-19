@@ -16,22 +16,41 @@ namespace Audio
 	{
 	public:
 		// ctor
-		FQuartzClockManager(Audio::FMixerDevice* InOwner);
+		FQuartzClockManager(Audio::FMixerDevice* InOwner = nullptr);
 
 		// dtor
 		~FQuartzClockManager();
 
+		int32 GetNumClocks() const { return ActiveClocks.Num(); }
+
 		// Called on AudioRenderThread
 		void Update(int32 NumFramesUntilNextUpdate);
+		void UpdateClock(FName InClockToAdvance, int32 NumFramesToAdvance);
+
+		// can be called from any thread for low-resolution clock updates
+		// (i.e. used when running without an audio device)
+		// not sample-accurate!
+		void LowResoultionUpdate(float DeltaTimeSeconds);
 
 		// add (and take ownership of) a new clock
 		// safe to call from AudioThread (uses critical section)
-		FQuartzClock* GetOrCreateClock(const FName& InClockName, const FQuartzClockSettings& InClockSettings, bool bOverrideTickRateIfClockExists = false);
+		TSharedPtr<FQuartzClock> GetOrCreateClock(const FName& InClockName, const FQuartzClockSettings& InClockSettings, bool bOverrideTickRateIfClockExists = false);
 
 
 		// returns true if a clock with the given name already exists.
-		// OutKey is overwritten with a default object if the clock didn't exist
 		bool DoesClockExist(const FName& InClockName);
+
+		// returns true if the name is running
+		bool IsClockRunning(const FName& InClockName);
+
+		// Returns the duration in seconds of the given Quantization Type, or -1 if the Clock is invalid or nonexistent
+		float GetDurationOfQuantizationTypeInSeconds(const FName& InClockName, const EQuartzCommandQuantization& QuantizationType, float Multiplier);
+
+		// Returns the current location of the clock in the transport
+		FQuartzTransportTimeStamp GetCurrentTimestamp(const FName& InClockName);
+
+		// Returns the amount of time, in seconds, the clock has been running. Caution: due to latency, this will not be perfectly accurate
+		float GetEstimatedRunTime(const FName& InClockName);
 
 		// remove existing clock
 		// safe to call from AudioThread (uses Audio Render Thread Command)
@@ -45,7 +64,11 @@ namespace Audio
 
 		// start the given clock
 		// safe to call from AudioThread (uses Audio Render Thread command)
-		void ResumeClock(const FName& InName);
+		void ResumeClock(const FName& InName, int32 NumFramesToDelayStart = 0);
+
+		// stop the given clock
+		// safe to call from AudioThread (uses Audio Render Thread command)
+		void StopClock(const FName& InName, bool CancelPendingEvents);
 
 		// stop the given clock
 		// safe to call from AudioThread (uses Audio Render Thread command)
@@ -76,16 +99,19 @@ namespace Audio
 		// cancel a queued command on a clock (i.e. cancel a PlayQuantized command if the sound is stopped before it is played)
 		bool CancelCommandOnClock(FName InOwningClockName, TSharedPtr<IQuartzQuantizedCommand> InCommandPtr);
 
-		// get access to the owning FMixerDevice
-		FMixerDevice* GetMixerDevice() const { return MixerDevice; }
+		bool HasClockBeenTickedThisUpdate(FName InClockName);
 
+		int32 GetLastUpdateSizeInFrames() { return LastUpdateSizeInFrames; }
+
+		// get access to the owning FMixerDevice
+		FMixerDevice* GetMixerDevice() const;
 
 	private:
 		// updates all active clocks
 		void TickClocks(int32 NumFramesToTick);
 
 		// find clock with a given key
-		FQuartzClock* FindClock(const FName& InName);
+		TSharedPtr<FQuartzClock> FindClock(const FName& InName);
 
 		// pointer to owning FMixerDevice
 		FMixerDevice* MixerDevice;
@@ -94,6 +120,9 @@ namespace Audio
 		FCriticalSection ActiveClockCritSec;
 
 		// Our array of active clocks (mutation/access acquires clock)
-		TArray<FQuartzClock> ActiveClocks;
+		TArray<TSharedPtr<FQuartzClock>> ActiveClocks;
+
+		FThreadSafeCounter LastClockTickedIndex{ 0 };
+		int32 LastUpdateSizeInFrames{ 0 };
 	};
 } // namespace Audio

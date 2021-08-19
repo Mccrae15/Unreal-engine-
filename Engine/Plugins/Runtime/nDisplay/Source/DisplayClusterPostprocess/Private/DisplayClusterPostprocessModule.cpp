@@ -5,32 +5,28 @@
 #include "DisplayClusterPostprocessLog.h"
 #include "DisplayClusterPostprocessStrings.h"
 
-#include "PostProcess/DisplayClusterPostprocessOutputRemap.h"
-#include "PostProcess/DisplayClusterPostprocessTextureShare.h"
-#include "PostProcess/DisplayClusterPostprocessDX12CrossGPU.h"
+#if PLATFORM_WINDOWS
+#include "PostProcess/Windows/DisplayClusterPostprocessTextureShare.h"
+#include "PostProcess/Windows/DisplayClusterPostprocessDX12CrossGPU.h"
+#endif
 
 #include "IDisplayCluster.h"
 #include "Render/IDisplayClusterRenderManager.h"
 
-#include "ITextureShare.h"
-#include "ITextureShareD3D12.h"
-
 
 FDisplayClusterPostprocessModule::FDisplayClusterPostprocessModule()
 {
-	TSharedPtr<IDisplayClusterPostProcess> Postprocess;
+	TSharedPtr<IDisplayClusterPostProcessFactory> Postprocess;
 
-	// Output Remap
-	Postprocess = MakeShared<FDisplayClusterPostprocessOutputRemap>();
-	PostprocessAssets.Emplace(DisplayClusterPostprocessStrings::postprocess::OutputRemap, Postprocess);
-
+#if PLATFORM_WINDOWS
 	// Texture Share
-	Postprocess = MakeShared<FDisplayClusterPostprocessTextureShare>();
-	PostprocessAssets.Emplace(DisplayClusterPostprocessStrings::postprocess::TextureShare, Postprocess);
+	//Postprocess = MakeShared<FDisplayClusterPostprocessTextureShare>();
+	//PostprocessAssets.Emplace(DisplayClusterPostprocessStrings::postprocess::TextureShare, Postprocess);
 
 	// D3D12 Cross GPU
-	Postprocess = MakeShared<FDisplayClusterPostprocessD3D12CrossGPU>();
-	PostprocessAssets.Emplace(DisplayClusterPostprocessStrings::postprocess::D3D12CrossGPU, Postprocess);
+	//Postprocess = MakeShared<FDisplayClusterPostprocessD3D12CrossGPU>();
+	//PostprocessAssets.Emplace(DisplayClusterPostprocessStrings::postprocess::D3D12CrossGPU, Postprocess);
+#endif
 
 	UE_LOG(LogDisplayClusterPostprocess, Log, TEXT("Postprocess module has been instantiated"));
 }
@@ -51,13 +47,13 @@ void FDisplayClusterPostprocessModule::StartupModule()
 	IDisplayClusterRenderManager* RenderMgr = IDisplayCluster::Get().GetRenderMgr();
 	if (RenderMgr)
 	{
-		for (auto it = PostprocessAssets.CreateIterator(); it; ++it)
+		for (TPair<FString, TSharedPtr<IDisplayClusterPostProcessFactory>>& PPFactoryIt : PostprocessAssets)
 		{
-			UE_LOG(LogDisplayClusterPostprocess, Log, TEXT("Registering <%s> projection policy factory..."), *it->Key);
+			UE_LOG(LogDisplayClusterPostprocess, Log, TEXT("Registering <%s> projection policy factory..."), *PPFactoryIt.Key);
 
-			if (!RenderMgr->RegisterPostprocessOperation(it->Key, it->Value))
+			if (!RenderMgr->RegisterPostProcessFactory(PPFactoryIt.Key, PPFactoryIt.Value))
 			{
-				UE_LOG(LogDisplayClusterPostprocess, Warning, TEXT("Couldn't register <%s> projection policy factory"), *it->Key);
+				UE_LOG(LogDisplayClusterPostprocess, Warning, TEXT("Couldn't register <%s> projection policy factory"), *PPFactoryIt.Key);
 			}
 		}
 	}
@@ -72,13 +68,13 @@ void FDisplayClusterPostprocessModule::ShutdownModule()
 	IDisplayClusterRenderManager* RenderMgr = IDisplayCluster::Get().GetRenderMgr();
 	if (RenderMgr)
 	{
-		for (auto it = PostprocessAssets.CreateConstIterator(); it; ++it)
+		for (TPair<FString, TSharedPtr<IDisplayClusterPostProcessFactory>>& PPFactoryIt : PostprocessAssets)
 		{
-			UE_LOG(LogDisplayClusterPostprocess, Log, TEXT("Un-registering <%s> projection factory..."), *it->Key);
+			UE_LOG(LogDisplayClusterPostprocess, Log, TEXT("Un-registering <%s> projection factory..."), *PPFactoryIt.Key);
 
-			if (!RenderMgr->UnregisterPostprocessOperation(it->Key))
+			if (!RenderMgr->UnregisterPostProcessFactory(PPFactoryIt.Key))
 			{
-				UE_LOG(LogDisplayClusterPostprocess, Warning, TEXT("An error occurred during un-registering the <%s> projection factory"), *it->Key);
+				UE_LOG(LogDisplayClusterPostprocess, Warning, TEXT("An error occurred during un-registering the <%s> projection factory"), *PPFactoryIt.Key);
 			}
 		}
 	}

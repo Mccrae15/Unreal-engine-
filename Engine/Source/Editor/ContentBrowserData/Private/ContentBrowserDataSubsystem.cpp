@@ -6,6 +6,7 @@
 #include "Misc/PackageName.h"
 #include "Features/IModularFeatures.h"
 #include "Stats/Stats.h"
+#include "UObject/UObjectThreadContext.h"
 #include "Framework/Application/SlateApplication.h"
 
 void UContentBrowserDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -241,9 +242,9 @@ void UContentBrowserDataSubsystem::EnumerateItemsMatchingFilter(const FContentBr
 	{
 		UContentBrowserDataSource* DataSource = ActiveDataSourcePair.Value;
 
-		// Does data source have dummy paths down to its mount root that we also have to emit callbacks for?
 		if (const FContentBrowserDataFilterList* FilterList = InFilter.CompiledFilters.Find(DataSource))
 		{
+			// Does data source have dummy paths down to its mount root that we also have to emit callbacks for?
 			if (const FContentBrowserCompiledSubsystemFilter* SubsystemFilter = FilterList->FindFilter<FContentBrowserCompiledSubsystemFilter>())
 			{
 				for (const FName& MountRootPart : SubsystemFilter->MountRootsToEnumerate)
@@ -252,6 +253,19 @@ void UContentBrowserDataSubsystem::EnumerateItemsMatchingFilter(const FContentBr
 
 					const FString MountLeafName = FPackageName::GetShortName(MountRootPart);
 					InCallback(FContentBrowserItemData(DataSource, EContentBrowserItemFlags::Type_Folder, MountRootPart, *MountLeafName, FText(), nullptr));
+				}
+			}
+
+			// Fully virtual folders are ones used purely for display purposes such as /All or /All/Plugins
+			if (const FContentBrowserCompiledVirtualFolderFilter* VirtualFolderFilter = FilterList->FindFilter<FContentBrowserCompiledVirtualFolderFilter>())
+			{
+				if (EnumHasAnyFlags(InFilter.ItemTypeFilter, EContentBrowserItemTypeFilter::IncludeFolders))
+				{
+					for (const auto& It : VirtualFolderFilter->CachedSubPaths)
+					{
+						// how do we skip over this item if not included (Engine Content, Engine Plugins, C++ Classes, etc..)
+						InCallback(FContentBrowserItemData(It.Value));
+					}
 				}
 			}
 		}
@@ -545,6 +559,13 @@ void UContentBrowserDataSubsystem::HandleDataSourceUnregistered(const FName& Typ
 void UContentBrowserDataSubsystem::Tick(const float InDeltaTime)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_UContentBrowserDataSubsystem_Tick);
+
+	if (GIsSavingPackage || IsGarbageCollecting() || FUObjectThreadContext::Get().IsRoutingPostLoad)
+	{
+		// Not to safe to Tick right now, as the below code may try and find objects
+		return;
+	}
+
 	for (const auto& AvailableDataSourcePair : AvailableDataSources)
 	{
 		AvailableDataSourcePair.Value->Tick(InDeltaTime);

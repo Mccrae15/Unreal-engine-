@@ -202,7 +202,18 @@ bool CanEditItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* InO
 
 bool CanEditAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, FText* OutErrorMsg)
 {
-	return CanModifyAssetFileItem(InAssetTools, InAssetPayload, OutErrorMsg);
+	if (!CanModifyAssetFileItem(InAssetTools, InAssetPayload, OutErrorMsg))
+	{
+		return false;
+	}
+
+	if (InAssetPayload.GetAssetData().PackageFlags & PKG_FilterEditorOnly)
+	{
+		SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotEditCookedPackages", "Cannot edit cooked packages"));
+		return false;
+	}
+
+	return true;
 }
 
 bool CanPreviewItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, const FContentBrowserItemData& InItem, FText* OutErrorMsg)
@@ -441,6 +452,12 @@ bool CanSaveAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetF
 {
 	if (!CanModifyAssetFileItem(InAssetTools, InAssetPayload, OutErrorMsg))
 	{
+		return false;
+	}
+
+	if (InAssetPayload.GetAssetData().PackageFlags & PKG_FilterEditorOnly)
+	{
+		SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotSaveCookedPackages", "Cannot save cooked packages"));
 		return false;
 	}
 
@@ -1301,22 +1318,38 @@ bool GetAssetFileItemAttributes(const FContentBrowserAssetFileItemDataPayload& I
 	}
 
 	// Generic attribute keys
+	static const FName BlueprintAssetClass = FName("Blueprint");
+	static const FName ParentClassTag = FName("ParentClass");
 	{
 		const FAssetData& AssetData = InAssetPayload.GetAssetData();
 		const FAssetPropertyTagCache::FClassPropertyTagCache& ClassPropertyTagCache = FAssetPropertyTagCache::Get().GetCacheForClass(AssetData.AssetClass);
+		const FAssetPropertyTagCache::FClassPropertyTagCache* ParentClassPropertyTagCache = nullptr;
+
+		if (AssetData.AssetClass == BlueprintAssetClass)
+		{
+			FAssetTagValueRef ParentClassRef = AssetData.TagsAndValues.FindTag(ParentClassTag);
+			if (ParentClassRef.IsSet())
+			{
+				ParentClassPropertyTagCache = &FAssetPropertyTagCache::Get().GetCacheForClass(ParentClassRef.AsName());
+			}
+		}
 
 		OutAttributeValues.Reserve(OutAttributeValues.Num() + AssetData.TagsAndValues.Num());
 		for (const auto& TagAndValue : AssetData.TagsAndValues)
 		{
 			FContentBrowserItemDataAttributeValue& GenericAttributeValue = OutAttributeValues.Add(TagAndValue.Key);
-			GetGenericItemAttribute(TagAndValue.Key, TagAndValue.Value, ClassPropertyTagCache, InIncludeMetaData, GenericAttributeValue);
+			GetGenericItemAttribute(TagAndValue.Key, TagAndValue.Value.AsString(), ClassPropertyTagCache, InIncludeMetaData, GenericAttributeValue);
+			if (ParentClassPropertyTagCache && ParentClassPropertyTagCache->GetCacheForTag(TagAndValue.Key))
+			{
+				GetGenericItemAttribute(TagAndValue.Key, TagAndValue.Value.AsString(), *ParentClassPropertyTagCache, InIncludeMetaData, GenericAttributeValue);
+			}
 		}
 	}
 
 	return true;
 }
 
-void PopulateAssetFolderContextMenu(const UContentBrowserDataSource* InOwnerDataSource, UToolMenu* InMenu, FAssetFolderContextMenu& InAssetFolderContextMenu)
+void PopulateAssetFolderContextMenu(UContentBrowserDataSource* InOwnerDataSource, UToolMenu* InMenu, FAssetFolderContextMenu& InAssetFolderContextMenu)
 {
 	const UContentBrowserDataMenuContext_FolderMenu* ContextObject = InMenu->FindContext<UContentBrowserDataMenuContext_FolderMenu>();
 	checkf(ContextObject, TEXT("Required context UContentBrowserDataMenuContext_FolderMenu was missing!"));
@@ -1340,14 +1373,13 @@ void PopulateAssetFolderContextMenu(const UContentBrowserDataSource* InOwnerData
 		);
 }
 
-void PopulateAssetFileContextMenu(const UContentBrowserDataSource* InOwnerDataSource, UToolMenu* InMenu, FAssetFileContextMenu& InAssetFileContextMenu)
+void PopulateAssetFileContextMenu(UContentBrowserDataSource* InOwnerDataSource, UToolMenu* InMenu, FAssetFileContextMenu& InAssetFileContextMenu)
 {
 	const UContentBrowserDataMenuContext_FileMenu* ContextObject = InMenu->FindContext<UContentBrowserDataMenuContext_FileMenu>();
 	checkf(ContextObject, TEXT("Required context UContentBrowserDataMenuContext_FileMenu was missing!"));
 
 	// Extract the internal asset data that belong to this data source from the full list of selected items given in the context
 	TArray<FAssetData> SelectedAssets;
-	TMap<FAssetData, FContentBrowserItem> SelectedAssetsToItems;
 	for (const FContentBrowserItem& SelectedItem : ContextObject->SelectedItems)
 	{
 		if (const FContentBrowserItemData* SelectedItemData = SelectedItem.GetPrimaryInternalItem())
@@ -1355,21 +1387,22 @@ void PopulateAssetFileContextMenu(const UContentBrowserDataSource* InOwnerDataSo
 			if (TSharedPtr<const FContentBrowserAssetFileItemDataPayload> AssetPayload = GetAssetFileItemPayload(InOwnerDataSource, *SelectedItemData))
 			{
 				SelectedAssets.Add(AssetPayload->GetAssetData());
-				SelectedAssetsToItems.Add(AssetPayload->GetAssetData(), SelectedItem);
 			}
 		}
 	}
 
-	FAssetFileContextMenu::FOnShowAssetsInPathsView OnShowAssetsInPathsView = FAssetFileContextMenu::FOnShowAssetsInPathsView::CreateLambda([SelectedAssetsToItems, OnShowInPathsView = ContextObject->OnShowInPathsView](const TArray<FAssetData>& InAssetsToShow)
+	FAssetFileContextMenu::FOnShowAssetsInPathsView OnShowAssetsInPathsView = FAssetFileContextMenu::FOnShowAssetsInPathsView::CreateLambda([OwnerDataSource = TWeakObjectPtr<UContentBrowserDataSource>(InOwnerDataSource), OnShowInPathsView = ContextObject->OnShowInPathsView](const TArray<FAssetData>& InAssetsToShow)
 	{
-		if (OnShowInPathsView.IsBound())
+		UContentBrowserDataSource* OwnerDataSourcePtr = OwnerDataSource.Get();
+		if (OwnerDataSourcePtr && OnShowInPathsView.IsBound())
 		{
 			TArray<FContentBrowserItem> ItemsToShow;
 			for (const FAssetData& AssetToShow : InAssetsToShow)
 			{
-				if (const FContentBrowserItem* ItemToShow = SelectedAssetsToItems.Find(AssetToShow))
+				FName VirtualPathToShow;
+				if (OwnerDataSourcePtr->Legacy_TryConvertAssetDataToVirtualPath(AssetToShow, /*bUseFolderPaths*/false, VirtualPathToShow))
 				{
-					ItemsToShow.Emplace(*ItemToShow);
+					ItemsToShow.Emplace(CreateAssetFileItem(OwnerDataSourcePtr, VirtualPathToShow, AssetToShow));
 				}
 			}
 			OnShowInPathsView.Execute(ItemsToShow);

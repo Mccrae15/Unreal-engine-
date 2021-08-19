@@ -32,9 +32,9 @@ const FMeshMapBuildData* FStaticMeshInstance::GetMeshMapBuildDataForLODIndex(int
 
 void FStaticMeshInstance::AllocateLightmaps(TEntityArray<FLightmap>& LightmapContainer)
 {
-	for (int32 LODIndex = 0; LODIndex < ComponentUObject->GetStaticMesh()->RenderData->LODResources.Num(); LODIndex++)
+	for (int32 LODIndex = 0; LODIndex < ComponentUObject->GetStaticMesh()->GetRenderData()->LODResources.Num(); LODIndex++)
 	{
-		FStaticMeshLODResources& LODModel = ComponentUObject->GetStaticMesh()->RenderData->LODResources[LODIndex];
+		FStaticMeshLODResources& LODModel = ComponentUObject->GetStaticMesh()->GetRenderData()->LODResources[LODIndex];
 
 		int32 BaseLightMapWidth;
 		int32 BaseLightMapHeight;
@@ -43,8 +43,8 @@ void FStaticMeshInstance::AllocateLightmaps(TEntityArray<FLightmap>& LightmapCon
 		bool bValidTextureMap = false;
 		if (BaseLightMapWidth > 0
 			&& BaseLightMapHeight > 0
-			&& ComponentUObject->GetStaticMesh()->LightMapCoordinateIndex >= 0
-			&& (uint32)ComponentUObject->GetStaticMesh()->LightMapCoordinateIndex < LODModel.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords())
+			&& ComponentUObject->GetStaticMesh()->GetLightMapCoordinateIndex() >= 0
+			&& (uint32)ComponentUObject->GetStaticMesh()->GetLightMapCoordinateIndex() < LODModel.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords())
 		{
 			bValidTextureMap = true;
 		}
@@ -68,6 +68,8 @@ void FStaticMeshInstance::AllocateLightmaps(TEntityArray<FLightmap>& LightmapCon
 
 TArray<FMeshBatch> FStaticMeshInstanceRenderState::GetMeshBatchesForGBufferRendering(int32 LODIndex)
 {
+	LODIndex = FMath::Max(LODIndex, ClampedMinLOD);
+
 	TArray<FMeshBatch> MeshBatches;
 
 	// TODO: potentital race conditions between GT & RT everywhere in the following code

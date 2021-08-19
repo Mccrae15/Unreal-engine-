@@ -159,11 +159,42 @@ void UBlueprintGeneratedClass::PostLoad()
 	AssembleReferenceTokenStream(true);
 }
 
+void UBlueprintGeneratedClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
+{
+	Super::GetAssetRegistryTags(OutTags);
+
+	FString NativeParentClassName;
+	FString ParentClassName;
+
+	if (UClass* ParentClass = GetSuperClass())
+	{
+		ParentClassName = FString::Printf(TEXT("%s'%s'"), *ParentClass->GetClass()->GetName(), *ParentClass->GetPathName());
+
+		// Walk up until we find a native class (ie 'while they are BP classes')
+		UClass* NativeParentClass = ParentClass;
+		while (Cast<UBlueprintGeneratedClass>(NativeParentClass))
+		{
+			NativeParentClass = NativeParentClass->GetSuperClass();
+		}
+		NativeParentClassName = FString::Printf(TEXT("%s'%s'"), *NativeParentClass->GetClass()->GetName(), *NativeParentClass->GetPathName());
+	}
+	else
+	{
+		NativeParentClassName = ParentClassName = TEXT("None");
+	}
+
+	OutTags.Add(FAssetRegistryTag(FBlueprintTags::ParentClassPath, ParentClassName, FAssetRegistryTag::TT_Alphabetical));
+	OutTags.Add(FAssetRegistryTag(FBlueprintTags::NativeParentClassPath, NativeParentClassName, FAssetRegistryTag::TT_Alphabetical));
+}
+
 FPrimaryAssetId UBlueprintGeneratedClass::GetPrimaryAssetId() const
 {
 	FPrimaryAssetId AssetId;
-	if (!ensure(ClassDefaultObject))
+	if (!ClassDefaultObject)
 	{
+		// All UBlueprintGeneratedClass objects should have a pointer to their generated ClassDefaultObject, except for the
+		// CDO itself of the UBlueprintGeneratedClass class.
+		verify(HasAnyFlags(RF_ClassDefaultObject));
 		return AssetId;
 	}
 
@@ -1065,6 +1096,8 @@ void UBlueprintGeneratedClass::CreateTimelineComponent(AActor* Actor, const UTim
 	NewTimeline->SetTimelineLength(TimelineTemplate->TimelineLength); // copy length
 	NewTimeline->SetTimelineLengthMode(TimelineTemplate->LengthMode);
 
+	NewTimeline->PrimaryComponentTick.TickGroup = TimelineTemplate->TimelineTickGroup;
+
 	// Find property with the same name as the template and assign the new Timeline to it
 	UClass* ActorClass = Actor->GetClass();
 	FObjectPropertyBase* Prop = FindFProperty<FObjectPropertyBase>(ActorClass, TimelineTemplate->GetVariableName());
@@ -1583,6 +1616,14 @@ UClass* UBlueprintGeneratedClass::RegenerateClass(UClass* ClassToRegenerate, UOb
 }
 #endif
 
+bool UBlueprintGeneratedClass::IsAsset() const
+{
+	// UClass::IsAsset returns false; override that to return true for BlueprintGeneratedClasses,
+	// but only if the instance satisfies the regular definition of an asset (RF_Public, not transient, etc)
+	// and only if it is the active BPGC matching the Blueprint
+	return UObject::IsAsset() && !HasAnyClassFlags(CLASS_NewerVersionExists);
+}
+
 void UBlueprintGeneratedClass::Link(FArchive& Ar, bool bRelinkExistingProperties)
 {
 	Super::Link(Ar, bRelinkExistingProperties);
@@ -1917,16 +1958,33 @@ bool UBlueprintGeneratedClass::ArePropertyGuidsAvailable() const
 {
 #if WITH_EDITORONLY_DATA
 	// Property guid's are generated during compilation.
-	return PropertyGuids.Num() > 0;
-#else
-	return false;
+	if (PropertyGuids.Num() > 0)
+	{
+		return true;
+	}
+	else if (UBlueprintGeneratedClass* Super = Cast<UBlueprintGeneratedClass>(GetSuperStruct()))
+	{
+		// Our parent may have guids for inherited variables
+		return Super->ArePropertyGuidsAvailable();
+	}
 #endif // WITH_EDITORONLY_DATA
+	return false;
 }
 
 FName UBlueprintGeneratedClass::FindPropertyNameFromGuid(const FGuid& PropertyGuid) const
 {
 	FName RedirectedName = NAME_None;
 #if WITH_EDITORONLY_DATA
+	// Check parent first as it may have renamed a property since this class was last saved
+	if (UBlueprintGeneratedClass* Super = Cast<UBlueprintGeneratedClass>(GetSuperStruct()))
+	{
+		RedirectedName = Super->FindPropertyNameFromGuid(PropertyGuid);
+		if (!RedirectedName.IsNone())
+		{
+			return RedirectedName;
+		}
+	}
+
 	if (const FName* Result = PropertyGuids.FindKey(PropertyGuid))
 	{
 		RedirectedName = *Result;
@@ -1942,6 +2000,11 @@ FGuid UBlueprintGeneratedClass::FindPropertyGuidFromName(const FName InName) con
 	if (const FGuid* Result = PropertyGuids.Find(InName))
 	{
 		PropertyGuid = *Result;
+	}
+	else if (UBlueprintGeneratedClass* Super = Cast<UBlueprintGeneratedClass>(GetSuperStruct()))
+	{
+		// Fall back to parent if this is an inherited variable
+		PropertyGuid = Super->FindPropertyGuidFromName(InName);
 	}
 #endif // WITH_EDITORONLY_DATA
 	return PropertyGuid;

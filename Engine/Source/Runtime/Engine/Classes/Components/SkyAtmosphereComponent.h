@@ -21,13 +21,13 @@ struct FTentDistribution
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Tent", meta = (UIMin = 0.0, UIMax = 60.0))
-	float TipAltitude;
+	float TipAltitude = 0.0f;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Tent", meta = (UIMin = 0.0, UIMax = 1.0, ClampMin = 0.0, SliderExponent = 4.0))
-	float TipValue;
+	float TipValue = 0.0f;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Tent", meta = (UIMin = 0.01, UIMax = 20.0, ClampMin = 0.0))
-	float Width;
+	float Width = 1.0f;
 };
 
 UENUM()
@@ -50,21 +50,21 @@ class USkyAtmosphereComponent : public USceneComponent
 	~USkyAtmosphereComponent();
 
 
-	/** The ground albedo that will tint the astmophere when the sun light will bounce on it. Only taken into account when MultiScattering>0.0. */
+	/** The ground albedo that will tint the atmosphere when the sun light will bounce on it. Only taken into account when MultiScattering>0.0. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Planet", meta = (HideAlphaChannel))
 	ESkyAtmosphereTransformMode TransformMode;
 
-	/** The planet radius. (kilometers from the center to the ground level). */
+	/** The radius in kilometers from the center of the planet to the ground level. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Planet", meta = (DisplayName = "Ground Radius", UIMin = 1.0, UIMax = 7000.0, ClampMin = 0.1, ClampMax = 10000.0, SliderExponent = 5.0))
 	float BottomRadius;
 
-	/** The ground albedo that will tint the astmophere when the sun light will bounce on it. Only taken into account when MultiScattering>0.0. */
+	/** The ground albedo that will tint the atmosphere when the sun light will bounce on it. Only taken into account when MultiScattering>0.0. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Planet", meta = (HideAlphaChannel))
 	FColor GroundAlbedo;
 
 
 
-	/** The planet radius. (kilometers from the center to the ground level). */
+	/** The height of the atmosphere layer above the ground in kilometers. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Atmosphere", meta = (UIMin = 1.0, UIMax = 200.0, ClampMin = 0.1, SliderExponent = 2.0))
 	float AtmosphereHeight;
 
@@ -153,8 +153,7 @@ class USkyAtmosphereComponent : public USceneComponent
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Art Direction", meta = (UIMin = -90.0, UIMax = 90.0, ClampMin = -90.0f, ClampMax = 90.0f))
 	float TransmittanceMinLightElevationAngle;
 
-	/** The distance (kiloneters) at which we start evaluating the aerial pespective. 
-	Keeping this value a little away from the camera can help with performance: pixels not affected by the aerial perspective will have their computation skipped using early depth test.*/
+	/** The distance (kilometers) at which we start evaluating the aerial perspective. Having the aerial perspective starts away from the camera can help with performance: pixels not affected by the aerial perspective will have their computation skipped using early depth test.*/
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Art Direction", meta = (UIMin = 0.001f, UIMax = 10.0f, ClampMin = 0.001f))
 	float AerialPerspectiveStartDepth;
 
@@ -162,6 +161,11 @@ class USkyAtmosphereComponent : public USceneComponent
 
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	ENGINE_API void OverrideAtmosphereLightDirection(int32 AtmosphereLightIndex, const FVector& LightDirection);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	ENGINE_API void SetAtmosphereHeight(float NewValue);
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	ENGINE_API void SetMultiScatteringFactor(float NewValue);
 	
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	ENGINE_API void SetRayleighScatteringScale(float NewValue);
@@ -196,6 +200,8 @@ class USkyAtmosphereComponent : public USceneComponent
 	ENGINE_API void SetHeightFogContribution(float NewValue);
 
 
+	UFUNCTION(BlueprintCallable, Category = "Utilities", meta = (DisplayName = "Get Atmosphere Transmitance On Ground At Planet Top (Experimental)", Experimental))
+	ENGINE_API FLinearColor GetAtmosphereTransmitanceOnGroundAtPlanetTop(UDirectionalLightComponent* DirectionalLight);
 
 protected:
 	//~ Begin UActorComponent Interface.

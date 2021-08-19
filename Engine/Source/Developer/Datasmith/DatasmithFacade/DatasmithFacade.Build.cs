@@ -14,7 +14,8 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"Core",
-					"DatasmithCore"
+					"DatasmithCore",
+					"DirectLink",
 				}
 			);
 
@@ -23,10 +24,6 @@ namespace UnrealBuildTool.Rules
 				{
 					"DatasmithExporter",
 					"UEOpenExr",
-
-					// DirectLink
-					"Messaging",
-					"MessagingCommon",
 				}
 			);
 		}

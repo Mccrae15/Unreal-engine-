@@ -2,7 +2,6 @@
 #include "CoreTechHelper.h"
 
 
-#ifdef CAD_LIBRARY
 #include "CoreTechTypes.h"
 
 #include "CADData.h"
@@ -73,13 +72,6 @@ namespace CADLibrary
 		int32 TriangleCount = Body.TriangleCount;
 		TArray<FTessellationData>& FaceTessellationSet = Body.Faces;
 
-		// Add offset to the bounding box to avoid to remove good vertex
-		FVector Size = Body.BBox.GetSize();
-		FBox BBox = Body.BBox.ExpandBy(Size.Size());
-		BBox.IsValid = Body.BBox.IsValid;
-		BBox.Min *= ImportParams.ScaleFactor;
-		BBox.Max *= ImportParams.ScaleFactor;
-
 		TVertexAttributesRef<FVector> VertexPositions = MeshDescription.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
 
 		// Create a list of vertex Z/index pairs
@@ -122,13 +114,7 @@ namespace CADLibrary
 			int32 Index_i = VertexDataSet[i].Index;
 			IndexOfCoincidentNode[Index_i] = Index_i;
 
-			// Check if mesh vertex is not outside body bbox
 			const FVector& PositionA = VertexDataSet[i].Coordinates;
-			if (BBox.IsValid && !BBox.IsInside(PositionA))
-			{
-				VertexDataSet[i].Index = -1;
-				continue;
-			}
 
 			// only need to search forward, since we add pairs both ways
 			for (int32 j = i + 1; j < VertexDataSet.Num(); j++)
@@ -514,7 +500,7 @@ namespace CADLibrary
 
 	bool ConvertCTBodySetToMeshDescription(const FImportParameters& ImportParams, const FMeshParameters& MeshParameters, FBodyMesh& Body, FMeshDescription& MeshDescription)
 	{
-		// Ref. CreateMesh(UDatasmithCADImportOptions* CADOptions, CTMesh& Mesh)
+		// Ref. CreateMesh(UDatasmithCADImportOptions* CADOptions, FCTMesh& Mesh)
 		MeshDescription.EdgeAttributes().RegisterAttribute<bool>(MeshAttribute::Edge::IsUVSeam, 1, false);
 
 		// in a closed big mesh VertexCount ~ TriangleCount / 2, EdgeCount ~ 1.5* TriangleCount
@@ -634,38 +620,51 @@ namespace CADLibrary
 		return MaterialElement;
 	}
 
-	CT_IO_ERROR Tessellate(CT_OBJECT_ID MainObjectId, const FImportParameters& ImportParams, FMeshDescription& MeshDesc, FMeshParameters& MeshParameters)
+	bool Tessellate(uint64 MainObjectId, const FImportParameters& ImportParams, FMeshDescription& MeshDesc, FMeshParameters& MeshParameters)
 	{
-		CheckedCTError Result;
-
-		CT_LIST_IO Objects;
-		Result = CT_COMPONENT_IO::AskChildren(MainObjectId, Objects);
-		if (!Result)
-			return Result;
-
-		SetCoreTechTessellationState(ImportParams);
-
-		FCoreTechFileParser Parser = FCoreTechFileParser(ImportParams);
+		CTKIO_SetCoreTechTessellationState(ImportParams);
 
 		FBodyMesh BodyMesh;
 		BodyMesh.BodyID = 1;
 
-		while (CT_OBJECT_ID BodyId = Objects.IteratorIter())
+		CTKIO_GetTessellation(MainObjectId, BodyMesh, false);
+
+		if (BodyMesh.Faces.Num() == 0)
 		{
-			Parser.GetBodyTessellation(BodyId, MainObjectId, BodyMesh, 0, /*bNeedRepair*/ true);
+			return false;
 		}
 
-		bool bTessellated = ConvertCTBodySetToMeshDescription(ImportParams, MeshParameters, BodyMesh, MeshDesc);
-
-		CheckedCTError ConversionResult;
-		if (!bTessellated)
+		if (!ConvertCTBodySetToMeshDescription(ImportParams, MeshParameters, BodyMesh, MeshDesc))
 		{
-			ConversionResult.RaiseOtherError("Error during mesh conversion");
+			ensureMsgf(false, TEXT("Error during mesh conversion"));
+			return false;
 		}
 
-		return ConversionResult;
+		return true;
+	}
+
+	bool LoadFile(const FString& FileName, FMeshDescription& MeshDescription, const FImportParameters& ImportParameters, FMeshParameters& MeshParameters)
+	{
+		FCoreTechSessionBase Session(TEXT("CoreTechMeshLoader::LoadFile"));
+		if (!Session.IsSessionValid())
+		{
+			return false;
+		}
+
+		uint64 MainObjectID;
+		CTKIO_ChangeUnit(ImportParameters.MetricUnit);
+		if(!CTKIO_LoadModel(*FileName, MainObjectID, 0x00020000 /* CT_LOAD_FLAGS_READ_META_DATA */))
+		{
+			// Something wrong happened during the load, abort
+			return false;
+		}
+
+		if (ImportParameters.StitchingTechnique != StitchingNone)
+		{
+			CTKIO_Repair(MainObjectID, StitchingSew);
+		}
+
+		return Tessellate(MainObjectID, ImportParameters, MeshDescription, MeshParameters);
 	}
 
 }
-
-#endif // CAD_LIBRARY

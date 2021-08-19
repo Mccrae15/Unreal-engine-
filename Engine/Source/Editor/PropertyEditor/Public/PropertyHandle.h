@@ -23,6 +23,8 @@ namespace EPropertyValueSetFlags
 	const Type NotTransactable = 1 << 0;
 	/** When PostEditChange is called mark the change as interactive (e.g, user is spinning a value in a spin box) */
 	const Type InteractiveChange = 1 << 1;
+	/** If the property being imported to is an instanced object, create a new object rather than simply setting the value literally */
+	const Type InstanceObjects = 1 << 2;
 
 };
 
@@ -550,6 +552,13 @@ public:
 	 * which don't use CreatePropertyValueWidget but you still want array item behaviors and reset to default capabilities.
 	 */
 	virtual TSharedRef<SWidget> CreateDefaultPropertyButtonWidgets() const = 0;
+
+	/**
+	 * Creates the default copy and paste actions for a single property.  This is useful when creating customizations which use
+	 * custom node builders since they can't implement copy/paste by default because the contents of the rows is not known,
+	 * but frequently you're using the handles on each row to generate this UI.
+	 */
+	virtual void CreateDefaultPropertyCopyPasteActions(FUIAction& OutCopyAction, FUIAction& OutPasteAction) const = 0;
 
 	/**
 	 * Adds a restriction to the possible values for this property.

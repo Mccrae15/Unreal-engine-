@@ -5,12 +5,13 @@
 #include "CoreMinimal.h"
 #include "LidarPointCloudShared.h"
 #include "LidarPointCloudSettings.h"
-#include "LidarPointCloudLODManager.h"
 #include "Meshing/LidarPointCloudMeshing.h"
 #include "HAL/ThreadSafeCounter64.h"
 #include "Misc/ScopeLock.h"
+#include "Containers/Queue.h"
 #include "ConvexVolume.h"
 #include "Interfaces/Interface_CollisionDataProvider.h"
+#include "Serialization/BulkData.h"
 
 class ULidarPointCloud;
 class FLidarPointCloudOctree;
@@ -22,16 +23,16 @@ struct FLidarPointCloudTraversalOctreeNode;
  * Use the FLidarPointCloudOctree::DataLock prior to such attempt
  */
 
- /**
- Child ordering
- 0	X- Y- Z-
- 1	X- Y- Z+
- 2	X- Y+ Z-
- 3	X- Y+ Z+
- 4	X+ Y- Z-
- 5	X+ Y- Z+
- 6	X+ Y+ Z-
- 7	X+ Y+ Z+
+/**
+ * Child ordering
+ * 0	X- Y- Z-
+ * 1	X- Y- Z+
+ * 2	X- Y+ Z-
+ * 3	X- Y+ Z+
+ * 4	X+ Y- Z-
+ * 5	X+ Y- Z+
+ * 6	X+ Y+ Z-
+ * 7	X+ Y+ Z+
  */
 
 /**
@@ -56,6 +57,9 @@ private:
 	// #todo: Change to TIndirectArray<> - investigate increased memory consumption, ~130 bytes / Node
 	TArray<FLidarPointCloudOctreeNode*> Children;
 
+	/** Pointer to the Tree holding this node */
+	FLidarPointCloudOctree* Tree;
+
 	/** Marks the node for visibility recalculation next time it's necessary */
 	bool bVisibilityDirty;
 
@@ -67,11 +71,29 @@ private:
 
 	FCriticalSection MapLock;
 
-	/** Used for streaming the data from disk */
-	FLidarPointCloudBulkData BulkData;
+	/**
+	 * Holds point data allocated to this node
+	 * Can be empty, if the data hasn't been streamed in yet
+	 */
+	TArray<FLidarPointCloudPoint> Data;
+
+	/**
+	 * Stores the number of points this node contains.
+	 * Needed, since Data may not have been streamed yet, and would return a count of 0.
+	 */
+	uint32 NumPoints;
+
+	/** True, if the node has its data loaded */
+	TAtomic<bool> bHasData;
+
+	/** Offset in the archive file, where the data for this node is located */
+	int64 BulkDataOffset;
+
+	uint32 BulkDataSize;
 
 	/** Holds render data for this node */
 	class FLidarPointCloudRenderBuffer* DataCache;
+	class FLidarPointCloudVertexFactory* VertexFactory;
 
 	bool bRenderDataDirty;
 
@@ -82,7 +104,6 @@ private:
 	TAtomic<bool> bCanReleaseData;
 
 public:
-	FORCEINLINE FLidarPointCloudOctreeNode() : FLidarPointCloudOctreeNode(nullptr, 0) {}
 	FORCEINLINE FLidarPointCloudOctreeNode(FLidarPointCloudOctree* Tree, const uint8& Depth) : FLidarPointCloudOctreeNode(Tree, Depth, 0, FVector::ZeroVector) {}
 	FLidarPointCloudOctreeNode(FLidarPointCloudOctree* Tree, const uint8& Depth, const uint8& LocationInParent, const FVector& Center);
 	~FLidarPointCloudOctreeNode();
@@ -92,7 +113,7 @@ public:
 	FLidarPointCloudOctreeNode& operator=(FLidarPointCloudOctreeNode&&) = delete;
 
 	/** Returns a pointer to the point data */
-	FORCEINLINE FLidarPointCloudPoint* GetData() const { return BulkData.GetData(); }
+	FLidarPointCloudPoint* GetData() const;
 
 	/** Returns a pointer to the point data and prevents it from being released */
 	FLidarPointCloudPoint* GetPersistentData() const;
@@ -100,28 +121,37 @@ public:
 	/** Returns a pointer to the point data */
 	FORCEINLINE FLidarPointCloudRenderBuffer* GetDataCache() { return DataCache; }
 
-	bool BuildDataCache();
+	/** Return a pointer to the vertex factory containing pre-cached geometry */
+	FORCEINLINE FLidarPointCloudVertexFactory* GetVertexFactory() { return VertexFactory; }
+
+	/**
+	 * Builds and updates the necessary render data buffers
+	 * Returns true if successful
+	 */
+	bool BuildDataCache(bool bUseStaticBuffers);
 
 	/** Returns the sum of grid and padding points allocated to this node. */
-	FORCEINLINE int64 GetNumPoints() const { return BulkData.GetElementCount(); }
+	FORCEINLINE uint32 GetNumPoints() const { return NumPoints; }
 
 	/** Returns the sum of visible grid and padding points allocated to this node. */
 	uint32 GetNumVisiblePoints() const { return NumVisiblePoints; }
 
 	/** Calculates and returns the bounds of this node */
-	FBox GetBounds(const FLidarPointCloudOctree* Tree) const;
+	FORCEINLINE FBox GetBounds() const;
 
 	/** Calculates and returns the sphere bounds of this node */
-	FSphere GetSphereBounds(const FLidarPointCloudOctree* Tree) const;
+	FORCEINLINE FSphere GetSphereBounds() const;
 
 	/** Returns a pointer to the node at the given location, or null if one doesn't exist yet. */
 	FLidarPointCloudOctreeNode* GetChildNodeAtLocation(const uint8& Location) const;
 
+	uint8 GetChildrenBitmask() const;
+
 	void UpdateNumVisiblePoints();
 
 	/** Attempts to insert given points to this node or passes it to the children, otherwise. */
-	void InsertPoints(FLidarPointCloudOctree* Tree, const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
-	void InsertPoints(FLidarPointCloudOctree* Tree, FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
+	void InsertPoints(const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
+	void InsertPoints(FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
 
 	/** Removes all points. */
 	void Empty(bool bRecursive = true);
@@ -133,22 +163,33 @@ public:
 	int64 GetAllocatedSize(bool bRecursive, bool bIncludeBulkData) const;
 
 	/** Returns true, if the node has its data loaded */
-	bool HasData() const { return BulkData.HasData(); }
+	bool HasData() const { return bHasData; }
+
+	/** Returns true, if the node has its data loaded */
+	bool HasRenderData() const { return DataCache || VertexFactory; }
 
 	/**
 	 * Releases the BulkData
 	 * If forced, the node will be released even if persistent
 	 */
 	void ReleaseData(bool bForce = false);
+	
+	/** Releases and removes the render data cache */
+	void ReleaseDataCache();
 
-	/**
-	 * Convenience function, to add point statistics to the Tree table.
-	 * If parameter set to negative value, GetNumPoints will be used
-	 */
-	void AddPointCount(FLidarPointCloudOctree* Tree, int32 PointCount = INT32_MIN);
+	/** Convenience function, to add point statistics to the Tree table. */
+	void AddPointCount(int32 PointCount);
 
 	/** Sorts the points by visibility (visible first) to optimize data processing and rendering */
 	void SortVisiblePoints();
+
+private:
+	template <typename T>
+	void InsertPoints_Internal(T Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
+	void InsertPoints_Dynamic(const FLidarPointCloudPoint* Points, const int64& Count, const FVector& Translation);
+	void InsertPoints_Static(const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
+	void InsertPoints_Dynamic(FLidarPointCloudPoint** Points, const int64& Count, const FVector& Translation);
+	void InsertPoints_Static(FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
 
 	friend FLidarPointCloudOctree;
 	friend FLidarPointCloudTraversalOctree;
@@ -190,6 +231,9 @@ public:
 	/** Used for thread safety between rendering and asset operations. */
 	mutable FCriticalSection DataLock;
 
+	/** Used to prevent auto-release of nodes if they are in use by other threads */
+	FCriticalSection DataReleaseLock;
+
 private:
 	FLidarPointCloudOctreeNode Root;
 	
@@ -219,6 +263,25 @@ private:
 
 	/** Pointer to the owner of this Octree */
 	ULidarPointCloud* Owner;
+
+	struct FLidarPointCloudBulkData : public FUntypedBulkData
+	{
+	private:
+		FLidarPointCloudOctree* Octree;
+		IAsyncReadFileHandle* ReadHandle;
+
+	public:
+		FLidarPointCloudBulkData(FLidarPointCloudOctree* Octree);
+		virtual ~FLidarPointCloudBulkData();
+		virtual int32 GetElementSize() const override { return 1; }
+		bool ReadRequest(int64 Offset, int64 BytesToRead, uint8* UserSuppliedMemory);
+		FORCEINLINE void CloseReadHandle();
+
+	protected:
+		virtual void SerializeElements(FArchive& Ar, void* Data) override;
+		virtual void SerializeElement(FArchive& Ar, void* Data, int64 ElementIndex) override { };
+		virtual bool RequiresSingleElementSerialization(FArchive& Ar) override { return true; }
+	} BulkData;
 
 	TQueue<FLidarPointCloudOctreeNode*> QueuedNodes;
 	TArray<FLidarPointCloudOctreeNode*> NodesInUse;
@@ -261,6 +324,9 @@ public:
 	/** Returns the total number of nodes. */
 	int32 GetNumNodes() const;
 
+	/** Returns the total number of nodes. */
+	FORCEINLINE int32 GetNumNodesInUse() const { return NodesInUse.Num(); }
+
 	/** Returns a pointer to the Point Cloud asset, which owns this Octree. */
 	ULidarPointCloud* GetOwner() const { return Owner; }
 
@@ -289,35 +355,37 @@ public:
 	const FTriMeshCollisionData* GetCollisionData() const { return &CollisionMesh; }
 
 	/** Populates the given array with points from the tree */
-	template <typename T>
-	void GetPoints(TArray<FLidarPointCloudPoint*, T>& Points, int64 StartIndex = 0, int64 Count = -1);
+	void GetPoints(TArray<FLidarPointCloudPoint*>& SelectedPoints, int64 StartIndex = 0, int64 Count = -1);
+	void GetPoints(TArray64<FLidarPointCloudPoint*>& SelectedPoints, int64 StartIndex = 0, int64 Count = -1);
 
 	/** Populates the array with the list of points within the given sphere. */
-	template <typename T>
-	void GetPointsInSphere(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly);
+	void GetPointsInSphere(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly);
+	void GetPointsInSphere(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly);
 
 	/** Populates the array with the list of pointers to points within the given box. */
-	template <typename T>
-	void GetPointsInBox(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly);
+	void GetPointsInBox(TArray<const FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly) const;
+	void GetPointsInBox(TArray64<const FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly) const;
+	void GetPointsInBox(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly);
+	void GetPointsInBox(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly);
 
-	/** Populates the array with the list of points within the given frustum. */
-	template <typename T>
-	void GetPointsInFrustum(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FConvexVolume& Frustum, const bool& bVisibleOnly);
+	/** Populates the array with the list of points within the given convex volume. */
+	void GetPointsInConvexVolume(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FConvexVolume& ConvexVolume, const bool& bVisibleOnly);
+	void GetPointsInConvexVolume(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FConvexVolume& ConvexVolume, const bool& bVisibleOnly);
 
 	/** Populates the given array with copies of points from the tree */
-	template <typename T>
-	void GetPointsAsCopies(TArray<FLidarPointCloudPoint, T>& Points, const FTransform* LocalToWorld, int64 StartIndex = 0, int64 Count = -1) const;
+	void GetPointsAsCopies(TArray<FLidarPointCloudPoint>& SelectedPoints, const FTransform* LocalToWorld, int64 StartIndex = 0, int64 Count = -1) const;
+	void GetPointsAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, const FTransform* LocalToWorld, int64 StartIndex = 0, int64 Count = -1) const;
 
 	/** Executes the provided action on batches of points. */
 	void GetPointsAsCopiesInBatches(TFunction<void(TSharedPtr<TArray64<FLidarPointCloudPoint>>)> Action, const int64& BatchSize, const bool& bVisibleOnly);
 
 	/** Populates the array with the list of points within the given sphere. */
-	template <typename T>
-	void GetPointsInSphereAsCopies(TArray<FLidarPointCloudPoint, T>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly, const FTransform* LocalToWorld) const;
+	void GetPointsInSphereAsCopies(TArray<FLidarPointCloudPoint>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly, const FTransform* LocalToWorld) const;
+	void GetPointsInSphereAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly, const FTransform* LocalToWorld) const;
 
 	/** Populates the array with the list of pointers to points within the given box. */
-	template <typename T>
-	void GetPointsInBoxAsCopies(TArray<FLidarPointCloudPoint, T>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, const FTransform* LocalToWorld) const;
+	void GetPointsInBoxAsCopies(TArray<FLidarPointCloudPoint>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, const FTransform* LocalToWorld) const;
+	void GetPointsInBoxAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, const FTransform* LocalToWorld) const;
 
 	/** Performs a raycast test against the point cloud. Returns the pointer if hit or nullptr otherwise. */
 	FLidarPointCloudPoint* RaycastSingle(const FLidarPointCloudRay& Ray, const float& Radius, const bool& bVisibleOnly);
@@ -396,34 +464,30 @@ public:
 	/** Marks render data of all nodes as dirty. */
 	void MarkRenderDataDirty();
 
-	/** Marks render data of all nodes within the given frustum as dirty. */
-	void MarkRenderDataInFrustumDirty(const FConvexVolume& Frustum);
+	/** Marks render data of all nodes within the given sphere as dirty. */
+	void MarkRenderDataInSphereDirty(const FSphere& Sphere);
+	
+	/** Marks render data of all nodes within the given convex volume as dirty. */
+	void MarkRenderDataInConvexVolumeDirty(const FConvexVolume& ConvexVolume);
 
 	/** Initializes the Octree properties. */
 	void Initialize(const FVector& InExtent);
 
 	/** Inserts the given point into the Octree structure, internally thread-safe. */
-	FORCEINLINE void InsertPoint(const FLidarPointCloudPoint* Point, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation) { InsertPoints(Point, 1, DuplicateHandling, bRefreshPointsBounds, Translation); }
+	void InsertPoint(const FLidarPointCloudPoint* Point, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
 
 	/** Inserts group of points into the Octree structure, internally thread-safe. */
-	template <typename T>
-	void InsertPoints(T Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation)
-	{
-		Root.InsertPoints(this, Points, Count, DuplicateHandling, Translation);
-		MarkTraversalOctreesForInvalidation();
-		if (bRefreshPointsBounds)
-		{
-			RefreshBounds();
-		}
-	}
+	void InsertPoints(FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
+	void InsertPoints(const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
+	void InsertPoints(FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
 
 	/** Attempts to remove the given point.  */
 	void RemovePoint(const FLidarPointCloudPoint* Point);
 	void RemovePoint(FLidarPointCloudPoint Point);
 
 	/** Removes points in bulk */
-	template <typename T>
-	void RemovePoints(TArray<FLidarPointCloudPoint*, T>& Points);
+	void RemovePoints(TArray<FLidarPointCloudPoint*>& Points);
+	void RemovePoints(TArray64<FLidarPointCloudPoint*>& Points);
 
 	/** Removes all points within the given sphere */
 	void RemovePointsInSphere(const FSphere& Sphere, const bool& bVisibleOnly);
@@ -464,19 +528,17 @@ public:
 	/** Removes the given traversal octree from the list */
 	void UnregisterTraversalOctree(FLidarPointCloudTraversalOctree* TraversalOctree);
 
-	/** If bImmediate is true, the node will be loaded immediately, otherwise, it will be queued for async loading. */
-	void QueueNode(FLidarPointCloudOctreeNode* Node, float Lifetime);
-
-	/** Streams all requested nodes */
-	void StreamQueuedNodes();
-
-	void UnloadOldNodes(const float& CurrentTime);
+	/**
+	 * Streams requested nodes or extends their lifetime, if already loaded
+	 * Unloads all unused nodes with expired lifetime
+	 */
+	void StreamNodes(TArray<FLidarPointCloudOctreeNode*>& Nodes, const float& CurrentTime);
 
 	/** Returns true, if the cloud is fully and persistently loaded. */
 	bool IsFullyLoaded() const { return bIsFullyLoaded; }
 
-	/** Persistently loads all nodes. */
-	void LoadAllNodes();
+	/** Loads all nodes. */
+	void LoadAllNodes(bool bLoadPersistently);
 
 	/**
 	 * Releases all nodes.
@@ -484,8 +546,46 @@ public:
 	 */
 	void ReleaseAllNodes(bool bIncludePersistent);
 
+	bool IsOptimizedForDynamicData() const;
+
+	void OptimizeForDynamicData();
+
+	void OptimizeForStaticData();
+
+	//~ Begin Deprecated
+	UE_DEPRECATED(4.27, "Use GetPointsInConvexVolume instead.")
+	void GetPointsInFrustum(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FConvexVolume& Frustum, const bool& bVisibleOnly);
+	UE_DEPRECATED(4.27, "Use GetPointsInConvexVolume instead.")
+	void GetPointsInFrustum(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FConvexVolume& Frustum, const bool& bVisibleOnly);
+	UE_DEPRECATED(4.27, "Use MarkRenderDataInConvexVolumeDirty instead.")
+	void MarkRenderDataInFrustumDirty(const FConvexVolume& Frustum);
+	//~ End Deprecated
+
 private:
 	void RefreshAllocatedSize();
+
+	template <typename T>
+	void InsertPoints_Internal(T Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
+
+	template <typename T>
+	void GetPoints_Internal(TArray<FLidarPointCloudPoint*, T>& Points, int64 StartIndex = 0, int64 Count = -1);
+	template <typename T>
+	void GetPointsInSphere_Internal(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly);
+	template <typename T>
+	void GetPointsInBox_Internal(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly);
+	template <typename T>
+	void GetPointsInBox_Internal(TArray<const FLidarPointCloudPoint*, T>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly) const;
+	template <typename T>
+	void GetPointsInConvexVolume_Internal(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FConvexVolume& ConvexVolume, const bool& bVisibleOnly);
+	template <typename T>
+	void GetPointsAsCopies_Internal(TArray<FLidarPointCloudPoint, T>& Points, const FTransform* LocalToWorld, int64 StartIndex = 0, int64 Count = -1) const;
+	template <typename T>
+	void GetPointsInSphereAsCopies_Internal(TArray<FLidarPointCloudPoint, T>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly, const FTransform* LocalToWorld) const;
+	template <typename T>
+	void GetPointsInBoxAsCopies_Internal(TArray<FLidarPointCloudPoint, T>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, const FTransform* LocalToWorld) const;
+
+	template <typename T>
+	void RemovePoints_Internal(TArray<FLidarPointCloudPoint*, T>& Points);
 
 	void RemovePoint_Internal(FLidarPointCloudOctreeNode* Node, int32 Index);
 
@@ -493,6 +593,9 @@ private:
 	void MarkTraversalOctreesForInvalidation();
 
 	void Serialize(FArchive& Ar);
+	void SerializeBulkData(FArchive& Ar);
+
+	void StreamNodeData(FLidarPointCloudOctreeNode* Node);
 
 	friend FArchive& operator<<(FArchive& Ar, FLidarPointCloudOctree& O)
 	{
@@ -524,6 +627,8 @@ struct FLidarPointCloudTraversalOctreeNode
 
 	FLidarPointCloudTraversalOctreeNode* Parent;
 
+	FLidarPointCloudTraversalOctree* Octree;
+
 	/** Stores the children array */
 	TArray<FLidarPointCloudTraversalOctreeNode> Children;
 
@@ -535,11 +640,34 @@ struct FLidarPointCloudTraversalOctreeNode
 	FLidarPointCloudTraversalOctreeNode();
 
 	/** Builds the traversal version of the given node. */
-	void Build(FLidarPointCloudOctreeNode* Node, const FTransform& LocalToWorld, const FVector& LocationOffset);
+	void Build(FLidarPointCloudTraversalOctree* TraversalOctree, FLidarPointCloudOctreeNode* Node, const FTransform& LocalToWorld, const FVector& LocationOffset);
 
-	// #refactor: This is ugly - refactor to avoid the const or call directly in the buffer update with no mutable
 	/** Calculates virtual depth of this node, to be used to estimate the best sprite size */
-	void CalculateVirtualDepth(const TArray<float>& LevelWeights, const float& VDMultiplier, const float& PointSizeBias);
+	void CalculateVirtualDepth(const TArray<float>& LevelWeights, const float& PointSizeBias);
+
+	FORCEINLINE bool IsAvailable() const { return bSelected && DataNode->HasRenderData(); }
+};
+
+/** Used for node size sorting and node selection. */
+struct FLidarPointCloudTraversalOctreeNodeSizeData
+{
+	FLidarPointCloudTraversalOctreeNode* Node;
+	float Size;
+	int32 ProxyIndex;
+
+	FLidarPointCloudTraversalOctreeNodeSizeData(FLidarPointCloudTraversalOctreeNode* Node, const float& Size, const int32& ProxyIndex);
+};
+
+/** Convenience struct to group all selection params into one */
+struct FLidarPointCloudNodeSelectionParams
+{
+	float MinScreenSize;
+	float ScreenCenterImportance;
+	int32 MinDepth;
+	int32 MaxDepth;
+	float BoundsScale;
+	bool bUseFrustumCulling;
+	const TArray<struct FLidarPointCloudClippingVolumeParams>* ClippingVolumes;
 };
 
 /**
@@ -576,8 +704,15 @@ struct FLidarPointCloudTraversalOctree
 	FLidarPointCloudTraversalOctree& operator=(const FLidarPointCloudTraversalOctree&) = delete;
 	FLidarPointCloudTraversalOctree& operator=(FLidarPointCloudTraversalOctree&&) = delete;
 
-	/** Selects and appends the subset of visible nodes for rendering. */
-	void GetVisibleNodes(TArray<FLidarPointCloudLODManager::FNodeSizeData>& NodeSizeData, const FLidarPointCloudViewData& ViewData, const int32& ProxyIndex, const FLidarPointCloudNodeSelectionParams& SelectionParams, const float& CurrentTime);
+	/**
+	 * Selects and appends the subset of visible nodes for rendering.
+	 * Returns number of selected nodes
+	 */
+	int32 GetVisibleNodes(TArray<FLidarPointCloudTraversalOctreeNodeSizeData>& NodeSizeData, const struct FLidarPointCloudViewData* ViewData, const int32& ProxyIndex, const FLidarPointCloudNodeSelectionParams& SelectionParams);
+
+	void CalculateVisibilityStructure(TArray<uint32>& OutData);
+
+	void CalculateLevelWeightsForSelectedNodes(TArray<float>& OutLevelWeights);
 
 	FVector GetCenter() const { return Root.Center; }
 	FVector GetExtent() const { return Extents[0]; }

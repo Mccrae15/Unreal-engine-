@@ -40,9 +40,10 @@ class NIAGARAEDITOR_API UNiagaraStackViewModel : public UObject
 	GENERATED_BODY()
 
 public:
-	DECLARE_MULTICAST_DELEGATE(FOnStructureChanged);
+	DECLARE_MULTICAST_DELEGATE(FOnExpansionChanged);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnStructureChanged, ENiagaraStructureChangedFlags);
 	DECLARE_MULTICAST_DELEGATE(FOnSearchCompleted);
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnDataObjectChanged, UObject* /** Changed Object */);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDataObjectChanged, TArray<UObject*> /** Changed objects */, ENiagaraDataObjectChange /** Change type */);
 public:
 	struct FSearchResult
 	{
@@ -87,6 +88,7 @@ public:
 
 	TArray<UNiagaraStackEntry*>& GetRootEntryAsArray();
 
+	FOnExpansionChanged& OnExpansionChanged();
 	FOnStructureChanged& OnStructureChanged();
 	FOnSearchCompleted& OnSearchCompleted();
 	FOnDataObjectChanged& OnDataObjectChanged();
@@ -105,8 +107,6 @@ public:
 
 	double GetLastScrollPosition() const;
 	void SetLastScrollPosition(double InLastScrollPosition);
-
-	void NotifyStructureChanged();
 
 	virtual void Tick();
 	//~ stack search stuff
@@ -153,14 +153,15 @@ private:
 		}
 	};
 
-	void EntryStructureChanged();
-	void EntryDataObjectModified(UObject* ChangedObject);
+	void EntryExpansionChanged();
+	void EntryStructureChanged(ENiagaraStructureChangedFlags Flags);
+	void EntryDataObjectModified(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType);
 	void EntryRequestFullRefresh();
 	void EntryRequestFullRefreshDeferred();
 	void RefreshTopLevelViewModels();
 	void RefreshHasIssues();
 	void OnSystemCompiled();
-	void OnEmitterCompiled();
+	void OnEmitterCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
 	void EmitterParentRemoved();
 	/** Called by the tick function to perform partial search */
 	void SearchTick();
@@ -182,6 +183,7 @@ private:
 
 	bool bExternalRootEntry;
 
+	FOnExpansionChanged ExpansionChangedDelegate;
 	FOnStructureChanged StructureChangedDelegate;
 	FOnDataObjectChanged DataObjectChangedDelegate;
 

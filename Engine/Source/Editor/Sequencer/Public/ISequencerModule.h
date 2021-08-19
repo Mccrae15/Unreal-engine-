@@ -8,6 +8,7 @@
 #include "Modules/ModuleInterface.h"
 #include "AnimatedPropertyKey.h"
 #include "ISequencerChannelInterface.h"
+#include "IMovieRendererInterface.h"
 #include "MovieSceneSequenceEditor.h"
 
 class IKeyArea;
@@ -72,6 +73,9 @@ struct FSequencerViewParams
 	/** Called when this sequencer has received user focus */
 	FSimpleDelegate OnReceivedFocus;
 
+	/** The playback speed options available */
+	ISequencer::FOnGetPlaybackSpeeds OnGetPlaybackSpeeds;
+	
 	/** A menu extender for the add menu */
 	TSharedPtr<FExtender> AddMenuExtender;
 
@@ -88,7 +92,8 @@ struct FSequencerViewParams
 	ESequencerScrubberStyle ScrubberStyle;
 
 	FSequencerViewParams(FString InName = FString())
-		: UniqueName(MoveTemp(InName))
+		: OnGetPlaybackSpeeds(ISequencer::FOnGetPlaybackSpeeds::CreateLambda([]() { return TArray<float>{ 0.1f, 0.25f, 0.5f, 1.f, 2.f, 5.f, 10.f }; }))
+		, UniqueName(MoveTemp(InName))
 		, bReadOnly(false)
 		, ScrubberStyle(ESequencerScrubberStyle::Vanilla)
 	{ }
@@ -107,9 +112,17 @@ struct FSequencerHostCapabilities
 	/** Do we support the curve editor */
 	bool bSupportsCurveEditor;
 
+	/** Do we support recording */
+	bool bSupportsRecording;
+
+	/** Do we support rendering to a movie */
+	bool bSupportsRenderMovie;
+
 	FSequencerHostCapabilities()
 		: bSupportsSaveMovieSceneAsset(false)
 		, bSupportsCurveEditor(false)
+		, bSupportsRecording(false)
+		, bSupportsRenderMovie(false)
 	{}
 };
 
@@ -141,6 +154,9 @@ struct FSequencerInitParams
 
 	/** Accessor for playback context */
 	TAttribute<UObject*> PlaybackContext;
+
+	/** Accessor for playback client */
+	TAttribute<IMovieScenePlaybackClient*> PlaybackClient;
 
 	FSequencerInitParams()
 		: RootSequence(nullptr)
@@ -356,6 +372,28 @@ public:
 		auto PropertyTypes = PropertyTrackEditorType::GetAnimatedPropertyTypes();
 		return RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(PropertyTrackEditorType::CreateTrackEditor), PropertyTypes);
 	}
+
+public:
+
+	/**
+	 * Register a movie renderer for this sequencer.
+	 */
+	virtual FDelegateHandle RegisterMovieRenderer(TUniquePtr<IMovieRendererInterface>&& InMovieRenderer) = 0;
+
+	/**
+	 * Unregister a movie renderer for this sequencer.
+	 */
+	virtual void UnregisterMovieRenderer(FDelegateHandle InDelegateHandle) = 0;
+
+	/**
+	 * Get the movie renderer with the requested name.
+	 */
+	virtual IMovieRendererInterface* GetMovieRenderer(const FString& InMovieRendererName) = 0;
+
+	/**
+	 * Get a list of registered movie renderers.
+	 */
+	virtual TArray<FString> GetMovieRendererNames() = 0;
 
 private:
 

@@ -238,7 +238,7 @@ void UControlRigBlueprint::PostLoad()
 
 #if WITH_EDITOR
 
-	if (!IsInAsyncLoadingThread() || IsRunningCommandlet())
+	if (ensure(IsInGameThread()))
 	{
 		Controller->DetachLinksFromPinObjects();
 		TArray<URigVMNode*> Nodes = Model->GetNodes();
@@ -294,7 +294,7 @@ void UControlRigBlueprint::RecompileVM()
 		InitContext.Hierarchy = &CDO->Hierarchy;
 
 		FRigUnitContext UpdateContext = InitContext;
-		InitContext.State = EControlRigState::Update;
+		UpdateContext.State = EControlRigState::Update;
 
 		void* InitContextPtr = &InitContext;
 		void* UpdateContextPtr = &UpdateContext;
@@ -523,6 +523,7 @@ FName UControlRigBlueprint::AddTransientControl(URigVMPin* InPin)
 	UControlRig* CDO = Cast<UControlRig>(RigClass->GetDefaultObject(true /* create if needed */));
 
 	FRigElementKey SpaceKey;
+	FTransform OffsetTransform = FTransform::Identity;
 	if (URigVMStructNode* StructNode = Cast<URigVMStructNode>(InPin->GetPinForLink()->GetNode()))
 	{
 		if (TSharedPtr<FStructOnScope> DefaultStructScope = StructNode->ConstructStructInstance())
@@ -533,8 +534,19 @@ FName UControlRigBlueprint::AddTransientControl(URigVMPin* InPin)
 			FString Left, Right;
 
 			if (URigVMPin::SplitPinPathAtStart(PinPath, Left, Right))
-		{
+			{
 				SpaceKey = DefaultStruct->DetermineSpaceForPin(Right, &HierarchyContainer);
+
+				FRigHierarchyContainer* HierarchyContainerPtr = &HierarchyContainer;
+
+				// use the active rig instead of the CDO rig because we want to access the evaluation result of the rig graph
+				// to calculate the offset transform, for example take a look at RigUnit_ModifyTransform
+				if (UControlRig* RigBeingDebugged = Cast<UControlRig>(GetObjectBeingDebugged()))
+				{
+					HierarchyContainerPtr = &(RigBeingDebugged->Hierarchy);
+				}
+				
+				OffsetTransform = DefaultStruct->DetermineOffsetTransformForPin(Right, HierarchyContainerPtr);
 			}
 		}
 	}
@@ -547,7 +559,7 @@ FName UControlRigBlueprint::AddTransientControl(URigVMPin* InPin)
 		UControlRig* InstancedControlRig = Cast<UControlRig>(ArchetypeInstance);
 		if (InstancedControlRig)
 		{
-			FName ControlName = InstancedControlRig->AddTransientControl(InPin, SpaceKey);
+			FName ControlName = InstancedControlRig->AddTransientControl(InPin, SpaceKey, OffsetTransform);
 			if (ReturnName == NAME_None)
 			{
 				ReturnName = ControlName;
@@ -557,6 +569,13 @@ FName UControlRigBlueprint::AddTransientControl(URigVMPin* InPin)
 
 	if (ReturnName != NAME_None)
 	{
+		// de-select all elements so that they don't trigger "ClearTransientControl()" in "OnElementAdded => OnHierachyChanged"
+    	TArray<FRigElementKey> SelectedElements = HierarchyContainer.CurrentSelection();
+    	for (const FRigElementKey& SelectedElement : SelectedElements)
+    	{
+    		HierarchyContainer.OnElementSelected.Broadcast(&HierarchyContainer, SelectedElement, false);
+    	}
+
 		HierarchyContainer.OnElementAdded.Broadcast(&HierarchyContainer, FRigElementKey(ReturnName, ERigElementType::Control));
 		HierarchyContainer.OnElementSelected.Broadcast(&HierarchyContainer, FRigElementKey(ReturnName, ERigElementType::Control), true);
 	}
@@ -1040,6 +1059,27 @@ void UControlRigBlueprint::HandleModifiedEvent(ERigVMGraphNotifType InNotifType,
 							bRequiresRecompile = true;
 						}
 
+						// If we are only changing a pin's default value, we need to
+						// check if there is a connection to a sub-pin of the root pin
+						// that has its value is directly stored in the root pin due to optimization, if so,
+						// we want to recompile to make sure the pin's new default value and values from other connections
+						// are both applied to the root pin because GetDefaultValue() alone cannot account for values
+						// from other connections.
+						if(!bRequiresRecompile)
+						{
+							TArray<URigVMPin*> SourcePins = RootPin->GetLinkedSourcePins(true);
+							for (const URigVMPin* SourcePin : SourcePins)
+							{
+								// check if the source node is optimized out, if so, only a recompile will allows us
+								// to re-query its value.
+								if (InGraph->GetRuntimeAST()->GetExprForSubject(SourcePin->GetNode()) == nullptr)
+								{
+									bRequiresRecompile = true;
+									break;
+								}
+							}
+						} 
+						
 						if(!bRequiresRecompile)
 						{
 							TArray<FString> DefaultValues;
@@ -1780,7 +1820,9 @@ void UControlRigBlueprint::HandleOnElementSelected(FRigHierarchyContainer* InCon
 		{
 			if (FRigControl* Control = RigBeingDebugged->FindControl(InKey.Name))
 			{
-				if (!Control->bIsTransientControl)
+				// when a transient control is created, it will attempt to deselect all other controls
+				// so when it is deselection, we don't want to clear the transient control that we just created.
+				if (!Control->bIsTransientControl && bSelected)
 				{
 					ClearTransientControls();
 				}

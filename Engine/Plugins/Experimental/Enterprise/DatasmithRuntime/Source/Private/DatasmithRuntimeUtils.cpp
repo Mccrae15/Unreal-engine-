@@ -10,13 +10,19 @@
 #include "Utility/DatasmithMeshHelper.h"
 
 #include "Algo/AnyOf.h"
-#include "Engine/StaticMesh.h"
+#include "Async/Async.h"
+#include "Engine/Polys.h"
 #include "HAL/FileManager.h"
+#include "Math/Plane.h"
 #include "MeshDescription.h"
 #include "MeshUtilitiesCommon.h"
+#include "Model.h"
 #include "OverlappingCorners.h"
 #include "PhysicsEngine/AggregateGeom.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "PhysicsEngine/PhysicsSettings.h"
+#include "PhysicsPublicCore.h"
+#include "PhysXCookHelper.h"
 #include "StaticMeshAttributes.h"
 #include "StaticMeshOperations.h"
 
@@ -171,13 +177,13 @@ namespace DatasmithRuntime
 #if WITH_EDITORONLY_DATA
 			StaticMesh->bCustomizedCollision = true;
 #endif
-			if (!ensure(StaticMesh->BodySetup))
+			if (!ensure(StaticMesh->GetBodySetup()))
 			{
 				return;
 			}
 
 			// Convex elements must be removed first since the re-import process uses the same flow
-			FKAggregateGeom& AggGeom = StaticMesh->BodySetup->AggGeom;
+			FKAggregateGeom& AggGeom = StaticMesh->GetBodySetup()->AggGeom;
 			AggGeom.ConvexElems.Reset();
 			FKConvexElem& ConvexElem = AggGeom.ConvexElems.AddDefaulted_GetRef();
 
@@ -191,7 +197,7 @@ namespace DatasmithRuntime
 		}
 	}
 
-	TMap<DirectLink::FElementHash, TStrongObjectPtr<UObject>> FAssetRegistry::RegistrationMap;
+	TMap<uint32, TStrongObjectPtr<UObject>> FAssetRegistry::RegistrationMap;
 	TMap<uint32, TMap<FSceneGraphId,FAssetData>*> FAssetRegistry::SceneMappings;
 
 	union FRegistryKey
@@ -344,6 +350,19 @@ namespace DatasmithRuntime
 		return bIsCompleted;
 	}
 
+	int32 FAssetRegistry::GetAssetReferenceCount(UObject * Asset)
+	{
+		if (IInterface_AssetUserData* AssetUserData = Cast< IInterface_AssetUserData >(Asset))
+		{
+			if (UDatasmithRuntimeAuxiliaryData* AuxillaryData = AssetUserData->GetAssetUserData<UDatasmithRuntimeAuxiliaryData>())
+			{
+				return AuxillaryData->Referencers.Num();
+			}
+		}
+
+		return -1;
+	}
+
 	void FAssetRegistry::UnregisteredAssetsData(UObject* Asset, uint32 SceneKey, TFunction<void(FAssetData& AssetData)> UpdateFunc)
 	{
 		if (IInterface_AssetUserData* AssetUserData = Cast< IInterface_AssetUserData >(Asset))
@@ -389,7 +408,7 @@ namespace DatasmithRuntime
 		ensure(false);
 	}
 
-	UObject* FAssetRegistry::FindObjectFromHash(DirectLink::FElementHash ElementHash)
+	UObject* FAssetRegistry::FindObjectFromHash(uint32 ElementHash)
 	{
 		TStrongObjectPtr<UObject>* AssetPtr = RegistrationMap.Find(ElementHash);
 		return AssetPtr ? (*AssetPtr).Get() : nullptr;
@@ -397,10 +416,10 @@ namespace DatasmithRuntime
 
 	bool FAssetRegistry::CleanUp()
 	{
-		TArray<DirectLink::FElementHash> EntriesToDelete;
+		TArray<uint32> EntriesToDelete;
 		EntriesToDelete.Reserve(RegistrationMap.Num());
 
-		for (TPair<DirectLink::FElementHash, TStrongObjectPtr<UObject>>& Entry : RegistrationMap)
+		for (TPair<uint32, TStrongObjectPtr<UObject>>& Entry : RegistrationMap)
 		{
 			if (IInterface_AssetUserData* AssetUserData = Cast< IInterface_AssetUserData >(Entry.Value.Get()))
 			{
@@ -420,7 +439,7 @@ namespace DatasmithRuntime
 			}
 		}
 
-		for (DirectLink::FElementHash ElementHash : EntriesToDelete)
+		for (uint32 ElementHash : EntriesToDelete)
 		{
 			RegistrationMap.Remove(ElementHash);
 		}
@@ -428,4 +447,161 @@ namespace DatasmithRuntime
 		return EntriesToDelete.Num() > 0;
 	}
 
+	// Code below has been borrowed from GenerateKDopAsSimpleCollision in GeomFitUtils.cpp
+	// to generate k-DOP (k-Discrete Oriented Polytopes) with 26 polytopes
+	#define RCP_SQRT2 (0.70710678118654752440084436210485f)
+	#define RCP_SQRT3 (0.57735026918962576450914878050196f)
+
+	const FVector KDopDir26[26] = 
+	{
+		FVector( 1.f, 0.f, 0.f),
+		FVector(-1.f, 0.f, 0.f),
+		FVector( 0.f, 1.f, 0.f),
+		FVector( 0.f,-1.f, 0.f),
+		FVector( 0.f, 0.f, 1.f),
+		FVector( 0.f, 0.f,-1.f),
+		FVector( 0.f, RCP_SQRT2,  RCP_SQRT2),
+		FVector( 0.f,-RCP_SQRT2, -RCP_SQRT2),
+		FVector( 0.f, RCP_SQRT2, -RCP_SQRT2),
+		FVector( 0.f,-RCP_SQRT2,  RCP_SQRT2),
+		FVector( RCP_SQRT2, 0.f,  RCP_SQRT2),
+		FVector(-RCP_SQRT2, 0.f, -RCP_SQRT2),
+		FVector( RCP_SQRT2, 0.f, -RCP_SQRT2),
+		FVector(-RCP_SQRT2, 0.f,  RCP_SQRT2),
+		FVector( RCP_SQRT2,  RCP_SQRT2, 0.f),
+		FVector(-RCP_SQRT2, -RCP_SQRT2, 0.f),
+		FVector( RCP_SQRT2, -RCP_SQRT2, 0.f),
+		FVector(-RCP_SQRT2,  RCP_SQRT2, 0.f),
+		FVector( RCP_SQRT3,  RCP_SQRT3,  RCP_SQRT3),
+		FVector( RCP_SQRT3,  RCP_SQRT3, -RCP_SQRT3),
+		FVector( RCP_SQRT3, -RCP_SQRT3,  RCP_SQRT3),
+		FVector( RCP_SQRT3, -RCP_SQRT3, -RCP_SQRT3),
+		FVector(-RCP_SQRT3,  RCP_SQRT3,  RCP_SQRT3),
+		FVector(-RCP_SQRT3,  RCP_SQRT3, -RCP_SQRT3),
+		FVector(-RCP_SQRT3, -RCP_SQRT3,  RCP_SQRT3),
+		FVector(-RCP_SQRT3, -RCP_SQRT3, -RCP_SQRT3),
+	};
+
+	constexpr float HalfWorldMax = HALF_WORLD_MAX;
+
+	void GenerateKDopAsSimpleCollision(UBodySetup* BodySetup, const FStaticMeshLODResources& Resources, const FVector* Directions, int32 DirectionCount)
+	{
+		TArray<float> MaxDistances;
+		MaxDistances.Reserve(DirectionCount);
+
+		for (int32 Index = 0; Index < DirectionCount; ++Index)
+		{
+			MaxDistances.Add(-MAX_FLT);
+		}
+
+		// For each vertex, project along each kdop direction, to find the max in that direction.
+		const FPositionVertexBuffer& PositionVertexBuffer = Resources.VertexBuffers.PositionVertexBuffer;
+		for(int32 Index = 0; Index < Resources.GetNumVertices(); ++Index)
+		{
+			for(int32 DirIndex = 0; DirIndex < DirectionCount; ++DirIndex)
+			{
+				const float Dist = PositionVertexBuffer.VertexPosition(Index) | Directions[DirIndex];
+				MaxDistances[DirIndex] = FMath::Max(Dist, MaxDistances[DirIndex]);
+			}
+		}
+
+		// Inflate MaxDistances to ensure it is no degenerate
+		const float MinSize = 0.1f;
+		for (int32 Index = 0; Index < DirectionCount; ++Index)
+		{
+			MaxDistances[Index] += MinSize;
+		}
+
+		// Now we have the Planes of the kdop, we work out the face polygons.
+		TArray<FPlane> Planes;
+		Planes.Reserve(DirectionCount);
+		for (int32 Index = 0; Index < DirectionCount; ++Index)
+		{
+			Planes.Add( FPlane(Directions[Index], MaxDistances[Index]) );
+		}
+
+		TArray<FPoly> Element;
+		Element.Reserve(DirectionCount);
+		for (int32 Index = 0; Index < DirectionCount; ++Index)
+		{
+			FPoly&	Polygon = Element.AddZeroed_GetRef();
+			FVector Base, AxisX, AxisY;
+
+			Polygon.Init();
+			Polygon.Normal = Planes[Index];
+			Polygon.Normal.FindBestAxisVectors(AxisX, AxisY);
+
+			Base = Planes[Index] * Planes[Index].W;
+
+			Polygon.Vertices.Reserve(4);
+			new(Polygon.Vertices) FVector(Base + AxisX * HalfWorldMax + AxisY * HalfWorldMax);
+			new(Polygon.Vertices) FVector(Base + AxisX * HalfWorldMax - AxisY * HalfWorldMax);
+			new(Polygon.Vertices) FVector(Base - AxisX * HalfWorldMax - AxisY * HalfWorldMax);
+			new(Polygon.Vertices) FVector(Base - AxisX * HalfWorldMax + AxisY * HalfWorldMax);
+
+			for (int32 Jndex = 0; Jndex < DirectionCount; ++Jndex)
+			{
+				if(Index != Jndex)
+				{
+					if(!Polygon.Split(-FVector(Planes[Jndex]), Planes[Jndex] * Planes[Jndex].W))
+					{
+						Polygon.Vertices.Empty();
+						break;
+					}
+				}
+			}
+
+			if(Polygon.Vertices.Num() < 3)
+			{
+				// If poly resulted in no verts, remove from array
+				Element.Pop(false);
+			}
+			else
+			{
+				// Other stuff...
+				Polygon.iLink = Index;
+				Polygon.CalcNormal(1);
+			}
+		}
+
+		if(Element.Num() < 4)
+		{
+			return;
+		}
+
+		FKConvexElem& ConvexElem = BodySetup->AggGeom.ConvexElems.AddDefaulted_GetRef();
+
+		for (FPoly& Poly : Element)
+		{
+			for (FVector& Position : Poly.Vertices)
+			{
+				ConvexElem.VertexData.Add(Position);
+			}
+		}
+
+		ConvexElem.UpdateElemBox();
+	}
+	// End of Code borrowed from GenerateKDopAsSimpleCollision in GeomFitUtils.cpp
+
+	void BuildCollision(UBodySetup* BodySetup, ECollisionTraceFlag CollisionFlag, const FStaticMeshLODResources& Resources)
+	{
+		BodySetup->CollisionTraceFlag = CollisionFlag;
+
+		if (BodySetup->CollisionTraceFlag == ECollisionTraceFlag::CTF_UseDefault)
+		{
+			BodySetup->CollisionTraceFlag = UPhysicsSettings::Get()->DefaultShapeComplexity;
+		}
+
+		// Use k-DOP 26 as the collision mesh if simple collision is required
+		// #ue_dsruntime - TODO | Choose better shape of collision mesh
+		if (BodySetup->CollisionTraceFlag != ECollisionTraceFlag::CTF_UseComplexAsSimple && BodySetup->AggGeom.ConvexElems.Num() == 0)
+		{
+			GenerateKDopAsSimpleCollision(BodySetup, Resources, KDopDir26, 26);
+		}
+
+		// Creation of collision meshes can only happen on game thread
+		AsyncTask(ENamedThreads::GameThread, [BodySetup] {
+			BodySetup->CreatePhysicsMeshes();
+		});
+	}
 } // End of namespace DatasmithRuntime

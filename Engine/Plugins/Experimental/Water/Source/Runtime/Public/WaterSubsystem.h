@@ -6,7 +6,6 @@
 #include "UObject/ObjectMacros.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Engine/EngineTypes.h"
-#include "Engine/Public/Tickable.h"
 #include "Interfaces/Interface_PostProcessVolume.h"
 #include "WaterBodyManager.h"
 #include "WaterSubsystem.generated.h"
@@ -21,8 +20,10 @@ class AWaterBody;
 class UMaterialParameterCollection;
 class UWaterRuntimeSettings;
 class FSceneView;
+class UTexture2D;
 struct FUnderwaterPostProcessDebugInfo;
 enum class EWaterBodyQueryFlags;
+class ABuoyancyManager;
 
 bool IsWaterEnabled(bool bIsRenderThread);
 
@@ -56,35 +57,41 @@ struct FUnderwaterPostProcessVolume : public IInterface_PostProcessVolume
  * This is the API used to get information about water at runtime
  */
 UCLASS(BlueprintType, Transient)
-class WATER_API UWaterSubsystem : public UWorldSubsystem, public FTickableGameObject
+class WATER_API UWaterSubsystem : public UTickableWorldSubsystem
 {
 	GENERATED_BODY()
 
+public:
 	UWaterSubsystem();
 
+	// FTickableGameObject implementation Begin
+	virtual bool IsTickable() const override { return true; }
+	virtual bool IsTickableInEditor() const override { return true; }
 	virtual void Tick(float DeltaTime) override;
-
-	/** return the stat id to use for this tickable **/
 	virtual TStatId GetStatId() const override;
+	// FTickableGameObject implementation End
 
-public:
+	// UWorldSubsystem implementation Begin
+	/** Override to support water subsystems in editor preview worlds */
+	virtual bool DoesSupportWorldType(EWorldType::Type WorldType) const override;
+	// UWorldSubsystem implementation End
+
+	// USubsystem implementation Begin
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
+	// USubsystem implementation End
 
 	/** Static helper function to get a water subsystem from a world, returns nullptr if world or subsystem don't exist */
-	static UWaterSubsystem* GetWaterSubsystem(UWorld* InWorld);
+	static UWaterSubsystem* GetWaterSubsystem(const UWorld* InWorld);
 
 	/** Static helper function to get a waterbody manager from a world, returns nullptr if world or manager don't exist */
 	static FWaterBodyManager* GetWaterBodyManager(UWorld* InWorld);
 
-	virtual bool IsTickableInEditor() const override { return true; }
-
-	// Begin USubsystem
-	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
-	virtual void Deinitialize() override;
-	// End USubsystem
-
 	FWaterBodyManager WaterBodyManager;
 
-	AWaterMeshActor* GetWaterMeshActor();
+	AWaterMeshActor* GetWaterMeshActor() const;
+
+	ABuoyancyManager* GetBuoyancyManager() const { return BuoyancyManager; }
 
 	TWeakObjectPtr<AWaterBody> GetOceanActor() { return OceanActor; }
 	void SetOceanActor(TWeakObjectPtr<AWaterBody> InOceanActor) { OceanActor = InOceanActor; }
@@ -142,25 +149,30 @@ public:
 	void SetShouldOverrideSmoothedWorldTimeSeconds(bool bOverride);
 	bool GetShouldOverrideSmoothedWorldTimeSeconds() const { return bUsingOverrideWorldTimeSeconds; }
 
+	void SetShouldPauseWaveTime(bool bInPauseWaveTime);
+
 	UMaterialParameterCollection* GetMaterialParameterCollection() const {	return MaterialParameterCollection; }
 	
 	void MarkAllWaterMeshesForRebuild();
 
-public:
-	DECLARE_EVENT_OneParam(UWaterSubsystem, FOnWaterSubsystemInitialized, UWaterSubsystem*)
-	static FOnWaterSubsystemInitialized OnWaterSubsystemInitialized;
+#if WITH_EDITOR
+	/** Little scope object to temporarily change the value of bAllowWaterSubsystemOnPreviewWorld */
+	struct WATER_API FScopedAllowWaterSubsystemOnPreviewWorld
+	{
+		FScopedAllowWaterSubsystemOnPreviewWorld(bool bNewValue);
+		~FScopedAllowWaterSubsystemOnPreviewWorld();
 
-	UPROPERTY(BlueprintAssignable, Category = Water)
-	FOnCameraUnderwaterStateChanged OnCameraUnderwaterStateChanged;
+		// Non-copyable
+	private:
+		FScopedAllowWaterSubsystemOnPreviewWorld() = delete;
+		FScopedAllowWaterSubsystemOnPreviewWorld& operator=(const FScopedAllowWaterSubsystemOnPreviewWorld&) = delete;
+		FScopedAllowWaterSubsystemOnPreviewWorld(const FScopedAllowWaterSubsystemOnPreviewWorld&) = delete;
 
-	UPROPERTY(BlueprintAssignable, Category = Water)
-	FOnWaterScalabilityChanged OnWaterScalabilityChanged;
-
-	UPROPERTY()
-	UStaticMesh* DefaultRiverMesh;
-	
-	UPROPERTY()
-	UStaticMesh* DefaultLakeMesh;
+		bool bPreviousValue = false;
+	};
+	static void SetAllowWaterSubsystemOnPreviewWorld(bool bInValue) { bAllowWaterSubsystemOnPreviewWorld = bInValue; }
+	static bool GetAllowWaterSubsystemOnPreviewWorld() { return bAllowWaterSubsystemOnPreviewWorld; }
+#endif // WITH_EDITOR
 
 private:
 	void NotifyWaterScalabilityChangedInternal(IConsoleVariable* CVar);
@@ -173,13 +185,31 @@ private:
 	void ApplyRuntimeSettings(const UWaterRuntimeSettings* Settings, EPropertyChangeType::Type ChangeType);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	void ShowOnScreenDebugInfo(const FUnderwaterPostProcessDebugInfo& InDebugInfo);
+	void ShowOnScreenDebugInfo(const FVector& InViewLocation, const FUnderwaterPostProcessDebugInfo& InDebugInfo);
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
-private:
+public:
+	UPROPERTY(Transient)
+	ABuoyancyManager* BuoyancyManager;
+
+	DECLARE_EVENT_OneParam(UWaterSubsystem, FOnWaterSubsystemInitialized, UWaterSubsystem*)
+	static FOnWaterSubsystemInitialized OnWaterSubsystemInitialized;
+
+	UPROPERTY(BlueprintAssignable, Category = Water)
+	FOnCameraUnderwaterStateChanged OnCameraUnderwaterStateChanged;
+
+	UPROPERTY(BlueprintAssignable, Category = Water)
+	FOnWaterScalabilityChanged OnWaterScalabilityChanged;
 
 	UPROPERTY()
-	AWaterMeshActor* WaterMeshActor;
+	UStaticMesh* DefaultRiverMesh;
+
+	UPROPERTY()
+	UStaticMesh* DefaultLakeMesh;
+
+private:
+	UPROPERTY()
+	mutable AWaterMeshActor* WaterMeshActor;
 
 	TWeakObjectPtr<AWaterBody> OceanActor;
 
@@ -194,10 +224,16 @@ private:
 	bool bUsingSmoothedTime;
 	bool bUsingOverrideWorldTimeSeconds;
 	bool bUnderWaterForAudio;
+	bool bPauseWaveTime;
 
 	/** The parameter collection asset that holds the global parameters that are updated by this actor */
 	UPROPERTY()
 	UMaterialParameterCollection* MaterialParameterCollection;
 
 	FUnderwaterPostProcessVolume UnderwaterPostProcessVolume;
+
+#if WITH_EDITOR
+	/** By default, there is no water subsystem allowed on preview worlds except when explicitly requested : */
+	static bool bAllowWaterSubsystemOnPreviewWorld;
+#endif // WITH_EDITOR
 };

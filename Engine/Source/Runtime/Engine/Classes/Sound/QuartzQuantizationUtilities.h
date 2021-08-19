@@ -67,7 +67,10 @@ enum class EQuartzCommandQuantization : uint8
 
 	Tick					UMETA(DisplayName = "On Tick (Smallest Value, same as 1/32)", ToolTip = "(same as 1/32)"),
 
-	Count				UMETA(Hidden),
+	Count					UMETA(Hidden),
+
+	None					UMETA(DisplayName = "None", ToolTip = "(Execute as soon as possible)"),
+	// (when using "Count" in various logic, we don't want to account for "None")
 };
 
 // An enumeration for specifying the denominator of time signatures
@@ -91,11 +94,11 @@ struct ENGINE_API FQuartzPulseOverrideStep
 
 	// The number of pulses for this beat duration
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quantized Audio Clock Time Signature")
-	int32 NumberOfPulses;
+	int32 NumberOfPulses = 1;
 
 	// This Beat duration
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quantized Audio Clock Time Signature")
-	EQuartzCommandQuantization PulseDuration;
+	EQuartzCommandQuantization PulseDuration = EQuartzCommandQuantization::Beat;
 };
 
 
@@ -109,7 +112,7 @@ struct ENGINE_API FQuartzTimeSignature
 	FQuartzTimeSignature() {};
 
 	// numerator
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quantized Audio Clock Time Signature")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quantized Audio Clock Time Signature", meta = (ClampMin = "1", UIMin = "1"))
 	int32 NumBeats { 4 };
 
 	// denominator
@@ -137,21 +140,25 @@ struct ENGINE_API FQuartzTransportTimeStamp
 {
 	GENERATED_BODY()
 
-		int32 Bars { 0 };
+	// The current bar this clock is on
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Quantized Audio TimeStamp")
+	int32 Bars { 0 };
 
+	// The current beat this clock is on
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Quantized Audio TimeStamp")
 	int32 Beat{ 0 };
 
-	float BeatFration{ 0.f };
+	// A fractional representation of the time that's played since the last bear
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Quantized Audio TimeStamp")
+	float BeatFraction{ 0.f };
 
-	bool IsZero() const
-	{
-		return (!Bars) && (!Beat) && FMath::IsNearlyZero(BeatFration);
-	}
+	// The time in seconds that this TimeStamp occured at
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Quantized Audio TimeStamp")
+	float Seconds{ 0.f };
 
-	void Reset()
-	{
-		Bars = 0;
-	}
+	bool IsZero() const;
+
+	void Reset();
 };
 
 
@@ -216,15 +223,21 @@ struct ENGINE_API FQuartzQuantizationBoundary
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quantized Audio Clock Settings")
 	EQuarztQuantizationReference CountingReferencePoint;
 
+	// If this is true and the Clock hasn't started yet, the event will fire immediately when the Clock starts
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Quantized Audio Clock Settings")
+	bool bFireOnClockStart;
+
 	// ctor
 	FQuartzQuantizationBoundary(
-		EQuartzCommandQuantization InQuantization = EQuartzCommandQuantization::Tick
+		EQuartzCommandQuantization InQuantization = EQuartzCommandQuantization::None
 		, float InMultiplier = 1.f
 		, EQuarztQuantizationReference InReferencePoint = EQuarztQuantizationReference::BarRelative
+		, bool bInFireOnClockStart = true
 	)
 		: Quantization(InQuantization)
 		, Multiplier(InMultiplier)
 		, CountingReferencePoint(InReferencePoint)
+		, bFireOnClockStart(bInFireOnClockStart)
 	{}
 }; // struct FQuartzQuantizationBoundary
 
@@ -409,6 +422,7 @@ namespace Audio
 		// shared with FQuartzQuantizedCommandInitInfo:
 		FName ClockName;
 		FName ClockHandleName;
+		FName OtherClockName;
 		TSharedPtr<IQuartzQuantizedCommand> QuantizedCommandPtr;
 		FQuartzQuantizationBoundary QuantizationBoundary{ /* InQuantization */ EQuartzCommandQuantization::Tick, /* InMultiplier */ 1.f };
 		TSharedPtr<FShareableQuartzCommandQueue, ESPMode::ThreadSafe> GameThreadCommandQueue{ nullptr };
@@ -429,7 +443,7 @@ namespace Audio
 			, int32 InSourceID = -1
 		);
 
-		void SetOwningClockPtr(Audio::FQuartzClock* InClockPointer)
+		void SetOwningClockPtr(TSharedPtr<Audio::FQuartzClock> InClockPointer)
 		{
 			OwningClockPointer = InClockPointer;
 		}
@@ -437,13 +451,14 @@ namespace Audio
 		// shared with FQuartzQuantizedRequestData
 		FName ClockName;
 		FName ClockHandleName;
+		FName OtherClockName;
 		TSharedPtr<IQuartzQuantizedCommand> QuantizedCommandPtr;
 		FQuartzQuantizationBoundary QuantizationBoundary;
 		TSharedPtr<FShareableQuartzCommandQueue, ESPMode::ThreadSafe> GameThreadCommandQueue;
 		int32 GameThreadDelegateID{ -1 };
 
 		// Audio Render thread-specific data:
-		Audio::FQuartzClock* OwningClockPointer{ nullptr };
+		TSharedPtr<Audio::FQuartzClock> OwningClockPointer{ nullptr };
 		int32 SourceID{ -1 };
 	};
 
@@ -486,6 +501,10 @@ namespace Audio
 
 		virtual bool IsLooping() { return false; }
 		virtual bool IsClockAltering() { return false; }
+		virtual bool RequiresAudioDevice() const { return false; }
+
+		virtual FName GetCommandName() const = 0;
+
 
 	protected:
 		// base classes can override these to add extra functionality
@@ -500,6 +519,7 @@ namespace Audio
 	private:
 		TSharedPtr<FShareableQuartzCommandQueue, ESPMode::ThreadSafe> GameThreadCommandQueue{ nullptr };
 		int32 GameThreadDelegateID{ -1 };
+		bool bAboutToStartHasBeenCalled{ false };
 	}; // class IAudioMixerQuantizedCommandBase
 
 	// Audio Render Thread Handle to a queued command

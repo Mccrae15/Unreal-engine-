@@ -84,9 +84,6 @@ bool FOpenGLES::bSupportsColorBufferFloat = false;
 /** GL_EXT_shader_framebuffer_fetch */
 bool FOpenGLES::bSupportsShaderFramebufferFetch = false;
 
-/* This is to avoid a bug where device supports GL_EXT_shader_framebuffer_fetch but does not define it in GLSL */
-bool FOpenGLES::bRequiresUEShaderFramebufferFetchDef = false;
-
 /** GL_ARM_shader_framebuffer_fetch_depth_stencil */
 bool FOpenGLES::bSupportsShaderDepthStencilFetch = false;
 
@@ -133,6 +130,9 @@ GLint FOpenGLES::MaxComputeUniformComponents = -1;
 GLint FOpenGLES::MaxComputeUAVUnits = -1;
 GLint FOpenGLES::MaxPixelUAVUnits = -1;
 GLint FOpenGLES::MaxCombinedUAVUnits = 0;
+
+/** GL_EXT_texture_compression_astc_decode_mode */
+bool FOpenGLES::bSupportsASTCDecodeMode = false;
 
 FOpenGLES::EFeatureLevelSupport FOpenGLES::CurrentFeatureLevelSupport = FOpenGLES::EFeatureLevelSupport::ES31;
 
@@ -204,12 +204,12 @@ void FOpenGLES::ProcessExtensions(const FString& ExtensionsString)
 	bSupportsColorBufferHalfFloat = ExtensionsString.Contains(TEXT("GL_EXT_color_buffer_half_float"));
 	bSupportsShaderFramebufferFetch = ExtensionsString.Contains(TEXT("GL_EXT_shader_framebuffer_fetch")) || ExtensionsString.Contains(TEXT("GL_NV_shader_framebuffer_fetch"))
 		|| ExtensionsString.Contains(TEXT("GL_ARM_shader_framebuffer_fetch ")); // has space at the end to exclude GL_ARM_shader_framebuffer_fetch_depth_stencil match
-	bRequiresUEShaderFramebufferFetchDef = ExtensionsString.Contains(TEXT("GL_EXT_shader_framebuffer_fetch"));
 	bSupportsShaderDepthStencilFetch = ExtensionsString.Contains(TEXT("GL_ARM_shader_framebuffer_fetch_depth_stencil"));
 	bSupportsMultisampledRenderToTexture = ExtensionsString.Contains(TEXT("GL_EXT_multisampled_render_to_texture"));
 	bSupportsDXT = ExtensionsString.Contains(TEXT("GL_NV_texture_compression_s3tc")) || ExtensionsString.Contains(TEXT("GL_EXT_texture_compression_s3tc"));
 	bSupportsNVFrameBufferBlit = ExtensionsString.Contains(TEXT("GL_NV_framebuffer_blit"));
 	bSupportsBufferStorage = ExtensionsString.Contains(TEXT("GL_EXT_buffer_storage"));
+	bSupportsASTCDecodeMode = ExtensionsString.Contains(TEXT("GL_EXT_texture_compression_astc_decode_mode"));
 
 	// Report shader precision
 	int Range[2];

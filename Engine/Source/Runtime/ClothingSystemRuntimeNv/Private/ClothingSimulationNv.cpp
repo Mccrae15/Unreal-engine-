@@ -86,7 +86,7 @@ void FClothingSimulationNv::CreateActor(USkeletalMeshComponent* InOwnerComponent
 
 	// Need the current reftolocals so we can skin the ref pose for the sim mesh
 	TArray<FMatrix> RefToLocals;
-	InOwnerComponent->GetCurrentRefToLocalMatrices(RefToLocals, FMath::Min(InOwnerComponent->PredictedLODLevel, Asset->LodData.Num() - 1));
+	InOwnerComponent->GetCurrentRefToLocalMatrices(RefToLocals, FMath::Min(InOwnerComponent->GetPredictedLODLevel(), Asset->LodData.Num() - 1));
 
 	Actors.AddDefaulted();
 	FClothingActorNv& NewActor = Actors.Last();
@@ -252,6 +252,16 @@ void FClothingSimulationNv::CreateActor(USkeletalMeshComponent* InOwnerComponent
 			NewActor.SkinnedPhysicsMeshPositions[1] = SkinnedVerts;
 			NewActor.SkinnedPhysicsMeshNormals = SkinnedNormals;
 		}
+		else
+		{
+			// Increase the array in case a LOD N is of higher definition than LOD 0
+			// Note: Only the normal array needs doing since it is shared between LODs
+			//       whereas positions are stored inside their respective LOD data
+			if (NumVerts > NewActor.CurrentNormals.Num())
+			{
+				NewActor.CurrentNormals.SetNum(NumVerts);
+			}
+		}
 	}
 
 	const UClothConfigNv* const Config = Asset->GetClothConfig<UClothConfigNv>();
@@ -268,7 +278,7 @@ void FClothingSimulationNv::CreateActor(USkeletalMeshComponent* InOwnerComponent
 
 	// Force update LODs so we're in the correct state now, need to resolve MPC if one is present
 	USkinnedMeshComponent* TransformComponent = InOwnerComponent->MasterPoseComponent.IsValid() ? InOwnerComponent->MasterPoseComponent.Get() : InOwnerComponent;
-	UpdateLod(InOwnerComponent->PredictedLODLevel, InOwnerComponent->GetComponentTransform(), TransformComponent->GetComponentSpaceTransforms(), RefToLocals, true, true);
+	UpdateLod(InOwnerComponent->GetPredictedLODLevel(), InOwnerComponent->GetComponentTransform(), TransformComponent->GetComponentSpaceTransforms(), RefToLocals, true, true);
 
 	// Compute normals for all active actors for first frame
 	for(FClothingActorNv& Actor : Actors)
@@ -291,7 +301,7 @@ void FClothingSimulationNv::ExtractActorCollisions(UClothingAssetCommon* Asset, 
 		bool bAddedBodies = false;
 		for(const USkeletalBodySetup* BodySetup : PhysAsset->SkeletalBodySetups)
 		{
-			int32 MeshBoneIndex = TargetMesh->RefSkeleton.FindBoneIndex(BodySetup->BoneName);
+			int32 MeshBoneIndex = TargetMesh->GetRefSkeleton().FindBoneIndex(BodySetup->BoneName);
 			int32 MappedBoneIndex = INDEX_NONE;
 
 			if(MeshBoneIndex != INDEX_NONE)
@@ -664,8 +674,9 @@ void FClothingSimulationNv::Simulate(IClothingSimulationContext* InContext)
 				Scratch.ConvexMasks.AddZeroed();
 				uint32& ConvexMask = Scratch.ConvexMasks.Last();
 
-				for(FPlane& ConvexPlane : Convex.Planes)
+				for(FClothCollisionPrim_ConvexFace& ConvexFace : Convex.Faces)
 				{
+					const FPlane& ConvexPlane = ConvexFace.Plane;
 					Scratch.PlaneData.AddDefaulted();
 					physx::PxVec4& NewPlane = Scratch.PlaneData.Last();
 
@@ -1800,7 +1811,7 @@ void FClothingActorNv::UpdateAnimDrive(FClothingSimulationContextNv* InContext)
 	SCOPE_CYCLE_COUNTER(STAT_NvClothUpdateAnimDrive);
 
 	const FClothPhysicalMeshData& MeshDataBase = AssetCreatedFrom->LodData[CurrentLodIndex].PhysicalMeshData;
-	const FPointWeightMap* const AnimDriveMultipliers = MeshDataBase.FindWeightMap(EWeightMapTargetCommon::AnimDriveMultiplier);
+	const FPointWeightMap* const AnimDriveMultipliers = MeshDataBase.FindWeightMap(EWeightMapTargetCommon::AnimDriveStiffness);
 	if(AnimDriveMultipliers && AnimDriveMultipliers->Num())
 	{
 		const TArray<FVector> CurrentSkinPositions = GetCurrentSkinnedPositions();

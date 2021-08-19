@@ -75,6 +75,12 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 		return;
 	}
 
+	// Don't tick the animation if inside of a PostLoad
+	if (FUObjectThreadContext::Get().IsRoutingPostLoad)
+	{
+		return;
+	}
+
 	TGuardValue<bool> IsTickingGuard(bIsTicking, true);
 
 	// Tick all animations in all active widgets.
@@ -84,30 +90,41 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 	// stopping, etc.), we might see some blocking (immediate) evaluations running here.
 	//
 
-	for (auto WidgetIter = WeakUserWidgets.CreateIterator(); WidgetIter; ++WidgetIter)
 	{
-		UUserWidget* UserWidget = WidgetIter->Get();
-		if (!UserWidget)
-		{
-			WidgetIter.RemoveCurrent();
-		}
-		else if (!UserWidget->IsConstructed())
-		{
-			UserWidget->TearDownAnimations();
-			UserWidget->AnimationTickManager = nullptr;
+	#if STATS || ENABLE_STATNAMEDEVENTS
+		const bool bShouldTrackObject = Stats::IsThreadCollectingData();
+		FScopeCycleCounterUObject ContextScope(bShouldTrackObject ? this : nullptr);
+	#endif
 
-			WidgetIter.RemoveCurrent();
-		}
-		else
+		for (auto WidgetIter = WeakUserWidgets.CreateIterator(); WidgetIter; ++WidgetIter)
 		{
-#if WITH_EDITOR
-			const bool bTickAnimations = !UserWidget->IsDesignTime();
-#else
-			const bool bTickAnimations = true;
-#endif
-			if (bTickAnimations && UserWidget->IsVisible())
+			UUserWidget* UserWidget = WidgetIter->Get();
+			if (!UserWidget)
 			{
-				UserWidget->TickActionsAndAnimation(DeltaSeconds);
+				WidgetIter.RemoveCurrent();
+			}
+			else if (!UserWidget->IsConstructed())
+			{
+				UserWidget->TearDownAnimations();
+				UserWidget->AnimationTickManager = nullptr;
+
+				WidgetIter.RemoveCurrent();
+			}
+			else
+			{
+	#if STATS || ENABLE_STATNAMEDEVENTS
+				FScopeCycleCounterUObject WidgetContextScope(bShouldTrackObject ? UserWidget : nullptr);
+	#endif
+
+	#if WITH_EDITOR
+				const bool bTickAnimations = !UserWidget->IsDesignTime();
+	#else
+				const bool bTickAnimations = true;
+	#endif
+				if (bTickAnimations && UserWidget->IsVisible())
+				{
+					UserWidget->TickActionsAndAnimation(DeltaSeconds);
+				}
 			}
 		}
 	}
@@ -126,6 +143,7 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 			// If this widget no longer has any animations playing, it doesn't need to be ticked any more
 			if (UserWidget->ActiveSequencePlayers.Num() == 0)
 			{
+				UserWidget->UpdateCanTick();
 				UserWidget->AnimationTickManager = nullptr;
 				WidgetIter.RemoveCurrent();
 			}
@@ -148,6 +166,12 @@ void UUMGSequenceTickManager::ForceFlush()
 
 void UUMGSequenceTickManager::HandleSlatePostTick(float DeltaSeconds)
 {
+	// Early out if inside a PostLoad
+	if (FUObjectThreadContext::Get().IsRoutingPostLoad)
+	{
+		return;
+	}
+
 	if (GFlushUMGAnimationsAtEndOfFrame && Runner.IsAttachedToLinker() && Runner.HasQueuedUpdates())
 	{
 		SCOPE_CYCLE_COUNTER(MovieSceneEval_FlushEndOfFrameAnimations);
@@ -167,9 +191,9 @@ void UUMGSequenceTickManager::ClearLatentActions(UObject* Object)
 	LatentActionManager.ClearLatentActions(Object);
 }
 
-void UUMGSequenceTickManager::RunLatentActions(const UObject* Object, FMovieSceneEntitySystemRunner& InRunner)
+void UUMGSequenceTickManager::RunLatentActions()
 {
-	LatentActionManager.RunLatentActions(InRunner, Object);
+	LatentActionManager.RunLatentActions(Runner);
 }
 
 UUMGSequenceTickManager* UUMGSequenceTickManager::Get(UObject* PlaybackContext)

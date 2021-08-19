@@ -92,7 +92,11 @@ struct FStaticMeshComponentLODInfo
 	/** Used during deserialization to temporarily store legacy lightmap data. */
 	FMeshMapBuildData* LegacyMapBuildData;
 
-	/** Transient override lightmap data, used by landscape grass. */
+	/** 
+	 * Transient override lightmap data, used by landscape grass.
+	 * Be sure to add your component to UMapBuildDataRegistry::CleanupTransientOverrideMapBuildData() for proper cleanup
+	 * so that you don't get stale rendering resource references if the underlying MapBuildData is gone (lighting scenario changes, new static lighting build, etc.)
+	 */
 	TUniquePtr<FMeshMapBuildData> OverrideMapBuildData;
 
 	/** Vertex data cached at the time this LOD was painted, if any */
@@ -176,8 +180,8 @@ class ENGINE_API UStaticMeshComponent : public UMeshComponent
 	int32 ForcedLodModel;
 
 	/** LOD that was desired for rendering this StaticMeshComponent last frame. */
-	UPROPERTY()
-	int32 PreviousLODLevel;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated and no longer supported."))
+	int32 PreviousLODLevel_DEPRECATED;
 
 	/** 
 	 * Specifies the smallest LOD that will be used for this component.  
@@ -606,6 +610,7 @@ public:
 	void RemoveInstanceVertexColors();
 #endif
 
+	UE_DEPRECATED(4.27, "This function is no longer used")
 	void UpdatePreCulledData(int32 LODIndex, const TArray<uint32>& PreCulledData, const TArray<int32>& NumTrianglesPerSection);
 
 #if WITH_EDITORONLY_DATA
@@ -716,7 +721,7 @@ struct FStaticMeshVertexColorLODData
 
 	/** Index of the LOD that this data came from */
 	UPROPERTY()
-	uint32 LODIndex;
+	uint32 LODIndex=0;
 
 	/** Check whether this contains valid data */
 	bool IsValid() const
@@ -748,7 +753,7 @@ public:
 
 	/** Mesh being used by component */
 	UPROPERTY()
-	class UStaticMesh* StaticMesh;
+	class UStaticMesh* StaticMesh = nullptr;
 
 	/** Array of cached vertex colors for each LOD */
 	UPROPERTY()

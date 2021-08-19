@@ -21,6 +21,12 @@ namespace Electra
 		virtual ~IPlaylistReader() = default;
 
 		/**
+		 * Must call Close() before dropping any TShared..<> of this to allow for any internally
+		 * used TWeak..<> to still be valid if used by AsShared().
+		 */
+		virtual void Close() = 0;
+
+		/**
 		 * Returns the type of the playlist (eg. "hls", "dash", etc.)
 		 */
 		virtual const FString& GetPlaylistType() const = 0;
@@ -29,12 +35,8 @@ namespace Electra
 		 * Loads and parses the playlist.
 		 *
 		 * @param URL     URL of the playlist to load
-		 * @param Preferences
-		 *                User preferences (for initial stream selection)
-		 * @param Options Options for the playlist reader and parser specific to the format.
-		 *                See specifics in the format's implementation.
 		 */
-		virtual void LoadAndParse(const FString& URL, const FStreamPreferences& Preferences, const FParamDict& Options) = 0;
+		virtual void LoadAndParse(const FString& URL) = 0;
 
 		/**
 		 * Returns the URL from which the playlist was loaded (or supposed to be loaded).

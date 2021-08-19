@@ -107,8 +107,8 @@ public:
 	FD3D12Texture2D* GetBackBuffer_RHIThread() const { return BackBuffer_RHIThread; }
 	FD3D12Texture2D* GetSDRBackBuffer_RHIThread() const { return (PixelFormat == SDRPixelFormat) ? GetBackBuffer_RHIThread() : SDRBackBuffer_RHIThread; }
 
-	void WaitForFrameEventCompletion();
-	void IssueFrameEvent();
+	virtual void WaitForFrameEventCompletion() override;
+	virtual void IssueFrameEvent() override;
 
 #if D3D12_VIEWPORT_EXPOSES_SWAP_CHAIN
 	IDXGISwapChain1* GetSwapChain() const { return SwapChain1; }
@@ -145,6 +145,9 @@ public:
 		return BackBufferGPUIndices.IsValidIndex(ExpectedBackBufferIndex_RenderThread) ? BackBufferGPUIndices[ExpectedBackBufferIndex_RenderThread] : 0;
 	}
 #endif // WITH_MGPU
+
+	void OnResumeRendering();
+	void OnSuspendRendering();
 
 private:
 

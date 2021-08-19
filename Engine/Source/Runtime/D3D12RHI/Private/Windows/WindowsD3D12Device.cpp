@@ -30,6 +30,10 @@
 
 #include "ShaderCompiler.h"
 
+#if NV_GEFORCENOW
+#include "GeForceNOWWrapper.h"
+#endif
+
 #pragma comment(lib, "d3d12.lib")
 
 IMPLEMENT_MODULE(FD3D12DynamicRHIModule, D3D12RHI);
@@ -50,7 +54,50 @@ static FAutoConsoleVariableRef CVarDX12NVAfterMathBufferSize(
 	TEXT("Use NV Aftermath for GPU crash analysis in D3D12"),
 	ECVF_ReadOnly
 );
+int32 GDX12NVAfterMathTrackResources = 0;
+static FAutoConsoleVariableRef CVarDX12NVAfterMathTrackResources(
+	TEXT("r.DX12NVAfterMathTrackResources"),
+	GDX12NVAfterMathTrackResources,
+	TEXT("Enable NV Aftermath resource tracing in D3D12"),
+	ECVF_ReadOnly
+);
+int32 GDX12NVAfterMathMarkers = 0;
 #endif
+
+int32 GMinimumWindowsBuildVersionForRayTracing = 0;
+static FAutoConsoleVariableRef CVarMinBuildVersionForRayTracing(
+	TEXT("r.D3D12.DXR.MinimumWindowsBuildVersion"),
+	GMinimumWindowsBuildVersionForRayTracing,
+	TEXT("Sets the minimum Windows build version required to enable ray tracing."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+
+int32 GMinimumDriverVersionForRayTracingNVIDIA = 0;
+static FAutoConsoleVariableRef CVarMinDriverVersionForRayTracingNVIDIA(
+	TEXT("r.D3D12.DXR.MinimumDriverVersionNVIDIA"),
+	GMinimumDriverVersionForRayTracingNVIDIA,
+	TEXT("Sets the minimum driver version required to enable ray tracing on NVIDIA GPUs."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+
+// Use AGS_MAKE_VERSION() macro to define the version.
+// i.e. AGS_MAKE_VERSION(major, minor, patch) ((major << 22) | (minor << 12) | patch)
+int32 GMinimumDriverVersionForRayTracingAMD = 0;
+static FAutoConsoleVariableRef CVarMinDriverVersionForRayTracingAMD(
+	TEXT("r.D3D12.DXR.MinimumDriverVersionAMD"),
+	GMinimumDriverVersionForRayTracingAMD,
+	TEXT("Sets the minimum driver version required to enable ray tracing on AMD GPUs."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+
+int32 GAllowAsyncCompute = 1;
+static FAutoConsoleVariableRef CVarAllowAsyncCompute(
+	TEXT("r.D3D12.AllowAsyncCompute"),
+	GAllowAsyncCompute,
+	TEXT("Allow usage of async compute"),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+
 
 static inline int D3D12RHI_PreferAdapterVendor()
 {
@@ -464,6 +511,11 @@ void FD3D12DynamicRHIModule::FindAdapter()
 
 FDynamicRHI* FD3D12DynamicRHIModule::CreateRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 {
+	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES2_REMOVED] = SP_NumPlatforms;
+	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_PCD3D_ES3_1;
+	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4_REMOVED] = SP_NumPlatforms;
+	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM5] = SP_PCD3D_SM5;
+
 	ERHIFeatureLevel::Type PreviewFeatureLevel;
 	if (!GIsEditor && RHIGetPreviewFeatureLevel(PreviewFeatureLevel))
 	{
@@ -471,16 +523,22 @@ FDynamicRHI* FD3D12DynamicRHIModule::CreateRHI(ERHIFeatureLevel::Type RequestedF
 
 		// ES3.1 feature level emulation in D3D
 		GMaxRHIFeatureLevel = PreviewFeatureLevel;
-		if (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1)
-		{
-			GMaxRHIShaderPlatform = SP_PCD3D_ES3_1;
-		}
 	}
 	else
 	{
 		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
-		GMaxRHIShaderPlatform = SP_PCD3D_SM5;
+		if (RequestedFeatureLevel < ERHIFeatureLevel::Num)	
+		{
+			GMaxRHIFeatureLevel = RequestedFeatureLevel;
+		}
 	}
+
+	if (!ensure(GMaxRHIFeatureLevel < ERHIFeatureLevel::Num))
+	{
+		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
+	}
+	GMaxRHIShaderPlatform = GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel];
+	check(GMaxRHIShaderPlatform != SP_NumPlatforms);
 
 #if USE_PIX
 	bool bPixEventEnabled = (WindowsPixDllHandle != nullptr);
@@ -568,13 +626,14 @@ void FD3D12DynamicRHI::Init()
 
 #if AMD_API_ENABLE
 	// Initialize the AMD AGS utility library, when running on an AMD device
+	AGSGPUInfo AmdAgsGpuInfo = {};
 	if (IsRHIDeviceAMD() && bAllowVendorDevice)
 	{
 		check(AmdAgsContext == nullptr);
 		check(AmdSupportedExtensionFlags == 0);
 
 		// agsInit should be called before D3D device creation
-		agsInit(&AmdAgsContext, nullptr, nullptr);
+		agsInit(AGS_MAKE_VERSION(AMD_AGS_VERSION_MAJOR, AMD_AGS_VERSION_MINOR, AMD_AGS_VERSION_PATCH), nullptr, &AmdAgsContext, &AmdAgsGpuInfo);
 	}
 #endif
 
@@ -605,6 +664,32 @@ void FD3D12DynamicRHI::Init()
 	}
 #endif
 
+#if !PLATFORM_HOLOLENS
+	// Disable ray tracing for Windows build versions
+
+	bool bIsRunningNvidiaGFN = false;
+#if NV_GEFORCENOW
+	const GfnRuntimeError GfnResult = GeForceNOWWrapper::Get().Initialize();
+	const bool bGfnRuntimeSDKInitialized = GfnResult == gfnSuccess || GfnResult == gfnInitSuccessClientOnly;
+
+	if (bGfnRuntimeSDKInitialized && GeForceNOWWrapper::Get().IsRunningInCloud())
+	{
+		UE_LOG(LogRHI, Log, TEXT("GeForceNow cloud instance running. Ray Tracing Windows build version check disabled"));
+		bIsRunningNvidiaGFN = true;
+	}
+#endif
+
+	if (GRHISupportsRayTracing
+		&& GMinimumWindowsBuildVersionForRayTracing > 0
+		&& !FPlatformMisc::VerifyWindowsVersion(10, 0, GMinimumWindowsBuildVersionForRayTracing)
+		&& !bIsRunningNvidiaGFN)
+	{
+		GRHISupportsRayTracing = false;
+
+		UE_LOG(LogD3D12RHI, Warning, TEXT("Ray tracing is disabled because it requires Windows 10 version %u"), (uint32)GMinimumWindowsBuildVersionForRayTracing);
+	}
+#endif
+
 #if NV_API_ENABLE
 	if (IsRHIDeviceNVIDIA() && bAllowVendorDevice)
 	{
@@ -622,8 +707,42 @@ void FD3D12DynamicRHI::Init()
 		{
 			UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to initialize NVAPI"));
 		}
+
+		// Disable ray tracing for old Nvidia drivers
+		if (GRHISupportsRayTracing
+			&& GMinimumDriverVersionForRayTracingNVIDIA > 0
+			&& NvStatus == NVAPI_OK)
+		{
+			NvU32 DriverVersion = UINT32_MAX;
+			NvAPI_ShortString BranchString("");
+			if (NvAPI_SYS_GetDriverAndBranchVersion(&DriverVersion, BranchString) == NVAPI_OK)
+			{
+				if (DriverVersion < (uint32)GMinimumDriverVersionForRayTracingNVIDIA)
+				{
+					GRHISupportsRayTracing = false;
+
+					UE_LOG(LogD3D12RHI, Warning, TEXT("Ray tracing is disabled because the driver is too old"));
+				}
+			}
+		}
 	}
 #endif
+
+#if AMD_API_ENABLE
+	if (GRHISupportsRayTracing
+		&& IsRHIDeviceAMD()
+		&& GMinimumDriverVersionForRayTracingAMD > 0
+		&& AmdAgsContext
+		&& AmdAgsGpuInfo.radeonSoftwareVersion)
+	{
+		if (agsCheckDriverVersion(AmdAgsGpuInfo.radeonSoftwareVersion, GMinimumDriverVersionForRayTracingAMD) == AGS_SOFTWAREVERSIONCHECK_OLDER)
+		{
+			GRHISupportsRayTracing = false;
+
+			UE_LOG(LogD3D12RHI, Warning, TEXT("Ray tracing is disabled because the driver is too old"));
+		}
+	}
+#endif // AMD_API_ENABLE
 
 	GTexturePoolSize = 0;
 
@@ -714,12 +833,7 @@ void FD3D12DynamicRHI::Init()
 		UE_LOG(LogD3D12RHI, Log, TEXT("RHI does not have support for 64 bit atomics"));
 	}
 
-	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES2_REMOVED] = SP_NumPlatforms;
-	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_PCD3D_ES3_1;
-	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4_REMOVED] = SP_NumPlatforms;
-	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM5] = SP_PCD3D_SM5;
-
-	GSupportsEfficientAsyncCompute = FParse::Param(FCommandLine::Get(), TEXT("ForceAsyncCompute")) || (GRHISupportsParallelRHIExecute && IsRHIDeviceAMD());
+	GSupportsEfficientAsyncCompute = GAllowAsyncCompute && (FParse::Param(FCommandLine::Get(), TEXT("ForceAsyncCompute")) || (GRHISupportsParallelRHIExecute && IsRHIDeviceAMD()));
 
 	GSupportsDepthBoundsTest = SupportsDepthBoundsTest(this);
 
@@ -761,17 +875,30 @@ void FD3D12DynamicRHI::Init()
 
 	D3D12_FEATURE_DATA_D3D12_OPTIONS6 options = {};
 	HRESULT hr = GetAdapter().GetD3DDevice()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6, &options, sizeof(options));
-	if(hr == S_OK)
+	if(hr == S_OK && options.VariableShadingRateTier != D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED)
 	{
-		GVariableRateShadingTier 			= options.VariableShadingRateTier;
-		GRHISupportsVariableRateShading 	= GVariableRateShadingTier != D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED;
-		GVariableRateShadingImageTileSize 	= options.ShadingRateImageTileSize;
+		GRHISupportsPipelineVariableRateShading = true;		// We have at least tier 1.
+		if (options.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_2)
+		{
+			GRHISupportsAttachmentVariableRateShading = true;
+			GRHISupportsComplexVariableRateShadingCombinerOps = true;
+
+			GRHIVariableRateShadingImageTileMinWidth = options.ShadingRateImageTileSize;
+			GRHIVariableRateShadingImageTileMinHeight = options.ShadingRateImageTileSize;
+			GRHIVariableRateShadingImageTileMaxWidth = options.ShadingRateImageTileSize;
+			GRHIVariableRateShadingImageTileMaxHeight = options.ShadingRateImageTileSize;
+
+			GRHIVariableRateShadingImageDataType = VRSImage_Palette;
+			GRHIVariableRateShadingImageFormat = PF_R8_UINT;
+		}
 	}
 	else
 	{
-		GVariableRateShadingTier 			= D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED;
-		GRHISupportsVariableRateShading 	= false;
-		GVariableRateShadingImageTileSize 	= 1;
+		GRHISupportsAttachmentVariableRateShading = GRHISupportsPipelineVariableRateShading = false;
+		GRHIVariableRateShadingImageTileMinWidth = 1;
+		GRHIVariableRateShadingImageTileMinHeight = 1;
+		GRHIVariableRateShadingImageTileMaxWidth = 1;
+		GRHIVariableRateShadingImageTileMaxHeight = 1;
 	}
 
 	// Command lists need the validation RHI context if enabled, so call the global scope version of RHIGetDefaultContext() and RHIGetDefaultAsyncComputeContext().

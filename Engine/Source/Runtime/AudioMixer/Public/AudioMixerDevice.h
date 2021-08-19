@@ -9,10 +9,13 @@
 #include "DSP/BufferVectorOperations.h"
 #include "DSP/MultithreadedPatching.h"
 #include "Quartz/AudioMixerClockManager.h"
+#include "UObject/GCObject.h"
+#include "UObject/StrongObjectPtr.h"
 
 // Forward Declarations
 class FOnSubmixEnvelopeBP;
 class IAudioMixerPlatformInterface;
+class USoundModulatorBase;
 
 namespace Audio
 {
@@ -53,14 +56,35 @@ namespace Audio
 		enum Type
 		{
 			Master,
+			BaseDefault,
 			Reverb,
 			EQ,
 			Count,
 		};
 	}
 
+	struct FSubmixMap
+	{
+	public:
+		using FObjectId = uint32;
+		using FPair = TPair<FObjectId, FMixerSubmixPtr>;
+		using FIterFunc = TUniqueFunction<void(const FPair&)>;
+
+		void Add(const FObjectId InObjectId, FMixerSubmixPtr InMixerSubmix);
+		void Iterate(FIterFunc InFunction);
+		FMixerSubmixPtr FindRef(FObjectId InObjectId);
+		int32 Remove(const FObjectId InObjectId);
+		void Reset();
+
+	private:
+		TMap<FObjectId, FMixerSubmixPtr> SubmixMap;
+
+		FCriticalSection MutationLock;
+	};
+
 	class AUDIOMIXER_API FMixerDevice :	public FAudioDevice,
-										public IAudioMixer
+										public IAudioMixer,
+										public FGCObject
 	{
 	public:
 		FMixerDevice(IAudioMixerPlatformInterface* InAudioMixerPlatform);
@@ -92,10 +116,12 @@ namespace Audio
 		virtual void SuspendContext() override;
 		virtual void EnableDebugAudioOutput() override;
 		virtual FAudioPlatformSettings GetPlatformSettings() const override;
-		virtual void RegisterSoundSubmix(const USoundSubmixBase* SoundSubmix, bool bInit = true) override;
+		virtual void RegisterSoundSubmix(USoundSubmixBase* SoundSubmix, bool bInit = true) override;
 		virtual void UnregisterSoundSubmix(const USoundSubmixBase* SoundSubmix) override;
 
 		virtual void InitSoundEffectPresets() override;
+		virtual void InitDefaultAudioBuses() override;
+		virtual void ShutdownDefaultAudioBuses() override;
 		virtual int32 GetNumActiveSources() const override;
 
 		// Updates the source effect chain (using unique object id). 
@@ -108,6 +134,10 @@ namespace Audio
 		virtual void SetSubmixOutputVolume(USoundSubmix* InSoundSubmix, float InOutputVolume) override;
 		virtual void SetSubmixWetLevel(USoundSubmix* InSoundSubmix, float InWetLevel) override;
 		virtual void SetSubmixDryLevel(USoundSubmix* InSoundSubmix, float InDryLevel) override;
+
+		// Submix Modulation Settings
+		virtual void UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, USoundModulatorBase* InOutputModulation, USoundModulatorBase* InWetLevelModulation, USoundModulatorBase* InDryLevelModulation) override;
+		virtual void SetSubmixModulationBaseLevels(USoundSubmix* InSoundSubmix, float InVolumeModBase, float InWetModBase, float InDryModBase) override;
 
 		// Submix effect chain override settings
 		virtual void SetSubmixEffectChainOverride(USoundSubmix* InSoundSubmix, const TArray<FSoundEffectSubmixPtr>& InSubmixEffectPresetChain, float InFadeTimeSec) override;
@@ -136,6 +166,9 @@ namespace Audio
 		// Submix buffer listener callbacks
 		virtual void RegisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* InSubmix = nullptr) override;
 		virtual void UnregisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* InSubmix = nullptr) override;
+
+		virtual FPatchOutputStrongPtr AddPatchForSubmix(uint32 InObjectId, float InPatchGain) override;
+
 		virtual void FlushExtended(UWorld* WorldToFlush, bool bClearActivatedReverb);
 		virtual void FlushAudioRenderingCommands(bool bPumpSynchronously = false) override;
 
@@ -148,6 +181,12 @@ namespace Audio
 		virtual bool OnProcessAudioStream(AlignedFloatBuffer& OutputBuffer) override;
 		virtual void OnAudioStreamShutdown() override;
 		//~ End IAudioMixer
+
+		//~ Begin FGCObject
+		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+		//~End FGCObject
+
+		FMixerSubmixPtr FindSubmixInstanceByObjectId(uint32 InObjectId);
 
 		FMixerSubmixWeakPtr GetSubmixInstance(const USoundSubmixBase* SoundSubmix);
 
@@ -169,7 +208,7 @@ namespace Audio
 
 		const FAudioPlatformDeviceInfo& GetPlatformDeviceInfo() const { return PlatformInfo; };
 
-		int32 GetNumDeviceChannels() const { return PlatformInfo.NumChannels; }
+		FORCEINLINE int32 GetNumDeviceChannels() const { return PlatformInfo.NumChannels; }
 
 		int32 GetNumOutputFrames() const { return PlatformSettings.CallbackBufferFrameSize; }
 		
@@ -189,6 +228,7 @@ namespace Audio
 		FMixerSourceManager* GetSourceManager();
 
 		FMixerSubmixWeakPtr GetMasterSubmix(); 
+		FMixerSubmixWeakPtr GetBaseDefaultSubmix();
 		FMixerSubmixWeakPtr GetMasterReverbSubmix();
 		FMixerSubmixWeakPtr GetMasterEQSubmix();
 
@@ -240,7 +280,7 @@ namespace Audio
 		void StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic);
 		void StopAudioBus(uint32 InAudioBusId);
 		bool IsAudioBusActive(uint32 InAudioBusId);
-		FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float PatchGain);
+		FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain);
 
 		// Clock Manager for quantized event handling on Audio Render Thread
 		FQuartzClockManager QuantizedEventClockManager;
@@ -276,7 +316,7 @@ namespace Audio
 
 		void LoadMasterSoundSubmix(EMasterSubmixType::Type InType, const FString& InDefaultName, bool bInDefaultMuteWhenBackgrounded, FSoftObjectPath& InOutObjectPath);
 		void LoadPluginSoundSubmixes();
-		void LoadSoundSubmix(const USoundSubmixBase& SoundSubmix);
+		void LoadSoundSubmix(USoundSubmixBase& SoundSubmix);
 
 		void InitSoundfieldAndEndpointDataForSubmix(const USoundSubmixBase& InSoundSubmix, FMixerSubmixPtr MixerSubmix, bool bAllowReInit);
 
@@ -285,6 +325,7 @@ namespace Audio
 	private:
 
 		bool IsMasterSubmixType(const USoundSubmixBase* InSubmix) const;
+		FMixerSubmixPtr GetMasterSubmixInstance(uint32 InSubmixId);
 		FMixerSubmixPtr GetMasterSubmixInstance(const USoundSubmixBase* InSubmix);
 		
 		// Pumps the audio render thread command queue
@@ -292,6 +333,8 @@ namespace Audio
 
 		TArray<USoundSubmix*> MasterSubmixes;
 		TArray<FMixerSubmixPtr> MasterSubmixInstances;
+
+		TArray<TStrongObjectPtr<UAudioBus>> DefaultAudioBuses;
 
 		// The active audio bus list accessible on the game thread
 		TArray<int32> ActiveAudioBuses_GameThread;
@@ -332,7 +375,7 @@ namespace Audio
 		FAudioPlatformDeviceInfo PlatformInfo;
 
 		/** Map of USoundSubmix static data objects to the dynamic audio mixer submix. */
-		TMap<const USoundSubmixBase*, FMixerSubmixPtr> Submixes;
+		FSubmixMap Submixes;
 
 		// Submixes that will sum their audio and send it directly to AudioMixerPlatform.
 		// Submixes are added to this list in RegisterSoundSubmix, and removed in UnregisterSoundSubmix.

@@ -49,6 +49,24 @@ void UDataprepAssetInterface::PostLoad()
 	{
 		Output->GetOnChanged().AddUObject( this, &UDataprepAssetInterface::OnConsumerChanged );
 	}
+	else
+	{
+		// Check if a consumer class has become available since last load
+		for( TObjectIterator< UClass > It ; It ; ++It )
+		{
+			UClass* CurrentClass = (*It);
+
+			if ( !CurrentClass->HasAnyClassFlags( CLASS_Abstract ) )
+			{
+				if( CurrentClass->IsChildOf( UDataprepContentConsumer::StaticClass() ) )
+				{
+					UE_LOG( LogDataprepCore, Warning, TEXT("Default Dataprep consumer was assigned") );
+					SetConsumer( CurrentClass );
+					break;
+				}
+			}
+		}
+	}
 
 	if(Recipe != nullptr)
 	{
@@ -161,15 +179,20 @@ void UDataprepAssetInterface::ExecuteRecipe_Internal(const TSharedPtr<FDataprepA
 
 	for (UDataprepActionAsset* ActionAsset : ActionAssets)
 	{
-		if (ActionAsset != nullptr && ActionAsset->bIsEnabled)
+		if (ActionAsset != nullptr)
 		{
-			Task.ReportNextStep(FText::Format(LOCTEXT("ExecutingAction", "Executing \"{0}\" ..."), FText::FromString(ActionAsset->GetLabel())));
-
-			ActionAsset->ExecuteAction(InActionsContext);
-			if (Task.IsWorkCancelled())
+			const bool bGroupEnabled = ActionAsset->GetAppearance()->GroupId != INDEX_NONE ? ActionAsset->GetAppearance()->bGroupIsEnabled : true;
+		
+			if (ActionAsset->bIsEnabled && bGroupEnabled)
 			{
-				Task.ReportNextStep(LOCTEXT("InterruptedExecution", "Execution interrupted ..."));
-				break;
+				Task.ReportNextStep(FText::Format(LOCTEXT("ExecutingAction", "Executing \"{0}\" ..."), FText::FromString(ActionAsset->GetLabel())));
+
+				ActionAsset->ExecuteAction(InActionsContext);
+				if (Task.IsWorkCancelled())
+				{
+					Task.ReportNextStep(LOCTEXT("InterruptedExecution", "Execution interrupted ..."));
+					break;
+				}
 			}
 		}
 		else

@@ -1,124 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetRegistry/AssetRegistryState.h"
-#include "AssetRegistry.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/ArrayReader.h"
+#include "Serialization/MemoryWriter.h"
 #include "Misc/ConfigCacheIni.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/MetaData.h"
+#include "AssetRegistryArchive.h"
 #include "AssetRegistryPrivate.h"
 #include "AssetRegistry/ARFilter.h"
 #include "DependsNode.h"
 #include "PackageReader.h"
 #include "NameTableArchive.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
-
-#if !defined(USE_COMPACT_ASSET_REGISTRY)
-#error "USE_COMPACT_ASSET_REGISTRY must be defined"
-#endif
-
-#if !USE_COMPACT_ASSET_REGISTRY
-void FAssetRegistryState::IngestIniSettingsForCompact(TArray<FString>& AsFName, TArray<FString>& AsPathName, TArray<FString>& AsLocText)
-{
-
-}
-
-#else
 #include "Blueprint/BlueprintSupport.h"
+#include "UObject/NameBatchSerialization.h"
 #include "UObject/PrimaryAssetId.h"
 
-// if any of these cause a link error, then you can't use USE_COMPACT_ASSET_REGISTRY with this build config
-FAssetDataTagMapValueStorage& FAssetDataTagMapValueStorage::Get()
+
+FAssetRegistryState& FAssetRegistryState::operator=(FAssetRegistryState&& Rhs)
 {
-	static FAssetDataTagMapValueStorage Singleton;
-	return Singleton;
-}
+	Reset();
 
-static TSet<FName> KeysToCompactToFName;
-static TSet<FName> KeysToCompactToExportText;
-static TSet<FName> KeysToFTextExportText;
+	CachedAssetsByObjectPath			= MoveTemp(Rhs.CachedAssetsByObjectPath);
+	CachedAssetsByPackageName			= MoveTemp(Rhs.CachedAssetsByPackageName);
+	CachedAssetsByPath					= MoveTemp(Rhs.CachedAssetsByPath);
+	CachedAssetsByClass					= MoveTemp(Rhs.CachedAssetsByClass);
+	CachedAssetsByTag					= MoveTemp(Rhs.CachedAssetsByTag);
+	CachedDependsNodes					= MoveTemp(Rhs.CachedDependsNodes);
+	CachedPackageData					= MoveTemp(Rhs.CachedPackageData);
+	PreallocatedAssetDataBuffers		= MoveTemp(Rhs.PreallocatedAssetDataBuffers);
+	PreallocatedDependsNodeDataBuffers	= MoveTemp(Rhs.PreallocatedDependsNodeDataBuffers);
+	PreallocatedPackageDataBuffers		= MoveTemp(Rhs.PreallocatedPackageDataBuffers);
+	Swap(NumAssets,				Rhs.NumAssets);
+	Swap(NumDependsNodes,		Rhs.NumDependsNodes);
+	Swap(NumPackageData,		Rhs.NumPackageData);
 
-void FAssetRegistryState::IngestIniSettingsForCompact(TArray<FString>& AsFName, TArray<FString>& AsPathName, TArray<FString>& AsLocText)
-{
-	for (auto & Item : AsFName)
-	{
-		KeysToCompactToFName.Add(*Item);
-	}
-	for (auto & Item : AsPathName)
-	{
-		KeysToCompactToExportText.Add(*Item);
-	}
-	for (auto & Item : AsLocText)
-	{
-		KeysToFTextExportText.Add(*Item);
-	}
-}
-
-#define AGGRESSIVE_NAMEIFICATION (0)
-
-bool FAssetDataTagMapValueStorage::KeyShouldHaveFNameValue(FName Key, const FString& Value)
-{
-	if (FCString::Strcmp(*Value, TEXT("False")) == 0)
-	{
-		return true;
-	}
-	if (FCString::Strcmp(*Value, TEXT("True")) == 0)
-	{
-		return true;
-	}
-
-#if AGGRESSIVE_NAMEIFICATION  // this was an experiment, it doesn't save enough at this time to bother
-	if (Value.Len() < NAME_SIZE && FName::IsValidXName(Value, INVALID_NAME_CHARACTERS) && !KeyShouldHaveCompactExportTextValue(Key, Value))
-	{
-		const FName IndexedName(*Value, FNAME_Find);
-		if (IndexedName != NAME_None)
-		{
-			if (IndexedName.ToString().Compare(Value, ESearchCase::CaseSensitive) == 0)
-			{
-				return true;
-			}
-		}
-		else
-		{
-			if (FName(*Value).ToString().Compare(Value, ESearchCase::CaseSensitive) == 0)
-			{
-				return true;
-			}
-		}
-	}
-#endif
-	return KeysToCompactToFName.Contains(Key);
-}
-bool FAssetDataTagMapValueStorage::KeyShouldHaveCompactExportTextValue(FName Key, const FString& Value)
-{
-	return KeysToCompactToExportText.Contains(Key);
-}
-
-bool FAssetDataTagMapValueStorage::KeyShouldHaveLocTextExportTextValue(FName Key, const FString& Value)
-{
-	bool bMaybeLoc = KeysToFTextExportText.Contains(Key);
-
-	if (bMaybeLoc && !FTextStringHelper::IsComplexText(*Value))
-	{
-		bMaybeLoc = false;
-	}
-
-	return bMaybeLoc;
-}
-
-#endif
-
-
-
-FAssetRegistryState::FAssetRegistryState()
-{
-	NumAssets = 0;
-	NumDependsNodes = 0;
-	NumPackageData = 0;
+	return *this;
 }
 
 FAssetRegistryState::~FAssetRegistryState()
@@ -231,7 +153,7 @@ void FAssetRegistryState::FilterTags(const FAssetDataTagMapSharedView& InTagsAnd
 			if (bInAllClasseslist || bInClassSpecificlist)
 			{
 				// It is in the white list. Keep it.
-				OutTagsAndValues.Add(TagPair.Key, TagPair.Value);
+				OutTagsAndValues.Add(TagPair.Key, TagPair.Value.ToLoose());
 			}
 		}
 		else
@@ -240,7 +162,7 @@ void FAssetRegistryState::FilterTags(const FAssetDataTagMapSharedView& InTagsAnd
 			if (!bInAllClasseslist && !bInClassSpecificlist)
 			{
 				// It isn't in the blacklist. Keep it.
-				OutTagsAndValues.Add(TagPair.Key, TagPair.Value);
+				OutTagsAndValues.Add(TagPair.Key, TagPair.Value.ToLoose());
 			}
 		}
 	}
@@ -297,6 +219,9 @@ void FAssetRegistryState::InitializeFromExistingAndPrune(const FAssetRegistrySta
 
 		FAssetData* NewAssetData = new FAssetData(AssetData->PackageName, AssetData->PackagePath, AssetData->AssetName,
 			AssetData->AssetClass, NewTagsAndValues, AssetData->ChunkIDs, AssetData->PackageFlags);
+
+		NewAssetData->TaggedAssetBundles = AssetData->TaggedAssetBundles;
+
 		// Add asset to new state
 		AddAssetData(NewAssetData);
 	}
@@ -418,17 +343,26 @@ void FAssetRegistryState::InitializeFromExisting(const TMap<FName, FAssetData*>&
 			if (InInitializationMode == EInitializationMode::OnlyUpdateExisting)
 			{
 				// Only modify tags
-				if (ExistingData && (LocalTagsAndValues != ExistingData->TagsAndValues.GetMap()))
+				if (ExistingData)
 				{
-					FAssetData TempData = *ExistingData;
-					TempData.TagsAndValues = FAssetDataTagMapSharedView(MoveTemp(LocalTagsAndValues));
-					UpdateAssetData(ExistingData, TempData);
+					// Bundle tags might have changed even if other tags haven't
+					ExistingData->TaggedAssetBundles = AssetData.TaggedAssetBundles;
+
+					// If tags have changed we need to update CachedAssetsByTag
+					if (LocalTagsAndValues != ExistingData->TagsAndValues)
+					{
+						FAssetData TempData = *ExistingData;
+						TempData.TagsAndValues = FAssetDataTagMapSharedView(MoveTemp(LocalTagsAndValues));
+						UpdateAssetData(ExistingData, TempData);
+					}
 				}
 			}
 			else
 			{
 				FAssetData* NewData = new FAssetData(AssetData.PackageName, AssetData.PackagePath, AssetData.AssetName,
 					AssetData.AssetClass, LocalTagsAndValues, AssetData.ChunkIDs, AssetData.PackageFlags);
+				NewData->TaggedAssetBundles = AssetData.TaggedAssetBundles;
+
 				AddAssetData(NewData);
 			}
 		}
@@ -622,22 +556,63 @@ void FAssetRegistryState::PruneAssetData(const TSet<FName>& RequiredPackages, co
 	}
 }
 
-bool FAssetRegistryState::HasAssets(const FName PackagePath) const
+bool FAssetRegistryState::HasAssets(const FName PackagePath, bool bARFiltering) const
 {
 	const TArray<FAssetData*>* FoundAssetArray = CachedAssetsByPath.Find(PackagePath);
-	return FoundAssetArray && FoundAssetArray->Num() > 0;
+	if (FoundAssetArray)
+	{
+		if (bARFiltering)
+		{
+			return FoundAssetArray->ContainsByPredicate([](FAssetData* AssetData)
+			{
+				return AssetData && !UE::AssetRegistry::FFiltering::ShouldSkipAsset(AssetData->AssetClass, AssetData->PackageFlags);
+			});
+		}
+		else
+		{
+			return FoundAssetArray->Num() > 0;
+		}
+	}
+	return false;
 }
 
-bool FAssetRegistryState::GetAssets(const FARCompiledFilter& Filter, const TSet<FName>& PackageNamesToSkip, TArray<FAssetData>& OutAssetData) const
+bool FAssetRegistryState::GetAssets(const FARCompiledFilter& Filter, const TSet<FName>& PackageNamesToSkip, TArray<FAssetData>& OutAssetData, bool bARFiltering) const
 {
 	return EnumerateAssets(Filter, PackageNamesToSkip, [&OutAssetData](const FAssetData& AssetData)
 	{
 		OutAssetData.Emplace(AssetData);
 		return true;
-	});
+	},
+	bARFiltering);
 }
 
-bool FAssetRegistryState::EnumerateAssets(const FARCompiledFilter& Filter, const TSet<FName>& PackageNamesToSkip, TFunctionRef<bool(const FAssetData&)> Callback) const
+template<class ArrayType>
+TArray<FAssetData*> FindAssets(const TMap<FName, ArrayType>& Map, const TSet<FName>& Keys)
+{
+	TArray<TArrayView<FAssetData* const>> Matches;
+	Matches.Reserve(Keys.Num());
+	uint32 TotalMatches = 0;
+
+	for (FName Key : Keys)
+	{
+		if (const ArrayType* Assets = Map.Find(Key))
+		{
+			Matches.Add(MakeArrayView(*Assets));
+			TotalMatches += Assets->Num();
+		}
+	}
+
+	TArray<FAssetData*> Out;
+	Out.Reserve(TotalMatches);
+	for (TArrayView<FAssetData* const> Assets : Matches)
+	{
+		Out.Append(Assets.GetData(), Assets.Num());
+	}
+
+	return Out;
+}
+
+bool FAssetRegistryState::EnumerateAssets(const FARCompiledFilter& Filter, const TSet<FName>& PackageNamesToSkip, TFunctionRef<bool(const FAssetData&)> Callback, bool bARFiltering) const
 {
 	// Verify filter input. If all assets are needed, use EnumerateAllAssets() instead.
 	if (Filter.IsEmpty() || !IsFilterValid(Filter))
@@ -648,67 +623,36 @@ bool FAssetRegistryState::EnumerateAssets(const FARCompiledFilter& Filter, const
 	const uint32 FilterWithoutPackageFlags = Filter.WithoutPackageFlags;
 	const uint32 FilterWithPackageFlags = Filter.WithPackageFlags;
 
-	// Form a set of assets matched by each filter
-	TArray<TSet<FAssetData*>> DiskFilterSets;
-
+	// The assets that match each filter
+	TArray<TArray<FAssetData*>, TInlineAllocator<5>> FilterResults;
+	
 	// On disk package names
 	if (Filter.PackageNames.Num() > 0)
 	{
-		TSet<FAssetData*>& PackageNameFilter = DiskFilterSets[DiskFilterSets.AddDefaulted()];
-
-		for (FName PackageName : Filter.PackageNames)
-		{
-			const TArray<FAssetData*>* PackageAssets = CachedAssetsByPackageName.Find(PackageName);
-
-			if (PackageAssets != nullptr)
-			{
-				PackageNameFilter.Append(*PackageAssets);
-			}
-		}
+		FilterResults.Emplace(FindAssets(CachedAssetsByPackageName, Filter.PackageNames));
 	}
 
 	// On disk package paths
 	if (Filter.PackagePaths.Num() > 0)
 	{
-		TSet<FAssetData*>& PathFilter = DiskFilterSets[DiskFilterSets.AddDefaulted()];
-
-		for (FName PackagePath : Filter.PackagePaths)
-		{
-			const TArray<FAssetData*>* PathAssets = CachedAssetsByPath.Find(PackagePath);
-
-			if (PathAssets != nullptr)
-			{
-				PathFilter.Append(*PathAssets);
-			}
-		}
+		FilterResults.Emplace(FindAssets(CachedAssetsByPath, Filter.PackagePaths));
 	}
 
 	// On disk classes
 	if (Filter.ClassNames.Num() > 0)
 	{
-		TSet<FAssetData*>& ClassFilter = DiskFilterSets[DiskFilterSets.AddDefaulted()];
-
-		for (FName ClassName : Filter.ClassNames)
-		{
-			const TArray<FAssetData*>* ClassAssets = CachedAssetsByClass.Find(ClassName);
-
-			if (ClassAssets != nullptr)
-			{
-				ClassFilter.Append(*ClassAssets);
-			}
-		}
+		FilterResults.Emplace(FindAssets(CachedAssetsByClass, Filter.ClassNames));
 	}
 
 	// On disk object paths
 	if (Filter.ObjectPaths.Num() > 0)
 	{
-		TSet<FAssetData*>& ObjectPathsFilter = DiskFilterSets[DiskFilterSets.AddDefaulted()];
+		TArray<FAssetData*>& ObjectPathsFilter = FilterResults.Emplace_GetRef();
+		ObjectPathsFilter.Reserve(Filter.ObjectPaths.Num());
 
 		for (FName ObjectPath : Filter.ObjectPaths)
 		{
-			FAssetData* AssetDataPtr = CachedAssetsByObjectPath.FindRef(ObjectPath);
-
-			if (AssetDataPtr != nullptr)
+			if (FAssetData* AssetDataPtr = CachedAssetsByObjectPath.FindRef(ObjectPath))
 			{
 				ObjectPathsFilter.Add(AssetDataPtr);
 			}
@@ -718,16 +662,16 @@ bool FAssetRegistryState::EnumerateAssets(const FARCompiledFilter& Filter, const
 	// On disk tags and values
 	if (Filter.TagsAndValues.Num() > 0)
 	{
-		TSet<FAssetData*>& TagAndValuesFilter = DiskFilterSets[DiskFilterSets.AddDefaulted()];
+		TArray<FAssetData*>& TagAndValuesFilter = FilterResults.Emplace_GetRef();
+		// Sometimes number of assets matching this filter is correlated to number of assets matching previous filters 
+		TagAndValuesFilter.Reserve(FilterResults[0].Num());
 
 		for (auto FilterTagIt = Filter.TagsAndValues.CreateConstIterator(); FilterTagIt; ++FilterTagIt)
 		{
 			const FName Tag = FilterTagIt.Key();
 			const TOptional<FString>& Value = FilterTagIt.Value();
 
-			const TArray<FAssetData*>* TagAssets = CachedAssetsByTag.Find(Tag);
-
-			if (TagAssets != nullptr)
+			if (const TArray<FAssetData*>* TagAssets = CachedAssetsByTag.Find(Tag))
 			{
 				for (FAssetData* AssetData : *TagAssets)
 				{
@@ -752,61 +696,62 @@ bool FAssetRegistryState::EnumerateAssets(const FARCompiledFilter& Filter, const
 		}
 	}
 
-	// If we have any filter sets, add the assets which are contained in the sets to OutAssetData
-	if (DiskFilterSets.Num() > 0)
+	// Perform callback for assets that match all filters
+	if (FilterResults.Num() > 0)
 	{
-		// Initialize the combined filter set to the first set, in case we can skip combining.
-		TSet<FAssetData*>* CombinedFilterSetPtr = &DiskFilterSets[0];
-		TSet<FAssetData*> IntersectedFilterSet;
-
-		// If we have more than one set, we must combine them. We take the intersection
-		if (DiskFilterSets.Num() > 1)
-		{
-			IntersectedFilterSet = *CombinedFilterSetPtr;
-			CombinedFilterSetPtr = &IntersectedFilterSet;
-
-			for (int32 SetIdx = 1; SetIdx < DiskFilterSets.Num() && IntersectedFilterSet.Num() > 0; ++SetIdx)
+		auto SkipAssetData = [&](const FAssetData* AssetData) 
+		{ 
+			if (PackageNamesToSkip.Contains(AssetData->PackageName) |			//-V792
+				AssetData->HasAnyPackageFlags(FilterWithoutPackageFlags) |		//-V792
+				!AssetData->HasAllPackageFlags(FilterWithPackageFlags))			//-V792
 			{
-				// If the other set is smaller, swap it so we iterate the smaller set
-				TSet<FAssetData*> OtherFilterSet = DiskFilterSets[SetIdx];
-				if (OtherFilterSet.Num() < IntersectedFilterSet.Num())
-				{
-					Swap(OtherFilterSet, IntersectedFilterSet);
-				}
+				return true;
+			}
 
-				for (auto It = IntersectedFilterSet.CreateIterator(); It; ++It)
+			return bARFiltering && UE::AssetRegistry::FFiltering::ShouldSkipAsset(AssetData->AssetClass, AssetData->PackageFlags);
+		};
+
+		if (FilterResults.Num() > 1)
+		{
+			// Count how many filters each asset pass
+			TMap<FAssetData*, uint32> PassCounts;
+			for (const TArray<FAssetData*>& FilterEvaluation : FilterResults)
+			{
+				PassCounts.Reserve(FilterEvaluation.Num());
+				
+				for (FAssetData* AssetData : FilterEvaluation)
 				{
-					if (!OtherFilterSet.Contains(*It))
-					{
-						It.RemoveCurrent();
-						continue;
-					}
+					PassCounts.FindOrAdd(AssetData)++;	
+				}
+			}
+
+			// Include assets that match all filters
+			for (TPair<FAssetData*, uint32> PassCount : PassCounts)
+			{
+				const FAssetData* AssetData = PassCount.Key;
+				if (PassCount.Value != FilterResults.Num() || SkipAssetData(AssetData))
+				{
+					continue;
+				}
+				else if (!Callback(*AssetData))
+				{
+					return true;
 				}
 			}
 		}
-
-		// Iterate over the final combined filter set to add to OutAssetData
-		for (const FAssetData* AssetData : *CombinedFilterSetPtr)
+		else
 		{
-			if (PackageNamesToSkip.Contains(AssetData->PackageName))
+			// All matched assets passed the single filter
+			for (const FAssetData* AssetData : FilterResults[0])
 			{
-				// Skip assets in passed in package list
-				continue;
-			}
-
-			if (AssetData->HasAnyPackageFlags(FilterWithoutPackageFlags))
-			{
-				continue;
-			}
-
-			if (!AssetData->HasAllPackageFlags(FilterWithPackageFlags))
-			{
-				continue;
-			}
-
-			if (!Callback(*AssetData))
-			{
-				return true;
+				if (SkipAssetData(AssetData))
+				{
+					continue;
+				}
+				else if (!Callback(*AssetData))
+				{
+					return true;
+				}
 			}
 		}
 	}
@@ -814,31 +759,30 @@ bool FAssetRegistryState::EnumerateAssets(const FARCompiledFilter& Filter, const
 	return true;
 }
 
-bool FAssetRegistryState::GetAllAssets(const TSet<FName>& PackageNamesToSkip, TArray<FAssetData>& OutAssetData) const
+bool FAssetRegistryState::GetAllAssets(const TSet<FName>& PackageNamesToSkip, TArray<FAssetData>& OutAssetData, bool bARFiltering) const
 {
 	return EnumerateAllAssets(PackageNamesToSkip, [&OutAssetData](const FAssetData& AssetData)
 	{
 		OutAssetData.Emplace(AssetData);
 		return true;
-	});
+	},
+	bARFiltering);
 }
 
-bool FAssetRegistryState::EnumerateAllAssets(const TSet<FName>& PackageNamesToSkip, TFunctionRef<bool(const FAssetData&)> Callback) const
+bool FAssetRegistryState::EnumerateAllAssets(const TSet<FName>& PackageNamesToSkip, TFunctionRef<bool(const FAssetData&)> Callback, bool bARFiltering) const
 {
 	// All unloaded disk assets
 	for (const TPair<FName, FAssetData*>& AssetDataPair : CachedAssetsByObjectPath)
 	{
 		const FAssetData* AssetData = AssetDataPair.Value;
 
-		if (AssetData != nullptr)
+		if (AssetData &&
+			!PackageNamesToSkip.Contains(AssetData->PackageName) &&
+			(!bARFiltering || !UE::AssetRegistry::FFiltering::ShouldSkipAsset(AssetData->AssetClass, AssetData->PackageFlags)))
 		{
-			// Make sure the asset's package was not loaded then the object was deleted/renamed
-			if (!PackageNamesToSkip.Contains(AssetData->PackageName))
+			if (!Callback(*AssetData))
 			{
-				if (!Callback(*AssetData))
-				{
-					return true;
-				}
+				return true;
 			}
 		}
 	}
@@ -989,250 +933,291 @@ bool FAssetRegistryState::GetReferencers(const FAssetIdentifier& AssetIdentifier
 	}
 }
 
-bool FAssetRegistryState::Serialize(FArchive& OriginalAr, const FAssetRegistrySerializationOptions& Options)
+bool FAssetRegistryState::Serialize(FArchive& Ar, const FAssetRegistrySerializationOptions& Options)
 {
+	return Ar.IsSaving() ? Save(Ar, Options) : Load(Ar, FAssetRegistryLoadOptions(Options));
+}
+
+bool FAssetRegistryState::Save(FArchive& OriginalAr, const FAssetRegistrySerializationOptions& Options)
+{
+	SCOPED_BOOT_TIMING("FAssetRegistryState::Save");
+
+	check(!OriginalAr.IsLoading());
+
 	// This is only used for the runtime version of the AssetRegistry
-	if (OriginalAr.IsSaving())
+
+#if !ALLOW_NAME_BATCH_SAVING
+	checkf(false, TEXT("Cannot save cooked AssetRegistryState in this configuration"));
+#else
+	check(CachedAssetsByObjectPath.Num() == NumAssets);
+
+	FAssetRegistryVersion::Type Version = FAssetRegistryVersion::LatestVersion;
+	FAssetRegistryVersion::SerializeVersion(OriginalAr, Version);
+
+	// Set up fixed asset registry writer
+	FAssetRegistryWriter Ar(FAssetRegistryWriterOptions(Options), OriginalAr);
+
+	// serialize number of objects
+	int32 AssetCount = CachedAssetsByObjectPath.Num();
+	Ar << AssetCount;
+
+	// Write asset data first
+	for (TPair<FName, FAssetData*>& Pair : CachedAssetsByObjectPath)
 	{
-		check(CachedAssetsByObjectPath.Num() == NumAssets);
+		FAssetData& AssetData(*Pair.Value);
+		AssetData.SerializeForCache(Ar);
+	}
 
-		FAssetRegistryVersion::Type Version = FAssetRegistryVersion::LatestVersion;
-		FAssetRegistryVersion::SerializeVersion(OriginalAr, Version);
+	// Serialize Dependencies
+	// Write placeholder data for the size
+	int64 OffsetToDependencySectionSize = Ar.Tell();
+	int64 DependencySectionSize = 0;
+	Ar << DependencySectionSize;
+	int64 DependencySectionStart = Ar.Tell();
+	if (!Options.bSerializeDependencies)
+	{
+		int32 NumDependencies = 0;
+		Ar << NumDependencies;
+	}
+	else
+	{
+		TMap<FDependsNode*, FDependsNode*> RedirectCache;
+		TMap<FDependsNode*, int32> DependsIndexMap;
+		TArray<FDependsNode*> Dependencies;
+		DependsIndexMap.Reserve(CachedAssetsByObjectPath.Num());
 
-		// Set up name table archive
-		FNameTableArchiveWriter Ar(OriginalAr);
-
-		// serialize number of objects
-		int32 AssetCount = CachedAssetsByObjectPath.Num();
-		Ar << AssetCount;
-
-		// Write asset data first
-		for (TPair<FName, FAssetData*>& Pair : CachedAssetsByObjectPath)
+		// Scan dependency nodes, we won't save all of them if we filter out certain types
+		for (TPair<FAssetIdentifier, FDependsNode*>& Pair : CachedDependsNodes)
 		{
-			FAssetData& AssetData(*Pair.Value);
-			AssetData.SerializeForCache(Ar);
-		}
+			FDependsNode* Node = Pair.Value;
 
-		// Serialize Dependencies
-		// Write placeholder data for the size
-		int64 OffsetToDependencySectionSize = Ar.Tell();
-		int64 DependencySectionSize = 0;
-		Ar << DependencySectionSize;
-		int64 DependencySectionStart = Ar.Tell();
-
-		if (!Options.bSerializeDependencies)
-		{
-			int32 NumDependencies = 0;
-			Ar << NumDependencies;
-		}
-		else
-		{
-			TMap<FDependsNode*, FDependsNode*> RedirectCache;
-			TMap<FDependsNode*, int32> DependsIndexMap;
-			TArray<FDependsNode*> Dependencies;
-			DependsIndexMap.Reserve(CachedAssetsByObjectPath.Num());
-
-			// Scan dependency nodes, we won't save all of them if we filter out certain types
-			for (TPair<FAssetIdentifier, FDependsNode*>& Pair : CachedDependsNodes)
+			if (Node->GetIdentifier().IsPackage() 
+				|| (Options.bSerializeSearchableNameDependencies && Node->GetIdentifier().IsValue())
+				|| (Options.bSerializeManageDependencies && Node->GetIdentifier().GetPrimaryAssetId().IsValid()))
 			{
-				FDependsNode* Node = Pair.Value;
-
-				if (Node->GetIdentifier().IsPackage() 
-					|| (Options.bSerializeSearchableNameDependencies && Node->GetIdentifier().IsValue())
-					|| (Options.bSerializeManageDependencies && Node->GetIdentifier().GetPrimaryAssetId().IsValid()))
-				{
-					DependsIndexMap.Add(Node, Dependencies.Num());
-					Dependencies.Add(Node);
-				}
-			}
-
-			int32 NumDependencies = Dependencies.Num();
-			Ar << NumDependencies;
-
-			TUniqueFunction<int32(FDependsNode*, bool bAsReferencer)> GetSerializeIndexFromNode = [this, &RedirectCache, &DependsIndexMap](FDependsNode* InDependency, bool bAsReferencer)
-			{
-				if (!bAsReferencer)
-				{
-					InDependency = ResolveRedirector(InDependency, CachedAssetsByObjectPath, RedirectCache);
-				}
-				if (!InDependency)
-				{
-					return -1;
-				}
-				int32* DependencyIndex = DependsIndexMap.Find(InDependency);
-				if (!DependencyIndex)
-				{
-					return -1;
-				}
-				return *DependencyIndex;
-			};
-
-			FDependsNode::FSaveScratch Scratch;
-			for (FDependsNode* DependentNode : Dependencies)
-			{
-				DependentNode->SerializeSave(Ar, GetSerializeIndexFromNode, Scratch);
+				DependsIndexMap.Add(Node, Dependencies.Num());
+				Dependencies.Add(Node);
 			}
 		}
+
+		int32 NumDependencies = Dependencies.Num();
+		Ar << NumDependencies;
+
+		TUniqueFunction<int32(FDependsNode*, bool bAsReferencer)> GetSerializeIndexFromNode = [this, &RedirectCache, &DependsIndexMap](FDependsNode* InDependency, bool bAsReferencer)
+		{
+			if (!bAsReferencer)
+			{
+				InDependency = ResolveRedirector(InDependency, CachedAssetsByObjectPath, RedirectCache);
+			}
+			if (!InDependency)
+			{
+				return -1;
+			}
+			int32* DependencyIndex = DependsIndexMap.Find(InDependency);
+			if (!DependencyIndex)
+			{
+				return -1;
+			}
+			return *DependencyIndex;
+		};
+
+		FDependsNode::FSaveScratch Scratch;
+		for (FDependsNode* DependentNode : Dependencies)
+		{
+			DependentNode->SerializeSave(Ar, GetSerializeIndexFromNode, Scratch, Options);
+		}
+	}
 		// Write the real value to the placeholder data for the DependencySectionSize
 		int64 DependencySectionEnd = Ar.Tell();
 		DependencySectionSize = DependencySectionEnd - DependencySectionStart;
 		Ar.Seek(OffsetToDependencySectionSize);
 		Ar << DependencySectionSize;
 		check(Ar.Tell() == DependencySectionStart);
-		Ar.Seek(DependencySectionEnd);
+		Ar.Seek(DependencySectionEnd);	
 
-		// Serialize the PackageData
-		int32 PackageDataCount = 0;
-		if (Options.bSerializePackageData)
-		{
-			PackageDataCount = CachedPackageData.Num();
-			Ar << PackageDataCount;
 
-			for (TPair<FName, FAssetPackageData*>& Pair : CachedPackageData)
-			{
-				Ar << Pair.Key;
-				Pair.Value->SerializeForCache(Ar);
-			}
-		}
-		else
+	// Serialize the PackageData
+	int32 PackageDataCount = 0;
+	if (Options.bSerializePackageData)
+	{
+		PackageDataCount = CachedPackageData.Num();
+		Ar << PackageDataCount;
+
+		for (TPair<FName, FAssetPackageData*>& Pair : CachedPackageData)
 		{
-			Ar << PackageDataCount;
+			Ar << Pair.Key;
+			Pair.Value->SerializeForCache(Ar);
 		}
 	}
-	// load in by building the TMap
 	else
 	{
-		FAssetRegistryVersion::Type Version = FAssetRegistryVersion::LatestVersion;
-		FAssetRegistryVersion::SerializeVersion(OriginalAr, Version);
+		Ar << PackageDataCount;
+	}
+#endif // ALLOW_NAME_BATCH_SAVING
 
-		if (Version < FAssetRegistryVersion::RemovedMD5Hash)
+	return !OriginalAr.IsError();
+}
+
+bool FAssetRegistryState::Load(FArchive& OriginalAr, const FAssetRegistryLoadOptions& Options)
+{
+	LLM_SCOPE(ELLMTag::AssetRegistry);
+
+	FAssetRegistryVersion::Type Version = FAssetRegistryVersion::LatestVersion;
+	FAssetRegistryVersion::SerializeVersion(OriginalAr, Version);
+
+	FSoftObjectPathSerializationScope SerializationScope(NAME_None, NAME_None, ESoftObjectPathCollectType::NeverCollect, ESoftObjectPathSerializeType::AlwaysSerialize);
+
+	if (Version < FAssetRegistryVersion::RemovedMD5Hash)
+	{
+		// Cannot read states before this version
+		return false;
+	}
+	else if (Version < FAssetRegistryVersion::FixedTags)
+	{
+		FNameTableArchiveReader NameTableReader(OriginalAr);
+		Load(NameTableReader, Version, Options);
+	}
+	else
+	{
+		FAssetRegistryReader Reader(OriginalAr, Options.ParallelWorkers);
+
+		if (Reader.IsError())
 		{
-			// Cannot read states before this version
 			return false;
 		}
 
-		// Set up name table archive
-		FNameTableArchiveReader Ar(OriginalAr);
+		// Load won't resolve asset registry tag values loaded in parallel
+		// and can run before WaitForTasks
+		Load(Reader, Version, Options);
 
-		// serialize number of objects
-		int32 LocalNumAssets = 0;
-		Ar << LocalNumAssets;
-
-		// allocate one single block for all asset data structs (to reduce tens of thousands of heap allocations)
-		FAssetData* PreallocatedAssetDataBuffer = new FAssetData[LocalNumAssets];
-		PreallocatedAssetDataBuffers.Add(PreallocatedAssetDataBuffer);
-
-		for (int32 AssetIndex = 0; AssetIndex < LocalNumAssets; AssetIndex++)
-		{
-			// make a new asset data object
-			FAssetData* NewAssetData = &PreallocatedAssetDataBuffer[AssetIndex];
-
-			// load it
-			NewAssetData->SerializeForCache(Ar);
-
-			AddAssetData(NewAssetData);
-		}
-
-		if (Version >= FAssetRegistryVersion::AddedDependencyFlags)
-		{
-			int64 DependencySectionSize;
-			Ar << DependencySectionSize;
-			int64 DependencySectionEnd = Ar.Tell() + DependencySectionSize;
-
-			if (!Options.bSerializeDependencies)
-			{
-				Ar.Seek(DependencySectionEnd);
-			}
-			else
-			{
-				int32 LocalNumDependsNodes = 0;
-				Ar << LocalNumDependsNodes;
-
-				FDependsNode* PreallocatedDependsNodeDataBuffer = nullptr;
-				if (LocalNumDependsNodes > 0)
-				{
-					PreallocatedDependsNodeDataBuffer = new FDependsNode[LocalNumDependsNodes];
-					PreallocatedDependsNodeDataBuffers.Add(PreallocatedDependsNodeDataBuffer);
-					CachedDependsNodes.Reserve(LocalNumDependsNodes);
-				}
-				TUniqueFunction<FDependsNode*(int32)> GetNodeFromSerializeIndex = [&PreallocatedDependsNodeDataBuffer, LocalNumDependsNodes](int32 Index) -> FDependsNode*
-				{
-					if (Index < 0 || LocalNumDependsNodes <= Index)
-					{
-						return nullptr;
-					}
-					return &PreallocatedDependsNodeDataBuffer[Index];
-				};
-
-				FDependsNode::FLoadScratch Scratch;
-				for (int32 DependsNodeIndex = 0; DependsNodeIndex < LocalNumDependsNodes; DependsNodeIndex++)
-				{
-					FDependsNode* DependsNode = &PreallocatedDependsNodeDataBuffer[DependsNodeIndex];
-					DependsNode->SerializeLoad(Ar, GetNodeFromSerializeIndex, Scratch, Options);
-					CachedDependsNodes.Add(DependsNode->GetIdentifier(), DependsNode);
-				}
-				if (Ar.IsError())
-				{
-					Ar.Seek(DependencySectionEnd);
-				}
-			}
-		}
-		else
-		{
-			LegacySerializeLoad_BeforeAssetRegistryDependencyFlags(Ar, Options, Version);
-		}
-
-		int32 LocalNumPackageData = 0;
-		Ar << LocalNumPackageData;
-		FAssetPackageData* PreallocatedPackageDataBuffer = nullptr;
-		if (Options.bSerializePackageData && LocalNumPackageData > 0)
-		{
-			PreallocatedPackageDataBuffer = new FAssetPackageData[LocalNumPackageData];
-			PreallocatedPackageDataBuffers.Add(PreallocatedPackageDataBuffer);
-			CachedPackageData.Reserve(LocalNumPackageData);
-		}
-
-		for (int32 PackageDataIndex = 0; PackageDataIndex < LocalNumPackageData; PackageDataIndex++)
-		{
-			FName PackageName;
-			Ar << PackageName;
-			
-			if (Options.bSerializePackageData)
-			{
-				FAssetPackageData& NewPackageData = PreallocatedPackageDataBuffer[PackageDataIndex];
-				if (Version < FAssetRegistryVersion::AddedCookedMD5Hash)
-				{
-					Ar << NewPackageData.DiskSize;
-					Ar << NewPackageData.PackageGuid;
-				}
-				else
-				{
-					NewPackageData.SerializeForCache(Ar);
-				}
-				CachedPackageData.Add(PackageName, &NewPackageData);
-			}
-			else
-			{
-				FAssetPackageData FakeData;
-				FakeData.SerializeForCache(Ar);
-			}
-		}
-#if USE_COMPACT_ASSET_REGISTRY
-		Shrink();
-#endif
+		Reader.WaitForTasks();
 	}
 
 	return !OriginalAr.IsError();
 }
 
-void FAssetRegistryState::LegacySerializeLoad_BeforeAssetRegistryDependencyFlags(FArchive& Ar, const FAssetRegistrySerializationOptions& Options, FAssetRegistryVersion::Type Version)
+template<class Archive>
+void FAssetRegistryState::Load(Archive&& Ar, FAssetRegistryVersion::Type Version, const FAssetRegistryLoadOptions& Options)
+{
+	// serialize number of objects
+	int32 LocalNumAssets = 0;
+	Ar << LocalNumAssets;
+
+	// allocate one single block for all asset data structs (to reduce tens of thousands of heap allocations)
+	TArrayView<FAssetData> PreallocatedAssetDataBuffer(new FAssetData[LocalNumAssets], LocalNumAssets);
+	PreallocatedAssetDataBuffers.Add(PreallocatedAssetDataBuffer.GetData());
+	for (FAssetData& NewAssetData : PreallocatedAssetDataBuffer)
+	{
+		NewAssetData.SerializeForCache(Ar);
+	}
+
+	SetAssetDatas(PreallocatedAssetDataBuffer, Options);
+
+	if (Version < FAssetRegistryVersion::AddedDependencyFlags)
+	{
+		LoadDependencies_BeforeFlags(Ar, Options.bLoadDependencies, Version);
+	}
+	else
+	{
+		int64 DependencySectionSize;
+		Ar << DependencySectionSize;
+		int64 DependencySectionEnd = Ar.Tell() + DependencySectionSize;
+
+		if (Options.bLoadDependencies)
+		{
+			LoadDependencies(Ar);
+		}
+			
+		if (!Options.bLoadDependencies || Ar.IsError())
+		{
+			Ar.Seek(DependencySectionEnd);
+		}
+	}
+
+	int32 LocalNumPackageData = 0;
+	Ar << LocalNumPackageData;
+
+	if (LocalNumPackageData > 0)
+	{
+		if (Options.bLoadPackageData)
+		{
+			TArrayView<FAssetPackageData> PreallocatedPackageDataBuffer(new FAssetPackageData[LocalNumPackageData], LocalNumPackageData);
+			PreallocatedPackageDataBuffers.Add(PreallocatedPackageDataBuffer.GetData());
+			CachedPackageData.Reserve(LocalNumPackageData);
+			for (FAssetPackageData& NewPackageData : PreallocatedPackageDataBuffer)
+			{
+				FName PackageName;
+				Ar << PackageName;
+		
+				if (Version < FAssetRegistryVersion::AddedCookedMD5Hash)
+				{
+					Ar << NewPackageData.DiskSize;
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
+					Ar << NewPackageData.PackageGuid;
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
+				}
+				else
+				{
+					NewPackageData.SerializeForCache(Ar);
+				}
+
+				CachedPackageData.Add(PackageName, &NewPackageData);
+			}	
+		}
+		else
+		{
+			for (int32 PackageDataIndex = 0; PackageDataIndex < LocalNumPackageData; PackageDataIndex++)
+			{
+				FName PackageName;
+				Ar << PackageName;
+
+				FAssetPackageData FakeData;
+				FakeData.SerializeForCache(Ar);
+			}
+		}
+	}
+}
+
+void FAssetRegistryState::LoadDependencies(FArchive& Ar)
+{
+	int32 LocalNumDependsNodes = 0;
+	Ar << LocalNumDependsNodes;
+
+	if (LocalNumDependsNodes <= 0)
+	{
+		return;
+	}
+
+	FDependsNode* PreallocatedDependsNodeDataBuffer = new FDependsNode[LocalNumDependsNodes];
+	PreallocatedDependsNodeDataBuffers.Add(PreallocatedDependsNodeDataBuffer);
+	CachedDependsNodes.Reserve(LocalNumDependsNodes);
+	
+	TUniqueFunction<FDependsNode*(int32)> GetNodeFromSerializeIndex = [&PreallocatedDependsNodeDataBuffer, LocalNumDependsNodes](int32 Index) -> FDependsNode*
+	{
+		if (Index < 0 || LocalNumDependsNodes <= Index)
+		{
+			return nullptr;
+		}
+		return &PreallocatedDependsNodeDataBuffer[Index];
+	};
+
+	FDependsNode::FLoadScratch Scratch;
+	for (int32 DependsNodeIndex = 0; DependsNodeIndex < LocalNumDependsNodes; DependsNodeIndex++)
+	{
+		FDependsNode* DependsNode = &PreallocatedDependsNodeDataBuffer[DependsNodeIndex];
+		DependsNode->SerializeLoad(Ar, GetNodeFromSerializeIndex, Scratch);
+		CachedDependsNodes.Add(DependsNode->GetIdentifier(), DependsNode);
+	}
+}
+
+void FAssetRegistryState::LoadDependencies_BeforeFlags(FArchive& Ar, bool bSerializeDependencies, FAssetRegistryVersion::Type Version)
 {
 	int32 LocalNumDependsNodes = 0;
 	Ar << LocalNumDependsNodes;
 
 	FDependsNode Placeholder;
 	FDependsNode* PreallocatedDependsNodeDataBuffer = nullptr;
-	if (Options.bSerializeDependencies && LocalNumDependsNodes > 0)
+	if (bSerializeDependencies && LocalNumDependsNodes > 0)
 	{
 		PreallocatedDependsNodeDataBuffer = new FDependsNode[LocalNumDependsNodes];
 		PreallocatedDependsNodeDataBuffers.Add(PreallocatedDependsNodeDataBuffer);
@@ -1248,14 +1233,14 @@ void FAssetRegistryState::LegacySerializeLoad_BeforeAssetRegistryDependencyFlags
 	};
 
 	uint32 HardBits, SoftBits, HardManageBits, SoftManageBits;
-	FDependsNode::LegacySerializeLoad_BeforeAssetRegistryDependencyFlags_GetPropertySetBits(HardBits, SoftBits, HardManageBits, SoftManageBits);
+	FDependsNode::GetPropertySetBits_BeforeFlags(HardBits, SoftBits, HardManageBits, SoftManageBits);
 
 	TArray<FDependsNode*> DependsNodes;
 	for (int32 DependsNodeIndex = 0; DependsNodeIndex < LocalNumDependsNodes; DependsNodeIndex++)
 	{
 		// Create the node if we're actually saving dependencies, otherwise just fake serialize
 		FDependsNode* DependsNode = nullptr;
-		if (Options.bSerializeDependencies)
+		if (bSerializeDependencies)
 		{
 			DependsNode = &PreallocatedDependsNodeDataBuffer[DependsNodeIndex];
 		}
@@ -1265,29 +1250,18 @@ void FAssetRegistryState::LegacySerializeLoad_BeforeAssetRegistryDependencyFlags
 		}
 
 		// Call the DependsNode legacy serialization function
-		DependsNode->LegacySerializeLoad_BeforeAssetRegistryDependencyFlags(Ar, Version, PreallocatedDependsNodeDataBuffer, LocalNumDependsNodes, Options, HardBits, SoftBits, HardManageBits, SoftManageBits);
+		DependsNode->SerializeLoad_BeforeFlags(Ar, Version, PreallocatedDependsNodeDataBuffer, LocalNumDependsNodes, bSerializeDependencies, HardBits, SoftBits, HardManageBits, SoftManageBits);
 
 		// Register the DependsNode with its AssetIdentifier
-		if (Options.bSerializeDependencies)
+		if (bSerializeDependencies)
 		{
 			CachedDependsNodes.Add(DependsNode->GetIdentifier(), DependsNode);
 		}
 	}
 }
 
-void FAssetRegistryState::StripAssetRegistryKeyForObject(FName ObjectPath, FName Key)
-{
-	FAssetData** Found = CachedAssetsByObjectPath.Find(ObjectPath);
-	if (Found)
-	{
-		(*Found)->TagsAndValues.StripKey(Key);
-	}
-}
-
 uint32 FAssetRegistryState::GetAllocatedSize(bool bLogDetailed) const
 {
-	uint32 TotalBytes = 0;
-
 	uint32 MapMemory = CachedAssetsByObjectPath.GetAllocatedSize();
 	MapMemory += CachedAssetsByPackageName.GetAllocatedSize();
 	MapMemory += CachedAssetsByPath.GetAllocatedSize();
@@ -1301,7 +1275,7 @@ uint32 FAssetRegistryState::GetAllocatedSize(bool bLogDetailed) const
 
 	uint32 MapArrayMemory = 0;
 	auto SubArray = 
-		[&MapArrayMemory](const TMap<FName, TArray<FAssetData*>>& A)
+		[&MapArrayMemory](const auto& A)
 	{
 		for (auto& Pair : A)
 		{
@@ -1318,8 +1292,8 @@ uint32 FAssetRegistryState::GetAllocatedSize(bool bLogDetailed) const
 		UE_LOG(LogAssetRegistry, Log, TEXT("Index Size: %dk"), MapMemory / 1024);
 	}
 
-	uint32 AssetDataSize = 0, TagOverHead = 0, TotalTagSize = 0;
-	TMap<FName, uint32> TagSizes;
+	uint32 AssetDataSize = 0;
+	FAssetDataTagMapSharedView::FMemoryCounter TagMemoryUsage;
 
 	for (const TPair<FName, FAssetData*>& AssetDataPair : CachedAssetsByObjectPath)
 	{
@@ -1327,43 +1301,16 @@ uint32 FAssetRegistryState::GetAllocatedSize(bool bLogDetailed) const
 		
 		AssetDataSize += sizeof(AssetData);
 		AssetDataSize += AssetData.ChunkIDs.GetAllocatedSize();
-
-		TagOverHead += AssetData.TagsAndValues.GetAllocatedSize();
-
-		for (const auto& TagPair : AssetData.TagsAndValues)
-		{
-			uint32 StringSize = TagPair.Value.GetAllocatedSize();
-			
-			TotalTagSize += StringSize;
-			TagSizes.FindOrAdd(TagPair.Key) += StringSize;
-
-
-		}
+		TagMemoryUsage.Include(AssetData.TagsAndValues); 
 	}
-#if USE_COMPACT_ASSET_REGISTRY
-	uint32 CompactOverhead = FAssetDataTagMapValueStorage::Get().GetAllocatedSize();
-	uint32 CompactStrings = FAssetDataTagMapValueStorage::Get().GetStringSize();
-	uint32 CompactStringsDeDup = FAssetDataTagMapValueStorage::Get().GetUniqueStringSize();
-#endif
 
 	if (bLogDetailed)
 	{
 		UE_LOG(LogAssetRegistry, Log, TEXT("AssetData Count: %d"), CachedAssetsByObjectPath.Num());
 		UE_LOG(LogAssetRegistry, Log, TEXT("AssetData Static Size: %dk"), AssetDataSize / 1024);
-		UE_LOG(LogAssetRegistry, Log, TEXT("AssetData Tag Overhead: %dk"), TagOverHead / 1024);
+		UE_LOG(LogAssetRegistry, Log, TEXT("Loose Tags: %dk"), TagMemoryUsage.GetLooseSize() / 1024);
+		UE_LOG(LogAssetRegistry, Log, TEXT("Fixed Tags: %dk"), TagMemoryUsage.GetFixedSize() / 1024);
 		UE_LOG(LogAssetRegistry, Log, TEXT("TArray<FAssetData*>: %dk"), MapArrayMemory / 1024);
-		UE_LOG(LogAssetRegistry, Log, TEXT("Strings: %dk"), TotalTagSize / 1024);
-#if USE_COMPACT_ASSET_REGISTRY
-		UE_LOG(LogAssetRegistry, Log, TEXT("Compact Strings (used to double check): %dk"), CompactStrings / 1024);
-		UE_LOG(LogAssetRegistry, Log, TEXT("Compact Strings (case insensitive deduplicated): %dk"), CompactStringsDeDup / 1024);
-		UE_LOG(LogAssetRegistry, Log, TEXT("Compact Tag Overhead: %dk"), CompactOverhead / 1024);
-		UE_LOG(LogAssetRegistry, Log, TEXT("FAssetData* potential savings: %dk"), (MapArrayMemory + sizeof(void*) * CachedAssetsByObjectPath.Num()) / 1024 / 2);
-#endif
-
-		for (const TPair<FName, uint32>& SizePair : TagSizes)
-		{
-			UE_LOG(LogAssetRegistry, Log, TEXT("Tag %s Size: %dk"), *SizePair.Key.ToString(), SizePair.Value / 1024);
-		}
 	}
 
 	uint32 DependNodesSize = 0, DependenciesSize = 0;
@@ -1385,11 +1332,7 @@ uint32 FAssetRegistryState::GetAllocatedSize(bool bLogDetailed) const
 
 	uint32 PackageDataSize = CachedPackageData.Num() * sizeof(FAssetPackageData);
 
-	TotalBytes = MapMemory + AssetDataSize + TagOverHead + TotalTagSize + DependNodesSize + DependenciesSize + PackageDataSize + MapArrayMemory
-#if USE_COMPACT_ASSET_REGISTRY
-		+ CompactOverhead
-#endif
-		;
+	uint32 TotalBytes = MapMemory + AssetDataSize + TagMemoryUsage.GetFixedSize()  + TagMemoryUsage.GetLooseSize() + DependNodesSize + DependenciesSize + PackageDataSize + MapArrayMemory;
 
 	if (bLogDetailed)
 	{
@@ -1397,9 +1340,6 @@ uint32 FAssetRegistryState::GetAllocatedSize(bool bLogDetailed) const
 		UE_LOG(LogAssetRegistry, Log, TEXT("PackageData Static Size: %dk"), PackageDataSize / 1024);
 		UE_LOG(LogAssetRegistry, Log, TEXT("Total State Size: %dk"), TotalBytes / 1024);
 	}
-#if USE_COMPACT_ASSET_REGISTRY
-	check(CompactStrings == TotalTagSize); // Otherwise there is a leak, now maybe some other subsystem takes ownership of these, then this check is not valid.
-#endif
 
 	return TotalBytes;
 }
@@ -1432,7 +1372,7 @@ FDependsNode* FAssetRegistryState::ResolveRedirector(FDependsNode* InDependency,
 		if (CachedAssetsByPackageName.Contains(CurrentDependency->GetPackageName()))
 		{
 			// Get the list of assets contained in this package
-			TArray<FAssetData*>& Assets = CachedAssetsByPackageName[CurrentDependency->GetPackageName()];
+			TArray<FAssetData*, TInlineAllocator<1>>& Assets = CachedAssetsByPackageName[CurrentDependency->GetPackageName()];
 
 			for (FAssetData* Asset : Assets)
 			{
@@ -1488,15 +1428,107 @@ FDependsNode* FAssetRegistryState::ResolveRedirector(FDependsNode* InDependency,
 	return Result;
 }
 
+void FAssetRegistryState::SetAssetDatas(TArrayView<FAssetData> AssetDatas, const FAssetRegistryLoadOptions& Options)
+{
+	UE_CLOG(NumAssets != 0, LogAssetRegistry, Fatal, TEXT("Can only load into empty asset registry states. Load into temporary and append using InitializeFromExisting() instead."));
+
+	NumAssets = AssetDatas.Num();
+
+	auto SetPathCache = [&]() 
+	{
+		CachedAssetsByObjectPath.Empty(AssetDatas.Num());
+		for (FAssetData& AssetData : AssetDatas)
+		{
+			CachedAssetsByObjectPath.Add(AssetData.ObjectPath, &AssetData);
+		}
+		ensure(NumAssets == CachedAssetsByObjectPath.Num());
+	};
+
+	// FAssetDatas sharing package name are very rare.
+	// Reserve up front and don't bother shrinking. 
+	auto SetPackageNameCache = [&]() 
+	{
+		CachedAssetsByPackageName.Empty(AssetDatas.Num());
+		for (FAssetData& AssetData : AssetDatas)
+		{
+			TArray<FAssetData*, TInlineAllocator<1>>& PackageAssets = CachedAssetsByPackageName.FindOrAdd(AssetData.PackageName);
+			PackageAssets.Add(&AssetData);
+		}
+	};
+
+	auto SetOtherCaches = [&]()
+	{
+		auto ShrinkMultimap = [](TMap<FName, TArray<FAssetData*> >& Map)
+		{
+			Map.Shrink();
+			for (auto& Pair : Map)
+			{
+				Pair.Value.Shrink();
+			}
+		};
+
+		CachedAssetsByPath.Empty();
+		for (FAssetData& AssetData : AssetDatas)
+		{
+			TArray<FAssetData*>& PathAssets = CachedAssetsByPath.FindOrAdd(AssetData.PackagePath);
+			PathAssets.Add(&AssetData);
+		}
+		ShrinkMultimap(CachedAssetsByPath);
+
+		CachedAssetsByClass.Empty();
+		for (FAssetData& AssetData : AssetDatas)
+		{
+			TArray<FAssetData*>& ClassAssets = CachedAssetsByClass.FindOrAdd(AssetData.AssetClass);
+			ClassAssets.Add(&AssetData);
+		}
+		ShrinkMultimap(CachedAssetsByClass);
+
+		CachedAssetsByTag.Empty();
+		for (FAssetData& AssetData : AssetDatas)
+		{
+			for (const TPair<FName, FAssetTagValueRef>& Pair : AssetData.TagsAndValues)
+			{
+				TArray<FAssetData*>& TagAssets = CachedAssetsByTag.FindOrAdd(Pair.Key);
+				TagAssets.Add(&AssetData);
+			}
+		}
+		ShrinkMultimap(CachedAssetsByTag);
+	};
+
+	if (Options.ParallelWorkers <= 1)
+	{
+		SetPathCache();
+		SetPackageNameCache();
+		SetOtherCaches();
+	}
+	else
+	{
+		TFuture<void> Task1 = Async(EAsyncExecution::TaskGraph, [=](){ SetPathCache(); });
+		TFuture<void> Task2 = Async(EAsyncExecution::TaskGraph, [=](){ SetPackageNameCache(); });
+		SetOtherCaches();
+		Task1.Wait();
+		Task2.Wait();
+	}
+}
+
 void FAssetRegistryState::AddAssetData(FAssetData* AssetData)
 {
-	NumAssets++;
+	FAssetData*& ExistingByObjectPath = CachedAssetsByObjectPath.FindOrAdd(AssetData->ObjectPath);
+	if (ExistingByObjectPath)
+	{
+		UE_LOG(LogAssetRegistry, Error, TEXT("AddAssetData called with ObjectPath %s which already exists. ")
+			TEXT("This will overwrite and leak the existing AssetData."), *AssetData->ObjectPath.ToString());
+	}
+	else
+	{
+		++NumAssets;
+	}
+	ExistingByObjectPath = AssetData;
 
-	TArray<FAssetData*>& PackageAssets = CachedAssetsByPackageName.FindOrAdd(AssetData->PackageName);
+	TArray<FAssetData*, TInlineAllocator<1>>& PackageAssets = CachedAssetsByPackageName.FindOrAdd(AssetData->PackageName);
 	TArray<FAssetData*>& PathAssets = CachedAssetsByPath.FindOrAdd(AssetData->PackagePath);
 	TArray<FAssetData*>& ClassAssets = CachedAssetsByClass.FindOrAdd(AssetData->AssetClass);
 
-	CachedAssetsByObjectPath.Add(AssetData->ObjectPath, AssetData);
 	PackageAssets.Add(AssetData);
 	PathAssets.Add(AssetData);
 	ClassAssets.Add(AssetData);
@@ -1539,15 +1571,33 @@ void FAssetRegistryState::UpdateAssetData(FAssetData* AssetData, const FAssetDat
 	// Update ObjectPath
 	if (AssetData->PackageName != NewAssetData.PackageName || AssetData->AssetName != NewAssetData.AssetName)
 	{
-		CachedAssetsByObjectPath.Remove(AssetData->ObjectPath);
-		CachedAssetsByObjectPath.Add(NewAssetData.ObjectPath, AssetData);
+		int32 NumRemoved = CachedAssetsByObjectPath.Remove(AssetData->ObjectPath);
+		check(NumRemoved <= 1);
+		if (NumRemoved == 0)
+		{
+			UE_LOG(LogAssetRegistry, Error, TEXT("UpdateAssetData called on AssetData %s that is not present in the AssetRegistry."),
+				*AssetData->ObjectPath.ToString());
+		}
+		NumAssets -= NumRemoved;
+		FAssetData*& Existing = CachedAssetsByObjectPath.FindOrAdd(NewAssetData.ObjectPath, AssetData);
+		if (Existing)
+		{
+			UE_LOG(LogAssetRegistry, Error, TEXT("UpdateAssetData called with a change in ObjectPath from Old=\"%s\" to New=\"%s\", ")
+				TEXT("but the new ObjectPath is already present with another AssetData. This will overwrite and leak the existing AssetData."),
+				*AssetData->ObjectPath.ToString(), *NewAssetData.ObjectPath.ToString());
+		}
+		else
+		{
+			++NumAssets;
+		}
+		Existing = AssetData;
 	}
 
 	// Update PackageName
 	if (AssetData->PackageName != NewAssetData.PackageName)
 	{
-		TArray<FAssetData*>* OldPackageAssets = CachedAssetsByPackageName.Find(AssetData->PackageName);
-		TArray<FAssetData*>& NewPackageAssets = CachedAssetsByPackageName.FindOrAdd(NewAssetData.PackageName);
+		TArray<FAssetData*, TInlineAllocator<1>>* OldPackageAssets = CachedAssetsByPackageName.Find(AssetData->PackageName);
+		TArray<FAssetData*, TInlineAllocator<1>>& NewPackageAssets = CachedAssetsByPackageName.FindOrAdd(NewAssetData.PackageName);
 
 		OldPackageAssets->Remove(AssetData);
 		NewPackageAssets.Add(AssetData);
@@ -1608,48 +1658,57 @@ void FAssetRegistryState::RemoveAssetData(FAssetData* AssetData, bool bRemoveDep
 	bOutRemovedAssetData = false;
 	bOutRemovedPackageData = false;
 
-	if (ensure(AssetData))
+	if (!ensure(AssetData))
 	{
-		TArray<FAssetData*>* OldPackageAssets = CachedAssetsByPackageName.Find(AssetData->PackageName);
-		TArray<FAssetData*>* OldPathAssets = CachedAssetsByPath.Find(AssetData->PackagePath);
-		TArray<FAssetData*>* OldClassAssets = CachedAssetsByClass.Find(AssetData->AssetClass);
-
-		CachedAssetsByObjectPath.Remove(AssetData->ObjectPath);
-		OldPackageAssets->RemoveSingleSwap(AssetData);
-		OldPathAssets->RemoveSingleSwap(AssetData);
-		OldClassAssets->RemoveSingleSwap(AssetData);
-
-		for (auto TagIt = AssetData->TagsAndValues.CreateConstIterator(); TagIt; ++TagIt)
-		{
-			TArray<FAssetData*>* OldTagAssets = CachedAssetsByTag.Find(TagIt.Key());
-			OldTagAssets->RemoveSingleSwap(AssetData);
-		}
-
-		// Only remove dependencies and package data if there are no other known assets in the package
-		if (OldPackageAssets->Num() == 0)
-		{
-			CachedAssetsByPackageName.Remove(AssetData->PackageName);
-
-			// We need to update the cached dependencies references cache so that they know we no
-			// longer exist and so don't reference them.
-			if (bRemoveDependencyData)
-			{
-				RemoveDependsNode(AssetData->PackageName);
-			}
-
-			// Remove the package data as well
-			RemovePackageData(AssetData->PackageName);
-			bOutRemovedPackageData = true;
-		}
-
-		// if the assets were preallocated in a block, we can't delete them one at a time, only the whole chunk in the destructor
-		if (PreallocatedAssetDataBuffers.Num() == 0)
-		{
-			delete AssetData;
-		}
-		NumAssets--;
-		bOutRemovedAssetData = true;
+		return;
 	}
+
+	int32 NumRemoved = CachedAssetsByObjectPath.Remove(AssetData->ObjectPath);
+	check(NumRemoved <= 1);
+	if (NumRemoved == 0)
+	{
+		UE_LOG(LogAssetRegistry, Error, TEXT("RemoveAssetData called on AssetData %s that is not present in the AssetRegistry."),
+			*AssetData->ObjectPath.ToString());
+		return;
+	}
+
+	TArray<FAssetData*, TInlineAllocator<1>>* OldPackageAssets = CachedAssetsByPackageName.Find(AssetData->PackageName);
+	TArray<FAssetData*>* OldPathAssets = CachedAssetsByPath.Find(AssetData->PackagePath);
+	TArray<FAssetData*>* OldClassAssets = CachedAssetsByClass.Find(AssetData->AssetClass);
+	OldPackageAssets->RemoveSingleSwap(AssetData);
+	OldPathAssets->RemoveSingleSwap(AssetData);
+	OldClassAssets->RemoveSingleSwap(AssetData);
+
+	for (auto TagIt = AssetData->TagsAndValues.CreateConstIterator(); TagIt; ++TagIt)
+	{
+		TArray<FAssetData*>* OldTagAssets = CachedAssetsByTag.Find(TagIt.Key());
+		OldTagAssets->RemoveSingleSwap(AssetData);
+	}
+
+	// Only remove dependencies and package data if there are no other known assets in the package
+	if (OldPackageAssets->Num() == 0)
+	{
+		CachedAssetsByPackageName.Remove(AssetData->PackageName);
+
+		// We need to update the cached dependencies references cache so that they know we no
+		// longer exist and so don't reference them.
+		if (bRemoveDependencyData)
+		{
+			RemoveDependsNode(AssetData->PackageName);
+		}
+
+		// Remove the package data as well
+		RemovePackageData(AssetData->PackageName);
+		bOutRemovedPackageData = true;
+	}
+
+	// if the assets were preallocated in a block, we can't delete them one at a time, only the whole chunk in the destructor
+	if (PreallocatedAssetDataBuffers.Num() == 0)
+	{
+		delete AssetData;
+	}
+	NumAssets--;
+	bOutRemovedAssetData = true;
 }
 
 FDependsNode* FAssetRegistryState::FindDependsNode(const FAssetIdentifier& Identifier) const
@@ -1722,35 +1781,6 @@ bool FAssetRegistryState::RemoveDependsNode(const FAssetIdentifier& Identifier)
 	}
 
 	return false;
-}
-
-void FAssetRegistryState::Shrink()
-{
-	for (auto& Pair : CachedAssetsByObjectPath)
-	{
-		Pair.Value->Shrink();
-	}
-	auto ShrinkIn =
-		[](TMap<FName, TArray<FAssetData*> >& Map)
-	{
-		Map.Shrink();
-		for (auto& Pair : Map)
-		{
-			Pair.Value.Shrink();
-		}
-	};
-	CachedAssetsByObjectPath.Shrink();
-	ShrinkIn(CachedAssetsByPackageName);
-	ShrinkIn(CachedAssetsByPath);
-	ShrinkIn(CachedAssetsByClass);
-	ShrinkIn(CachedAssetsByTag);
-	ShrinkIn(CachedAssetsByPackageName);
-	CachedDependsNodes.Shrink();
-	CachedPackageData.Shrink();
-	CachedAssetsByObjectPath.Shrink();
-#if USE_COMPACT_ASSET_REGISTRY
-	FAssetDataTagMapValueStorage::Get().Shrink();
-#endif
 }
 
 void FAssetRegistryState::GetPrimaryAssetsIds(TSet<FPrimaryAssetId>& OutPrimaryAssets) const
@@ -1978,7 +2008,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 		}
 	};
 
-	auto PrintAssetDataMap = [&AddLine, &PageBuffer](FString Name, const TMap<FName, TArray<FAssetData*>>& AssetMap)
+	auto PrintAssetDataMap = [&AddLine, &PageBuffer](FString Name, const auto& AssetMap)
 	{
 		PageBuffer.Appendf(TEXT("--- Begin %s ---"), *Name);
 		AddLine();
@@ -1993,7 +2023,7 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 		int32 ValidCount = 0;
 		for (const FName& Key : Keys)
 		{
-			const TArray<FAssetData*> AssetArray = AssetMap.FindChecked(Key);
+			const auto& AssetArray = AssetMap.FindChecked(Key);
 			if (AssetArray.Num() == 0)
 			{
 				continue;
@@ -2216,7 +2246,9 @@ void FAssetRegistryState::Dump(const TArray<FString>& Arguments, TArray<FString>
 			PageBuffer.Append(TEXT("	"));
 			Key.AppendString(PageBuffer);
 			PageBuffer.Append(TEXT(" : "));
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			PageBuffer.Append(PackageData->PackageGuid.ToString()); // TODO: Add AppendString for Guid
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			PageBuffer.Appendf(TEXT(" : %d bytes"), PackageData->DiskSize);
 			AddLine();
 		}

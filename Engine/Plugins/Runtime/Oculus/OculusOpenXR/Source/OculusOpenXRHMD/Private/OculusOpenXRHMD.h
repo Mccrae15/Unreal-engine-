@@ -33,7 +33,13 @@ public:
 		}
 	}
 
+	virtual FString GetDisplayName() override
+	{
+		return FString(TEXT("Oculus OpenXR"));
+	}
+
 	virtual bool GetCustomLoader(PFN_xrGetInstanceProcAddr* OutGetProcAddr) override;
+	virtual bool IsStandaloneStereoOnlyDevice() override;
 	virtual bool GetRequiredExtensions(TArray<const ANSICHAR*>& OutExtensions) override;
 	virtual bool GetInteractionProfile(XrInstance InInstance, FString& OutKeyPrefix, XrPath& OutPath, bool& OutHasHaptics) override;
 	virtual bool GetSpectatorScreenController(FHeadMountedDisplayBase* InHMDBase, TUniquePtr<FDefaultSpectatorScreenController>& OutSpectatorScreenController) override;

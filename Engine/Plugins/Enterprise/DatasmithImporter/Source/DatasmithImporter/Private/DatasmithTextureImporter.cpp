@@ -196,11 +196,13 @@ UTexture* FDatasmithTextureImporter::CreateTexture(const TSharedPtr<IDatasmithTe
 	}
 
 	const FString TextureLabel = TextureElement->GetLabel();
-	const FString TextureName = TextureLabel.Len() > 0 ? ImportContext.AssetsContext.TextureNameProvider.GenerateUniqueName(TextureLabel) : TextureElement->GetName();
+	UPackage* DestinationPackage = ImportContext.AssetsContext.TexturesFinalPackage.Get();
+	int32 AssetNameMaxLength = FDatasmithImporterUtils::GetAssetNameMaxCharCount(DestinationPackage);
+	const FString TextureName = ImportContext.AssetsContext.TextureNameProvider.GenerateUniqueName(TextureLabel.Len() > 0 ? TextureLabel : TextureElement->GetName(), AssetNameMaxLength) ;
 
 	// Verify that the texture could be created in final package
 	FText FailReason;
-	if (!FDatasmithImporterUtils::CanCreateAsset<UTexture2D>(ImportContext.AssetsContext.TexturesFinalPackage.Get(), TextureName, FailReason))
+	if (!FDatasmithImporterUtils::CanCreateAsset<UTexture2D>(DestinationPackage, TextureName, FailReason))
 	{
 		ImportContext.LogError(FailReason);
 		return nullptr;
@@ -233,6 +235,20 @@ UTexture* FDatasmithTextureImporter::CreateTexture(const TSharedPtr<IDatasmithTe
 		TextureFact->LODGroup = TEXTUREGROUP_World;
 		break;
 	}
+
+	const EDatasmithColorSpace DatasmithColorSpace = TextureElement->GetSRGB();
+	ETextureSourceColorSpace FactoryColorSpace = ETextureSourceColorSpace::Auto;
+
+	if (DatasmithColorSpace == EDatasmithColorSpace::sRGB)
+	{
+		FactoryColorSpace = ETextureSourceColorSpace::SRGB;
+	}
+	else if (DatasmithColorSpace == EDatasmithColorSpace::Linear)
+	{
+		FactoryColorSpace = ETextureSourceColorSpace::Linear;
+	}
+
+	TextureFact->ColorSpaceMode = FactoryColorSpace;
 
 	const float RGBCurve = TextureElement->GetRGBCurve();
 
@@ -271,6 +287,11 @@ UTexture* FDatasmithTextureImporter::CreateTexture(const TSharedPtr<IDatasmithTe
 			break;
 		}
 
+		bool bUpdateResource = false;
+		bUpdateResource |= Texture->Filter != TexFilter;
+		bUpdateResource |= Texture->AddressX != (TextureAddress)TextureElement->GetTextureAddressX();
+		bUpdateResource |= Texture->AddressY != (TextureAddress)TextureElement->GetTextureAddressY();
+
 		Texture->Filter = TexFilter;
 		Texture->AddressX = (TextureAddress)TextureElement->GetTextureAddressX();
 		Texture->AddressY = (TextureAddress)TextureElement->GetTextureAddressY();
@@ -281,14 +302,13 @@ UTexture* FDatasmithTextureImporter::CreateTexture(const TSharedPtr<IDatasmithTe
 		// Notify the asset registry
 		FAssetRegistryModule::AssetCreated(Texture);
 
-		bool bUpdateResource = false;
-
 		if (FMath::IsNearlyEqual(RGBCurve, 1.0f) == false && RGBCurve > 0.f)
 		{
 			Texture->AdjustRGBCurve = RGBCurve;
 			bUpdateResource = true;
 		}
 
+		// Double check that the texture color space matches what we requested
 		EDatasmithColorSpace ColorSpace = TextureElement->GetSRGB();
 		if (!Texture->SRGB && ColorSpace == EDatasmithColorSpace::sRGB)
 		{

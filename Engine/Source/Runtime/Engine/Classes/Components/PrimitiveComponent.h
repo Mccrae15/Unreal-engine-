@@ -526,6 +526,12 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Rendering, meta=(DisplayName = "Render CustomDepth Pass"))
 	uint8 bRenderCustomDepth:1;
 
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering, meta = (DisplayName = "Visible In Scene Capture Only", ToolTip = "When true, will only be visible in Scene Capture"))
+	uint8 bVisibleInSceneCaptureOnly : 1;
+
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering, meta = (DisplayName = "Hidden In Scene Capture", ToolTip = "When true, will not be captured by Scene Capture"))
+	uint8 bHiddenInSceneCapture : 1;
+
 protected:
 	/** Result of last call to AreAllCollideableDescendantsRelative(). */
 	uint8 bCachedAllCollideableDescendantsRelative : 1;
@@ -599,9 +605,19 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category=Rendering)
 	int32 TranslucencySortPriority;
 
+	/**
+	 * Modified sort distance offset for translucent objects in world units.
+	 * A positive number will move the sort distance further and a negative number will move the distance closer.
+	 *
+	 * Ignored if the object is not translucent.
+	 * Warning: Adjusting this value will prevent the renderer from correctly sorting based on distance.  Only modify this value if you are certain it will not cause visual artifacts.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = Rendering)
+	float TranslucencySortDistanceOffset = 0.0f;
+
 	/** Used for precomputed visibility */
 	UPROPERTY()
-	int32 VisibilityId;
+	int32 VisibilityId=0;
 
 	/** 
 	 * Array of runtime virtual textures into which we draw the mesh for this actor. 
@@ -707,7 +723,7 @@ private:
 	 */
 	mutable float LastRenderTime;
 
-	/** Same as LastRenderTimeOnScreen but only updated if the component is on screen. Used by the texture streamer. */
+	/** Same as LastRenderTime but only updated if the component is on screen. Used by the texture streamer. */
 	mutable float LastRenderTimeOnScreen;
 
 	friend class FPrimitiveSceneInfo;
@@ -1509,6 +1525,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Rendering")
 	void SetCastShadow(bool NewCastShadow);
 
+	/** Changes the value of CastHiddenShadow. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetCastHiddenShadow(bool NewCastHiddenShadow);
+
 	/** Changes the value of CastInsetShadow. */
 	UFUNCTION(BlueprintCallable, Category="Rendering")
 	void SetCastInsetShadow(UPARAM(DisplayName="CastInsetShadow") bool bInCastInsetShadow);
@@ -1528,6 +1548,10 @@ public:
 	/** Changes the value of TranslucentSortPriority. */
 	UFUNCTION(BlueprintCallable, Category="Rendering")
 	void SetTranslucentSortPriority(int32 NewTranslucentSortPriority);
+
+	/** Changes the value of TranslucencySortDistanceOffset. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetTranslucencySortDistanceOffset(float NewTranslucencySortDistanceOffset);
 
 	/** Changes the value of bReceivesDecals. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
@@ -1614,6 +1638,14 @@ public:
 	/** Sets bRenderInMainPass property and marks the render state dirty. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	void SetRenderInMainPass(bool bValue);
+
+	/** Sets bVisibleInSceneCaptureOnly property and marks the render state dirty. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetVisibleInSceneCaptureOnly(bool bValue);
+
+	/** Sets bHideInSceneCapture property and marks the render state dirty. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetHiddenInSceneCapture(bool bValue);
 
 	/**
 	 * Count of all component overlap events (begin or end) ever generated for any components.
@@ -2438,10 +2470,10 @@ private:
 	FTransform ComponentTransform;
 
 	UPROPERTY()
-	int32 VisibilityId;
+	int32 VisibilityId = INDEX_NONE;
 
 	UPROPERTY()
-	UPrimitiveComponent* LODParent;
+	UPrimitiveComponent* LODParent = nullptr;
 };
 
 

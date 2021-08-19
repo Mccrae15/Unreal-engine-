@@ -5,11 +5,13 @@
 #include "CoreTypes.h"
 #include "Containers/Map.h"
 #include "Containers/SparseArray.h"
+#include "Algo/AnyOf.h"
 
 #include "EntitySystem/MovieSceneEntityIDs.h"
 #include "EntitySystem/MovieSceneEntitySystemTypes.h"
 #include "EntitySystem/MovieSceneComponentAccessors.h"
 #include "EntitySystem/MovieSceneEntitySystemTask.h"
+#include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
 
 namespace UE
@@ -105,13 +107,16 @@ struct TOverlappingEntityTracker
 	 *                  void DestroyOutput(KeyType Object, OutputType* Output, FEntityOutputAggregate Aggregate);
 	 */
 	template<typename HandlerType>
-	void ProcessInvalidatedOutputs(HandlerType&& InHandler)
+	void ProcessInvalidatedOutputs(UMovieSceneEntitySystemLinker* Linker, HandlerType&& InHandler)
 	{
 		if (InvalidatedOutputs.Num() != 0)
 		{
 			TArray<FMovieSceneEntityID, TInlineAllocator<8>> InputArray;
 
+			FComponentTypeID RestoreStateTag = FBuiltInComponentTypes::Get()->Tags.RestoreState;
 			int32 NumRemoved = 0;
+
+			auto RestoreStatePredicate = [Linker, RestoreStateTag](FMovieSceneEntityID InEntityID){ return Linker->EntityManager.HasComponent(InEntityID, RestoreStateTag); };
 
 			check(InvalidatedOutputs.Num() < NO_OUTPUT);
 			for (TConstSetBitIterator<> InvalidOutput(InvalidatedOutputs); InvalidOutput; ++InvalidOutput)
@@ -127,6 +132,8 @@ struct TOverlappingEntityTracker
 				FOutput& Output = Outputs[OutputIndex];
 				if (InputArray.Num() > 0)
 				{
+					Output.Aggregate.bNeedsRestoration = Algo::AnyOf(InputArray, RestoreStatePredicate);
+
 					if (NewOutputs.IsValidIndex(OutputIndex) && NewOutputs[OutputIndex] == true)
 					{
 						InHandler.InitializeOutput(Output.Key, InputArray, &Output.OutputData, Output.Aggregate);
@@ -179,6 +186,14 @@ struct TOverlappingEntityTracker
 		NewOutputs.Empty();
 	}
 
+	void FindEntityIDs(ParamType Key, TArray<FMovieSceneEntityID>& OutEntityIDs) const
+	{
+		if (const uint16* OutputIndex = KeyToOutput.Find(Key))
+		{
+			OutputToEntity.MultiFind(*OutputIndex, OutEntityIDs);
+		}
+	}
+
 	const OutputType* FindOutput(FMovieSceneEntityID EntityID) const
 	{
 		if (const uint16* OutputIndex = EntityToOutput.Find(EntityID))
@@ -191,9 +206,9 @@ struct TOverlappingEntityTracker
 		return nullptr;
 	}
 
-	OutputType* FindOutput(FMovieSceneEntityID EntityID)
+	const OutputType* FindOutput(ParamType Key) const
 	{
-		if (const uint16* OutputIndex = EntityToOutput.Find(EntityID))
+		if (const uint16* OutputIndex = KeyToOutput.Find(Key))
 		{
 			if (ensure(Outputs.IsValidIndex(*OutputIndex)))
 			{
@@ -228,12 +243,11 @@ struct TOverlappingEntityTracker
 
 protected:
 
-	void VisitLinkedAllocationImpl(const FEntityAllocation* Allocation, TRead<KeyType> ReadKeys)
+	void VisitLinkedAllocationImpl(const FEntityAllocation* Allocation, TRead<KeyType> Keys)
 	{
 		const int32 Num = Allocation->Num();
 
 		const FMovieSceneEntityID* EntityIDs = Allocation->GetRawEntityIDs();
-		const KeyType*             Keys      = ReadKeys.Resolve(Allocation);
 
 		if (Allocation->HasComponent(FBuiltInComponentTypes::Get()->Tags.RestoreState))
 		{

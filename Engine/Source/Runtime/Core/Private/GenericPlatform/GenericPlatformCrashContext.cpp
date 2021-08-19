@@ -19,6 +19,7 @@
 #include "Misc/EngineVersion.h"
 #include "Misc/EngineBuildSettings.h"
 #include "Misc/OutputDeviceRedirector.h"
+#include "Misc/ScopeLock.h"
 #include "Stats/Stats.h"
 #include "Internationalization/Regex.h"
 #include "Internationalization/TextLocalizationManager.h"
@@ -156,7 +157,6 @@ void FGenericCrashContext::Initialize()
 		}
 
 		NCached::UserSettings.bNoDialog = FApp::IsUnattended() || IsRunningDedicatedServer();
-
 	}
 
 	// Create a unique base guid for bug report ids
@@ -595,7 +595,7 @@ void FGenericCrashContext::SerializeUserSettings(FString& Buffer)
 	AddCrashPropertyInternal(Buffer, TEXT("NoDialog"), NCached::UserSettings.bNoDialog);
 	AddCrashPropertyInternal(Buffer, TEXT("SendUnattendedBugReports"), NCached::UserSettings.bSendUnattendedBugReports);
 	AddCrashPropertyInternal(Buffer, TEXT("SendUsageData"), NCached::UserSettings.bSendUsageData);
-	AddCrashPropertyInternal(Buffer, TEXT("LogFilePath"), NCached::UserSettings.LogFilePath);
+	AddCrashPropertyInternal(Buffer, TEXT("LogFilePath"), FPlatformOutputDevices::GetAbsoluteLogFilename()); // Don't use the value cached, it may be out of date.
 }
 
 void FGenericCrashContext::SerializeContentToBuffer() const
@@ -1080,6 +1080,8 @@ void FGenericCrashContext::DumpLog(const FString& CrashFolderAbsolute)
 		static_cast<void>(IFileManager::Get().Copy(*LogDstAbsolute, *LogSrcAbsolute, bReplace, bEvenIfReadOnly, bAttributes, CopyProgress, FILEREAD_AllowWrite, FILEWRITE_AllowRead));	// best effort, so don't care about result: couldn't copy -> tough, no log
 	}
 #endif // !NO_LOGGING
+
+	
 }
 
 FORCENOINLINE void FGenericCrashContext::CapturePortableCallStack(int32 NumStackFramesToIgnore, void* Context)
@@ -1153,6 +1155,8 @@ void FGenericCrashContext::AddPortableThreadCallStack(uint32 ThreadId, const TCH
 	// Not implemented for generic class
 }
 
+
+
 void FGenericCrashContext::CopyPlatformSpecificFiles(const TCHAR* OutputDirectory, void* Context)
 {
 	// If present, include the crash report config file to pass config values to the CRC
@@ -1163,7 +1167,135 @@ void FGenericCrashContext::CopyPlatformSpecificFiles(const TCHAR* OutputDirector
 		const FString CrashConfigDstAbsolute = FPaths::Combine(OutputDirectory, *CrashConfigFilename);
 		IFileManager::Get().Copy(*CrashConfigDstAbsolute, CrashConfigSrcPath);	// best effort, so don't care about result: couldn't copy -> tough, no config
 	}
+
+	
 }
+
+#if WITH_ADDITIONAL_CRASH_CONTEXTS
+
+thread_local FAdditionalCrashContextStack FAdditionalCrashContextStack::ThreadContextProvider;
+static FAdditionalCrashContextStack* GProviderHead;
+
+FCriticalSection* GetAdditionalProviderLock()
+{
+	static FCriticalSection GAdditionalProviderLock;
+	return &GAdditionalProviderLock;
+}
+
+FAdditionalCrashContextStack::FAdditionalCrashContextStack()
+	: Next(nullptr)
+{
+	// Register by appending self to the the linked list. 
+	FScopeLock _(GetAdditionalProviderLock());
+	FAdditionalCrashContextStack** Current = &GProviderHead;
+	while(*Current != nullptr)
+	{
+		Current = &((*Current)->Next);
+	}
+	*Current = this;
+}
+
+FAdditionalCrashContextStack::~FAdditionalCrashContextStack()
+{
+	// Unregister by iterating the list, replacing self with next
+	// on the list.
+	FScopeLock _(GetAdditionalProviderLock());
+	FAdditionalCrashContextStack** Current = &GProviderHead;
+	while (*Current != this)
+	{
+		Current = &((*Current)->Next);
+	}
+	*Current = this->Next;
+}
+
+void FAdditionalCrashContextStack::PushProvider(struct FScopedAdditionalCrashContextProvider* Provider)
+{
+	ThreadContextProvider.PushProviderInternal(Provider);
+}
+
+void FAdditionalCrashContextStack::PopProvider()
+{
+	ThreadContextProvider.PopProviderInternal();
+}
+
+void FAdditionalCrashContextStack::ExecuteProviders(FCrashContextExtendedWriter& Writer)
+{
+	// Attempt to lock. If a thread crashed while holding the lock
+	// we could potentially deadlock here otherwise.
+	FCriticalSection* AdditionalProviderLock = GetAdditionalProviderLock();
+	if (AdditionalProviderLock->TryLock())
+	{
+		FAdditionalCrashContextStack* Provider = GProviderHead;
+		while (Provider)
+		{
+			for (uint32 i = 0; i < Provider->StackIndex; i++)
+			{
+				const FScopedAdditionalCrashContextProvider* Callback = Provider->Stack[i];
+				Callback->Execute(Writer);
+			}
+			Provider = Provider->Next;
+		}
+		AdditionalProviderLock->Unlock();
+	}
+}
+
+struct FCrashContextExtendedWriterImpl : public FCrashContextExtendedWriter
+{
+	FCrashContextExtendedWriterImpl(const TCHAR* InOutputDirectory)
+		: OutputDirectory(InOutputDirectory)
+	{
+	}
+	
+	void OutputBuffer(const TCHAR* Identifier, const uint8* Data, uint32 DataSize, const TCHAR* Extension)
+	{
+		TCHAR Filename[1024] = { 0 };
+		FCString::Snprintf(Filename, 1024, TEXT("%s/%s.%s"), OutputDirectory, Identifier, Extension);
+		TUniquePtr<IFileHandle> File(IPlatformFile::GetPlatformPhysical().OpenWrite(Filename));
+		if (File)
+		{
+			File->Write(Data, DataSize);
+			File->Flush();
+		}
+	}
+
+	virtual void AddBuffer(const TCHAR* Identifier, const uint8* Data, uint32 DataSize) override
+	{
+		if (Identifier == nullptr || Data == nullptr || DataSize == 0)
+		{
+			return;
+		}
+
+		OutputBuffer(Identifier, Data, DataSize, TEXT("bin"));
+	}
+
+	virtual void AddString(const TCHAR* Identifier, const TCHAR* DataStr) override
+	{
+		if (Identifier == nullptr || DataStr == nullptr)
+		{
+			return;
+		}
+
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Additional Crash Context (Key=\"%s\", Value=\"%s\")"), Identifier, DataStr);
+
+		FTCHARToUTF8 Converter(DataStr);
+		OutputBuffer(Identifier, (uint8*)Converter.Get(), Converter.Length(), TEXT("txt"));
+	}
+
+private:
+	const TCHAR* OutputDirectory;
+};
+
+#endif //WITH_ADDITIONAL_CRASH_CONTEXTS 
+
+
+void FGenericCrashContext::DumpAdditionalContext(const TCHAR* CrashFolderAbsolute)
+{
+#if WITH_ADDITIONAL_CRASH_CONTEXTS 
+	FCrashContextExtendedWriterImpl Writer(CrashFolderAbsolute);
+	FAdditionalCrashContextStack::ExecuteProviders(Writer);
+#endif
+}
+
 
 /**
  * Attempts to create the output report directory.
@@ -1185,17 +1317,6 @@ bool FGenericCrashContext::CreateCrashReportDirectory(const TCHAR* CrashGUIDRoot
 	FString CrashFolder = FPaths::Combine(*FPaths::ProjectSavedDir(), TEXT("Crashes"), CrashGUID);
 	OutCrashDirectoryAbsolute = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*CrashFolder);
 	return IFileManager::Get().MakeDirectory(*OutCrashDirectoryAbsolute, true);
-}
-
-FProgramCounterSymbolInfoEx::FProgramCounterSymbolInfoEx( FString InModuleName, FString InFunctionName, FString InFilename, uint32 InLineNumber, uint64 InSymbolDisplacement, uint64 InOffsetInModule, uint64 InProgramCounter ) :
-	ModuleName( InModuleName ),
-	FunctionName( InFunctionName ),
-	Filename( InFilename ),
-	LineNumber( InLineNumber ),
-	SymbolDisplacement( InSymbolDisplacement ),
-	OffsetInModule( InOffsetInModule ),
-	ProgramCounter( InProgramCounter )
-{
 }
 
 FString RecoveryService::GetRecoveryServerName()
@@ -1245,3 +1366,4 @@ bool RecoveryService::TokenizeSessionName(const FString& SessionName, FString* O
 
 	return true; // Successfully parsed.
 }
+

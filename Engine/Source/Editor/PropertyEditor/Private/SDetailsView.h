@@ -111,6 +111,7 @@ public:
 		return RootObjectCustomization;
 	}
 private:
+
 	void SetObjectArrayPrivate(const TArray<UObject*>& InObjects);
 
 	TSharedRef<SDetailTree> ConstructTreeView( TSharedRef<SScrollBar>& ScrollBar );

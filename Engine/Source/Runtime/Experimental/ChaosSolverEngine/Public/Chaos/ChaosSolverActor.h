@@ -15,6 +15,7 @@
 #include "Physics/Experimental/PhysScene_Chaos.h"
 #include "ChaosSolverConfiguration.h"
 #include "SolverEventFilters.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxyFwd.h"
 
 #include "ChaosSolverActor.generated.h"
 
@@ -30,11 +31,11 @@ namespace Chaos
 UENUM()
 enum class EClusterConnectionTypeEnum : uint8
 {
-	Chaos_PointImplicit = Chaos::FClusterCreationParameters<float>::PointImplicit UMETA(Hidden),
-	Chaos_DelaunayTriangulation = Chaos::FClusterCreationParameters<float>::DelaunayTriangulation UMETA(Hidden),
-	Chaos_MinimalSpanningSubsetDelaunayTriangulation = Chaos::FClusterCreationParameters<float>::MinimalSpanningSubsetDelaunayTriangulation UMETA(Hidden),
-	Chaos_PointImplicitAugmentedWithMinimalDelaunay = Chaos::FClusterCreationParameters<float>::PointImplicitAugmentedWithMinimalDelaunay UMETA(Hidden),
-	Chaos_None = Chaos::FClusterCreationParameters<float>::None UMETA(Hidden),
+	Chaos_PointImplicit = Chaos::FClusterCreationParameters::PointImplicit UMETA(Hidden),
+	Chaos_DelaunayTriangulation = Chaos::FClusterCreationParameters::DelaunayTriangulation UMETA(Hidden),
+	Chaos_MinimalSpanningSubsetDelaunayTriangulation = Chaos::FClusterCreationParameters::MinimalSpanningSubsetDelaunayTriangulation UMETA(Hidden),
+	Chaos_PointImplicitAugmentedWithMinimalDelaunay = Chaos::FClusterCreationParameters::PointImplicitAugmentedWithMinimalDelaunay UMETA(Hidden),
+	Chaos_None = Chaos::FClusterCreationParameters::None UMETA(Hidden),
 	//
 	Chaos_EClsuterCreationParameters_Max UMETA(Hidden)
 };
@@ -169,5 +170,5 @@ private:
 	UChaosGameplayEventDispatcher* GameplayEventDispatcherComponent;
 
 	/** If floor is enabled - this will point to the solver particle for it */
-	TUniquePtr<Chaos::TGeometryParticle<Chaos::FReal, 3>> FloorParticle;
+	FSingleParticlePhysicsProxy* Proxy;
 };

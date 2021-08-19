@@ -1,42 +1,108 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RemoteControlField.h"
+
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
-#include "StructDeserializer.h"
-#include "StructSerializer.h"
+#include "IRemoteControlModule.h"
+#include "Math/NumericLimits.h"
+#include "RemoteControlObjectVersion.h"
+#include "RemoteControlFieldPath.h"
+#include "RemoteControlBinding.h"
+#include "RemoteControlPreset.h"
+#include "RemoteControlPropertyHandle.h"
+#include "UObject/Class.h"
+#include "UObject/ReleaseObjectVersion.h"
+#include "UObject/StructOnScope.h"
 #include "UObject/UnrealType.h"
 
-namespace RemoteControlFieldUtils
-{
-	void ResolveSegment(FName SegmentName, UStruct* Owner, void* ContainerAddress, FRCFieldResolvedData& OutResolvedData)
-	{
-		if (FProperty* FoundField = FindFProperty<FProperty>(Owner, SegmentName))
-		{
-			OutResolvedData.ContainerAddress = ContainerAddress;
-			OutResolvedData.Field = FoundField;
-			OutResolvedData.Struct = Owner;
-		}
-		else
-		{
-			OutResolvedData.ContainerAddress = nullptr;
-			OutResolvedData.Field = nullptr;
-			OutResolvedData.Struct = nullptr;
-		}
-	}
-}
-
-FRemoteControlField::FRemoteControlField(EExposedFieldType InType, FName InLabel, FRCFieldPathInfo FieldPathInfo, TArray<FString> InComponentHierarchy)
-	: FieldType(InType)
-	, FieldName(FieldPathInfo.GetFieldName())
-	, Label(InLabel)
-	, Id(FGuid::NewGuid())
-	, FieldPathInfo(MoveTemp(FieldPathInfo))
-	, ComponentHierarchy(MoveTemp(InComponentHierarchy))
+FRemoteControlField::FRemoteControlField(URemoteControlPreset* InPreset, EExposedFieldType InType, FName InLabel, FRCFieldPathInfo InFieldPathInfo, const TArray<URemoteControlBinding*> InBindings)
+	: FRemoteControlEntity(InPreset, InLabel, InBindings)
+	, FieldType(InType)
+	, FieldName(InFieldPathInfo.GetFieldName())
+	, FieldPathInfo(MoveTemp(InFieldPathInfo))
 {
 }
 
 TArray<UObject*> FRemoteControlField::ResolveFieldOwners(const TArray<UObject*>& SectionObjects) const
+{
+	TArray<UObject*> ResolvedObjects;
+#if WITH_EDITORONLY_DATA
+	if (ComponentHierarchy_DEPRECATED.Num())
+	{
+		ResolvedObjects = ResolveFieldOwnersUsingComponentHierarchy(SectionObjects);
+	}
+	else
+#endif
+	{
+		ResolvedObjects = SectionObjects;
+	}
+
+	return ResolvedObjects;
+}
+
+void FRemoteControlField::BindObject(UObject* InObjectToBind)
+{
+	if (!InObjectToBind)
+	{
+		return;
+	}
+	
+	if (UClass* ResolvedOwnerClass = GetSupportedBindingClass())
+	{
+		if (InObjectToBind->GetClass()->IsChildOf(ResolvedOwnerClass))
+		{
+			FRemoteControlEntity::BindObject(InObjectToBind);
+		}
+		else if (AActor* Actor = Cast<AActor>(InObjectToBind))
+		{
+			// Attempt finding a matching component if the object is an actor.
+			FRemoteControlEntity::BindObject(Actor->GetComponentByClass(ResolvedOwnerClass));
+		}
+	}
+}
+
+bool FRemoteControlField::CanBindObject(const UObject* InObjectToBind) const
+{
+	if (InObjectToBind)
+	{
+		if (UClass* ResolvedOwnerClass = GetSupportedBindingClass())
+		{
+			if (InObjectToBind->GetClass()->IsChildOf(ResolvedOwnerClass))
+			{
+				return true;
+			}
+			
+			if (ResolvedOwnerClass->IsChildOf<UActorComponent>())
+			{
+				if (const AActor* Actor = Cast<AActor>(InObjectToBind))
+				{
+					return !!Actor->GetComponentByClass(ResolvedOwnerClass);
+				}
+				return false;
+			}
+		}
+	}
+	return false;
+}
+
+void FRemoteControlField::PostSerialize(const FArchive& Ar)
+{
+	if (Ar.IsLoading())
+	{
+		int32 CustomVersion = Ar.CustomVer(FRemoteControlObjectVersion::GUID);
+		if (CustomVersion < FRemoteControlObjectVersion::AddedRebindingFunctionality)
+		{
+			if (OwnerClass.IsNull())
+			{
+				OwnerClass = GetSupportedBindingClass();
+			}
+		}
+	}
+}
+
+#if WITH_EDITORONLY_DATA
+TArray<UObject*> FRemoteControlField::ResolveFieldOwnersUsingComponentHierarchy(const TArray<UObject*>& SectionObjects) const
 {
 	TArray<UObject*> FieldOwners;
 	FieldOwners.Reserve(SectionObjects.Num());
@@ -44,10 +110,11 @@ TArray<UObject*> FRemoteControlField::ResolveFieldOwners(const TArray<UObject*>&
 	for (UObject* Object : SectionObjects)
 	{
 		//If component hierarchy is not empty, we need to walk it to find the child object
-		if (ComponentHierarchy.Num() > 0)
+		if (ComponentHierarchy_DEPRECATED.Num() > 0)
 		{
 			UObject* Outer = Object;
-			for (const FString& Component : ComponentHierarchy)
+
+			for (const FString& Component : ComponentHierarchy_DEPRECATED)
 			{
 				if (UObject* ResolvedFieldOwner = FindObject<UObject>(Outer, *Component))
 				{
@@ -62,7 +129,8 @@ TArray<UObject*> FRemoteControlField::ResolveFieldOwners(const TArray<UObject*>&
 					break;
 				}
 			}
-			
+
+
 			if (Outer)
 			{
 				FieldOwners.Add(Outer);
@@ -76,32 +144,247 @@ TArray<UObject*> FRemoteControlField::ResolveFieldOwners(const TArray<UObject*>&
 
 	return FieldOwners;
 }
+#endif
 
-bool FRemoteControlField::operator==(const FRemoteControlField& InField) const
-{
-	return InField.Id == Id;
-}
-
-bool FRemoteControlField::operator==(FGuid InFieldId) const
-{
-	return InFieldId == Id;
-}
-
-uint32 GetTypeHash(const FRemoteControlField& InField)
-{
-	return GetTypeHash(InField.Id);
-}
+FName FRemoteControlProperty::MetadataKey_Min = "Min";
+FName FRemoteControlProperty::MetadataKey_Max = "Max";
 
 FRemoteControlProperty::FRemoteControlProperty(FName InLabel, FRCFieldPathInfo FieldPathInfo, TArray<FString> InComponentHierarchy)
-	: FRemoteControlField(EExposedFieldType::Property, InLabel, MoveTemp(FieldPathInfo), MoveTemp(InComponentHierarchy))
-{}
+	: FRemoteControlField(nullptr, EExposedFieldType::Property, InLabel, MoveTemp(FieldPathInfo), {})
+{
+}
+
+FRemoteControlProperty::FRemoteControlProperty(URemoteControlPreset* InPreset, FName InLabel, FRCFieldPathInfo InFieldPathInfo, const TArray<URemoteControlBinding*>& InBindings)
+	: FRemoteControlField(InPreset, EExposedFieldType::Property, InLabel, MoveTemp(InFieldPathInfo), InBindings)
+{
+	InitializeMetadata();
+	OwnerClass = GetSupportedBindingClass();
+
+	if (FProperty* Property = GetProperty())
+	{
+		bIsEditorOnly = Property->HasAnyPropertyFlags(CPF_EditorOnly);
+		bIsEditableInPackaged = !Property->HasAnyPropertyFlags(CPF_BlueprintReadOnly);
+	}
+}
+
+uint32 FRemoteControlProperty::GetUnderlyingEntityIdentifier() const
+{
+	return FieldPathInfo.PathHash;
+}
+
+FProperty* FRemoteControlProperty::GetProperty() const
+{
+	// Make a copy in order to preserve constness.
+	FRCFieldPathInfo FieldPathCopy = FieldPathInfo;
+	TArray<UObject*> Objects = GetBoundObjects();
+	if (Objects.Num() && FieldPathCopy.Resolve(Objects[0]))
+	{
+		FRCFieldResolvedData Data = FieldPathCopy.GetResolvedData();
+		return Data.Field;
+	}
+	return nullptr;
+}
+
+TSharedPtr<IRemoteControlPropertyHandle> FRemoteControlProperty::GetPropertyHandle() const 
+{
+	TSharedPtr<FRemoteControlProperty> ThisPtr = Owner->GetExposedEntity<FRemoteControlProperty>(GetId()).Pin();
+	FProperty* Property = GetProperty();
+	const int32 ArrayIndex = Property->ArrayDim != 1 ? -1 : 0;
+	constexpr FProperty* ParentProperty = nullptr;
+	const TCHAR* ParentFieldPath = TEXT("");
+	return FRemoteControlPropertyHandle::GetPropertyHandle(ThisPtr, Property, ParentProperty, ParentFieldPath, ArrayIndex);
+}
+
+void FRemoteControlProperty::EnableEditCondition()
+{
+#if WITH_EDITOR
+	if (FProperty* Property = GetProperty())
+	{
+		FRCFieldPathInfo EditConditionPath;
+
+		if (CachedEditConditionPath.GetSegmentCount())
+		{
+			EditConditionPath = CachedEditConditionPath;
+		}
+		else
+		{
+			const FString EditConditionPropertyName = Property->GetMetaData("EditCondition");
+			if (!EditConditionPropertyName.IsEmpty())
+			{
+				EditConditionPath = FieldPathInfo;
+				EditConditionPath.Segments.Pop();
+				EditConditionPath.Segments.Emplace(EditConditionPropertyName);
+				CachedEditConditionPath = EditConditionPath;
+			}
+		}
+
+		for (UObject* Object : GetBoundObjects())
+		{
+			if (EditConditionPath.Resolve(Object))
+			{
+				FRCFieldResolvedData Data = EditConditionPath.GetResolvedData();
+				if (ensure(Data.IsValid() && Data.Field->IsA(FBoolProperty::StaticClass())))
+				{
+					if (!Data.Field->HasAnyPropertyFlags(CPF_EditConst))
+					{
+						CastFieldChecked<FBoolProperty>(Data.Field)->SetPropertyValue_InContainer(Data.ContainerAddress, true);
+					}
+				}
+			}
+		}
+	}
+#endif
+}
+
+bool FRemoteControlProperty::IsEditableInPackaged() const
+{
+	return bIsEditableInPackaged || IRemoteControlModule::Get().PropertySupportsRawModificationWithoutEditor(GetProperty(), GetSupportedBindingClass());
+}
+
+bool FRemoteControlProperty::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FRemoteControlObjectVersion::GUID);
+	FRemoteControlProperty::StaticStruct()->SerializeTaggedProperties(Ar, (uint8*)this, FRemoteControlProperty::StaticStruct(), nullptr);
+
+	return true;
+}
+
+void FRemoteControlProperty::PostSerialize(const FArchive& Ar)
+{
+	FRemoteControlField::PostSerialize(Ar);
+
+	if (Ar.IsLoading())
+	{
+		if (FProperty* Property = GetProperty())
+		{
+			int32 CustomVersion = Ar.CustomVer(FRemoteControlObjectVersion::GUID);
+			if (CustomVersion < FRemoteControlObjectVersion::AddedFieldFlags)
+			{
+				bIsEditorOnly = Property->HasAnyPropertyFlags(CPF_EditorOnly);
+				bIsEditableInPackaged = !Property->HasAnyPropertyFlags(CPF_BlueprintReadOnly);
+			}
+		}
+		
+		if (UserMetadata.Num() == 0)
+		{
+			InitializeMetadata();
+		}
+	}
+}
+
+UClass* FRemoteControlProperty::GetSupportedBindingClass() const
+{
+	if (UClass* Class = OwnerClass.TryLoadClass<UObject>())
+	{
+		return Class;	
+	}
+	
+	if (FProperty* Property = GetProperty())
+	{
+		if (UClass* PropertyOwnerClass = Property->GetOwnerClass())
+		{
+			return PropertyOwnerClass;
+		}
+		else if (!OwnerClass.IsValid() && FieldPathInfo.GetSegmentCount() > 0 && FieldPathInfo.GetFieldSegment(0).IsResolved())
+		{
+			return FieldPathInfo.GetFieldSegment(0).ResolvedData.Field->GetOwnerClass();
+		}
+	}
+	return nullptr;
+}
+
+bool FRemoteControlProperty::IsBound() const
+{
+	return !!GetProperty();
+}
+
+void FRemoteControlProperty::InitializeMetadata()
+{
+#if WITH_EDITOR
+	auto SupportsMinMax = [] (FProperty* Property)
+	{
+		if (!Property)
+		{
+			return false;
+		}
+
+		if (Property->IsA<FNumericProperty>())
+		{
+			return !(Property->IsA<FByteProperty>() && CastFieldChecked<FByteProperty>(Property)->IsEnum());
+		}
+
+		if (Property->IsA<FStructProperty>())
+		{
+			UStruct* Struct = CastFieldChecked<FStructProperty>(Property)->Struct;
+			return Struct->IsChildOf(TBaseStructure<FVector>::Get())
+				|| Struct->IsChildOf(TBaseStructure<FRotator>::Get());
+		}
+
+		return false;
+	};
+	
+	if (FProperty* Property = GetProperty())
+	{
+		if (SupportsMinMax(Property))
+		{
+			const FString& UIMin = Property->GetMetaData(TEXT("UIMin"));
+			const FString& UIMax = Property->GetMetaData(TEXT("UIMax"));
+			const FString& ClampMin = Property->GetMetaData(TEXT("ClampMin"));
+			const FString& ClampMax = Property->GetMetaData(TEXT("ClampMax"));
+
+			const FString& NewMinEntry = !UIMin.IsEmpty() ? UIMin : ClampMin;
+			const FString& NewMaxEntry = !UIMax.IsEmpty() ? UIMax : ClampMax;
+
+			// Add the metadata even if empty in case the user wants to specify it themself.
+			UserMetadata.FindOrAdd(MetadataKey_Min) = NewMinEntry;
+			UserMetadata.FindOrAdd(MetadataKey_Max) = NewMaxEntry;
+		}
+	}
+#endif
+}
 
 FRemoteControlFunction::FRemoteControlFunction(FName InLabel, FRCFieldPathInfo FieldPathInfo, UFunction* InFunction)
-	: FRemoteControlField(EExposedFieldType::Function, InLabel, MoveTemp(FieldPathInfo), TArray<FString>())
-	, Function(InFunction)
+	: FRemoteControlField(nullptr, EExposedFieldType::Function, InLabel, MoveTemp(FieldPathInfo), {})
+	, FunctionPath(InFunction)
 {
-	FunctionArguments = MakeShared<FStructOnScope>(Function);
-	Function->InitializeStruct(FunctionArguments->GetStructMemory());
+	checkSlow(InFunction);
+	FunctionArguments = MakeShared<FStructOnScope>(InFunction);
+	InFunction->InitializeStruct(FunctionArguments->GetStructMemory());
+	AssignDefaultFunctionArguments();
+	OwnerClass = GetSupportedBindingClass();
+
+#if WITH_EDITOR
+	CachedFunctionArgsHash = HashFunctionArguments(InFunction);
+#endif
+}
+
+FRemoteControlFunction::FRemoteControlFunction(URemoteControlPreset* InPreset, FName InLabel, FRCFieldPathInfo InFieldPathInfo, UFunction* InFunction, const TArray<URemoteControlBinding*>& InBindings)
+	: FRemoteControlField(InPreset, EExposedFieldType::Function, InLabel, MoveTemp(InFieldPathInfo), InBindings)
+	, FunctionPath(InFunction)
+{
+	check(InFunction);
+	FunctionArguments = MakeShared<FStructOnScope>(InFunction);
+	InFunction->InitializeStruct(FunctionArguments->GetStructMemory());
+	CachedFunction = InFunction;
+	AssignDefaultFunctionArguments();
+	OwnerClass = GetSupportedBindingClass();
+
+	bIsEditorOnly = InFunction->HasAnyFunctionFlags(FUNC_EditorOnly);
+	bIsCallableInPackaged = InFunction->HasAnyFunctionFlags(FUNC_BlueprintCallable);
+
+#if WITH_EDITOR
+	CachedFunctionArgsHash = HashFunctionArguments(InFunction);
+#endif
+}
+
+uint32 FRemoteControlFunction::GetUnderlyingEntityIdentifier() const
+{
+	if (UFunction* Function = GetFunction())
+	{
+		return GetTypeHash(Function->GetName());
+	}
+	
+	return 0;
 }
 
 bool FRemoteControlFunction::Serialize(FArchive& Ar)
@@ -113,317 +396,235 @@ bool FRemoteControlFunction::Serialize(FArchive& Ar)
 	return true;
 }
 
+void FRemoteControlFunction::PostSerialize(const FArchive& Ar)
+{
+	FRemoteControlField::PostSerialize(Ar);
+
+	if (Ar.IsLoading())
+	{
+		int32 CustomVersion = Ar.CustomVer(FRemoteControlObjectVersion::GUID);
+
+		if (CustomVersion < FRemoteControlObjectVersion::AddedFieldFlags)
+		{
+			if (UFunction* Function = GetFunction())
+			{
+				bIsEditorOnly = Function->HasAnyFunctionFlags(FUNC_EditorOnly);
+				bIsCallableInPackaged = Function->HasAnyFunctionFlags(FUNC_BlueprintCallable);
+			}
+		}
+
+#if WITH_EDITOR
+		CachedFunctionArgsHash = HashFunctionArguments(GetFunction());
+#endif
+	}
+}
+
+UClass* FRemoteControlFunction::GetSupportedBindingClass() const
+{
+	if (UClass* Class = OwnerClass.TryLoadClass<UObject>())
+	{
+		return Class;	
+	}
+
+	if (UFunction* Function = GetFunction())
+	{
+		return Function->GetOwnerClass();
+	}
+	return nullptr;
+}
+
+bool FRemoteControlFunction::IsBound() const
+{
+	if (UFunction* Function = GetFunction())
+	{
+		TArray<UObject*> BoundObjects = GetBoundObjects();
+		if (!BoundObjects.Num())
+		{
+			return false;
+		}
+		
+		if (UClass* SupportedClass = GetSupportedBindingClass())
+		{
+			return BoundObjects.ContainsByPredicate([SupportedClass](UObject* Object){ return Object->GetClass() && Object->GetClass()->IsChildOf(SupportedClass);});
+		}
+	}
+	
+	return false;
+}
+
+UFunction* FRemoteControlFunction::GetFunction() const
+{
+	UObject* ResolvedObject = FunctionPath.ResolveObject();
+	
+	if (!ResolvedObject)
+	{
+		ResolvedObject = FunctionPath.TryLoad();
+	}
+
+	UFunction* ResolvedFunction = Cast<UFunction>(ResolvedObject);
+	if (ResolvedFunction)
+	{
+		CachedFunction = ResolvedFunction;
+	}
+	
+	return ResolvedFunction;
+}
+
+#if WITH_EDITOR
+void FRemoteControlFunction::RegenerateArguments()
+{
+	// Recreate the function arguments with the function from the new BP and copy the old ones on top of it.
+	if (UFunction* Function = GetFunction())
+	{
+		FStructOnScope NewFunctionOnScope{ Function };
+
+		// Only port the old values if the new function has the same arguments.
+		// We use a hash to determine compatibility because the old function may not be available after a recompile.
+		const uint32 NewHash = HashFunctionArguments(Function);
+		if (CachedFunctionArgsHash == NewHash)
+		{
+			for (TFieldIterator<FProperty> It(Function); It; ++It)
+			{
+				It->CopyCompleteValue_InContainer(NewFunctionOnScope.GetStructMemory(), FunctionArguments->GetStructMemory());
+			}
+		}
+		else
+		{
+			CachedFunctionArgsHash = NewHash; 
+		}
+		
+		*FunctionArguments = MoveTemp(NewFunctionOnScope);
+	}
+}
+#endif
+
+void FRemoteControlFunction::AssignDefaultFunctionArguments()
+{
+#if WITH_EDITOR
+	if (UFunction* Function = GetFunction())
+	{
+		for (TFieldIterator<FProperty> It(Function); It; ++It)
+		{
+			if (!It->HasAnyPropertyFlags(CPF_ReturnParm))
+			{
+				const FName DefaultPropertyKey = *FString::Printf(TEXT("CPP_Default_%s"), *It->GetName());
+				const FString& PropertyDefaultValue = Function->GetMetaData(DefaultPropertyKey);
+				if (!PropertyDefaultValue.IsEmpty())
+				{
+					It->ImportText(*PropertyDefaultValue, It->ContainerPtrToValuePtr<uint8>(FunctionArguments->GetStructMemory()), PPF_None, NULL);
+				}
+			}
+		}
+	}
+#endif
+}
+
+#if WITH_EDITOR
+uint32 FRemoteControlFunction::HashFunctionArguments(UFunction* InFunction)
+{
+	if (!InFunction)
+	{
+		return 0;
+	}
+
+	uint32 Hash = GetTypeHash(InFunction->NumParms);
+
+	for (TFieldIterator<FProperty> It(InFunction); It; ++It)
+	{
+		const bool Param = It->HasAnyPropertyFlags(CPF_Parm);
+		const bool OutParam = It->HasAnyPropertyFlags(CPF_OutParm) && !It->HasAnyPropertyFlags(CPF_ConstParm);
+		const bool ReturnParam = It->HasAnyPropertyFlags(CPF_ReturnParm);
+
+		if (!Param || OutParam || ReturnParam)
+		{
+			continue;
+		}
+
+		Hash = HashCombine(Hash, GetTypeHash(It->GetClass()->GetFName()));
+		Hash = HashCombine(Hash, GetTypeHash(It->GetSize()));
+	}
+
+	return Hash;
+}
+#endif
+
 FArchive& operator<<(FArchive& Ar, FRemoteControlFunction& RCFunction)
 {
+	Ar.UsingCustomVersion(FRemoteControlObjectVersion::GUID);
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+
 	FRemoteControlFunction::StaticStruct()->SerializeTaggedProperties(Ar, (uint8*)&RCFunction, FRemoteControlFunction::StaticStruct(), nullptr);
 
 	if (Ar.IsLoading())
 	{
-		RCFunction.FunctionArguments = MakeShared<FStructOnScope>(RCFunction.Function);
-	}
-
-	if (ensure(RCFunction.Function))
-	{
-		RCFunction.Function->SerializeTaggedProperties(Ar, RCFunction.FunctionArguments->GetStructMemory(), RCFunction.Function, nullptr);
-	}
-
-	return Ar;
-}
-
-bool FRCFieldPathInfo::ResolveInternalRecursive(UStruct* OwnerType, void* ContainerAddress, int32 SegmentIndex)
-{
-	const bool bLastSegment = (SegmentIndex == Segments.Num() -1);
-
-	//Resolve the desired segment
-	FRCFieldPathSegment& Segment = Segments[SegmentIndex];
-	RemoteControlFieldUtils::ResolveSegment(Segment.Name, OwnerType, ContainerAddress, Segment.ResolvedData);
-	
-	if (bLastSegment == false)
-	{
-		if (Segment.IsResolved())
+#if WITH_EDITOR
+		if (RCFunction.Function_DEPRECATED && RCFunction.FunctionPath.IsValid())
 		{
-			const int32 ArrayIndex = Segment.ArrayIndex == INDEX_NONE ? 0 : Segment.ArrayIndex;
-			//Not the last segment so we'll call ourself again digging into structures / arrays / containers
-
-			FProperty* Property = Segment.ResolvedData.Field;
-			if (FStructProperty* StructureProperty = CastField<FStructProperty>(Property))
-			{
-				return ResolveInternalRecursive(StructureProperty->Struct, StructureProperty->ContainerPtrToValuePtr<void>(ContainerAddress, ArrayIndex), SegmentIndex + 1);
-			}
-			else if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
-			{
-				//Look for the kind of array this is. Since it's not the final segment, it must be a container thing
-				if (FStructProperty* ArrayInnerStructureProperty = CastField<FStructProperty>(ArrayProperty->Inner))
-				{
-					FScriptArrayHelper_InContainer ArrayHelper(ArrayProperty, ContainerAddress);
-					if (ArrayHelper.IsValidIndex(ArrayIndex))
-					{
-						return ResolveInternalRecursive(ArrayInnerStructureProperty->Struct, reinterpret_cast<void*>(ArrayHelper.GetRawPtr(ArrayIndex)), SegmentIndex + 1);
-					}
-				}
-			}
-			else if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
-			{
-				//Look for the kind of set this is. Since it's not the final segment, it must be a container thing
-				if (FStructProperty* SetInnerStructureProperty = CastField<FStructProperty>(SetProperty->ElementProp))
-				{
-					FScriptSetHelper_InContainer SetHelper(SetProperty, ContainerAddress);
-					if (SetHelper.IsValidIndex(ArrayIndex))
-					{
-						return ResolveInternalRecursive(SetInnerStructureProperty->Struct, reinterpret_cast<void*>(SetHelper.GetElementPtr(ArrayIndex)), SegmentIndex + 1);
-					}
-				}
-			}
-			else if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
-			{
-				//Look for the kind of set this is. Since it's not the final segment, it must be a container thing
-				if (FStructProperty* SetInnerStructureProperty = CastField<FStructProperty>(MapProperty->ValueProp))
-				{
-					FScriptMapHelper_InContainer MapHelper(MapProperty, ContainerAddress);
-					if (MapHelper.IsValidIndex(ArrayIndex))
-					{
-						return ResolveInternalRecursive(SetInnerStructureProperty->Struct, reinterpret_cast<void*>(MapHelper.GetValuePtr(ArrayIndex)), SegmentIndex + 1);
-					}
-				}
-			}
-
-			//Add support for missing types if required (SoftObjPtr, ObjectProperty, etc...)
-			return false;
+			RCFunction.FunctionPath = RCFunction.Function_DEPRECATED;
 		}
-	}
-	
-	return Segment.IsResolved();
-}
+#endif
 
-FRCFieldPathInfo::FRCFieldPathInfo(const FString& PathInfo, bool bCleanDuplicates)
-{
-	TArray<FString> PathSegment;
-	PathInfo.ParseIntoArray(PathSegment, TEXT("."));
+		int32 CustomVersion = Ar.CustomVer(FReleaseObjectVersion::GUID);
+		int64 NumSerializedBytesFromArchive = 0;
 
-	Segments.Reserve(PathSegment.Num());
-	for (int32 Index = 0; Index < PathSegment.Num(); ++Index)
-	{
-		const FString& SegmentString = PathSegment[Index];
-		FRCFieldPathSegment NewSegment(SegmentString);
-
-		if (bCleanDuplicates && Index > 0 && NewSegment.ArrayIndex != INDEX_NONE)
+		if (CustomVersion >= FReleaseObjectVersion::RemoteControlSerializeFunctionArgumentsSize)
 		{
-			FRCFieldPathSegment& PreviousSegment = Segments[Segments.Num() - 1];
-			if (PreviousSegment.Name == NewSegment.Name)
-			{
-				//Skip duplicate entries if required for GeneratePathToProperty style (Array.Array[Index])
-				PreviousSegment.ArrayIndex = NewSegment.ArrayIndex;
-				continue;
-			}
+			Ar << NumSerializedBytesFromArchive;
 		}
 		
-		Segments.Emplace(MoveTemp(NewSegment));
-	}
-
-	PathHash = GetTypeHash(PathInfo);
-}
-
-bool FRCFieldPathInfo::Resolve(UObject* Owner)
-{
-	if (Owner == nullptr)
-	{
-		return false;
-	}
-
-	if (Segments.Num() <= 0)
-	{
-		return false;
-	}
-
-	void* ContainerAddress = reinterpret_cast<void*>(Owner);
-	UStruct* Type = Owner->GetClass();
-	return ResolveInternalRecursive(Type, ContainerAddress, 0);
-}
-
-bool FRCFieldPathInfo::IsResolved() const
-{
-	const int32 SegmentCount = GetSegmentCount();
-	if (SegmentCount <= 0)
-	{
-		return false;
-	}
-
-	return GetFieldSegment(SegmentCount-1).IsResolved();
-}
-
-bool FRCFieldPathInfo::IsEqual(FStringView OtherPath) const
-{
-	return GetTypeHash(OtherPath) == PathHash;
-}
-
-bool FRCFieldPathInfo::IsEqual(const FRCFieldPathInfo& OtherPath) const
-{
-	return OtherPath.PathHash == PathHash;
-}
-
-FString FRCFieldPathInfo::ToString(int32 EndSegment /*= INDEX_NONE*/) const
-{
-	const int32 LastSegment = EndSegment == INDEX_NONE ? Segments.Num() : FMath::Min(Segments.Num(), EndSegment);
-	FString FullPath; 
-	for (int32 SegmentIndex = 0; SegmentIndex < LastSegment; ++SegmentIndex)
-	{
-		const FRCFieldPathSegment& Segment = GetFieldSegment(SegmentIndex);
-
-		// Segment
-		FullPath += Segment.ToString();
-
-		// Delimiter
-		if (SegmentIndex < GetSegmentCount() - 1)
+		int64 ArgsBegin = Ar.Tell();
+		if (UFunction* Function = RCFunction.GetFunction())
 		{
-			FullPath += TEXT(".");
-		}
-	}
+			RCFunction.FunctionArguments = MakeShared<FStructOnScope>(Function);
+			Function->SerializeTaggedProperties(Ar, RCFunction.FunctionArguments->GetStructMemory(), Function, nullptr);
 
-	return FullPath;
-}
-
-FString FRCFieldPathInfo::ToPathPropertyString(int32 EndSegment /*= INDEX_NONE*/) const
-{
-	const int32 LastSegment = EndSegment == INDEX_NONE ? Segments.Num() : FMath::Min(Segments.Num(), EndSegment);
-	FString FullPath;
-	for (int32 SegmentIndex = 0; SegmentIndex < LastSegment; ++SegmentIndex)
-	{
-		const FRCFieldPathSegment& Segment = GetFieldSegment(SegmentIndex);
-
-		// Segment
-		FullPath += Segment.ToString(true /*bDuplicateContainer*/);
-
-		// Delimiter
-		if (SegmentIndex < GetSegmentCount() - 1)
-		{
-			FullPath += TEXT(".");
-		}
-	}
-
-	return FullPath;
-}
-
-const FRCFieldPathSegment& FRCFieldPathInfo::GetFieldSegment(int32 Index) const
-{
-	check(Segments.IsValidIndex(Index));
-	return Segments[Index];
-}
-
-FRCFieldResolvedData FRCFieldPathInfo::GetResolvedData() const
-{
-	if (IsResolved())
-	{
-		return GetFieldSegment(GetSegmentCount() - 1).ResolvedData;
-	}
-
-	return FRCFieldResolvedData();
-}
-
-FName FRCFieldPathInfo::GetFieldName() const
-{
-	if (GetSegmentCount() <= 0)
-	{
-		return NAME_None;
-	}
-
-	return *GetFieldSegment(GetSegmentCount() - 1).ToString();
-}
-
-FRCFieldPathSegment::FRCFieldPathSegment(FStringView SegmentName)
-{
-	bool bValidSegment = false;
-
-	int32 FieldNameEnd = MAX_int32;
-	int32 OpenBracketIndex;
-	if (SegmentName.FindChar('[', OpenBracketIndex))
-	{
-		if (OpenBracketIndex > 0)
-		{
-			FieldNameEnd = OpenBracketIndex;
-			//Found an open bracket, find the closing one
-			int32 CloseBracketIndex;
-			if (SegmentName.FindChar(']', CloseBracketIndex) && (CloseBracketIndex > OpenBracketIndex + 1))
+			if (ArgsBegin != INDEX_NONE
+				&& NumSerializedBytesFromArchive != 0
+				&& (Ar.Tell() - ArgsBegin) != NumSerializedBytesFromArchive)
 			{
-				//Brackets found so take that index in the middle
-				FStringView IndexString = SegmentName.Mid(OpenBracketIndex + 1, CloseBracketIndex - OpenBracketIndex - 1);
-				ArrayIndex = FCString::Atoi(IndexString.GetData());
-				bValidSegment = true;
+				UE_LOG(LogRemoteControl, Warning, TEXT("Arguments size mismatch from size serialized in asset. Expected %d, Actual: %d"), NumSerializedBytesFromArchive, Ar.Tell() - ArgsBegin);
+				Ar.SetError();
 			}
-		}
-	}
-	else
-	{
-		bValidSegment = true;
-	}
-
-	if (bValidSegment)
-	{
-		FStringView FieldName = SegmentName.Mid(0, FieldNameEnd);
-		Name = FName(FieldName);
-	}
-}
-
-bool FRCFieldPathSegment::IsResolved() const
-{
-	return ResolvedData.Field != nullptr
-		&& ResolvedData.ContainerAddress != nullptr
-		&& ResolvedData.Struct != nullptr;
-}
-
-FString FRCFieldPathSegment::ToString(bool bDuplicateContainer) const
-{
-	if (ArrayIndex == INDEX_NONE)
-	{
-		return FString::Printf(TEXT("%s"), *Name.ToString());
-	}
-	else
-	{
-		//Special case for GeneratePathToProperty match
-		if (bDuplicateContainer)
-		{
-			return FString::Printf(TEXT("%s.%s[%d]"), *Name.ToString(), *Name.ToString(), ArrayIndex);
 		}
 		else
 		{
-			return FString::Printf(TEXT("%s[%d]"), *Name.ToString(), ArrayIndex);
+			UE_LOG(LogRemoteControl, Warning, TEXT("%s could not be loaded while deserialzing a Remote Control Function."), *RCFunction.FunctionPath.ToString());
+			Ar.SetError();
+			if (NumSerializedBytesFromArchive > 0)
+			{
+				// Skip over chunk of data if we were unable to resolve the class.
+				Ar.Seek(Ar.Tell() + NumSerializedBytesFromArchive);
+			}
+		}
+		
+	}
+	else if (RCFunction.CachedFunction.IsValid())
+	{
+		// The following code serializes the size of the arguments to serialize so that when loading,
+		// we can skip over it if the function could not be loaded.
+		const int64 ArgumentsSizePos = Ar.Tell();
+
+		// Serialize a temporary value for the delta in order to end up with an archive of the right size.
+		int64 ArgumentsSize = 0;
+		Ar << ArgumentsSize;
+
+		// Then serialize the arguments in order to get its size.
+		const int64 ArgsBegin = Ar.Tell();
+		RCFunction.CachedFunction->SerializeTaggedProperties(Ar, RCFunction.FunctionArguments->GetStructMemory(), RCFunction.CachedFunction.Get(), nullptr);
+
+		// Only go back and serialize the number of argument bytes if there is actually an underlying buffer to seek to.
+		if (ArgumentsSizePos != INDEX_NONE)
+		{
+			const int64 ArgsEnd = Ar.Tell();
+			ArgumentsSize = (ArgsEnd - ArgsBegin);
+
+			// Come back to the temporary value we wrote and overwrite it with the arguments size we just calculated.
+			Ar.Seek(ArgumentsSizePos);
+			Ar << ArgumentsSize;
+
+			// And finally seek back to the end.
+			Ar.Seek(ArgsEnd);
 		}
 	}
-}
-
-void FRCFieldPathSegment::ClearResolvedData()
-{
-	ResolvedData = FRCFieldResolvedData();
-}
-
-FPropertyChangedEvent FRCFieldPathInfo::ToPropertyChangedEvent(EPropertyChangeType::Type InChangeType) const
-{
-	check(IsResolved());
-
-	FPropertyChangedEvent PropertyChangedEvent(GetFieldSegment(GetSegmentCount() - 1).ResolvedData.Field, InChangeType);
-
-	// Set a containing 'struct' if we need to
-	if (GetSegmentCount() > 1)
-	{
-		PropertyChangedEvent.SetActiveMemberProperty(GetFieldSegment(0).ResolvedData.Field);
-	}
-
-	return PropertyChangedEvent;
-}
-
-void FRCFieldPathInfo::ToEditPropertyChain(FEditPropertyChain& OutPropertyChain) const
-{
-	check(IsResolved());
-
-	//Go over the segment chain to build the property changed chain skipping duplicates
-	for (int32 Index = 0; Index < GetSegmentCount(); ++Index)
-	{
-		const FRCFieldPathSegment& Segment = GetFieldSegment(Index);
-		OutPropertyChain.AddTail(Segment.ResolvedData.Field);
-	}
-
-	OutPropertyChain.SetActivePropertyNode(OutPropertyChain.GetTail()->GetValue());
-	if (GetSegmentCount() > 1)
-	{
-		OutPropertyChain.SetActiveMemberPropertyNode(OutPropertyChain.GetHead()->GetValue());
-	}
+	return Ar;
 }

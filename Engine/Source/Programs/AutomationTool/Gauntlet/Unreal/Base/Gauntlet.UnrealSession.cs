@@ -891,6 +891,19 @@ namespace Gauntlet
 					// create a config from the build source (this also applies the role options)
 					UnrealAppConfig AppConfig = BuildSource.CreateConfiguration(Role, OtherRoles);
 
+					//Verify the device's OS version, and update if necessary
+					if(Device.IsOSOutOfDate())
+					{
+						Log.Info("OS of target device {0} for role {1} out of date, updating...", Device, Role);
+						if(!Device.UpdateOS())
+						{
+							Log.Info("Failed to update os of device {0} for role {1}.  Will retry with new device", Device, Role);
+							MarkProblemDevice(Device);
+							InstallSuccess = false;
+							break;
+						}
+					}
+
 					// todo - should this be elsewhere?
 					AppConfig.Sandbox = Sandbox;
 
@@ -1081,16 +1094,22 @@ namespace Gauntlet
 				{
 
 					string ScreenshotPath = Path.Combine(SourceSavedDir, "Screenshots", Platform.ToString()).ToLower();
+					string TempScreenshotPath = Path.GetTempPath();
+					if (!Directory.Exists(TempScreenshotPath))
+					{
+						Log.Info("Creating temp directory {0}", TempScreenshotPath);
+						Directory.CreateDirectory(TempScreenshotPath);
+					}
 
 					if (Directory.Exists(ScreenshotPath) && Directory.GetFiles(ScreenshotPath).Length > 0)
 					{
 						Log.Info("Downsizing and gifying session images at {0}", ScreenshotPath);
 
 						// downsize first so gif-step is quicker and takes less resoruces.
-						Utils.Image.ConvertImages(ScreenshotPath, ScreenshotPath, "jpg", true);
+						Utils.Image.ConvertImages(ScreenshotPath, TempScreenshotPath, "jpg", true);
 
 						string GifPath = Path.Combine(InDestArtifactPath, RoleName + "Test.gif");
-						if (Utils.Image.SaveImagesAsGif(ScreenshotPath, GifPath))
+						if (Utils.Image.SaveImagesAsGif(TempScreenshotPath, GifPath))
 						{
 							Log.Info("Saved gif to {0}", GifPath);
 						}
@@ -1135,7 +1154,7 @@ namespace Gauntlet
 
 				if (Directory.Exists(SourceSavedDir))
 				{
-					Utils.SystemHelpers.CopyDirectory(SourceSavedDir, DestSavedDir, Utils.SystemHelpers.CopyOptions.Default, TruncateLongPathFilter);
+					Utils.SystemHelpers.CopyDirectory(SourceSavedDir, Utils.SystemHelpers.GetFullyQualifiedPath(DestSavedDir), Utils.SystemHelpers.CopyOptions.Default, TruncateLongPathFilter);
 					Log.Info("Archived artifacts to to {0}", DestSavedDir);
 				}
 				else
@@ -1167,7 +1186,7 @@ namespace Gauntlet
 					{
 						// Grab the final dir name to copy everything into so everything's not just going into root artifact dir.
 						string IntendedCopyLocation = Path.Combine(InDestArtifactPath, DirToCopy.Name);
-						Utils.SystemHelpers.CopyDirectory(SourcePath, IntendedCopyLocation, Utils.SystemHelpers.CopyOptions.Default, TruncateLongPathFilter);
+						Utils.SystemHelpers.CopyDirectory(SourcePath, Utils.SystemHelpers.GetFullyQualifiedPath(IntendedCopyLocation), Utils.SystemHelpers.CopyOptions.Default, TruncateLongPathFilter);
 					}
 				}
 			}
@@ -1302,8 +1321,16 @@ namespace Gauntlet
 
 				string DestPath = Path.Combine(OutputPath, FolderName);
 
-				var Artifacts = SaveRoleArtifacts(Context, App, DestPath);
-				AllArtifacts.Add(Artifacts);
+				if (!App.Role.IsNullRole())
+				{
+					Log.VeryVerbose("Calling SaveRoleArtifacts, Role: {0}  Artifact Path: {1}", App.ToString(), App.AppInstance.ArtifactPath);
+					var Artifacts = SaveRoleArtifacts(Context, App, DestPath);
+					AllArtifacts.Add(Artifacts);
+				}
+				else 
+				{
+					Log.Verbose("Skipping SaveRoleArtifacts for Null Role: {0}", App.ToString());
+				}
 			}
 
 			return AllArtifacts;

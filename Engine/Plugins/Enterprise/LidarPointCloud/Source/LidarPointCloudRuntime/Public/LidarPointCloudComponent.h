@@ -10,28 +10,6 @@
 class UBodySetup;
 
 UENUM(BlueprintType)
-enum class ELidarPointCloudColorationMode : uint8
-{
-	/** Uses color tint only */
-	None,
-	/** Uses imported RGB / Intensity data */
-	Data,
-	/** The cloud's color will be overridden with elevation-based color */
-	Elevation,
-	/** The cloud's color will be overridden with relative position-based color */
-	Position,
-	/** Uses Classification ID of the point along with the component's Classification Colors property to sample the color */
-	Classification
-};
-
-UENUM(BlueprintType)
-enum class ELidarPointCloudSpriteShape : uint8
-{
-	Square,
-	Circle,
-};
-
-UENUM(BlueprintType)
 enum class ELidarPointCloudSpriteOrientation : uint8
 {
 	/** The sprites will face camera, even if Normals are available. */
@@ -59,27 +37,34 @@ private:
 
 public:
 	/**
-	 * Determines the minimum screen size for the node to be rendered.
-	 * Lower values will produce farther view distance, at the cost of higher CPU usage.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance", meta = (ClampMin = "0"))
-	float MinScreenSize;
-
-	/**
 	 * Use to tweak the size of the points.
 	 * Set to 0 to switch to 1 pixel points.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (ClampMin = "0.0"))
 	float PointSize;
 
+	/** Determines how the points will be scaled  */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
+	ELidarPointCloudScalingMethod ScalingMethod;
+
+	/**
+	 * If set to > 0, it attempts to close gaps between points.
+	 * Setting this too high may cause visual artifacts.
+	 * This setting may interfere with AO
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (ClampMin = "0.0"))
+	float GapFillingStrength;
+
 	/** Specifies which source to use for point colors. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
 	ELidarPointCloudColorationMode ColorSource;
 
+private:
 	/** Affects the shape of points. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", BlueprintSetter = SetPointShape, meta = (AllowPrivateAccess = "true", DeprecatedProperty, DeprecationMessage="Use GetPointShape() / SetPointShape() instead."))
 	ELidarPointCloudSpriteShape PointShape;
 
+public:
 	/** Affects the orientation of points. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
 	ELidarPointCloudSpriteOrientation PointOrientation;
@@ -130,6 +115,14 @@ public:
 	/** Specifies the influence of Intensity data, if available, on the overall color. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Color Adjustment", meta = (ClampMin = "0", ClampMax = "1"))
 	float IntensityInfluence;
+
+	/**
+	 * If enabled, points outside of the visible frustum will not be rendered.
+	 * While most project should leave this enabled, disabling it may help
+	 * with the data streaming lag when shooting cinematics.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering")
+	bool bUseFrustumCulling;
 
 	/**
 	 * Minimum Depth from which the nodes should be rendered.
@@ -205,8 +198,14 @@ public:
 	/** Populates the array with the list of points within the given sphere. */
 	void GetPointsInSphere(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FVector& Center, const float& Radius, const bool& bVisibleOnly) { GetPointsInSphere(SelectedPoints, FSphere(Center, Radius), bVisibleOnly); }
 	void GetPointsInSphere(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FVector& Center, const float& Radius, const bool& bVisibleOnly) { GetPointsInSphere(SelectedPoints, FSphere(Center, Radius), bVisibleOnly); }
-	template <typename T>
-	void GetPointsInSphere(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly)
+	void GetPointsInSphere(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly)
+	{
+		if (PointCloud)
+		{
+			PointCloud->GetPointsInSphere(SelectedPoints, Sphere.TransformBy(GetComponentTransform().Inverse()), bVisibleOnly);
+		}
+	}
+	void GetPointsInSphere(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly)
 	{
 		if (PointCloud)
 		{
@@ -217,8 +216,14 @@ public:
 	/** Populates the array with the list of points within the given box. */
 	void GetPointsInBox(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FVector& Center, const FVector& Extent, const bool& bVisibleOnly) { GetPointsInBox(SelectedPoints, FBox(Center - Extent, Center + Extent), bVisibleOnly); }
 	void GetPointsInBox(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FVector& Center, const FVector& Extent, const bool& bVisibleOnly) { GetPointsInBox(SelectedPoints, FBox(Center - Extent, Center + Extent), bVisibleOnly); }
-	template <typename T>
-	void GetPointsInBox(TArray<FLidarPointCloudPoint*, T>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly)
+	void GetPointsInBox(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly)
+	{
+		if (PointCloud)
+		{
+			PointCloud->GetPointsInBox(SelectedPoints, Box.TransformBy(GetComponentTransform().Inverse()), bVisibleOnly);
+		}
+	}
+	void GetPointsInBox(TArray64<FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly)
 	{
 		if (PointCloud)
 		{
@@ -237,8 +242,15 @@ public:
 		GetPointsInSphereAsCopies(Points, FSphere(Center, Radius), bVisibleOnly, bReturnWorldSpace);
 		return Points;
 	}
-	template <typename T>
-	void GetPointsInSphereAsCopies(TArray<FLidarPointCloudPoint, T>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly, const bool& bReturnWorldSpace)
+	void GetPointsInSphereAsCopies(TArray<FLidarPointCloudPoint>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly, const bool& bReturnWorldSpace)
+	{
+		if (PointCloud)
+		{
+			FTransform LocalToWorld = GetLocalToWorld();
+			PointCloud->Octree.GetPointsInSphereAsCopies(SelectedPoints, Sphere.TransformBy(LocalToWorld.Inverse()), bVisibleOnly, bReturnWorldSpace ? &LocalToWorld : nullptr);
+		}
+	}
+	void GetPointsInSphereAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, const FSphere& Sphere, const bool& bVisibleOnly, const bool& bReturnWorldSpace)
 	{
 		if (PointCloud)
 		{
@@ -258,8 +270,15 @@ public:
 		GetPointsInBoxAsCopies(Points, FBox(Center - Extent, Center + Extent), bVisibleOnly, bReturnWorldSpace);
 		return Points;
 	}
-	template <typename T>
-	void GetPointsInBoxAsCopies(TArray<FLidarPointCloudPoint, T>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, const bool& bReturnWorldSpace)
+	void GetPointsInBoxAsCopies(TArray<FLidarPointCloudPoint>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, const bool& bReturnWorldSpace)
+	{
+		if (PointCloud)
+		{
+			FTransform LocalToWorld = GetLocalToWorld();
+			PointCloud->Octree.GetPointsInBoxAsCopies(SelectedPoints, Box.TransformBy(LocalToWorld.Inverse()), bVisibleOnly, bReturnWorldSpace ? &LocalToWorld : nullptr);
+		}
+	}
+	void GetPointsInBoxAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, const FBox& Box, const bool& bVisibleOnly, const bool& bReturnWorldSpace)
 	{
 		if (PointCloud)
 		{
@@ -485,6 +504,14 @@ public:
 public:
 	UFUNCTION(BlueprintCallable, Category = "Components|LidarPointCloud")
 	void SetPointCloud(ULidarPointCloud *InPointCloud);
+
+	/** Returns the current Point Shape */
+	UFUNCTION(BlueprintPure, Category = "Components|LidarPointCloud")
+	FORCEINLINE ELidarPointCloudSpriteShape GetPointShape() const { return PointShape; }
+
+	/** Sets new Point Shape */
+	UFUNCTION(BlueprintCallable, Category = "Components|LidarPointCloud")
+	void SetPointShape(ELidarPointCloudSpriteShape NewPointShape);
 
 	/** Applies specified rendering parameters (Brightness, Saturation, etc) to the selected material */
 	UFUNCTION(BlueprintCallable, Category = "Components|LidarPointCloud|Rendering")

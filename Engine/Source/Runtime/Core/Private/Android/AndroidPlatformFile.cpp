@@ -466,6 +466,29 @@ public:
 		return true;
 	}
 
+	bool DeleteFileTimeStamp(const FString& FileName)
+	{
+		if (bInitialized == false)
+		{
+			Read();
+			bInitialized = true;
+		}
+
+		FDateTime* Result = ManifestEntries.Find(FileName);
+		if (Result != NULL)
+		{
+			ManifestEntries.Remove(FileName);
+			
+#if LOG_ANDROID_FILE_MANIFEST
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Deleted timestamp for file '%s' in manifest file '%s'"), *FileName, *ManifestFileName);
+#endif
+
+			return true;
+		}
+		
+		return false;
+	}
+
 	// read manifest from disk
 	void Read()
 	{
@@ -1115,18 +1138,18 @@ public:
 
 		// make sure the base path directory exists (UE4Game and UE4Game/ProjectName)
 		FString FileBaseDir = GFilePathBase + FString(FILEBASE_DIRECTORY);
-		mkdir(TCHAR_TO_UTF8(*FileBaseDir), 0766);
-		mkdir(TCHAR_TO_UTF8(*(FileBaseDir + GAndroidProjectName)), 0766);
+		mkdir(TCHAR_TO_UTF8(*FileBaseDir), 0777);
+		mkdir(TCHAR_TO_UTF8(*(FileBaseDir + GAndroidProjectName)), 0777);
 
 		// make sure the log directory exists if override applied
-		if (GOverrideAndroidLogDir)
+		//if (GOverrideAndroidLogDir)
 		{
 			FString LogBaseDir = GExternalFilePath + FString(FILEBASE_DIRECTORY);
-			mkdir(TCHAR_TO_UTF8(*LogBaseDir), 0766);
-			mkdir(TCHAR_TO_UTF8(*(LogBaseDir + GAndroidProjectName)), 0766);
-			mkdir(TCHAR_TO_UTF8(*(LogBaseDir + GAndroidProjectName + TEXT("/") + GAndroidProjectName)), 0766);
-			mkdir(TCHAR_TO_UTF8(*(LogBaseDir + GAndroidProjectName + TEXT("/") + GAndroidProjectName + TEXT("/Saved"))), 0766);
-			mkdir(TCHAR_TO_UTF8(*(LogBaseDir + GAndroidProjectName + TEXT("/") + GAndroidProjectName + TEXT("/Saved/Logs"))), 0766);
+			mkdir(TCHAR_TO_UTF8(*LogBaseDir), 0777);
+			mkdir(TCHAR_TO_UTF8(*(LogBaseDir + GAndroidProjectName)), 0777);
+			mkdir(TCHAR_TO_UTF8(*(LogBaseDir + GAndroidProjectName + TEXT("/") + GAndroidProjectName)), 0777);
+			mkdir(TCHAR_TO_UTF8(*(LogBaseDir + GAndroidProjectName + TEXT("/") + GAndroidProjectName + TEXT("/Saved"))), 0777);
+			mkdir(TCHAR_TO_UTF8(*(LogBaseDir + GAndroidProjectName + TEXT("/") + GAndroidProjectName + TEXT("/Saved/Logs"))), 0777);
 
 			AndroidLogDir = LogBaseDir + GAndroidProjectName + TEXT("/") + GAndroidProjectName + TEXT("/Saved/Logs/");
 		}
@@ -1225,6 +1248,16 @@ public:
 		// Only delete if we have a local file.
 		if (IsLocal(LocalPath))
 		{
+#if !USE_UTIME
+			if (NonUFSManifest.DeleteFileTimeStamp(AssetPath))
+			{
+				NonUFSManifest.Write();
+			}
+			else if (UFSManifest.DeleteFileTimeStamp(AssetPath))
+			{
+				UFSManifest.Write();
+			}
+#endif
 			return unlink(TCHAR_TO_UTF8(*LocalPath)) == 0;
 		}
 		return false;
@@ -2145,4 +2178,15 @@ const FString* IAndroidPlatformFile::GetOverrideLogDirectory()
 {
 	return FAndroidPlatformFile::GetOverrideLogDirectory();
 }
+
+FString IAndroidPlatformFile::ConvertToAbsolutePathForExternalAppForRead(const TCHAR* Filename)
+{
+	return AndroidRelativeToAbsolutePath(false, Filename);
+}
+
+FString IAndroidPlatformFile::ConvertToAbsolutePathForExternalAppForWrite(const TCHAR* Filename)
+{
+	return AndroidRelativeToAbsolutePath(false, Filename);
+}
+
 #endif

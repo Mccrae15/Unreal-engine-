@@ -8,6 +8,9 @@
 #include "Engine/World.h"
 #include "NiagaraTypes.h"
 #include "Templates/SharedPointer.h"
+#include "NiagaraPerfBaseline.h"
+#include "NiagaraDebuggerCommon.h"
+#include "Templates/PimplPtr.h"
 
 class FNiagaraWorldManager;
 class UNiagaraEmitter;
@@ -18,6 +21,8 @@ class FNiagaraCompileRequestDataBase;
 class INiagaraMergeManager;
 class INiagaraEditorOnlyDataUtilities;
 struct FNiagaraParameterStore;
+class FCommonViewportClient;
+class FNiagaraDebuggerClient;
 
 extern NIAGARA_API int32 GEnableVerboseNiagaraChangeIdLogging;
 
@@ -31,7 +36,7 @@ public:
 	typedef TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> CompileRequestPtr;
 	DECLARE_DELEGATE_RetVal_TwoParams(int32, FScriptCompiler, const FNiagaraCompileRequestDataBase*, const FNiagaraCompileOptions&);
 	DECLARE_DELEGATE_RetVal_TwoParams(TSharedPtr<FNiagaraVMExecutableData>, FCheckCompilationResult, int32, bool);
-	DECLARE_DELEGATE_RetVal_OneParam(CompileRequestPtr, FOnPrecompile, UObject*);
+	DECLARE_DELEGATE_RetVal_TwoParams(CompileRequestPtr, FOnPrecompile, UObject*, FGuid);
 #endif
 	DECLARE_DELEGATE_RetVal(void, FOnProcessQueue);
 
@@ -39,10 +44,20 @@ public:
 	virtual void StartupModule()override;
 	virtual void ShutdownModule()override;
 	void ShutdownRenderingResources();
+	
+	void OnPostEngineInit();
+	void OnPreExit();
+
+	void OnWorldTickStart(UWorld* World, ELevelTick TickType, float DeltaSeconds);
+	void OnWorldBeginTearDown(UWorld* World);
 
 	FDelegateHandle SetOnProcessShaderCompilationQueue(FOnProcessQueue InOnProcessQueue);
 	void ResetOnProcessShaderCompilationQueue(FDelegateHandle DelegateHandle);
 	void ProcessShaderCompilationQueue();
+
+#if WITH_NIAGARA_DEBUGGER
+	FNiagaraDebuggerClient* GetDebuggerClient() { return DebuggerClient.Get(); }
+#endif
 
 #if WITH_EDITOR
 	const INiagaraMergeManager& GetMergeManager() const;
@@ -66,11 +81,23 @@ public:
 	FDelegateHandle RegisterCompileResultDelegate(FCheckCompilationResult ResultDelegate);
 	void UnregisterCompileResultDelegate(FDelegateHandle DelegateHandle);
 
-	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> Precompile(UObject* InObj);
+	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> Precompile(UObject* InObj, FGuid Version);
 	FDelegateHandle RegisterPrecompiler(FOnPrecompile PreCompiler);
 	void UnregisterPrecompiler(FDelegateHandle DelegateHandle);
 
+	void OnAssetLoaded(UObject* Asset);
+
 #endif
+
+#if NIAGARA_PERF_BASELINES
+	void GeneratePerfBaselines(TArray<UNiagaraEffectType*>& BaselinesToGenerate);
+
+	bool ToggleStatPerfBaselines(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
+	int32 RenderStatPerfBaselines(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
+#endif
+
+	FORCEINLINE static bool UseGlobalFXBudget() { return bUseGlobalFXBudget; }
+	static void OnUseGlobalFXBudgetChanged(IConsoleVariable* Variable);
 
 	FORCEINLINE static float GetGlobalSpawnCountScale() { return EngineGlobalSpawnCountScale; }
 	FORCEINLINE static float GetGlobalSystemCountScale() { return EngineGlobalSystemCountScale; }
@@ -107,6 +134,7 @@ public:
 
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_ExecutionCount() { return Engine_ExecutionCount; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_NumParticles() { return Engine_Emitter_NumParticles; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_SimulationPosition() { return Engine_Emitter_SimulationPosition; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_TotalSpawnedParticles() { return Engine_Emitter_TotalSpawnedParticles; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_SpawnCountScale() { return Engine_Emitter_SpawnCountScale; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_InstanceSeed() { return Engine_Emitter_InstanceSeed; }
@@ -130,6 +158,7 @@ public:
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_SimulationTarget() { return Emitter_SimulationTarget; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_ScriptUsage() { return ScriptUsage; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_ScriptContext() { return ScriptContext; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_FunctionDebugState() { return FunctionDebugState; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_InterpSpawnStartDt() { return Emitter_InterpSpawnStartDt; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_SpawnGroup() { return Emitter_SpawnGroup; }
 
@@ -152,6 +181,7 @@ public:
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_Lifetime() { return Particles_Lifetime; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_MeshOrientation() { return Particles_MeshOrientation; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_UVScale() { return Particles_UVScale; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_PivotOffset() { return Particles_PivotOffset; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_CameraOffset() { return Particles_CameraOffset; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_MaterialRandom() { return Particles_MaterialRandom; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_LightRadius() { return Particles_LightRadius; }
@@ -163,11 +193,13 @@ public:
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_RibbonTwist() { return Particles_RibbonTwist; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_RibbonFacing() { return Particles_RibbonFacing; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_RibbonLinkOrder() { return Particles_RibbonLinkOrder; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_RibbonUVDistance() { return Particles_RibbonUVDistance; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_RibbonU0Override() { return Particles_RibbonU0Override; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_RibbonV0RangeOverride() { return Particles_RibbonV0RangeOverride; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_RibbonU1Override() { return Particles_RibbonU1Override; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_RibbonV1RangeOverride() { return Particles_RibbonV1RangeOverride; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_VisibilityTag() { return Particles_VisibilityTag; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_MeshIndex() { return Particles_MeshIndex; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Particles_ComponentsEnabled() { return Particles_ComponentsEnabled; }
 	
 	FORCEINLINE static const FNiagaraVariable&  GetVar_DataInstance_Alive() { return DataInstance_Alive; }
@@ -186,6 +218,8 @@ public:
 #endif
 
 	static int32 EngineEffectsQuality;
+
+	static bool bUseGlobalFXBudget;
 
 
 private:
@@ -218,6 +252,7 @@ private:
 
 	static FNiagaraVariable Engine_ExecutionCount;
 	static FNiagaraVariable Engine_Emitter_NumParticles;
+	static FNiagaraVariable Engine_Emitter_SimulationPosition;
 	static FNiagaraVariable Engine_Emitter_TotalSpawnedParticles;
 	static FNiagaraVariable Engine_Emitter_SpawnCountScale;
 	static FNiagaraVariable Engine_System_TickCount;
@@ -261,7 +296,9 @@ private:
 	static FNiagaraVariable Particles_Lifetime;
 	static FNiagaraVariable Particles_MeshOrientation;
 	static FNiagaraVariable Particles_VisibilityTag;
+	static FNiagaraVariable Particles_MeshIndex;
 	static FNiagaraVariable Particles_UVScale;
+	static FNiagaraVariable Particles_PivotOffset;
 	static FNiagaraVariable Particles_CameraOffset;
 	static FNiagaraVariable Particles_MaterialRandom;
 	static FNiagaraVariable Particles_LightRadius;
@@ -274,6 +311,7 @@ private:
 	static FNiagaraVariable Particles_RibbonFacing;
 	static FNiagaraVariable Particles_RibbonLinkOrder;
 	static FNiagaraVariable Particles_ComponentsEnabled;
+	static FNiagaraVariable Particles_RibbonUVDistance;
 	static FNiagaraVariable Particles_RibbonU0Override;
 	static FNiagaraVariable Particles_RibbonV0RangeOverride;
 	static FNiagaraVariable Particles_RibbonU1Override;
@@ -281,8 +319,17 @@ private:
 
 	static FNiagaraVariable ScriptUsage;
 	static FNiagaraVariable ScriptContext;
+	static FNiagaraVariable FunctionDebugState;
 	static FNiagaraVariable DataInstance_Alive;
 	static FNiagaraVariable Translator_BeginDefaults;
 	static FNiagaraVariable Translator_CallID;
+
+#if NIAGARA_PERF_BASELINES
+	TUniquePtr<FNiagaraPerfBaselineHandler> BaselineHandler;
+#endif
+
+#if WITH_NIAGARA_DEBUGGER
+	TPimplPtr<FNiagaraDebuggerClient> DebuggerClient;
+#endif
 };
 

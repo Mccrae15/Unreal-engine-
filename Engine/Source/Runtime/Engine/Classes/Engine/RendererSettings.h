@@ -156,6 +156,21 @@ namespace EDefaultBackBufferPixelFormat
 	};
 }
 
+/**
+* Enumerates VRS Fixed-foveation levels
+*/
+UENUM()
+namespace EFixedFoveationLevels
+{
+	enum Type
+	{
+		Disabled = 0 UMETA(DisplayName = "Disabled"),
+		Low = 1 UMETA(DisplayName = "Low"),
+		Medium = 2 UMETA(DisplayName = "Medium"),
+		High = 3 UMETA(DisplayName = "High"),
+	};
+}
+
 namespace EDefaultBackBufferPixelFormat
 {
 	ENGINE_API EPixelFormat Convert2PixelFormat(EDefaultBackBufferPixelFormat::Type InDefaultBackBufferPixelFormat);
@@ -256,6 +271,13 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "When enabled, Textures can be streamed using the virtual texture system. Changing this setting requires restarting the editor.",
 		ConfigRestartRequired = true))
 	uint32 bVirtualTextures : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = VirtualTextures, meta = (
+		EditCondition = "bVirtualTextures",
+		ConsoleVariable = "r.VT.EnableAutoImport", DisplayName = "Enable virtual texture on texture import",
+		ToolTip = "Set the 'Virtual Texture Streaming' setting for imported textures based on 'Auto Virtual Texturing Size' in the texture import settings.",
+		ConfigRestartRequired = false))
+	uint32 bVirtualTextureEnableAutoImport : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = VirtualTextures, meta = (
 		EditCondition = "bVirtualTextures",
@@ -389,6 +411,11 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		DisplayName="Translucent Sort Axis",
 		ToolTip="The axis that sorting will occur along when Translucent Sort Policy is set to SortAlongAxis."))
 	FVector TranslucentSortAxis;
+
+	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
+		ConsoleVariable = "vr.VRS.HMDFixedFoveationLevel", DisplayName = "HMD Fixed Foveation Level (experimental)",
+		ToolTip = "Set the level of fixed-foveation to apply when generating the Variable Rate Shading attachment. This feature is currently experimental.\nThis can yield some fairly significant performance benefits on GPUs that support Tier 2 VRS.\nLower settings will result in almost no discernible artifacting on most HMDs; higher settings will show some artifacts towards the edges of the view."))
+		TEnumAsByte<EFixedFoveationLevels::Type> HMDFixedFoveationLevel;
 
 	UPROPERTY(config, EditAnywhere, Category=Postprocessing, meta=(
 		ConsoleVariable="r.CustomDepth",DisplayName="Custom Depth-Stencil Pass",
@@ -821,12 +848,28 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ConsoleVariable = "r.GPUSkin.UnlimitedBoneInfluencesThreshold", DisplayName = "Unlimited Bone Influences Threshold",
 		ToolTip = "When Unlimited Bone Influence is enabled, it still uses a fixed bone inflence buffer until the max bone influence of a mesh exceeds this value"))
 		int32 UnlimitedBonInfluencesThreshold;
+
+	/*
+	 * The maximum bones count section vertices's skinning can use before being chunked into more sections. The minimum value is the maximum total influences define (MAX_TOTAL_INFLUENCES).
+	 */
+	UPROPERTY(config, EditAnywhere, Category = Skinning, meta = (
+		DisplayName = "Maximum bones per Sections",
+		ToolTip = "Max number of bones that can be skinned on the GPU in a single draw call. The default value is set by the Compat.MAX_GPUSKIN_BONES consolevariable. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true,
+		ClampMin = "12", UIMin = "12"))
+		FPerPlatformInt MaxSkinBones;
 	
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (
 		ConsoleVariable = "r.Mobile.PlanarReflectionMode", DisplayName = "Planar Reflection Mode",
 		ToolTip = "The PlanarReflection will work differently on different mode on mobile platform, choose the proper mode as expect. Changing this setting requires restarting the editor.",
 		ConfigRestartRequired = true))
 		TEnumAsByte<EMobilePlanarReflectionMode::Type> MobilePlanarReflectionMode;
+
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (
+		ConsoleVariable = "r.Mobile.SupportsGen4TAA", DisplayName = "Supports desktop Gen4 TAA on mobile",
+		ToolTip = "Support desktop Gen4 TAA with mobile rendering. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+		uint32 bMobileSupportsGen4TAA : 1;
 
 	UPROPERTY(config, EditAnywhere, Category="Experimental|LOD Streaming|Skeletal Mesh", meta=(
 		DisplayName="Stream LODs by default",

@@ -48,9 +48,9 @@ public:
 	//UNiagaraDataInterface Interface
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions) override { if (Impl) { Impl->GetFunctions(OutFunctions); } }
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) override { if (Impl) { Impl->GetVMExternalFunction(BindingInfo, InstanceData, OutFunc); } }
+#if WITH_EDITORONLY_DATA
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override { if (Impl) { Impl->GetParameterDefinitionHLSL(ParamInfo, OutHLSL); } }
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override { return Impl ? Impl->GetFunctionHLSL(ParamInfo, FunctionInfo, FunctionInstanceIndex, OutHLSL) : false; }
-#if WITH_EDITORONLY_DATA
 	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override { return Impl ? Impl->UpgradeFunctionCall(FunctionSignature) : false; }
 #endif
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target) const override { return true; }
@@ -71,7 +71,7 @@ public:
 	FRWLock ArrayRWGuard;
 
 	/** When greater than 0 sets the maximum number of elements the array can hold, only relevant when using operations that modify the array size. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Array", meta=(ClampMin="0"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category="Array", meta=(ClampMin="0"))
 	int32 MaxElements;
 
 protected:

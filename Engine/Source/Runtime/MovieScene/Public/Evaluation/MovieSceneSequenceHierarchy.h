@@ -53,9 +53,23 @@ struct FMovieSceneSubSequenceData
 	 */
 	MOVIESCENE_API bool IsDirty(const UMovieSceneSubSection& InSubSection) const;
 
+	/**
+	* Gets the signature of the sub-section this points to. 
+	*/
+	MOVIESCENE_API FGuid GetSubSectionSignature() const { return SubSectionSignature; }
+
+	/**
+	 * Re-creates a sub-section parameter struct.
+	 */
+	MOVIESCENE_API FMovieSceneSectionParameters ToSubSectionParameters() const;
+
 	/** The sequence that the sub section references */
 	UPROPERTY(meta=(AllowedClasses="MovieSceneSequence"))
 	FSoftObjectPath Sequence;
+
+	/** The transform from this sub sequence's parent to its own play space. */
+	UPROPERTY()
+	FMovieSceneSequenceTransform OuterToInnerTransform;
 
 	/** Transform that transforms a given time from the sequences outer space, to its authored space. */
 	UPROPERTY()
@@ -68,6 +82,26 @@ struct FMovieSceneSubSequenceData
 	/** This sequence's deterministic sequence ID. Used in editor to reduce the risk of collisions on recompilation. */ 
 	UPROPERTY()
 	FMovieSceneSequenceID DeterministicSequenceID;
+
+	/** The play range of the parent section */
+	UPROPERTY()
+	FMovieSceneFrameRange ParentPlayRange;
+
+	/** The start frame offset of the parent section */
+	UPROPERTY()
+	FFrameNumber ParentStartFrameOffset;
+
+	/** The end frame offset of the parent section */
+	UPROPERTY()
+	FFrameNumber ParentEndFrameOffset;
+
+	/** The offset for the first loop of the sub-sequence */
+	UPROPERTY()
+	FFrameNumber ParentFirstLoopStartFrameOffset;
+
+	/** Whether this sub-sequence can loop */
+	UPROPERTY()
+	bool bCanLoop = false;
 	
 	/** This sub sequence's playback range according to its parent sub section. Clamped recursively during template generation */
 	UPROPERTY()
@@ -122,10 +156,6 @@ private:
 	/** The sub section's signature at the time this structure was populated. */
 	UPROPERTY()
 	FGuid SubSectionSignature;
-
-	/** The transform from this sub sequence's parent to its own play space. */
-	UPROPERTY()
-	FMovieSceneSequenceTransform OuterToInnerTransform;
 };
 
 /**
@@ -163,18 +193,12 @@ struct FMovieSceneSubSequenceTreeEntry
 {
 	GENERATED_BODY()
 
-	friend FArchive& operator<<(FArchive& Ar, FMovieSceneSubSequenceTreeEntry& InOutEntry)
-	{
-		return Ar << InOutEntry.SequenceID << InOutEntry.Flags;
-	}
-
-	friend bool operator==(FMovieSceneSubSequenceTreeEntry A, FMovieSceneSubSequenceTreeEntry B)
-	{
-		return A.SequenceID == B.SequenceID && A.Flags == B.Flags;
-	}
+	friend FArchive& operator<<(FArchive& Ar, FMovieSceneSubSequenceTreeEntry& InOutEntry);
+	friend bool operator==(FMovieSceneSubSequenceTreeEntry A, FMovieSceneSubSequenceTreeEntry B);
 
 	FMovieSceneSequenceID SequenceID;
 	ESectionEvaluationFlags Flags;
+	FMovieSceneWarpCounter RootToSequenceWarpCounter;
 };
 
 USTRUCT()
@@ -273,11 +297,20 @@ struct FMovieSceneSequenceHierarchy
 	 */
 	void Add(const FMovieSceneSubSequenceData& Data, FMovieSceneSequenceIDRef ThisSequenceID, FMovieSceneSequenceIDRef ParentID);
 
+	/**
+	 * Remove the specified sub sequence datas from the hierarchy.
+	 */
 	void Remove(TArrayView<const FMovieSceneSequenceID> SequenceIDs);
 
-	void AddRange(FMovieSceneSequenceIDRef InSequenceID, const TRange<FFrameNumber>& RootSpaceRange, ESectionEvaluationFlags InFlags)
+	/**
+	 * Add an entry for the given sub sequence with the given root time range
+	 */
+	void AddRange(const TRange<FFrameNumber>& RootSpaceRange, FMovieSceneSequenceIDRef InSequenceID, ESectionEvaluationFlags InFlags, FMovieSceneWarpCounter RootToSequenceWarpCounter);
+	
+	/** Get all sub-sequence IDs */
+	void AllSubSequenceIDs(TArray<FMovieSceneSequenceID>& OutSequenceIDs) const
 	{
-		Tree.Data.AddUnique(RootSpaceRange, FMovieSceneSubSequenceTreeEntry{ InSequenceID, InFlags });
+		Hierarchy.GetKeys(OutSequenceIDs);
 	}
 
 	/** Access to all the subsequence data */

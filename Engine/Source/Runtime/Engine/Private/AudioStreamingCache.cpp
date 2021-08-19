@@ -35,31 +35,29 @@ static int32 KeepCacheMissBufferOnFlushCVar = 1;
 FAutoConsoleVariableRef CVarKeepCacheMissBufferOnFlush(
 	TEXT("au.streamcaching.KeepCacheMissBufferOnFlush"),
 	KeepCacheMissBufferOnFlushCVar,
-	TEXT("IF set to 1, this will maintain the buffer of recorded cache misses after calling AudioMemReport. Otherwise, calling audiomemreport will flush all previous recorded cache misses.\n")
-	TEXT("1: All cache misses from the  whole session will show up in audiomemreport. 0: Only cache misses since the previous call to audiomemreport will show up in the current audiomemreport."),
+	TEXT("If set to 1, this will maintain the buffer of recorded cache misses after calling AudioMemReport. Otherwise, calling audiomemreport will flush all previous recorded cache misses.\n")
+	TEXT("1: All cache misses from the whole session will show up in audiomemreport. 0: Only cache misses since the previous call to audiomemreport will show up in the current audiomemreport."),
 	ECVF_Default);
 
 static int32 ForceBlockForLoadCVar = 0;
 FAutoConsoleVariableRef CVarForceBlockForLoad(
 	TEXT("au.streamcaching.ForceBlockForLoad"),
 	ForceBlockForLoadCVar,
-	TEXT("when set to a nonzero value, blocks GetLoadedChunk until the disk read is complete.\n")
-	TEXT("n: Number of elements to display on screen."),
+	TEXT("When set to a nonzero value, blocks GetLoadedChunk until the disk read is complete.\n"),
 	ECVF_Default);
 
 static int32 TrimCacheWhenOverBudgetCVar = 1;
 FAutoConsoleVariableRef CVarTrimCacheWhenOverBudget(
 	TEXT("au.streamcaching.TrimCacheWhenOverBudget"),
 	TrimCacheWhenOverBudgetCVar,
-	TEXT("when set to a nonzero value, TrimMemory will be called in AddOrTouchChunk to ensure we never go over budget.\n")
-	TEXT("n: Number of elements to display on screen."),
+	TEXT("When set to a nonzero value, TrimMemory will be called in AddOrTouchChunk to ensure we never go over budget.\n"),
 	ECVF_Default);
 	
 static int32 AlwaysLogCacheMissesCVar = 0;
 FAutoConsoleVariableRef CVarAlwaysLogCacheMisses(
 	TEXT("au.streamcaching.AlwaysLogCacheMisses"),
 	AlwaysLogCacheMissesCVar,
-	TEXT("when set to a nonzero value, all cache misses will be added to the audiomemreport.\n")
+	TEXT("When set to a nonzero value, all cache misses will be added to the audiomemreport.\n")
 	TEXT("0: Don't log cache misses until au.streamcaching.StartProfiling is called. 1: Always log cache misses."),
 	ECVF_Default);
 
@@ -75,7 +73,7 @@ static int32 PlaybackRequestPriorityCVar = 0;
 FAutoConsoleVariableRef CVarPlaybackRequestPriority(
 	TEXT("au.streamcaching.PlaybackRequestPriority"),
 	PlaybackRequestPriorityCVar,
-	TEXT("This cvar sets the default request priority for audio chunks that are about to play back but aren't in the cache.\n")
+	TEXT("This cvar sets the default request priority for audio chunks that are about to play back, but aren't in the cache.\n")
 	TEXT("0: High, 1: Normal, 2: Below Normal, 3: Low, 4: Min"),
 	ECVF_Default);
 
@@ -83,8 +81,8 @@ static int32 BlockForPendingLoadOnCacheOverflowCVar = 0;
 FAutoConsoleVariableRef CVarBlockForPendingLoadOnCacheOverflow(
 	TEXT("au.streamcaching.BlockForPendingLoadOnCacheOverflow"),
 	BlockForPendingLoadOnCacheOverflowCVar,
-	TEXT("This cvar sets the default request priority for audio chunks that are about to play back but aren't in the cache.\n")
-	TEXT("0: when we blow the cache we clear any soundwave retainers. 1: when we blow the cache we attempt to cancel a load in flight."),
+	TEXT("This cvar sets the default request priority for audio chunks that are about to play back, but aren't in the cache.\n")
+	TEXT("0: When we blow the cache we clear any soundwave retainers. 1:When we blow the cache we attempt to cancel a load in flight."),
 	ECVF_Default);
 
 static int32 NumSoundWavesToClearOnCacheOverflowCVar = 0;
@@ -135,6 +133,30 @@ FAutoConsoleVariableRef CVarUseObjectKeyInChunkKeyComparisons(
 	TEXT("1: (default) Compare object keys.  0: Do not compare object keys."),
 	ECVF_Default);
 
+static int32 DebugViewCVar = 2;
+FAutoConsoleVariableRef CVarDebugView(
+	TEXT("au.streamcaching.DebugView"),
+	DebugViewCVar,
+	TEXT("Enables the comparison of FObjectKeys when comparing Stream Cache Chunk Keys.  Without this FName collisions could occur if 2 SoundWaves have the same name.\n")
+	TEXT("0: Legacy, 1: Default, 2: Averaged View, 3: High Detail View"),
+	ECVF_Default);
+
+static int32 SearchUsingChunkArrayCVar = 1;
+FAutoConsoleVariableRef CVarSearchUsingChunkArray(
+	TEXT("au.streamcaching.SearchUsingChunkArray"),
+	SearchUsingChunkArrayCVar,
+	TEXT("If performing an exhaustive search of the cache, use the chunk array instead of the LRU (we give up knowing how far down the cache an element was).\n")
+	TEXT("0: Search using LRU (linked list). 1: Search using Chunk Pool (TArray)"),
+	ECVF_Default);
+
+static int32 EnableExhaustiveCacheSearchesCVar = 0;
+FAutoConsoleVariableRef CVarEnableExhaustiveCacheSearches(
+	TEXT("au.streamcaching.EnableExhaustiveCacheSearches"),
+	EnableExhaustiveCacheSearchesCVar,
+	TEXT("Enables an exhaustive search of the cache in FindElementForKey.\n")
+	TEXT("0: Rely on chunk offset. 1: Search using linear search"),
+	ECVF_Default);
+
 static FAutoConsoleCommand GFlushAudioCacheCommand(
 	TEXT("au.streamcaching.FlushAudioCache"),
 	TEXT("This will flush any non retained audio from the cache when Stream Caching is enabled."),
@@ -144,7 +166,7 @@ static FAutoConsoleCommand GFlushAudioCacheCommand(
 		static constexpr uint64 NumBytesToFree = TNumericLimits<uint64>::Max() / 2;
 		uint64 NumBytesFreed = IStreamingManager::Get().GetAudioStreamingManager().TrimMemory(NumBytesToFree);
 
-		UE_LOG(LogAudio, Display, TEXT("Audio Cache Flushed! %d megabytes free."), NumBytesFreed / (1024.0 * 1024.0));
+		UE_LOG(LogAudioStreamCaching, Display, TEXT("Audio Cache Flushed! %d megabytes free."), NumBytesFreed / (1024.0 * 1024.0));
 	})
 );
 
@@ -183,7 +205,7 @@ static FAutoConsoleCommand GResizeAudioCacheCommand(
 
 	StreamCacheSizeCVar->Set(InMB);
 
-	UE_LOG(LogAudio, Display, TEXT("Audio Cache Shrunk! Now set to be %f MB."), InMB);
+	UE_LOG(LogAudioStreamCaching, Display, TEXT("Audio Cache Shrunk! Now set to be %f MB."), InMB);
 })
 );
 
@@ -195,7 +217,7 @@ static FAutoConsoleCommand GEnableProfilingAudioCacheCommand(
 {
 	IStreamingManager::Get().GetAudioStreamingManager().SetProfilingMode(true);
 
-	UE_LOG(LogAudio, Display, TEXT("Enabled profiling mode on the audio stream cache."));
+	UE_LOG(LogAudioStreamCaching, Display, TEXT("Enabled profiling mode on the audio stream cache."));
 })
 );
 
@@ -207,7 +229,7 @@ static FAutoConsoleCommand GDisableProfilingAudioCacheCommand(
 {
 	IStreamingManager::Get().GetAudioStreamingManager().SetProfilingMode(false);
 
-	UE_LOG(LogAudio, Display, TEXT("Disabled profiling mode on the audio stream cache."));
+	UE_LOG(LogAudioStreamCaching, Display, TEXT("Disabled profiling mode on the audio stream cache."));
 })
 );
 
@@ -392,7 +414,7 @@ FAudioChunkHandle FCachedAudioStreamingManager::GetLoadedChunk(const USoundWave*
 
 		if (!FAudioChunkCache::IsKeyValid(ChunkKey))
 		{
-			UE_LOG(LogAudio, Warning, TEXT("Invalid Chunk Index %d Requested for Wave %s!"), ChunkIndex, *SoundWave->GetName());
+			UE_LOG(LogAudioStreamCaching, Warning, TEXT("Invalid Chunk Index %d Requested for Wave %s!"), ChunkIndex, *SoundWave->GetName());
 			return FAudioChunkHandle();
 		}
 
@@ -401,12 +423,12 @@ FAudioChunkHandle FCachedAudioStreamingManager::GetLoadedChunk(const USoundWave*
 		TArrayView<uint8> LoadedChunk = Cache->GetChunk(ChunkKey, bBlockForLoad, (bForImmediatePlayback || bBlockForLoad), LookupIDForChunk);
 		
 		// Ensure that, if we requested a synchronous load of this chunk, we didn't fail to load said chunk.
-		UE_CLOG(bBlockForLoad && !LoadedChunk.GetData(), LogAudio, Display, TEXT("Synchronous load of chunk index %d for SoundWave %s failed to return any data. Likely because the cache was blown."), ChunkIndex, *SoundWave->GetName());
+		UE_CLOG(bBlockForLoad && !LoadedChunk.GetData(), LogAudioStreamCaching, Display, TEXT("Synchronous load of chunk index %d for SoundWave %s failed to return any data. Likely because the cache was blown."), ChunkIndex, *SoundWave->GetName());
 
 		// Set the updated cache offset for this chunk index.
 		ChunkKey.SoundWave->SetCacheLookupIDForChunk(ChunkIndex, LookupIDForChunk);
 
-		UE_CLOG(!bBlockForLoad && !LoadedChunk.GetData(), LogAudio, Display, TEXT("GetLoadedChunk called for chunk index %d of SoundWave %s when audio was not loaded yet. This will result in latency."), ChunkIndex, *SoundWave->GetName());
+		UE_CLOG(!bBlockForLoad && !LoadedChunk.GetData(), LogAudioStreamCaching, Verbose, TEXT("GetLoadedChunk called for chunk index %d of SoundWave %s when audio was not loaded yet. This will result in latency."), ChunkIndex, *SoundWave->GetName());
 
 		// Finally, if there's a chunk after this in the sound, request that it is in the cache.
 		const int32 NextChunk = GetNextChunkIndex(SoundWave, ChunkIndex);
@@ -435,7 +457,7 @@ FAudioChunkHandle FCachedAudioStreamingManager::GetLoadedChunk(const USoundWave*
 					bCacheCurrentlyBlown = true;
 					Cache->IncrementCacheOverflowCounter();
 
-					UE_LOG(LogAudio, Warning, TEXT("Cache overflow!!! couldn't load chunk %d for sound %s!"), ChunkIndex, *SoundWave->GetName());
+					UE_LOG(LogAudioStreamCaching, Warning, TEXT("Cache overflow!!! couldn't load chunk %d for sound %s!"), ChunkIndex, *SoundWave->GetName());
 
 					// gather SoundWaves to release compressed data on:
 					TArray<FObjectKey> SoundWavesToRelease;
@@ -492,7 +514,7 @@ FAudioChunkHandle FCachedAudioStreamingManager::GetLoadedChunk(const USoundWave*
 							}
 						}
 
-						UE_LOG(LogAudio, Warning, TEXT("Removed %d retained sounds from the stream cache."), NumChunksReleased);
+						UE_LOG(LogAudioStreamCaching, Warning, TEXT("Removed %d retained sounds from the stream cache."), NumChunksReleased);
 
 						bCacheCurrentlyBlown = false;
 					});
@@ -799,7 +821,7 @@ TArrayView<uint8> FAudioChunkCache::GetChunk(const FChunkKey& InKey, bool bBlock
 		if (!FoundElement)
 		{
 			OutCacheOffset = InvalidAudioStreamCacheLookupID;
-			UE_LOG(LogAudio, Display, TEXT("GetChunk failed to find an available chunk slot in the cache, likely because the cache is blown."));
+			UE_LOG(LogAudioStreamCaching, Display, TEXT("GetChunk failed to find an available chunk slot in the cache, likely because the cache is blown."));
 			return TArrayView<uint8>();
 		}
 		
@@ -1020,7 +1042,7 @@ void FAudioChunkCache::BlockForAllPendingLoads() const
 		if (bLoadInProgress)
 		{
 			float TimeSinceStarted = FPlatformTime::Seconds() - TimeStarted;
-			UE_LOG(LogAudio, Log, TEXT("Waited %f seconds for async audio chunk loads."), TimeSinceStarted);
+			UE_LOG(LogAudioStreamCaching, Log, TEXT("Waited %f seconds for async audio chunk loads."), TimeSinceStarted);
 			FPlatformProcess::Sleep(0.0f);
 		}
 
@@ -1168,6 +1190,7 @@ FAudioChunkCache::FCacheElement* FAudioChunkCache::FindElementForKey(const FChun
 	if (CacheOffset != InvalidAudioStreamCacheLookupID)
 	{
 		check(CacheOffset < CachePool.Num());
+
 		// Finally, sanity check that the key is still the same.
 		if (CachePool[CacheOffset].Key == InKey)
 		{
@@ -1175,9 +1198,24 @@ FAudioChunkCache::FCacheElement* FAudioChunkCache::FindElementForKey(const FChun
 		}
 	}
 
+	if (EnableExhaustiveCacheSearchesCVar)
+	{
+		// Otherwise, linearly search the cache.
+		if (SearchUsingChunkArrayCVar)
+		{
+			return LinearSearchChunkArrayForElement(InKey);
+		}
+
+		return LinearSearchCacheForElement(InKey);
+	}
+
+	return nullptr;
+}
+
+FAudioChunkCache::FCacheElement* FAudioChunkCache::LinearSearchCacheForElement(const FChunkKey& InKey)
+{
 	//Otherwise, linearly search the cache.
 	FCacheElement* CurrentElement = MostRecentElement;
-
 
 	// In debuggable situations, we breadcrumb how far down the cache the cache we were.
 	int32 ElementPosition = 0;
@@ -1191,25 +1229,38 @@ FAudioChunkCache::FCacheElement* FAudioChunkCache::FindElementForKey(const FChun
 			float& CMA = CurrentElement->DebugInfo.AverageLocationInCacheWhenNeeded;
 			CMA += ((ElementPosition - CMA) / (CurrentElement->DebugInfo.NumTimesTouched + 1));
 #endif
-
+			UE_LOG(LogAudioStreamCaching, Display, TEXT("Found element in cache using linear search (LRU)"));
 			return CurrentElement;
 		}
 		else
 		{
 			CurrentElement = CurrentElement->LessRecentElement;
 
-
 			ElementPosition++;
 
 			if (CurrentElement && ElementPosition >= ChunksInUse)
 			{
-				UE_LOG(LogAudio, Warning, TEXT("Possible cycle in our LRU cache list. Please check to ensure any place FCacheElement::MoreRecentElement or FCacheElement::LessRecentElement is changed is locked by CacheMutationCriticalSection."));
+				UE_LOG(LogAudioStreamCaching, Warning, TEXT("Possible cycle in our LRU cache list. Please check to ensure any place FCacheElement::MoreRecentElement or FCacheElement::LessRecentElement is changed is locked by CacheMutationCriticalSection."));
 				return nullptr;
 			}
 		}
 	}
 
 	return CurrentElement;
+}
+
+FAudioChunkCache::FCacheElement* FAudioChunkCache::LinearSearchChunkArrayForElement(const FChunkKey& InKey)
+{
+	for (int i = 0; i < ChunksInUse; ++i)
+	{
+		if (InKey == CachePool[i].Key)
+		{
+			UE_LOG(LogAudioStreamCaching, Display, TEXT("Found element in cache using linear search (Chunk Array)"));
+			return &CachePool[i];
+		}
+	}
+
+	return nullptr;
 }
 
 void FAudioChunkCache::TouchElement(FCacheElement* InElement)
@@ -1294,7 +1345,7 @@ FAudioChunkCache::FCacheElement* FAudioChunkCache::InsertChunk(const FChunkKey& 
 			static bool bLoggedCacheSaturated = false;
 			if (!bLoggedCacheSaturated)
 			{
-				UE_LOG(LogAudio, Display, TEXT("Audio Stream Cache: Using %d of %d chunks.."), ChunksInUse, CachePool.Num());
+				UE_LOG(LogAudioStreamCaching, Display, TEXT("Audio Stream Cache: Using %d of %d chunks.."), ChunksInUse, CachePool.Num());
 				bLoggedCacheSaturated = true;
 			}
 
@@ -1304,13 +1355,13 @@ FAudioChunkCache::FCacheElement* FAudioChunkCache::InsertChunk(const FChunkKey& 
 			// If we blew the cache, it might be because we have too many loads in flight. Here we attempt to find a load in flight for an unreferenced chunk:
 			if (BlockForPendingLoadOnCacheOverflowCVar && !CacheElement)
 			{
-				UE_LOG(LogAudio, Warning, TEXT("Failed to find an available chunk slot in the audio streaming manager. Finding a load in flight for an unreferenced chunk and cancelling it."));
+				UE_LOG(LogAudioStreamCaching, Warning, TEXT("Failed to find an available chunk slot in the audio streaming manager. Finding a load in flight for an unreferenced chunk and cancelling it."));
 				CacheElement = EvictLeastRecentChunk(true);
 			}
 
 			if (!CacheElement)
 			{
-				UE_LOG(LogAudio, Display, TEXT("Failed to find an available chunk slot in the audio streaming manager, likely because the cache was blown."));
+				UE_LOG(LogAudioStreamCaching, Display, TEXT("Failed to find an available chunk slot in the audio streaming manager, likely because the cache was blown."));
 				return nullptr;
 			}
 		}
@@ -1424,7 +1475,7 @@ FAudioChunkCache::FCacheElement* FAudioChunkCache::EvictLeastRecentChunk(bool bB
 		// If we ever hit this, it means that we couldn't find any cache elements that aren't in use.
 		if (!CacheElement || CacheElement == ElementToStopAt)
 		{
-			UE_LOG(LogAudio, Warning, TEXT("Cache blown! Please increase the cache size (currently %lu bytes) or load less audio."), ReportCacheSize());
+			UE_LOG(LogAudioStreamCaching, Warning, TEXT("Cache blown! Please increase the cache size (currently %lu bytes) or load less audio."), ReportCacheSize());
 			return nullptr;
 		}
 	}
@@ -1540,7 +1591,7 @@ void FAudioChunkCache::KickOffAsyncLoad(FCacheElement* CacheElement, const FChun
 
 		if (CacheElement->DDCTask.IsValid())
 		{
-			UE_CLOG(!CacheElement->DDCTask->IsDone(), LogAudio, Display, TEXT("DDC work was not finished for a requested audio streaming chunk slot berfore reuse; This may cause a hitch."));
+			UE_CLOG(!CacheElement->DDCTask->IsDone(), LogAudioStreamCaching, Display, TEXT("DDC work was not finished for a requested audio streaming chunk slot berfore reuse; This may cause a hitch."));
 			CacheElement->DDCTask->EnsureCompletion();
 		}
 
@@ -1626,7 +1677,7 @@ void FAudioChunkCache::KickOffAsyncLoad(FCacheElement* CacheElement, const FChun
 		IBulkDataIORequest* LocalReadRequest = Chunk.BulkData.CreateStreamingRequest(0, ChunkDataSize, AsyncIOPriority | AIOP_FLAG_DONTCACHE, &AsyncFileCallBack, CacheElement->ChunkData);
 		if (!LocalReadRequest)
 		{
-			UE_LOG(LogAudio, Error, TEXT("Chunk load in audio LRU cache failed."));
+			UE_LOG(LogAudioStreamCaching, Error, TEXT("Chunk load in audio LRU cache failed."));
 			OnLoadCompleted(EAudioChunkLoadResult::ChunkOutOfBounds);
 			NumberOfLoadsInFlight.Decrement();
 		}
@@ -1799,13 +1850,13 @@ uint64 FCachedAudioStreamingManager::TrimMemory(uint64 NumBytesToFree)
 	check(NumBytesLeftToFree <= NumBytesToFree);
 	uint64 TotalBytesFreed = NumBytesToFree - NumBytesLeftToFree;
 
-	UE_LOG(LogAudio, Display, TEXT("Call to IAudioStreamingManager::TrimMemory successfully freed %lu of the requested %lu bytes."), TotalBytesFreed, NumBytesToFree);
+	UE_LOG(LogAudioStreamCaching, Display, TEXT("Call to IAudioStreamingManager::TrimMemory successfully freed %lu of the requested %lu bytes."), TotalBytesFreed, NumBytesToFree);
 	return TotalBytesFreed;
 }
 
 #include "Engine/Font.h"
 
-TPair<int, int> FAudioChunkCache::DebugDisplay(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation) const
+TPair<int, int> FAudioChunkCache::DebugDisplayLegacy(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation) const
 {
 	FScopeLock ScopeLock(const_cast<FCriticalSection*>(&CacheMutationCriticalSection));
 
@@ -1845,35 +1896,10 @@ TPair<int, int> FAudioChunkCache::DebugDisplay(UWorld* World, FViewport* Viewpor
 	int32 CacheTitleOffsetY = 0;
 	UEngine::GetSmallFont()->GetStringHeightAndWidth(TEXT("Cache XX "), CacheTitleOffsetY, CacheTitleOffsetX);
 
-	Canvas->DrawShadowedString(X + CacheTitleOffsetX, Y - 12, *NumElementsDetail, UEngine::GetSmallFont(), FLinearColor::Green);
-	Y += 10;
-
-	Canvas->DrawShadowedString(X + CacheTitleOffsetX, Y - 12, *CacheOverflowsDetail, UEngine::GetSmallFont(), NumCacheOverflows != 0? FLinearColor::Red : FLinearColor::Green);
-	Y += 10;
-
 	// First pass: We run through and get a snap shot of the amount of memory currently in use.
-	FCacheElement* CurrentElement = MostRecentElement;
-	uint32 NumBytesCounter = 0;
-
-	while (CurrentElement != nullptr)
-	{
-		// Note: this is potentially a stale value if we're in the middle of FCacheElement::KickOffAsyncLoad.
-		NumBytesCounter += CurrentElement->ChunkDataSize;
-		CurrentElement = CurrentElement->LessRecentElement;
-	}
-
-	// Convert to megabytes and print the total size:
-	const double NumMegabytesInUse = (double)NumBytesCounter / (1024 * 1024);
-	const double MaxCacheSizeMB = ((double)MemoryLimitBytes) / (1024 * 1024);
-
-	FString CacheMemoryUsage = *FString::Printf(TEXT("Using: %.4f Megabytes (%lu bytes). Max Potential Usage: %.4f Megabytes."), NumMegabytesInUse, MemoryCounterBytes.Load(), MaxCacheSizeMB);
-
-	// We're going to align this horizontally with the number of elements right above it.
-	Canvas->DrawShadowedString(X + CacheTitleOffsetX, Y, *CacheMemoryUsage, UEngine::GetSmallFont(), FLinearColor::Green);
-	Y += 12;
 
 	// Second Pass: We're going to list the actual chunks in the cache.
-	CurrentElement = MostRecentElement;
+	FCacheElement* CurrentElement = MostRecentElement;
 	int32 Index = 0;
 
 	float ColorLerpAmount = 0.0f;
@@ -1968,12 +1994,7 @@ TPair<int, int> FAudioChunkCache::DebugDisplay(UWorld* World, FViewport* Viewpor
 		Index++;
 	}
 
-	// The largest element of our debug panel is the initial memory details.
-	int32 CacheMemoryTextOffsetX = 0;
-	int32 CacheMemoryTextOffsetY = 0;
-	UEngine::GetSmallFont()->GetStringHeightAndWidth(*CacheMemoryUsage, CacheMemoryTextOffsetX, CacheMemoryTextOffsetY);
-
-	return TPair<int, int>(X + CacheTitleOffsetX + CacheMemoryTextOffsetX - InitialX, Y - InitialY);
+	return TPair<int, int>(X - InitialX, Y - InitialY);
 }
 
 FString FAudioChunkCache::DebugPrint()
@@ -2084,4 +2105,633 @@ FString FAudioChunkCache::DebugPrint()
 	OutputString += FlushCacheMissLog();
 
 	return OutputString;
+}
+
+
+// statics for debug visuals
+// Color scheme:
+static constexpr float ColorMax = 256.0f;
+
+static const FLinearColor ColorRetainedAndPlaying(40 / ColorMax, 129 / ColorMax, 49 / ColorMax); // Dark Green
+static const FLinearColor ColorRetained = FLinearColor::Green; // Light Green
+
+static const FLinearColor ColorPrimedAndPlaying(0, 104 / ColorMax, 174 / ColorMax); // Dark Blue
+static const FLinearColor ColorPrimed(65 / ColorMax, 218 / ColorMax, 255 / ColorMax); // Light Blue
+
+static const FLinearColor ColorLODAndPlaying(172 / ColorMax, 128 / ColorMax, 27 / ColorMax); // Dark Yellow
+static const FLinearColor ColorLOD(255 / ColorMax, 197 / ColorMax, 1 / ColorMax); // Yellow
+
+static const FLinearColor ColorLoadInProgress = FLinearColor::Black;
+static const FLinearColor ColorTrimmed = FLinearColor::Red;
+static const FLinearColor ColorCacheMiss = ColorLOD;
+static const FLinearColor ColorOther = FLinearColor::Gray;
+
+
+
+TPair<int, int> FAudioChunkCache::DebugDisplay(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation) const
+{
+	FScopeLock ScopeLock(const_cast<FCriticalSection*>(&CacheMutationCriticalSection));
+
+	// Draw our header
+	const int32 InitialX = X;
+	const int32 InitialY = Y;
+
+	FString NumElementsDetail = *FString::Printf(TEXT("Number of chunks loaded: %d of %d"), ChunksInUse, CachePool.Num());
+
+	const int32 NumCacheOverflows = CacheOverflowCount.GetValue();
+	FString CacheOverflowsDetail = *FString::Printf(TEXT("The cache has blown %d times)"), NumCacheOverflows);
+
+	// Offset our number of elements loaded horizontally to the right next to the cache title:
+	int32 CacheTitleOffsetX = 0;
+	int32 CacheTitleOffsetY = 0;
+	UEngine::GetSmallFont()->GetStringHeightAndWidth(TEXT("Cache XX "), CacheTitleOffsetY, CacheTitleOffsetX);
+
+	Canvas->DrawShadowedString(X + CacheTitleOffsetX, Y - 12, *NumElementsDetail, UEngine::GetSmallFont(), FLinearColor::Green);
+	Y += 10;
+
+	Canvas->DrawShadowedString(X + CacheTitleOffsetX, Y - 12, *CacheOverflowsDetail, UEngine::GetSmallFont(), NumCacheOverflows != 0 ? FLinearColor::Red : FLinearColor::Green);
+	Y += 10;
+
+	// First pass: We run through and get a snap shot of the amount of memory currently in use.
+	uint32 NumBytesCounter = 0;
+
+	int32 NumRetainedAndPlaying = 0;
+	int32 NumRetained = 0;
+	int32 NumPrimedAndPlaying = 0;
+	int32 NumPrimed = 0;
+	int32 NumRetainedAndPlayingCacheMiss = 0;
+	int32 NumRetainedCacheMiss = 0;
+	int32 NumPrimedAndPlayingCacheMiss = 0;
+	int32 NumPrimedCacheMiss = 0;
+	int32 NumLODAndPlaying = 0;
+	int32 NumLOD = 0;
+	int32 NumTrimmed = 0;
+	int32 NumLoadInProgress = 0;
+	int32 NumOther = 0;
+
+
+	for(int i = 0; i < ChunksInUse; ++i)
+	{
+		const FAudioChunkCache::FCacheElement* CurrentElement = &CachePool[i];
+
+		NumBytesCounter += CurrentElement->ChunkDataSize;
+
+		ESoundWaveLoadingBehavior LoadingBehavior = ESoundWaveLoadingBehavior::Uninitialized;
+		bool bWasCacheMiss = false;
+
+		bool bIsPlaying = false;
+		const bool bWasTrimmed = CurrentElement->ChunkDataSize == 0;
+
+#if DEBUG_STREAM_CACHE
+		bWasCacheMiss = CurrentElement->DebugInfo.bWasCacheMiss;
+		LoadingBehavior = CurrentElement->DebugInfo.LoadingBehavior;
+		bIsPlaying = CurrentElement->IsBeingPlayed();
+#endif
+		if (bWasTrimmed)
+		{
+			++NumTrimmed;
+		}
+		else if (CurrentElement->IsLoadInProgress())
+		{
+			++NumLoadInProgress;
+		}
+		else
+		{
+			switch (LoadingBehavior)
+			{
+			case ESoundWaveLoadingBehavior::RetainOnLoad:
+				if (bIsPlaying && bWasCacheMiss)
+				{
+					++NumRetainedAndPlayingCacheMiss;
+				}
+				else if (bIsPlaying && !bWasCacheMiss)
+				{
+					++NumRetainedAndPlaying;
+				}
+				else if (!bIsPlaying && bWasCacheMiss)
+				{
+					++NumRetainedCacheMiss;
+				}
+				else if (!bIsPlaying && !bWasCacheMiss)
+				{
+					++NumRetained;
+				}
+				break;
+			case ESoundWaveLoadingBehavior::PrimeOnLoad:
+				if (bIsPlaying && bWasCacheMiss)
+				{
+					++NumPrimedAndPlayingCacheMiss;
+				}
+				else if (bIsPlaying && !bWasCacheMiss)
+				{
+					++NumPrimedAndPlaying;
+				}
+				else if (!bIsPlaying && bWasCacheMiss)
+				{
+					++NumPrimedCacheMiss;
+				}
+				else if (!bIsPlaying && !bWasCacheMiss)
+				{
+					++NumPrimed;
+				}
+				break;
+			case ESoundWaveLoadingBehavior::LoadOnDemand:
+				if (bIsPlaying)
+				{
+					++NumLODAndPlaying;
+				}
+				else
+				{
+					++NumLOD;
+				}
+				break;
+			default:
+				++NumOther;
+				break;
+			}
+		}
+	}
+
+	// Convert to megabytes and print the total size:
+	const double NumMegabytesInUse = (double)NumBytesCounter / (1024 * 1024);
+	const double MaxCacheSizeMB = ((double)MemoryLimitBytes) / (1024 * 1024);
+
+	FString CacheMemoryUsage = *FString::Printf(TEXT("Using: %.4f Megabytes (%lu bytes). Max Potential Usage: %.4f Megabytes."), NumMegabytesInUse, MemoryCounterBytes.Load(), MaxCacheSizeMB);
+
+	// We're going to align this horizontally with the number of elements right above it.
+	Canvas->DrawShadowedString(X, Y, *CacheMemoryUsage, UEngine::GetMediumFont(), FLinearColor::White);
+	Y += 24;
+
+	// gather cache composition as percentages
+	float NumChunks = NumRetainedAndPlaying 
+					+ NumRetained 
+					+ NumPrimedAndPlaying 
+					+ NumPrimed 
+					+ NumRetainedAndPlayingCacheMiss
+					+ NumRetainedCacheMiss
+					+ NumPrimedAndPlayingCacheMiss
+					+ NumPrimedCacheMiss
+					+ NumLODAndPlaying 
+					+ NumLOD 
+					+ NumTrimmed
+					+ NumLoadInProgress
+					+ NumOther;
+
+	if (NumChunks == 0)
+	{
+		NumChunks = 1.f;
+	}
+
+	// Draw the composition bar
+	const int32 BarWidth = 0.5f * (Canvas->GetParentCanvasSize().X - 2*X);
+	const int32 BarHeight = 20;
+	const int32 BarPad = BarHeight / 7;
+
+	const float PercentageRetainedAndPlaying = (NumRetainedAndPlaying / NumChunks);
+	const float PercentageRetained = (NumRetained / NumChunks);
+	const float PercentagePrimedAndPlaying = (NumPrimedAndPlaying / NumChunks);
+	const float PercentagePrimed = (NumPrimed / NumChunks);
+	const float PercentageRetainedAndPlayingCacheMiss = (NumRetainedAndPlayingCacheMiss / NumChunks);
+	const float PercentageRetainedCacheMiss = (NumRetainedCacheMiss / NumChunks);
+	const float PercentagePrimedAndPlayingCacheMiss = (NumPrimedAndPlayingCacheMiss / NumChunks);
+	const float PercentagePrimedCacheMiss = (NumPrimedCacheMiss / NumChunks);
+	const float PercentageLODAndPlaying = (NumLODAndPlaying / NumChunks);
+	const float PercentageLOD = (NumLOD / NumChunks);
+	const float PercentageTrimmed = (NumTrimmed / NumChunks);
+	const float PercentageLoadInProgress = (NumLoadInProgress / NumChunks);
+	const float PercentageOther = (NumOther / NumChunks);
+
+	const int32 BarWidthRetainedAndPlaying			= PercentageRetainedAndPlaying * BarWidth;
+	const int32 BarWidthRetained					= PercentageRetained * BarWidth;
+	const int32 BarWidthPrimedAndPlaying			= PercentagePrimedAndPlaying * BarWidth;
+	const int32 BarWidthPrimed						= PercentagePrimed * BarWidth;
+	const int32 BarWidthRetainedAndPlayingCacheMiss = PercentageRetainedAndPlayingCacheMiss * BarWidth;
+	const int32 BarWidthRetainedCacheMiss			= PercentageRetainedCacheMiss * BarWidth;
+	const int32 BarWidthPrimedAndPlayingCacheMiss	= PercentagePrimedAndPlayingCacheMiss * BarWidth;
+	const int32 BarWidthPrimedCacheMiss				= PercentagePrimedCacheMiss * BarWidth;
+	const int32 BarWidthLODAndPlaying				= PercentageLODAndPlaying * BarWidth;
+	const int32 BarWidthLOD							= PercentageLOD * BarWidth;
+	const int32 BarWidthTrimmed						= PercentageTrimmed * BarWidth;
+	const int32 BarWidthLoadInProgress				= PercentageLoadInProgress * BarWidth;
+	const int32 BarWidthOther						= PercentageOther * BarWidth;
+
+
+	// Draw color key
+	Canvas->DrawShadowedString(X, Y, TEXT("Cache Composition:"), UEngine::GetSmallFont(), FLinearColor::White);
+	Y += 15;
+
+	FString TempString = *FString::Printf(TEXT("Retained: %.2f %%"), 100.f * (PercentageRetained + PercentageRetainedAndPlaying));
+	Canvas->DrawShadowedString(X, Y, *TempString, UEngine::GetSmallFont(), ColorRetainedAndPlaying);
+	Y += 15;
+
+	TempString = *FString::Printf(TEXT("Primed: %.2f %%"), 100.f * (PercentagePrimed + PercentagePrimedAndPlaying));
+	Canvas->DrawShadowedString(X, Y, *TempString, UEngine::GetSmallFont(), ColorPrimedAndPlaying);
+	Y += 15;
+
+	TempString = *FString::Printf(TEXT("Load On Demand: %.2f %%"), 100.f * (PercentageLOD + PercentageLODAndPlaying));
+	Canvas->DrawShadowedString(X, Y, *TempString, UEngine::GetSmallFont(), ColorLODAndPlaying);
+	Y += 15;
+
+	TempString = *FString::Printf(TEXT("Trimmed: %.2f %%"), 100.f * PercentageTrimmed);
+	Canvas->DrawShadowedString(X, Y, *TempString, UEngine::GetSmallFont(), ColorTrimmed);
+	Y += 15;
+
+	TempString = *FString::Printf(TEXT("Load In Progress: %.2f %%"), 100.f * PercentageLoadInProgress);
+	Canvas->DrawShadowedString(X, Y, *TempString, UEngine::GetSmallFont(), ColorLoadInProgress);
+	Y += 15;
+
+	TempString = *FString::Printf(TEXT("Other: %.2f %%"), 100.f * PercentageOther);
+	Canvas->DrawShadowedString(X, Y, *TempString, UEngine::GetSmallFont(), ColorOther);
+	Y += 24;
+
+	int32 CurrHorzOffset = X;
+	int32 CurrVertOffset = Y;
+
+	// backdrops
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidth + 2 * BarPad, BarHeight + 4 * BarPad, 0, 0, 0, 0, FLinearColor::Black);
+	CurrHorzOffset += BarPad;
+	CurrVertOffset += BarPad;
+
+	// cache misses
+	// (retained, playing)
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidthRetainedAndPlayingCacheMiss, BarHeight + 2 * BarPad, 0, 0, 0, 0, ColorCacheMiss);
+	CurrHorzOffset += (BarWidthRetainedAndPlayingCacheMiss + BarWidthRetainedAndPlaying);
+
+	// (retained)
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidthRetainedCacheMiss, BarHeight + 2 * BarPad, 0, 0, 0, 0, ColorCacheMiss);
+	CurrHorzOffset += (BarWidthRetainedCacheMiss + BarWidthRetained);
+
+	// (primed, playing)
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidthPrimedAndPlayingCacheMiss, BarHeight + 2 * BarPad, 0, 0, 0, 0, ColorCacheMiss);
+	CurrHorzOffset += (BarWidthPrimedAndPlayingCacheMiss + BarWidthPrimedAndPlaying);
+
+	// (primed)
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidthPrimedCacheMiss, BarHeight + 2 * BarPad, 0, 0, 0, 0, ColorCacheMiss);
+	CurrHorzOffset = X + BarPad;
+	CurrVertOffset += BarPad;
+
+	// composition
+	// (retained, playing)
+	const int32 TotalRetainedAndPlaying = BarWidthRetainedAndPlaying + BarWidthRetainedAndPlayingCacheMiss;
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, TotalRetainedAndPlaying, BarHeight, 0, 0, 0, 0, ColorRetainedAndPlaying);
+	CurrHorzOffset += TotalRetainedAndPlaying;
+	
+	// (retained)
+	const int32 TotalRetained = BarWidthRetained + BarWidthRetainedCacheMiss;
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, TotalRetained, BarHeight, 0, 0, 0, 0, ColorRetained);
+	CurrHorzOffset += TotalRetained;
+
+	// (primed, playing)
+	const int32 TotalPrimedAndPlaying = BarWidthPrimedAndPlaying + BarWidthPrimedAndPlayingCacheMiss;
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, TotalPrimedAndPlaying, BarHeight, 0, 0, 0, 0, ColorPrimedAndPlaying);
+	CurrHorzOffset += TotalPrimedAndPlaying;
+
+	// (primed)
+	const int32 TotalPrimed = BarWidthPrimed + BarWidthPrimedCacheMiss;
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, TotalPrimed, BarHeight, 0, 0, 0, 0, ColorPrimed);
+	CurrHorzOffset += TotalPrimed;
+
+	// (Load on demand, playing)
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidthLODAndPlaying, BarHeight, 0, 0, 0, 0, ColorLODAndPlaying);
+	CurrHorzOffset += BarWidthLODAndPlaying;
+
+	// (Load on demand)
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidthLOD, BarHeight, 0, 0, 0, 0, ColorLOD);
+	CurrHorzOffset += BarWidthLOD;
+
+	// (Trimmed)
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidthTrimmed, BarHeight, 0, 0, 0, 0, ColorTrimmed);
+	CurrHorzOffset += BarWidthTrimmed;
+
+	// (load in progress)
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidthLoadInProgress, BarHeight, 0, 0, 0, 0, ColorLoadInProgress);
+	CurrHorzOffset += BarWidthLoadInProgress;
+
+	// (other)
+	Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, BarWidthOther, BarHeight, 0, 0, 0, 0, ColorOther);
+	CurrHorzOffset += BarWidthOther;
+
+	Y = (CurrVertOffset + 24);
+
+	// Draw the body of our display depending on the CVAR
+	TPair<int, int> Size(X,Y);
+	if (DebugViewCVar == 0)
+	{
+		Size = DebugDisplayLegacy(World, Viewport, Canvas, X, Y + 2 * BarPad, ViewLocation, ViewRotation);
+	}
+	else if (DebugViewCVar == 1)
+	{
+		// do nothing else (default)
+	}
+	else if (DebugViewCVar == 2)
+	{
+		DebugBirdsEyeDisplay(World, Viewport, Canvas, X, Y, ViewLocation, ViewRotation);
+	}
+	else if (DebugViewCVar == 3)
+	{
+		Size = DebugVisualDisplay(World, Viewport, Canvas, X, Y, ViewLocation, ViewRotation);
+	}
+
+	return Size;
+}
+
+TPair<int, int> FAudioChunkCache::DebugVisualDisplay(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation) const
+{
+	FScopeLock ScopeLock(const_cast<FCriticalSection*>(&CacheMutationCriticalSection));
+
+	// Second Pass: We're going to list the actual chunks in the cache.
+	FCacheElement* CurrentElement = MostRecentElement;
+	int32 Index = 0;
+
+	const int32 InitialX = X;
+	const int32 InitialY = Y;
+
+	float ColorLerpAmount = 0.0f;
+	const float ColorLerpStep = 0.04f;
+
+	// More detailed info about individual chunks here:
+	const int32 TileSize = 3;
+	const int32 TilePadding = 2;
+	const int32 MaxWidth = 0.5f * (Canvas->GetParentCanvasSize().X -2*X);
+
+	int32 CurrentXOffset = 0;
+
+	// loop over cache chunks
+	while (CurrentElement != nullptr)
+	{
+		// gather chunk info (todo, go through at remove parts that don't alter how a tile is drawn)
+		int32 NumTotalChunks = -1;
+		int32 NumTimesTouched = -1;
+		double TimeToLoad = -1.0;
+		float AveragePlaceInCache = -1.0f;
+		ESoundWaveLoadingBehavior LoadingBehavior = ESoundWaveLoadingBehavior::Uninitialized;
+		bool bLoadingBehaviorExternallyOverriden = false;
+		bool bWasCacheMiss = false;
+		bool bIsStaleChunk = false;
+		bool bIsPlaying = false;
+
+#if DEBUG_STREAM_CACHE
+		NumTotalChunks = CurrentElement->DebugInfo.NumTotalChunks;
+		NumTimesTouched = CurrentElement->DebugInfo.NumTimesTouched;
+		TimeToLoad = CurrentElement->DebugInfo.TimeToLoad;
+		AveragePlaceInCache = CurrentElement->DebugInfo.AverageLocationInCacheWhenNeeded;
+		LoadingBehavior = CurrentElement->DebugInfo.LoadingBehavior;
+		bLoadingBehaviorExternallyOverriden = CurrentElement->DebugInfo.bLoadingBehaviorExternallyOverriden;
+		bIsPlaying = CurrentElement->IsBeingPlayed();
+
+		// Load on demand is expected to be a cache miss
+		bWasCacheMiss = CurrentElement->DebugInfo.bWasCacheMiss && (LoadingBehavior != ESoundWaveLoadingBehavior::LoadOnDemand);
+#endif
+
+#if WITH_EDITOR
+		// TODO: Worry about whether the sound wave is alive here. In most editor cases this is ok because the soundwave will always be loaded, but this may not be the case in the future.
+		bIsStaleChunk = (CurrentElement->Key.SoundWave == nullptr) || (CurrentElement->Key.SoundWave->CurrentChunkRevision.GetValue() != CurrentElement->Key.ChunkRevision);
+#endif
+		const bool bWasTrimmed = CurrentElement->ChunkDataSize == 0;
+
+		// pick tile color
+		FLinearColor TileColor;
+
+		// If there's a load in flight, paint this element yellow.
+		if (bWasTrimmed)
+		{
+			TileColor = ColorTrimmed;
+		}
+		else if (CurrentElement->IsLoadInProgress())
+		{
+			TileColor = ColorLoadInProgress;
+		}
+#if DEBUG_STREAM_CACHE
+		else if (LoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad)
+		{
+			TileColor = bIsPlaying ? ColorRetainedAndPlaying : ColorRetained;
+		}
+		else if (LoadingBehavior == ESoundWaveLoadingBehavior::PrimeOnLoad)
+		{
+			TileColor = bIsPlaying ? ColorPrimedAndPlaying : ColorPrimed;
+		}
+		else if (LoadingBehavior == ESoundWaveLoadingBehavior::LoadOnDemand)
+		{
+			TileColor = bIsPlaying ? ColorLODAndPlaying : ColorLOD;
+		}
+#endif
+		else
+		{
+			TileColor = FLinearColor::Gray;
+		}
+
+
+		// draw a tile
+		const int32 HalfTilePad = TilePadding / 2;
+		const int32 ErrorTileSize = TileSize + TilePadding;
+
+		if (bWasCacheMiss)
+		{
+			Canvas->DrawTile(X + CurrentXOffset, Y, ErrorTileSize, ErrorTileSize, 0, 0, ErrorTileSize, ErrorTileSize, ColorCacheMiss);
+		}
+		Canvas->DrawTile(X + CurrentXOffset + HalfTilePad, Y + HalfTilePad, TileSize, TileSize, 0, 0, TileSize, TileSize, TileColor);
+
+		// update "cursor" position
+		CurrentXOffset += TileSize + TilePadding;
+
+		// wrap cursor
+		if (CurrentXOffset >= MaxWidth)
+		{
+			CurrentXOffset = 0;
+			Y += TileSize + 2 * TilePadding;
+		}
+
+		// move to next element
+		CurrentElement = CurrentElement->LessRecentElement;
+	}
+
+	return TPair<int, int>(X - InitialX, Y - InitialY);
+}
+
+TPair<int, int> FAudioChunkCache::DebugBirdsEyeDisplay(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation) const
+{
+	static const int32 DisplayElementSize = 10; // TODO: have this be dynamic based on display size
+
+	const int32 NumChunks = ChunksInUse;
+	const FIntPoint CanvasSize = Canvas->GetParentCanvasSize();
+
+	const int32 DisplayWidth = 0.5 * (CanvasSize.X - 2*X);
+	const int32 DisplayHeight = DisplayElementSize * 4;
+
+	const int32 NumDisplayElementsHortz = DisplayWidth / DisplayElementSize;
+	const int32 NumDisplayElementsVert = 4;
+	const int32 NumDisplayElements = NumDisplayElementsHortz * NumDisplayElementsVert;
+
+	const int32 NumChunksPerDispalyElement = FMath::CeilToInt(FMath::Max(1.f, NumChunks / static_cast<float>(NumDisplayElements)));
+
+	int32 CurrHorzOffset = X;
+	int32 CurrVertOffset = Y;
+
+	TArray<int32> DebugDisplayCounters;
+
+	FCacheElement* CurrentElement = MostRecentElement;
+	while (CurrentElement != nullptr)
+	{
+		// Reset info
+		DebugDisplayCounters.Reset();
+		DebugDisplayCounters.SetNumZeroed(static_cast<int32>(EDebugDisplayElementTypes::Count));
+
+		// gather info and draw a single display element
+		for (int i = 0; CurrentElement && (i < NumChunksPerDispalyElement); ++i)
+		{
+			// Gather info
+			ESoundWaveLoadingBehavior LoadingBehavior = ESoundWaveLoadingBehavior::Uninitialized;
+			bool bWasCacheMiss = false;
+
+			bool bIsPlaying = false;
+			const bool bWasTrimmed = CurrentElement->ChunkDataSize == 0;
+
+#if DEBUG_STREAM_CACHE
+			bWasCacheMiss = CurrentElement->DebugInfo.bWasCacheMiss;
+			LoadingBehavior = CurrentElement->DebugInfo.LoadingBehavior;
+			bIsPlaying = CurrentElement->IsBeingPlayed();
+
+#endif
+			if (bWasTrimmed)
+			{
+				++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumTrimmed)];
+			}
+			else if (CurrentElement->IsLoadInProgress())
+			{
+				++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumLoadInProgress)];
+			}
+			else
+			{
+				switch (LoadingBehavior)
+				{
+				case ESoundWaveLoadingBehavior::RetainOnLoad:
+					if (bIsPlaying && bWasCacheMiss)
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumRetainedAndPlayingCacheMiss)];
+					}
+					else if (bIsPlaying && !bWasCacheMiss)
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumRetainedAndPlaying)];
+					}
+					else if (!bIsPlaying && bWasCacheMiss)
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumRetainedCacheMiss)];
+					}
+					else if (!bIsPlaying && !bWasCacheMiss)
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumRetained)];
+					}
+					break;
+				case ESoundWaveLoadingBehavior::PrimeOnLoad:
+					if (bIsPlaying && bWasCacheMiss)
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumPrimedAndPlayingCacheMiss)];
+					}
+					else if (bIsPlaying && !bWasCacheMiss)
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumPrimedAndPlaying)];
+					}
+					else if (!bIsPlaying && bWasCacheMiss)
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumPrimedCacheMiss)];
+					}
+					else if (!bIsPlaying && !bWasCacheMiss)
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumPrimed)];
+					}
+					break;
+				case ESoundWaveLoadingBehavior::LoadOnDemand:
+					if (bIsPlaying)
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumLODAndPlaying)];
+					}
+					else
+					{
+						++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumLOD)];
+					}
+					break;
+				default:
+					++DebugDisplayCounters[static_cast<int32>(EDebugDisplayElementTypes::NumOther)];
+					break;
+				}
+			}
+
+			CurrentElement = CurrentElement->LessRecentElement;
+		}
+
+		// determine the presiding state of the chunks sampled
+		int32 MaxValue = -1;
+		EDebugDisplayElementTypes PresidingSate = EDebugDisplayElementTypes::NumRetainedAndPlaying;
+
+		// TODO: short-circuit if we know we have a majority
+		for (int32 j = 0; j < static_cast<int32>(EDebugDisplayElementTypes::Count); ++j)
+		{
+			int32& CurrValue = DebugDisplayCounters[j];
+
+			if (CurrValue > MaxValue)
+			{
+				PresidingSate = static_cast<EDebugDisplayElementTypes>(j);
+				MaxValue = CurrValue;
+			}
+		}
+
+		// Draw display element
+		FLinearColor ElementColor = ColorOther;
+		switch (PresidingSate)
+		{
+		case EDebugDisplayElementTypes::NumRetainedAndPlaying:
+			ElementColor = ColorRetainedAndPlaying;
+			break;
+		case EDebugDisplayElementTypes::NumRetained:
+			ElementColor = ColorRetained;
+			break;
+		case EDebugDisplayElementTypes::NumPrimedAndPlaying:
+			ElementColor = ColorPrimedAndPlaying;
+			break;
+		case EDebugDisplayElementTypes::NumPrimed:
+			ElementColor = ColorPrimed;
+			break;
+		case EDebugDisplayElementTypes::NumRetainedAndPlayingCacheMiss:
+			ElementColor = ColorRetainedAndPlaying;
+			break;
+		case EDebugDisplayElementTypes::NumRetainedCacheMiss:
+			ElementColor = ColorRetained;
+			break;
+		case EDebugDisplayElementTypes::NumPrimedAndPlayingCacheMiss:
+			ElementColor = ColorPrimedAndPlaying;
+			break;
+		case EDebugDisplayElementTypes::NumPrimedCacheMiss:
+			ElementColor = ColorPrimed;
+			break;
+		case EDebugDisplayElementTypes::NumLODAndPlaying:
+			ElementColor = ColorLODAndPlaying;
+			break;
+		case EDebugDisplayElementTypes::NumLOD:
+			ElementColor = ColorLOD;
+			break;
+		case EDebugDisplayElementTypes::NumTrimmed:
+			ElementColor = ColorTrimmed;
+			break;
+		case EDebugDisplayElementTypes::NumLoadInProgress:
+			ElementColor = ColorLoadInProgress;
+			break;
+		case EDebugDisplayElementTypes::NumOther:
+			ElementColor = ColorOther;
+			break;
+		default:
+			break;
+		}
+
+		Canvas->DrawTile(CurrHorzOffset, CurrVertOffset, DisplayElementSize, DisplayElementSize, 0, 0, 0, 0, ElementColor);
+
+		// advance cursor and wrap
+		CurrHorzOffset += DisplayElementSize;
+		if (CurrHorzOffset >= (X + DisplayWidth))
+		{
+			CurrHorzOffset = X;
+			CurrVertOffset += DisplayElementSize;
+		}
+	}
+
+	return TPair<int, int>(X, Y);
 }

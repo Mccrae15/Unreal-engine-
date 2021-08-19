@@ -31,11 +31,15 @@
 #include "Chaos/Public/EventManager.h"
 #include "Chaos/Public/RewindData.h"
 #include "PhysicsSettingsCore.h"
+#include "Chaos/PhysicsSolverBaseImpl.h"
 
 #include "ProfilingDebugging/CsvProfiler.h"
 
 DECLARE_CYCLE_STAT(TEXT("Update Kinematics On Deferred SkelMeshes"),STAT_UpdateKinematicsOnDeferredSkelMeshesChaos,STATGROUP_Physics);
 CSV_DEFINE_CATEGORY(ChaosPhysics,true);
+
+// Stat Counters
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumDirtyAABBTreeElements"), STAT_ChaosCounter_NumDirtyAABBTreeElements, STATGROUP_ChaosCounters);
 
 TAutoConsoleVariable<int32> CVar_ChaosSimulationEnable(TEXT("P.Chaos.Simulation.Enable"),1,TEXT("Enable / disable chaos simulation. If disabled, physics will not tick."));
 TAutoConsoleVariable<int32> CVar_ApplyProjectSettings(TEXT("p.Chaos.Simulation.ApplySolverProjectSettings"), 1, TEXT("Whether to apply the solver project settings on spawning a solver"));
@@ -46,7 +50,8 @@ FChaosScene::FChaosScene(
 	, const FName& DebugName
 #endif
 )
-	: ChaosModule(nullptr)
+	: SolverAccelerationStructure(nullptr)
+	, ChaosModule(nullptr)
 	, SceneSolver(nullptr)
 	, Owner(OwnerPtr)
 {
@@ -59,7 +64,7 @@ FChaosScene::FChaosScene(
 
 	Chaos::EThreadingMode ThreadingMode = bForceSingleThread ? Chaos::EThreadingMode::SingleThread : Chaos::EThreadingMode::TaskGraph;
 
-	SceneSolver = ChaosModule->CreateSolver<Chaos::FDefaultTraits>(OwnerPtr,ThreadingMode
+	SceneSolver = ChaosModule->CreateSolver(OwnerPtr,ThreadingMode
 #if CHAOS_CHECKED
 		,DebugName
 #endif
@@ -67,6 +72,7 @@ FChaosScene::FChaosScene(
 	check(SceneSolver);
 
 	SceneSolver->PhysSceneHack = this;
+	SimCallback = SceneSolver->CreateAndRegisterSimCallbackObject_External<FChaosSceneSimCallback>();
 
 	if(CVar_ApplyProjectSettings.GetValueOnAnyThread() != 0)
 	{
@@ -77,7 +83,7 @@ FChaosScene::FChaosScene(
 		});
 	}
 
-	Flush_AssumesLocked();	//make sure acceleration structure exists right away
+	Flush();	//make sure acceleration structure exists right away
 }
 
 FChaosScene::~FChaosScene()
@@ -86,6 +92,7 @@ FChaosScene::~FChaosScene()
 	{
 		Chaos::FEventManager* EventManager = SceneSolver->GetEventManager();
 		EventManager->UnregisterHandler(Chaos::EEventType::Collision,this);
+		SceneSolver->UnregisterAndFreeSimCallbackObject_External(SimCallback);
 	}
 
 	if(ensure(ChaosModule))
@@ -94,6 +101,7 @@ FChaosScene::~FChaosScene()
 		ChaosModule->DestroySolver(GetSolver());
 	}
 
+	SimCallback = nullptr;
 	ChaosModule = nullptr;
 	SceneSolver = nullptr;
 }
@@ -121,27 +129,27 @@ void FChaosScene::AddPieModifiedObject(UObject* InObj)
 #endif
 
 
-const Chaos::ISpatialAcceleration<Chaos::TAccelerationStructureHandle<float,3>,float,3>* FChaosScene::GetSpacialAcceleration() const
+const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>* FChaosScene::GetSpacialAcceleration() const
 {
-	return SolverAccelerationStructure.Get();
+	return SolverAccelerationStructure;
 }
 
-Chaos::ISpatialAcceleration<Chaos::TAccelerationStructureHandle<float,3>,float,3>* FChaosScene::GetSpacialAcceleration()
+Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>* FChaosScene::GetSpacialAcceleration()
 {
-	return SolverAccelerationStructure.Get();
+	return SolverAccelerationStructure;
 }
 
 void FChaosScene::CopySolverAccelerationStructure()
 {
+	using namespace Chaos;
 	if(SceneSolver)
 	{
-		ExternalDataLock.WriteLock();
+		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
 		SceneSolver->UpdateExternalAccelerationStructure_External(SolverAccelerationStructure);
-		ExternalDataLock.WriteUnlock();
 	}
 }
 
-void FChaosScene::Flush_AssumesLocked()
+void FChaosScene::Flush()
 {
 	check(IsInGameThread());
 
@@ -165,15 +173,29 @@ void FChaosScene::Flush_AssumesLocked()
 	CopySolverAccelerationStructure();
 }
 
+void FChaosScene::RemoveActorFromAccelerationStructure(Chaos::TGeometryParticle<Chaos::FReal, 3>* Particle)
+{
+#if WITH_CHAOS
+	using namespace Chaos;
+	if(GetSpacialAcceleration())
+	{
+		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
+		Chaos::FAccelerationStructureHandle AccelerationHandle(Particle);
+		GetSpacialAcceleration()->RemoveElementFrom(AccelerationHandle, Particle->SpatialIdx());
+	}
+#endif
+}
+
 void FChaosScene::RemoveActorFromAccelerationStructure(FPhysicsActorHandle& Actor)
 {
 #if WITH_CHAOS
-	if(GetSpacialAcceleration() && Actor->UniqueIdx().IsValid())
+	using namespace Chaos;
+	Chaos::FRigidBodyHandle_External& Body_External = Actor->GetGameThreadAPI();
+	if (GetSpacialAcceleration() && Body_External.UniqueIdx().IsValid())
 	{
-		ExternalDataLock.WriteLock();
-		Chaos::TAccelerationStructureHandle<float,3> AccelerationHandle(Actor);
-		GetSpacialAcceleration()->RemoveElementFrom(AccelerationHandle,Actor->SpatialIdx());
-		ExternalDataLock.WriteUnlock();
+		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
+		Chaos::FAccelerationStructureHandle AccelerationHandle(Actor->GetParticle_LowLevel());
+		GetSpacialAcceleration()->RemoveElementFrom(AccelerationHandle, Body_External.SpatialIdx());
 	}
 #endif
 }
@@ -185,27 +207,27 @@ void FChaosScene::UpdateActorInAccelerationStructure(const FPhysicsActorHandle& 
 
 	if(GetSpacialAcceleration())
 	{
-		ExternalDataLock.WriteLock();
+		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
 
 		auto SpatialAcceleration = GetSpacialAcceleration();
+		const Chaos::FRigidBodyHandle_External& Body_External = Actor->GetGameThreadAPI();
 
 		if(SpatialAcceleration)
 		{
 
-			TAABB<FReal,3> WorldBounds;
-			const bool bHasBounds = Actor->Geometry()->HasBoundingBox();
+			FAABB3 WorldBounds;
+			const bool bHasBounds = Body_External.Geometry()->HasBoundingBox();
 			if(bHasBounds)
 			{
-				WorldBounds = Actor->Geometry()->BoundingBox().TransformedAABB(TRigidTransform<FReal,3>(Actor->X(),Actor->R()));
+				WorldBounds = Body_External.Geometry()->BoundingBox().TransformedAABB(FRigidTransform3(Body_External.X(), Body_External.R()));
 			}
 
 
-			Chaos::TAccelerationStructureHandle<float,3> AccelerationHandle(Actor);
-			SpatialAcceleration->UpdateElementIn(AccelerationHandle,WorldBounds,bHasBounds,Actor->SpatialIdx());
+			Chaos::FAccelerationStructureHandle AccelerationHandle(Actor->GetParticle_LowLevel());
+			SpatialAcceleration->UpdateElementIn(AccelerationHandle,WorldBounds,bHasBounds, Body_External.SpatialIdx());
 		}
 
-		GetSolver()->UpdateParticleInAccelerationStructure_External(Actor,/*bDelete=*/false);
-		ExternalDataLock.WriteUnlock();
+		GetSolver()->UpdateParticleInAccelerationStructure_External(Actor->GetParticle_LowLevel(),/*bDelete=*/false);
 	}
 #endif
 }
@@ -217,7 +239,7 @@ void FChaosScene::UpdateActorsInAccelerationStructure(const TArrayView<FPhysicsA
 
 	if(GetSpacialAcceleration())
 	{
-		ExternalDataLock.WriteLock();
+		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
 
 		auto SpatialAcceleration = GetSpacialAcceleration();
 
@@ -227,18 +249,19 @@ void FChaosScene::UpdateActorsInAccelerationStructure(const TArrayView<FPhysicsA
 			for(int32 ActorIndex = 0; ActorIndex < NumActors; ++ActorIndex)
 			{
 				const FPhysicsActorHandle& Actor = Actors[ActorIndex];
-				if(Actor != nullptr)
+				if(Actor)
 				{
+					const Chaos::FRigidBodyHandle_External& Body_External = Actor->GetGameThreadAPI();
 					// @todo(chaos): dedupe code in UpdateActorInAccelerationStructure
-					TAABB<FReal,3> WorldBounds;
-					const bool bHasBounds = Actor->Geometry()->HasBoundingBox();
+					FAABB3 WorldBounds;
+					const bool bHasBounds = Body_External.Geometry()->HasBoundingBox();
 					if(bHasBounds)
 					{
-						WorldBounds = Actor->Geometry()->BoundingBox().TransformedAABB(TRigidTransform<FReal,3>(Actor->X(),Actor->R()));
+						WorldBounds = Body_External.Geometry()->BoundingBox().TransformedAABB(FRigidTransform3(Body_External.X(), Body_External.R()));
 					}
 
-					Chaos::TAccelerationStructureHandle<float,3> AccelerationHandle(Actor);
-					SpatialAcceleration->UpdateElementIn(AccelerationHandle,WorldBounds,bHasBounds,Actor->SpatialIdx());
+					Chaos::FAccelerationStructureHandle AccelerationHandle(Actor->GetParticle_LowLevel());
+					SpatialAcceleration->UpdateElementIn(AccelerationHandle,WorldBounds,bHasBounds, Body_External.SpatialIdx());
 				}
 			}
 		}
@@ -246,13 +269,11 @@ void FChaosScene::UpdateActorsInAccelerationStructure(const TArrayView<FPhysicsA
 		for(int32 ActorIndex = 0; ActorIndex < Actors.Num(); ++ActorIndex)
 		{
 			const FPhysicsActorHandle& Actor = Actors[ActorIndex];
-			if(Actor != nullptr)
+			if(Actor)
 			{
-				GetSolver()->UpdateParticleInAccelerationStructure_External(Actor,/*bDelete=*/false);
+				GetSolver()->UpdateParticleInAccelerationStructure_External(Actor->GetParticle_LowLevel(),/*bDelete=*/false);
 			}
 		}
-
-		ExternalDataLock.WriteUnlock();
 	}
 #endif
 }
@@ -261,7 +282,7 @@ void FChaosScene::AddActorsToScene_AssumesLocked(TArray<FPhysicsActorHandle>& In
 {
 #if WITH_CHAOS
 	Chaos::FPhysicsSolver* Solver = GetSolver();
-	Chaos::ISpatialAcceleration<Chaos::TAccelerationStructureHandle<float,3>,float,3>* SpatialAcceleration = GetSpacialAcceleration();
+	Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle,Chaos::FReal,3>* SpatialAcceleration = GetSpacialAcceleration();
 	for(FPhysicsActorHandle& Handle : InHandles)
 	{
 		FChaosEngineInterface::AddActorToSolver(Handle,Solver);
@@ -269,21 +290,35 @@ void FChaosScene::AddActorsToScene_AssumesLocked(TArray<FPhysicsActorHandle>& In
 		// Optionally add this to the game-thread acceleration structure immediately
 		if(bImmediate && SpatialAcceleration)
 		{
+			const Chaos::FRigidBodyHandle_External& Body_External = Handle->GetGameThreadAPI();
 			// Get the bounding box for the particle if it has one
-			bool bHasBounds = Handle->Geometry()->HasBoundingBox();
-			Chaos::TAABB<float,3> WorldBounds;
+			bool bHasBounds = Body_External.Geometry()->HasBoundingBox();
+			Chaos::FAABB3 WorldBounds;
 			if(bHasBounds)
 			{
-				const Chaos::TAABB<float,3> LocalBounds = Handle->Geometry()->BoundingBox();
-				WorldBounds = LocalBounds.TransformedAABB(Chaos::TRigidTransform<float,3>(Handle->X(),Handle->R()));
+				const Chaos::FAABB3 LocalBounds = Body_External.Geometry()->BoundingBox();
+				WorldBounds = LocalBounds.TransformedAABB(Chaos::FRigidTransform3(Body_External.X(), Body_External.R()));
 			}
 
 			// Insert the particle
-			Chaos::TAccelerationStructureHandle<float,3> AccelerationHandle(Handle);
-			SpatialAcceleration->UpdateElementIn(AccelerationHandle,WorldBounds,bHasBounds,Handle->SpatialIdx());
+			Chaos::FAccelerationStructureHandle AccelerationHandle(Handle->GetParticle_LowLevel());
+			SpatialAcceleration->UpdateElementIn(AccelerationHandle,WorldBounds,bHasBounds, Body_External.SpatialIdx());
 		}
 	}
 #endif
+}
+
+void FChaosSceneSimCallback::OnPreSimulate_Internal()
+{
+	if(const FChaosSceneCallbackInput* Input = GetConsumerInput_Internal())
+	{
+		static_cast<Chaos::FPBDRigidsSolver*>(GetSolver())->GetEvolution()->GetGravityForces().SetAcceleration(Input->Gravity);
+	}
+}
+
+void FChaosScene::SetGravity(const Chaos::FVec3& Acceleration)
+{
+	SimCallback->GetProducerInputData_External()->Gravity = Acceleration;
 }
 
 void FChaosScene::SetUpForFrame(const FVector* NewGrav,float InDeltaSeconds /*= 0.0f*/,float InMaxPhysicsDeltaTime /*= 0.0f*/,float InMaxSubstepDeltaTime /*= 0.0f*/,int32 InMaxSubsteps,bool bSubstepping)
@@ -340,29 +375,29 @@ void FChaosScene::StartFrame()
 #endif
 }
 
-void FChaosScene::OnSyncBodies(int32 SyncTimestamp, Chaos::FPBDRigidDirtyParticlesBufferAccessor& Accessor)
+void FChaosScene::OnSyncBodies(Chaos::FPhysicsSolverBase* Solver)
 {
-	using namespace Chaos;
-	//simple implementation that pulls data over. Used for unit testing, engine has its own version of this
-	const FPBDRigidDirtyParticlesBufferOut* DirtyParticleBuffer = Accessor.GetSolverOutData();
+	Solver->PullPhysicsStateForEachDirtyProxy_External([](auto){});
+}
 
-	for(FSingleParticlePhysicsProxy<TPBDRigidParticle<float,3> >* Proxy : DirtyParticleBuffer->DirtyGameThreadParticles)
+bool FChaosScene::AreAnyTasksPending() const
+{
+	const Chaos::FPBDRigidsSolver* Solver = GetSolver();
+	if (Solver && Solver->AreAnyTasksPending())
 	{
-		Proxy->PullFromPhysicsState(SyncTimestamp);
+		return true;
 	}
+	
+	return false;
+}
 
-	for(IPhysicsProxyBase* ProxyBase : DirtyParticleBuffer->PhysicsParticleProxies)
+void FChaosScene::BeginDestroy()
+{
+	Chaos::FPBDRigidsSolver* Solver = GetSolver();
+	if (Solver)
 	{
-		if(ProxyBase->GetType() == EPhysicsProxyType::GeometryCollectionType)
-		{
-			FGeometryCollectionPhysicsProxy* GCProxy = static_cast<FGeometryCollectionPhysicsProxy*>(ProxyBase);
-			GCProxy->PullFromPhysicsState(SyncTimestamp);
-		} else
-		{
-			ensure(false); // Unhandled physics only particle proxy!
-		}
+		Solver->BeginDestroy();
 	}
-
 }
 
 bool FChaosScene::IsCompletionEventComplete() const
@@ -383,21 +418,7 @@ void FChaosScene::SyncBodies(TSolver* Solver)
 {
 #if WITH_CHAOS
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("SyncBodies"),STAT_SyncBodies,STATGROUP_Physics);
-	const int32 SolverSyncTimestamp = Solver->GetMarshallingManager().GetExternalTimestampConsumed_External();
-	Chaos::FPBDRigidDirtyParticlesBufferAccessor Accessor(Solver->GetDirtyParticlesBuffer());
-	OnSyncBodies(SolverSyncTimestamp, Accessor);
-	//
-	// @todo(chaos) : Add Dirty Constraints Support
-	//
-	// This is temporary constraint code until the DirtyParticleBuffer
-	// can be updated to support constraints. In summary : The 
-	// FDirtyPropertiesManager is going to be updated to support a 
-	// FDirtySet that is specific to a TConstraintProperties class.
-	//
-	for (FJointConstraintPhysicsProxy* Proxy : Solver->GetJointConstraintPhysicsProxy_External())
-	{
-		Proxy->PullFromPhysicsState(SolverSyncTimestamp);
-	}
+	OnSyncBodies(Solver);
 #endif
 }
 
@@ -405,7 +426,7 @@ void FChaosScene::SyncBodies(TSolver* Solver)
 // Find the number of dirty elements in all substructures that has dirty elements that we know of
 // This is non recursive for now
 // Todo: consider making DirtyElementsCount a method on ISpatialAcceleration instead
-int32 DirtyElementCount(Chaos::ISpatialAccelerationCollection<Chaos::TAccelerationStructureHandle<Chaos::FReal,3>,Chaos::FReal,3>& Collection)
+int32 DirtyElementCount(Chaos::ISpatialAccelerationCollection<Chaos::FAccelerationStructureHandle,Chaos::FReal,3>& Collection)
 {
 	using namespace Chaos;
 	int32 DirtyElements = 0;
@@ -413,10 +434,10 @@ int32 DirtyElementCount(Chaos::ISpatialAccelerationCollection<Chaos::TAccelerati
 	for(const FSpatialAccelerationIdx SpatialIndex : SpatialIndices)
 	{
 		auto SubStructure = Collection.GetSubstructure(SpatialIndex);
-		if(const auto AABBTree = SubStructure->template As<TAABBTree<TAccelerationStructureHandle<FReal,3>,TAABBTreeLeafArray<TAccelerationStructureHandle<FReal,3>,FReal>,FReal>>())
+		if(const auto AABBTree = SubStructure->template As<TAABBTree<FAccelerationStructureHandle,TAABBTreeLeafArray<FAccelerationStructureHandle>>>())
 		{
 			DirtyElements += AABBTree->NumDirtyElements();
-		} else if(const auto AABBTreeBV = SubStructure->template As<TAABBTree<TAccelerationStructureHandle<FReal,3>,TBoundingVolume<TAccelerationStructureHandle<FReal,3>,FReal,3>,FReal>>())
+		} else if(const auto AABBTreeBV = SubStructure->template As<TAABBTree<FAccelerationStructureHandle,TBoundingVolume<FAccelerationStructureHandle>>>())
 		{
 			DirtyElements += AABBTreeBV->NumDirtyElements();
 		}
@@ -428,7 +449,7 @@ void FChaosScene::EndFrame()
 {
 #if WITH_CHAOS
 	using namespace Chaos;
-	using SpatialAccelerationCollection = ISpatialAccelerationCollection<TAccelerationStructureHandle<FReal,3>,FReal,3>;
+	using SpatialAccelerationCollection = ISpatialAccelerationCollection<FAccelerationStructureHandle,FReal,3>;
 
 	SCOPE_CYCLE_COUNTER(STAT_Scene_EndFrame);
 
@@ -439,6 +460,7 @@ void FChaosScene::EndFrame()
 
 	int32 DirtyElements = DirtyElementCount(GetSpacialAcceleration()->AsChecked<SpatialAccelerationCollection>());
 	CSV_CUSTOM_STAT(ChaosPhysics,AABBTreeDirtyElementCount,DirtyElements,ECsvCustomStatOp::Set);
+	SET_DWORD_STAT(STAT_ChaosCounter_NumDirtyAABBTreeElements, DirtyElements);
 
 	check(IsCompletionEventComplete())
 	//check(PhysicsTickTask->IsComplete());
@@ -462,34 +484,16 @@ void FChaosScene::EndFrame()
 		//for now just copy the whole thing, stomping any changes that came from GT
 		CopySolverAccelerationStructure();
 
-		TArray<FPhysicsSolverBase*> ActiveSolvers;
-		ActiveSolvers.Reserve(SolverList.Num());
-
-		// #BG calculate active solver list once as we dispatch our first task
 		for(FPhysicsSolverBase* Solver : SolverList)
 		{
-			Solver->CastHelper([&ActiveSolvers](auto& Concrete)
-			{
-				if(Concrete.HasActiveParticles())
-				{
-					ActiveSolvers.Add(&Concrete);
-				}
-			});
-
-		}
-
-		const int32 NumActiveSolvers = ActiveSolvers.Num();
-
-		for(FPhysicsSolverBase* Solver : ActiveSolvers)
-		{
-			Solver->CastHelper([&ActiveSolvers,this](auto& Concrete)
+			Solver->CastHelper([&SolverList,this](auto& Concrete)
 			{
 				SyncBodies(&Concrete);
 				Concrete.SyncEvents_GameThread();
 
 				{
 					SCOPE_CYCLE_COUNTER(STAT_SqUpdateMaterials);
-					Concrete.SyncQueryMaterials();
+					Concrete.SyncQueryMaterials_External();
 				}
 			});
 		}

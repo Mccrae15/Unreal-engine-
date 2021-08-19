@@ -1108,7 +1108,7 @@ void APlayerController::CreateTouchInterface()
 		if (CurrentTouchInterface)
 		{
 			// create the joystick 
-			VirtualJoystick = SNew(SVirtualJoystick);
+			VirtualJoystick = CreateVirtualJoystick();
 
 			// add it to the player's viewport
 			LocalPlayer->ViewportClient->AddViewportWidgetContent(VirtualJoystick.ToSharedRef());
@@ -1116,6 +1116,11 @@ void APlayerController::CreateTouchInterface()
 			ActivateTouchInterface(CurrentTouchInterface);
 		}
 	}
+}
+
+TSharedPtr<SVirtualJoystick> APlayerController::CreateVirtualJoystick()
+{
+	return SNew(SVirtualJoystick);
 }
 
 void APlayerController::CleanupGameViewport()
@@ -1340,8 +1345,8 @@ void APlayerController::OnNetCleanup(UNetConnection* Connection)
 	// a call to ClearOnlineDelegates() here so that PlayerController.ClearOnlineDelegates can use the correct ControllerId (which lives
 	// in ULocalPlayer)
 	Player = NULL;
-	NetConnection = NULL;
-	Destroy( true );		
+	NetConnection = NULL;	
+	Destroy( true );
 	UNetConnection::GNetConnectionBeingCleanedUp = NULL;
 }
 

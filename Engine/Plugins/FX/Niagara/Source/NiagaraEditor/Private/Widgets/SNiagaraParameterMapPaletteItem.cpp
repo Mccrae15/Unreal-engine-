@@ -1,19 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SNiagaraParameterMapPaletteItem.h"
-#include "NiagaraActions.h"
 #include "EdGraphSchema_Niagara.h"
-#include "TutorialMetaData.h"
-#include "NiagaraGraph.h"
-#include "NiagaraEditorStyle.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Images/SImage.h"
-#include "ScopedTransaction.h"
-#include "Widgets/SNiagaraParameterName.h"
-#include "Widgets/SNiagaraParameterMapView.h"
-#include "NiagaraEditorSettings.h"
 #include "EditorFontGlyphs.h"
 #include "EditorStyleSet.h"
+#include "NiagaraActions.h"
+#include "NiagaraEditorSettings.h"
+#include "NiagaraEditorStyle.h"
+#include "NiagaraGraph.h"
+#include "TutorialMetaData.h"
+#include "Widgets/SNiagaraParameterMapView.h"
+#include "Widgets/SNiagaraParameterName.h"
+#include "Widgets/Input/SComboButton.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraParameterMapPalleteItem"
 
@@ -60,12 +58,12 @@ void SNiagaraParameterMapPalleteItem::Construct(const FArguments& InArgs, FCreat
 	bool bForceReadOnly = NamespaceMetadata.IsValid() == false || NamespaceMetadata.Options.Contains(ENiagaraNamespaceMetadataOptions::PreventEditingName);
 
 	ParameterNameTextBlock = SNew(SNiagaraParameterNameTextBlock)
-		.ParameterText(FText::FromName(ParameterAction->Parameter.GetName()))
+		.ParameterText(FText::FromName(ParameterAction->GetParameter().GetName()))
 		.HighlightText(InCreateData->HighlightText)
 		.OnTextCommitted(this, &SNiagaraParameterMapPalleteItem::OnNameTextCommitted)
 		.OnVerifyTextChanged(this, &SNiagaraParameterMapPalleteItem::OnNameTextVerifyChanged)
 		.IsSelected(InCreateData->IsRowSelectedDelegate)
-		.IsReadOnly(InCreateData->bIsReadOnly || bForceReadOnly || ParameterAction->bIsExternallyReferenced)
+		.IsReadOnly(InCreateData->bIsReadOnly || bForceReadOnly || ParameterAction->GetIsExternallyReferenced())
 		.Decorator()
 		[
 			SNew(SHorizontalBox)
@@ -74,7 +72,7 @@ void SNiagaraParameterMapPalleteItem::Construct(const FArguments& InArgs, FCreat
 			.Padding(0, 0, 5, 0)
 			[
 				SNew(STextBlock)
-				.Visibility(ParameterAction->bIsExternallyReferenced ? EVisibility::Visible : EVisibility::Collapsed)
+				.Visibility(ParameterAction->GetIsExternallyReferenced() ? EVisibility::Visible : EVisibility::Collapsed)
 				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.8"))
 				.Text(FEditorFontGlyphs::Lock)
 				.ToolTipText(LOCTEXT("LockedToolTip", "This parameter is used in a referenced external graph and can't be edited directly."))
@@ -84,7 +82,7 @@ void SNiagaraParameterMapPalleteItem::Construct(const FArguments& InArgs, FCreat
 			.Padding(0, 0, 5, 0)
 			[
 				SNew(STextBlock)
-				.Visibility(ParameterAction->bIsSourcedFromCustomStackContext ? EVisibility::Visible : EVisibility::Collapsed)
+				.Visibility(ParameterAction->GetIsSourcedFromCustomStackContext() ? EVisibility::Visible : EVisibility::Collapsed)
 				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.8"))
 				.Text(FEditorFontGlyphs::Database)
 				.ToolTipText(LOCTEXT("DataInterfaceSourceToolTip", "This parameter is a child variable of an existing Data Interface, meant to be used in Simulation Stage based stacks where the parent Data Interface is the Iteration Source.") )
@@ -169,9 +167,15 @@ FText SNiagaraParameterMapPalleteItem::GetReferenceCount() const
 	if (ParameterAction.IsValid())
 	{
 		int32 TotalCount = 0;
-		for (const FNiagaraGraphParameterReferenceCollection& ReferenceCollection : ParameterAction->ReferenceCollection)
+		for (const FNiagaraGraphParameterReferenceCollection& ReferenceCollection : ParameterAction->GetReferenceCollection())
 		{
-			TotalCount += ReferenceCollection.ParameterReferences.Num();
+			for (const FNiagaraGraphParameterReference& ParamReference : ReferenceCollection.ParameterReferences)
+			{
+				if (ParamReference.bIsUserFacing)
+				{
+					TotalCount++;
+				}
+			}
 		}
 		return FText::AsNumber(TotalCount);
 	}

@@ -33,11 +33,11 @@ struct FMaterialSubstitutionDataTable : public FTableRowBase
 
 	/** Type of matching to perform with SearchString string */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "MaterialSubstitutionTable")
-	EEditorScriptingStringMatchType StringMatch;
+	EEditorScriptingStringMatchType StringMatch = EEditorScriptingStringMatchType::Contains;
 
 	/** Material to use for the substitution */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "MaterialSubstitutionTable")
-	UMaterialInterface* MaterialReplacement;
+	UMaterialInterface* MaterialReplacement = nullptr;
 };
 
 /*
@@ -54,11 +54,11 @@ struct FMeshSubstitutionDataTable
 
 	/** DEPRECATED - Type of matching to perform with SearchString string */
 	UPROPERTY()
-	EEditorScriptingStringMatchType StringMatch_DEPRECATED;
+	EEditorScriptingStringMatchType StringMatch_DEPRECATED = EEditorScriptingStringMatchType::Contains;
 
 	/** DEPRECATED - Mesh to use for the substitution */
 	UPROPERTY()
-	UStaticMesh* MeshReplacement_DEPRECATED;
+	UStaticMesh* MeshReplacement_DEPRECATED = nullptr;
 };
 
 /*
@@ -88,11 +88,11 @@ struct DATAPREPLIBRARIES_API FMeshReductionOptions
 
 	/** Value of the name of LODGroup not the display name */
 	UPROPERTY()
-	float ReductionPercent;
+	float ReductionPercent = 0.0f;
 
 	/** Value of the name of LODGroup not the display name */
 	UPROPERTY()
-	float ScreenSize;
+	float ScreenSize= 0.0f;
 };
 
 /*
@@ -318,6 +318,24 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dataprep | Operation")
 	static void AddToLayer(const TArray<UObject*>& SelectedObjects, const FName& LayerName);
+
+	/**
+	 * Set collision complexity for selected meshes
+	 * @param	InSelectedObjects			Array of meshes to process.
+	 * @param	InCollisionTraceFlag		The new collision complexity.
+	 * @param	InModifiedObjects			List of modified meshes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Dataprep | Operation")
+	static void SetCollisionComplexity(const TArray<UObject*>& InSelectedObjects, const ECollisionTraceFlag InCollisionTraceFlag, TArray<UObject*>& InModifiedObjects);
+
+	/**
+	 * Resize textures to max width/height and optionally ensure power of two size.
+	 * @param InTextures:	Textures to resize
+	 * @param InMaxSize:	Max allowed width or height
+	 * @note - This operation only applies on assets
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Dataprep | Operation")
+	static void ResizeTextures(const TArray<UTexture2D*>& InTextures, int32 InMaxSize);
 
 private:
 	static void SubstituteMaterial(const TArray<UObject*>& SelectedObjects, const FString& MaterialSearch, EEditorScriptingStringMatchType StringMatch, const TArray<UMaterialInterface*>& MaterialList, UMaterialInterface* MaterialSubstitute);

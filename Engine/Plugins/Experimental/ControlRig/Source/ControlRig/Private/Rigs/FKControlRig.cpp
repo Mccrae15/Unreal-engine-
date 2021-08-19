@@ -154,11 +154,14 @@ void UFKControlRig::Initialize(bool bInitRigUnits /*= true*/)
 	// execute init
 	Execute(EControlRigState::Init, FRigUnit_BeginExecution::EventName);
 }
+
 TArray<FName> UFKControlRig::GetControlNames()
 {
-	FRigHierarchyContainer* Container = GetHierarchy();
+	TArray<FRigControl> Controls;
+	GetControlsInOrder(Controls);
+
 	TArray<FName> Names;
-	for (FRigControl& Control : Container->ControlHierarchy)
+	for (FRigControl& Control: Controls)
 	{
 		Names.Add(Control.Name);
 	}
@@ -264,8 +267,8 @@ void UFKControlRig::CreateRigElements(const USkeletalMesh* InReferenceMesh)
 {
 	if (InReferenceMesh)
 	{
-		USkeleton* Skeleton = InReferenceMesh->Skeleton;
-		CreateRigElements(InReferenceMesh->RefSkeleton, (Skeleton) ? Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName) : nullptr);
+		const USkeleton* Skeleton = InReferenceMesh->GetSkeleton();
+		CreateRigElements(InReferenceMesh->GetRefSkeleton(), (Skeleton) ? Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName) : nullptr);
 	}
 }
 

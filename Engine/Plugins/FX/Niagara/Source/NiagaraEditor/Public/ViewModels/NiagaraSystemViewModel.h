@@ -4,10 +4,13 @@
 
 #include "IMovieScenePlayer.h"
 
+#include "NiagaraCommon.h"
+#include "NiagaraEditorCommon.h"
 #include "EditorUndoClient.h"
 #include "UObject/GCObject.h"
-#include "NiagaraCurveOwner.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
+#include "ViewModels/NiagaraParameterDefinitionsSubscriberViewModel.h"
+#include "NiagaraOverviewNode.h"
 #include "ISequencer.h"
 
 #include "TickableEditorObject.h"
@@ -20,6 +23,7 @@ class UNiagaraSequence;
 class UMovieSceneNiagaraEmitterTrack;
 struct FNiagaraVariable;
 struct FNiagaraEmitterHandle;
+class UNiagaraOverviewNode;
 class FNiagaraEmitterHandleViewModel;
 class FNiagaraSystemScriptViewModel;
 class UNiagaraStackViewModel;
@@ -29,7 +33,6 @@ class FNiagaraSystemInstance;
 class ISequencer;
 struct FAssetData;
 class UNiagaraSystemEditorData;
-struct FRichCurve;
 class UNiagaraEditorSettings;
 struct FNiagaraParameterStore;
 struct FEdGraphEditAction;
@@ -37,7 +40,13 @@ class UNiagaraNodeFunctionCall;
 class FNiagaraEmitterViewModel;
 class FNiagaraOverviewGraphViewModel;
 class UNiagaraScratchPadViewModel;
+class UNiagaraCurveSelectionViewModel;
 class UNiagaraMessageData;
+class UNiagaraEditorParametersAdapter;
+
+class INiagaraParameterDefinitionsSubscriber;
+
+class FNiagaraPlaceholderDataInterfaceManager;
 
 /** Defines different editing modes for this system view model. */
 enum class NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode
@@ -46,6 +55,8 @@ enum class NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode
 	SystemAsset,
 	/** An emitter asset is being edited.  In this mode the system scripts will not be editable and all emitter editing options are available. */
 	EmitterAsset,
+	/** Special case where an emitter asset is being edited during a merge. In this mode changes made to the emitter being edited don't have to be applied, but directly affect the source. */
+	EmitterDuringMerge,
 };
 
 /** Defines options for the niagara System view model */
@@ -70,6 +81,9 @@ struct NIAGARAEDITOR_API FNiagaraSystemViewModelOptions
 
 	/** Gets the current editing mode for this system. */
 	ENiagaraSystemViewModelEditMode EditMode;
+
+	/** Specifies that the view model is being constructed for data processing only and will not be displayed in the UI. */
+	bool bIsForDataProcessingOnly;
 };
 
 struct FNiagaraStackModuleData
@@ -88,19 +102,16 @@ class FNiagaraSystemViewModel
 	, public FEditorUndoClient
 	, public FTickableEditorObject
 	, public TNiagaraViewModelManager<UNiagaraSystem, FNiagaraSystemViewModel>
+	, public INiagaraParameterDefinitionsSubscriberViewModel
 {
 public:
 	DECLARE_MULTICAST_DELEGATE(FOnEmitterHandleViewModelsChanged);
 
-	DECLARE_MULTICAST_DELEGATE(FOnCurveOwnerChanged);
-
-	DECLARE_MULTICAST_DELEGATE(FOnPostSequencerTimeChange)
+	DECLARE_MULTICAST_DELEGATE(FOnPostSequencerTimeChange);
 
 	DECLARE_MULTICAST_DELEGATE(FOnSystemCompiled);
 
 	DECLARE_MULTICAST_DELEGATE(FOnPinnedEmittersChanged);
-
-	DECLARE_MULTICAST_DELEGATE(FOnPinnedCurvesChanged);
 
 	DECLARE_MULTICAST_DELEGATE(FOnPreClose);
 
@@ -114,6 +125,7 @@ public:
 	{
 		FString SystemPath;
 		FGuid EmitterHandleId;
+		UNiagaraOverviewNode* OverviewNode = nullptr;
 		bool operator==(const FEmitterHandleToDuplicate& Other) const
 		{
 			return SystemPath == Other.SystemPath && EmitterHandleId == Other.EmitterHandleId;
@@ -146,18 +158,28 @@ public:
 		/** Reset this system (do not pull in changes) */
 		ResetSystem,
 	};
+
 	/** Creates a new view model with the supplied System and System instance. */
 	NIAGARAEDITOR_API FNiagaraSystemViewModel();
 	
 	/** Initializes this system view model with the supplied system and options. */
 	NIAGARAEDITOR_API void Initialize(UNiagaraSystem& InSystem, FNiagaraSystemViewModelOptions InOptions);
 
+	/** Returns whether or not this view model is initialized and safe to use. */
+	bool IsValid() const;
+
 	NIAGARAEDITOR_API ~FNiagaraSystemViewModel();
 
+	//~ Begin NiagaraParameterDefinitionsSubscriberViewModel Interface
+protected:
+	virtual INiagaraParameterDefinitionsSubscriber* GetParameterDefinitionsSubscriber() override;
+	//~ End NiagaraParameterDefinitionsSubscriberViewModel Interface
+
+public:
 	NIAGARAEDITOR_API FText GetDisplayName() const;
 
 	/** Gets an array of the view models for the emitter handles owned by this System. */
-	NIAGARAEDITOR_API const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& GetEmitterHandleViewModels();
+	NIAGARAEDITOR_API const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& GetEmitterHandleViewModels() const;
 
 	/** Gets an emitter handle view model by ID. Returns an invalid shared ptr if it can't be found. */
 	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> GetEmitterHandleViewModelById(FGuid InEmitterHandleId);
@@ -173,9 +195,6 @@ public:
 
 	/** Gets the sequencer for this System for displaying the timeline. */
 	TSharedPtr<ISequencer> GetSequencer();
-
-	/** Gets the curve owner for the System represented by this view model, for use with the curve editor widget. */
-	FNiagaraCurveOwner& GetCurveOwner();
 
 	/** Get access to the underlying system*/
 	NIAGARAEDITOR_API UNiagaraSystem& GetSystem() const;
@@ -198,9 +217,6 @@ public:
 	/** Gets a multicast delegate which is called any time the array of emitter handle view models changes. */
 	NIAGARAEDITOR_API FOnEmitterHandleViewModelsChanged& OnEmitterHandleViewModelsChanged();
 
-	/** Gets a delegate which is called any time the data in the curve owner is changed internally by this view model. */
-	FOnCurveOwnerChanged& OnCurveOwnerChanged();
-	
 	/** Gets a multicast delegate which is called whenever we've received and handled a sequencer time update.*/
 	FOnPostSequencerTimeChange& OnPostSequencerTimeChanged();
 
@@ -234,7 +250,10 @@ public:
 	 * @param ReinitMode Defines whether the system should reinitialize and pull in changes or reset and keep its current state.
 	 */
 	void ResetSystem(ETimeResetMode TimeResetMode, EMultiResetMode MultiResetMode, EReinitMode ReinitMode);
-
+	
+	void IsolateSelectedEmitters();
+	void DisableSelectedEmitters();
+	
 	/** Compiles the spawn and update scripts. */
 	void CompileSystem(bool bForce);
 
@@ -251,16 +270,22 @@ public:
 	NIAGARAEDITOR_API void RefreshAll();
 
 	/** Called to notify the system view model that one of the data objects in the system was modified. */
-	void NotifyDataObjectChanged(UObject* ChangedObject);
+	void NotifyDataObjectChanged(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType);
 
 	/** Updates all selected emitter's fixed bounds with their current dynamic bounds. */
 	void UpdateEmitterFixedBounds();
+
+	/** Updates the current system's fixed bounds with its current dynamic bounds. */
+	void UpdateSystemFixedBounds();
 
 	/** Clear the captures stats for all the emitters in the current system. */
 	void ClearEmitterStats();
 
 	/** Isolates the supplied emitters.  This will remove all other emitters from isolation. */
 	NIAGARAEDITOR_API void IsolateEmitters(TArray<FGuid> EmitterHandlesIdsToIsolate);
+
+	/** Disable the supplied emitters. */
+	NIAGARAEDITOR_API void DisableEmitters(TArray<FGuid> EmitterHandlesIdsToDisable);
 
 	/** Toggles the isolation state of a single emitter. */
 	void ToggleEmitterIsolation(TSharedRef<FNiagaraEmitterHandleViewModel> InEmitterHandle);
@@ -293,9 +318,6 @@ public:
 	/** Gets the system toolkit command list. */
 	NIAGARAEDITOR_API TSharedPtr<FUICommandList> GetToolkitCommands();
 	
-	/** Returns a multicast delegate that is broadcast when pinned curves (shown in curve editor) state has changed*/
-	NIAGARAEDITOR_API FOnPinnedCurvesChanged& GetOnPinnedCurvesChanged();
-
 	/** Set the system toolkit command list. */
 	void SetToolkitCommands(const TSharedRef<FUICommandList>& InToolkitCommands);
 
@@ -322,6 +344,10 @@ public:
 
 	NIAGARAEDITOR_API UNiagaraScratchPadViewModel* GetScriptScratchPadViewModel();
 
+	NIAGARAEDITOR_API UNiagaraCurveSelectionViewModel* GetCurveSelectionViewModel();
+
+	TArray<float> OnGetPlaybackSpeeds() const;
+	
 	/** Duplicates a set of emitters and refreshes everything.*/
 	void DuplicateEmitters(TArray<FEmitterHandleToDuplicate> EmitterHandlesToDuplicate);
 
@@ -343,6 +369,9 @@ public:
 	/** Wrapper to set bPendingMessagesChanged after calling a delegate off of a message link. */
 	void ExecuteMessageDelegateAndRefreshMessages(FSimpleDelegate MessageDelegate);
 
+	/** Helper to get the current System or Emitter's EditorParameters. */
+	UNiagaraEditorParametersAdapter* GetEditorOnlyParametersAdapter() const;
+
 	ENiagaraStatEvaluationType StatEvaluationType = ENiagaraStatEvaluationType::Average;
 	ENiagaraStatDisplayMode StatDisplayMode = ENiagaraStatDisplayMode::Percent;
 
@@ -351,8 +380,13 @@ public:
 
 	FOnExternalRenameParameter& OnParameterRenamedExternally() { return OnExternalRenameDelegate; }
 	FOnExternalRemoveParameter& OnParameterRemovedExternally() { return OnExternalRemoveDelegate; }
-private:
 
+	TSharedRef<FNiagaraPlaceholderDataInterfaceManager> GetPlaceholderDataInterfaceManager();
+
+	/** Gets whether or not this view model is for data processing only and will not be displayed in the UI. */
+	bool GetIsForDataProcessingOnly() const;
+
+private:
 	/** Sends message jobs to FNiagaraMessageManager for all compile events from the last compile. */
 	void SendLastCompileMessageJobs() const;
 
@@ -381,11 +415,11 @@ private:
 	/** Sets up the sequencer for this emitter. */
 	void SetupSequencer();
 
+	/** Callback function for when editor settings change. Used to snap to the closest available speed. */
+	void SnapToNextSpeed(const FString& PropertyName, const UNiagaraEditorSettings* Settings);
+
 	/** Gets the content for the add menu in sequencer. */
 	void GetSequencerAddMenuContent(FMenuBuilder& MenuBuilder, TSharedRef<ISequencer> Sequencer);
-
-	/** Resets and rebuilds the data in the curve owner. */
-	void ResetCurveData();
 
 	/** Updates the compiled versions of data interfaces when their sources change. */
 	void UpdateCompiledDataInterfaces(UNiagaraDataInterface* ChangedDataInterface);
@@ -423,10 +457,7 @@ private:
 	void UpdateSimulationFromParameterChange();
 
 	/** Called when a script is compiled */
-	void ScriptCompiled();
-
-	/** Handles when a curve in the curve owner is changed by the curve editor. */
-	void CurveChanged(FRichCurve* ChangedCurve, UObject* CurveOwnerObject);
+	void ScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
 
 	/** Called whenever the data in the sequence is changed. */
 	void SequencerDataChanged(EMovieSceneDataChangeType DataChangeType);
@@ -463,15 +494,6 @@ private:
 
 	/** Removes event handlers for the system's scripts. */
 	void RemoveSystemEventHandlers();
-	
-	/** Adds event handler for the system's scripts. */
-	void AddCurveEventHandlers();
-
-	/** Removes event handlers for the system's scripts. */
-	void RemoveCurveEventHandlers();
-
-	/** sends a notification that pinned curves have changed status */
-	void NotifyPinnedCurvesChanged();
 
 	/** builds stack module data for use in module dependencies */
 	void BuildStackModuleData(UNiagaraScript* Script, FGuid InEmitterHandleId, TArray<FNiagaraStackModuleData>& OutStackModuleData);
@@ -483,7 +505,7 @@ private:
 	void SystemChanged(UNiagaraSystem* ChangedSystem);
 
 	/** Called whenever one of the owned stack viewmodels structure changes. */
-	void StackViewModelStructureChanged();
+	void StackViewModelStructureChanged(ENiagaraStructureChangedFlags Flags);
 
 	/** Called whenever one of the scripts in the scratch pad changes. */
 	void ScratchPadScriptsChanged();
@@ -545,9 +567,6 @@ private:
 	/** A multicast delegate which is called any time the array of emitter handle view models changes. */
 	FOnEmitterHandleViewModelsChanged OnEmitterHandleViewModelsChangedDelegate;
 
-	/** A multicast delegate which is called when the contents of the curve owner is changed internally by this view model. */
-	FOnCurveOwnerChanged OnCurveOwnerChangedDelegate;
-
 	/** A multicast delegate which is called whenever we've received and handled a sequencer time update.*/
 	FOnPostSequencerTimeChange OnPostSequencerTimeChangeDelegate;
 
@@ -574,9 +593,6 @@ private:
 	/** A flag for preventing reentrancy when synchronizing sequencer selection with system selection */
 	bool bUpdatingSequencerSelectionFromSystem;
 
-	/** A curve owner implementation for curves in a niagara System. */
-	FNiagaraCurveOwner CurveOwner;
-
 	TNiagaraViewModelManager<UNiagaraSystem, FNiagaraSystemViewModel>::Handle RegisteredHandle;
 
 	/** Array of FNiagaraEmitterHandleViewModel representing emitters that are pinned in the stack UI*/
@@ -599,12 +615,6 @@ private:
 
 	/** The system toolkit commands. */
 	TWeakPtr<class FUICommandList> ToolkitCommands;
-
-	/*A multicast delegate which is called any time the pinned status of the curves changes*/
-	FOnPinnedCurvesChanged OnPinnedCurvesChangedDelegate;
-
-	/*An array of data interfaces used to keep track of how curves are changed by the user*/
-	TArray<UNiagaraDataInterfaceCurveBase*> ShownCurveDataInterfaces;
 
 	/** A flag which indicates that a compile has been requested, but has not completed. */
 	bool bCompilePendingCompletion;
@@ -633,6 +643,10 @@ private:
 
 	UNiagaraScratchPadViewModel* ScriptScratchPadViewModel;
 
+	UNiagaraCurveSelectionViewModel* CurveSelectionViewModel;
+
+	TSharedPtr<FNiagaraPlaceholderDataInterfaceManager> PlaceholderDataInterfaceManager;
+
 	TArray<UNiagaraScript*> ScriptsToCheckForStatus;
 	TArray<ENiagaraScriptCompileStatus> ScriptCompileStatuses;
 
@@ -645,4 +659,7 @@ private:
 
 	/** Flag for when messages have been added/removed through the viewmodel to signal that the message manager needs to be refreshed. */
 	mutable bool bPendingAssetMessagesChanged;
+
+	/** Specifies that this view model is for data processing only and will not be displayed in the UI. */
+	bool bIsForDataProcessingOnly;
 };

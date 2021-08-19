@@ -5,6 +5,8 @@
 #include "EntitySystem/MovieSceneEntityManager.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/MovieSceneComponentRegistry.h"
+#include "EntitySystem/MovieScenePropertyBinding.h"
+#include "EntitySystem/MovieSceneEntityFactoryTemplates.h"
 
 namespace UE
 {
@@ -22,16 +24,19 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 
 	ComponentRegistry->NewComponentType(&ParentEntity,          TEXT("Parent Entity"));
 	ComponentRegistry->NewComponentType(&InstanceHandle,        TEXT("Instance Handle"));
+	ComponentRegistry->NewComponentType(&RootInstanceHandle,    TEXT("Root Instance Handle"));
 
 	ComponentRegistry->NewComponentType(&EvalTime,              TEXT("Eval Time"));
 
 	ComponentRegistry->NewComponentType(&BoundObject,           TEXT("Bound Object"));
 
-	ComponentRegistry->NewComponentType(&PropertyBinding,         TEXT("Property Binding"));
+	ComponentRegistry->NewComponentType(&PropertyBinding,         TEXT("Property Binding"), EComponentTypeFlags::CopyToOutput);
 	ComponentRegistry->NewComponentType(&GenericObjectBinding,    TEXT("Generic Object Binding ID"));
 	ComponentRegistry->NewComponentType(&SceneComponentBinding,   TEXT("USceneComponent Binding ID"));
 	ComponentRegistry->NewComponentType(&SpawnableBinding,        TEXT("Spawnable Binding"));
 	ComponentRegistry->NewComponentType(&TrackInstance,           TEXT("Track Instance"));
+	ComponentRegistry->NewComponentType(&ByteChannel,             TEXT("Byte Channel"));
+	ComponentRegistry->NewComponentType(&IntegerChannel,          TEXT("Integer Channel"));
 	ComponentRegistry->NewComponentType(&FloatChannel[0],         TEXT("Float Channel 0"));
 	ComponentRegistry->NewComponentType(&FloatChannel[1],         TEXT("Float Channel 1"));
 	ComponentRegistry->NewComponentType(&FloatChannel[2],         TEXT("Float Channel 2"));
@@ -58,14 +63,18 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	ComponentRegistry->NewComponentType(&HierarchicalEasingChannel, TEXT("Hierarchical Easing Channel"));
 	ComponentRegistry->NewComponentType(&HierarchicalEasingProvider, TEXT("Hierarchical Easing Provider"));
 
-	ComponentRegistry->NewComponentType(&BlenderType,           TEXT("Blender System Type"));
+	ComponentRegistry->NewComponentType(&BlenderType,           TEXT("Blender System Type"), EComponentTypeFlags::CopyToChildren);
 	ComponentRegistry->NewComponentType(&BlendChannelInput,     TEXT("Blend Channel Input"));
 	ComponentRegistry->NewComponentType(&HierarchicalBias,      TEXT("Hierarchical Bias"));
 	ComponentRegistry->NewComponentType(&BlendChannelOutput,    TEXT("Blend Channel Output"));
+	ComponentRegistry->NewComponentType(&InitialValueIndex,     TEXT("Initial Value Index"));
 
 	ComponentRegistry->NewComponentType(&CustomPropertyIndex,   TEXT("Custom Property Index"));			// Not EComponentTypeFlags::Preserved because the system property manager will always ensure that the component is added to the correct entity
 	ComponentRegistry->NewComponentType(&FastPropertyOffset,    TEXT("Fast Property Offset"));			// Not EComponentTypeFlags::Preserved because the system property manager will always ensure that the component is added to the correct entity
 	ComponentRegistry->NewComponentType(&SlowProperty,          TEXT("Slow Property Binding"));			// Not EComponentTypeFlags::Preserved because the system property manager will always ensure that the component is added to the correct entity
+	ComponentRegistry->NewComponentType(&BoolResult,            TEXT("Bool Result"));
+	ComponentRegistry->NewComponentType(&ByteResult,            TEXT("Byte Result"));
+	ComponentRegistry->NewComponentType(&IntegerResult,         TEXT("Integer Result"));
 	ComponentRegistry->NewComponentType(&FloatResult[0],        TEXT("Float Result 0"));
 	ComponentRegistry->NewComponentType(&FloatResult[1],        TEXT("Float Result 1"));
 	ComponentRegistry->NewComponentType(&FloatResult[2],        TEXT("Float Result 2"));
@@ -76,6 +85,7 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	ComponentRegistry->NewComponentType(&FloatResult[7],        TEXT("Float Result 7"));
 	ComponentRegistry->NewComponentType(&FloatResult[8],        TEXT("Float Result 8"));
 
+	ComponentRegistry->NewComponentType(&BaseInteger,			TEXT("Base Integer"));
 	ComponentRegistry->NewComponentType(&BaseFloat[0],          TEXT("Base Float 0"));
 	ComponentRegistry->NewComponentType(&BaseFloat[1],          TEXT("Base Float 1"));
 	ComponentRegistry->NewComponentType(&BaseFloat[2],          TEXT("Base Float 2"));
@@ -94,6 +104,9 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	ComponentRegistry->NewComponentType(&TrackInstance,         TEXT("Track Instance"));
 	ComponentRegistry->NewComponentType(&TrackInstanceInput,    TEXT("Track Instance Input"));
 
+	ComponentRegistry->NewComponentType(&EvaluationHook,        TEXT("Evaluation Hook"));
+	ComponentRegistry->NewComponentType(&EvaluationHookFlags,   TEXT("Evaluation Hook Flags"), EComponentTypeFlags::Preserved);
+
 	ComponentRegistry->NewComponentType(&Interrogation.InputKey,  TEXT("Interrogation Input"));
 	ComponentRegistry->NewComponentType(&Interrogation.OutputKey, TEXT("Interrogation Output"));
 
@@ -106,7 +119,6 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	Tags.NeedsLink               = ComponentRegistry->NewTag(TEXT("Needs Link"));
 	Tags.NeedsUnlink             = ComponentRegistry->NewTag(TEXT("Needs Unlink"));
 	Tags.MigratedFromFastPath    = ComponentRegistry->NewTag(TEXT("Migrated From Fast Path"));
-	Tags.CachePreAnimatedValue   = ComponentRegistry->NewTag(TEXT("Cache Pre Animated Value"));
 	Tags.Master                  = ComponentRegistry->NewTag(TEXT("Master"));
 	Tags.ImportedEntity          = ComponentRegistry->NewTag(TEXT("Imported Entity"));
 	Tags.Finished                = ComponentRegistry->NewTag(TEXT("Finished Evaluating"));
@@ -115,14 +127,12 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	Tags.PreRoll                 = ComponentRegistry->NewTag(TEXT("Pre Roll"));
 	Tags.SectionPreRoll          = ComponentRegistry->NewTag(TEXT("Section Pre Roll"));
 
-	SymbolicTags.CreatesEntities = ComponentRegistry->NewTag(TEXT(" ~~ SYMBOLIC~~ Creates Entities"));
+	SymbolicTags.CreatesEntities = ComponentRegistry->NewTag(TEXT("~~ SYMBOLIC ~~ Creates Entities"));
 
 	FinishedMask.SetAll({ Tags.NeedsUnlink, Tags.Finished });
 
 	// New children always need link
 	ComponentRegistry->Factories.DefineChildComponent(Tags.NeedsLink);
-
-	ComponentRegistry->Factories.DefineChildComponent(BlenderType, BlenderType);
 
 	// Always copy these tags over to children
 	ComponentRegistry->Factories.DefineChildComponent(Tags.RestoreState,  Tags.RestoreState);
@@ -140,6 +150,7 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	ComponentRegistry->Factories.DuplicateChildComponent(BaseValueEvalTime);
 
 	ComponentRegistry->Factories.DuplicateChildComponent(InstanceHandle);
+	ComponentRegistry->Factories.DuplicateChildComponent(RootInstanceHandle);
 	ComponentRegistry->Factories.DuplicateChildComponent(PropertyBinding);
 	ComponentRegistry->Factories.DuplicateChildComponent(HierarchicalBias);
 
@@ -153,8 +164,8 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 
 			virtual void Run(const FEntityRange& ChildRange, const FEntityAllocation* ParentAllocation, TArrayView<const int32> ParentAllocationOffsets) override
 			{
-				TArrayView<const FMovieSceneEntityID> ParentIDs = ParentAllocation->GetEntityIDs();
-				TArrayView<FMovieSceneEntityID>       ChildComponents = GetChildComponents(ChildRange.Allocation);
+				TArrayView<const FMovieSceneEntityID> ParentIDs       = ParentAllocation->GetEntityIDs();
+				TComponentWriter<FMovieSceneEntityID> ChildComponents = GetChildComponents(ChildRange.Allocation);
 
 				for (int32 Index = 0; Index < ChildRange.Num; ++Index)
 				{
@@ -166,6 +177,30 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 			}
 		};
 		ComponentRegistry->Factories.DefineChildComponent(FParentEntityInitializer(ParentEntity));
+	}
+	
+	// Bool channel relationships
+	{
+		ComponentRegistry->Factories.DuplicateChildComponent(BoolResult);
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(BoolResult, EvalTime);
+	}
+
+	// Byte channel relationships
+	{
+		ComponentRegistry->Factories.DuplicateChildComponent(ByteChannel);
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(ByteChannel, ByteResult);
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(ByteChannel, EvalTime);
+	}
+	
+	// Integer channel relationships
+	{
+		ComponentRegistry->Factories.DuplicateChildComponent(IntegerChannel);
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(IntegerChannel, IntegerResult);
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(IntegerChannel, EvalTime);
+
+		ComponentRegistry->Factories.DefineComplexInclusiveComponents(
+				FComplexInclusivityFilter::All({ IntegerChannel, BaseValueEvalTime, Tags.AdditiveFromBaseBlend }),
+				BaseInteger);
 	}
 
 	// Float channel relationships
@@ -228,6 +263,12 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 			OutInput.Section = InInstance.Owner;
 		};
 		ComponentRegistry->Factories.DefineChildComponent(TrackInstance, TrackInstanceInput, InitInput);
+	}
+
+	{
+		ComponentRegistry->Factories.DefineChildComponent(EvaluationHook, EvaluationHook);
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(EvaluationHook, EvalTime);
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(EvaluationHook, EvaluationHookFlags);
 	}
 }
 

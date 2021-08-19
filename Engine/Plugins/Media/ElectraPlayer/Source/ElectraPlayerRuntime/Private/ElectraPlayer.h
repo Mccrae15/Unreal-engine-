@@ -17,6 +17,9 @@ class FVideoDecoderOutput;
 using FVideoDecoderOutputPtr = TSharedPtr<FVideoDecoderOutput, ESPMode::ThreadSafe>;
 class IAudioDecoderOutput;
 using IAudioDecoderOutputPtr = TSharedPtr<IAudioDecoderOutput, ESPMode::ThreadSafe>;
+class IMetaDataDecoderOutput;
+using IMetaDataDecoderOutputPtr = TSharedPtr<IMetaDataDecoderOutput, ESPMode::ThreadSafe>;
+
 
 namespace Electra
 {
@@ -119,49 +122,207 @@ public:
 	void NotifyOfOptionChange() override;
 
 private:
+	DECLARE_DELEGATE_TwoParams(FOnMediaPlayerEventReceivedDelegate, TSharedPtrTS<IAdaptiveStreamingPlayerAEMSEvent> /*InEvent*/, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode /*InDispatchMode*/);
+	class FAEMSEventReceiver : public IAdaptiveStreamingPlayerAEMSReceiver
+	{
+	public:
+		virtual ~FAEMSEventReceiver() = default;
+		FOnMediaPlayerEventReceivedDelegate& GetEventReceivedDelegate()
+		{ return EventReceivedDelegate; }
+	private:
+		virtual void OnMediaPlayerEventReceived(TSharedPtrTS<IAdaptiveStreamingPlayerAEMSEvent> InEvent, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode InDispatchMode) override
+		{ EventReceivedDelegate.ExecuteIfBound(InEvent, InDispatchMode); }
+		FOnMediaPlayerEventReceivedDelegate EventReceivedDelegate;
+	};
+
+
+	struct FPlayerMetricEventBase
+	{
+		enum class EType
+		{
+			OpenSource,
+			ReceivedMasterPlaylist,
+			ReceivedPlaylists,
+			TracksChanged,
+			PlaylistDownload,
+			BufferingStart,
+			BufferingEnd,
+			Bandwidth,
+			BufferUtilization,
+			SegmentDownload,
+			LicenseKey,
+			DataAvailabilityChange,
+			VideoQualityChange,
+			PrerollStart,
+			PrerollEnd,
+			PlaybackStart,
+			PlaybackPaused,
+			PlaybackResumed,
+			PlaybackEnded,
+			JumpInPlayPosition,
+			PlaybackStopped,
+			Error,
+			LogMessage,
+			DroppedVideoFrame,
+			DroppedAudioFrame
+		};
+		FPlayerMetricEventBase(EType InType) : Type(InType) {}
+		virtual ~FPlayerMetricEventBase() = default;
+		EType Type;
+	};
+	struct FPlayerMetricEvent_OpenSource : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_OpenSource(const FString& InURL) : FPlayerMetricEventBase(EType::OpenSource), URL(InURL) {}
+		FString URL;
+	};
+	struct FPlayerMetricEvent_ReceivedMasterPlaylist : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_ReceivedMasterPlaylist(const FString& InEffectiveURL) : FPlayerMetricEventBase(EType::ReceivedMasterPlaylist), EffectiveURL(InEffectiveURL) {}
+		FString EffectiveURL;
+	};
+	struct FPlayerMetricEvent_PlaylistDownload : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_PlaylistDownload(const Metrics::FPlaylistDownloadStats& InPlaylistDownloadStats) : FPlayerMetricEventBase(EType::PlaylistDownload), PlaylistDownloadStats(InPlaylistDownloadStats) {}
+		Metrics::FPlaylistDownloadStats PlaylistDownloadStats;
+	};
+	struct FPlayerMetricEvent_BufferingStart : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_BufferingStart(Metrics::EBufferingReason InBufferingReason) : FPlayerMetricEventBase(EType::BufferingStart), BufferingReason(InBufferingReason) {}
+		Metrics::EBufferingReason BufferingReason;
+	};
+	struct FPlayerMetricEvent_BufferingEnd : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_BufferingEnd(Metrics::EBufferingReason InBufferingReason) : FPlayerMetricEventBase(EType::BufferingEnd), BufferingReason(InBufferingReason) {}
+		Metrics::EBufferingReason BufferingReason;
+	};
+	struct FPlayerMetricEvent_Bandwidth : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_Bandwidth(int64 InEffectiveBps, int64 InThroughputBps, double InLatencyInSeconds) : FPlayerMetricEventBase(EType::Bandwidth), EffectiveBps(InEffectiveBps), ThroughputBps(InThroughputBps), LatencyInSeconds(InLatencyInSeconds) {}
+		int64 EffectiveBps;
+		int64 ThroughputBps;
+		double LatencyInSeconds;
+	};
+	struct FPlayerMetricEvent_BufferUtilization : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_BufferUtilization(const Metrics::FBufferStats& InBufferStats) : FPlayerMetricEventBase(EType::BufferUtilization), BufferStats(InBufferStats) {}
+		Metrics::FBufferStats BufferStats;
+	};
+	struct FPlayerMetricEvent_SegmentDownload : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_SegmentDownload(const Metrics::FSegmentDownloadStats& InSegmentDownloadStats) : FPlayerMetricEventBase(EType::SegmentDownload), SegmentDownloadStats(InSegmentDownloadStats) {}
+		Metrics::FSegmentDownloadStats SegmentDownloadStats;
+	};
+	struct FPlayerMetricEvent_LicenseKey : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_LicenseKey(const Metrics::FLicenseKeyStats& InLicenseKeyStats) : FPlayerMetricEventBase(EType::LicenseKey), LicenseKeyStats(InLicenseKeyStats) {}
+		Metrics::FLicenseKeyStats LicenseKeyStats;
+	};
+	struct FPlayerMetricEvent_DataAvailabilityChange : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_DataAvailabilityChange(const Metrics::FDataAvailabilityChange& InDataAvailability) : FPlayerMetricEventBase(EType::DataAvailabilityChange), DataAvailability(InDataAvailability) {}
+		Metrics::FDataAvailabilityChange DataAvailability;
+	};
+	struct FPlayerMetricEvent_VideoQualityChange : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_VideoQualityChange(int32 InNewBitrate, int32 InPreviousBitrate, bool bInIsDrasticDownswitch) : FPlayerMetricEventBase(EType::VideoQualityChange), NewBitrate(InNewBitrate), PreviousBitrate(InPreviousBitrate), bIsDrasticDownswitch(bInIsDrasticDownswitch) {}
+		int32 NewBitrate;
+		int32 PreviousBitrate;
+		bool bIsDrasticDownswitch;
+	};
+	struct FPlayerMetricEvent_JumpInPlayPosition : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_JumpInPlayPosition(const FTimeValue& InToNewTime, const FTimeValue& InFromTime, Metrics::ETimeJumpReason InTimejumpReason) : FPlayerMetricEventBase(EType::JumpInPlayPosition), ToNewTime(InToNewTime), FromTime(InFromTime), TimejumpReason(InTimejumpReason) {}
+		FTimeValue ToNewTime;
+		FTimeValue FromTime;
+		Metrics::ETimeJumpReason TimejumpReason;
+	};
+	struct FPlayerMetricEvent_Error : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_Error(const FString& InErrorReason) : FPlayerMetricEventBase(EType::Error), ErrorReason(InErrorReason) {}
+		FString ErrorReason;
+	};
+	struct FPlayerMetricEvent_LogMessage : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_LogMessage(IInfoLog::ELevel InLogLevel, const FString& InLogMessage, int64 InPlayerWallclockMilliseconds) : FPlayerMetricEventBase(EType::LogMessage), LogLevel(InLogLevel), LogMessage(InLogMessage), PlayerWallclockMilliseconds(InPlayerWallclockMilliseconds) {}
+		IInfoLog::ELevel LogLevel;
+		FString LogMessage;
+		int64 PlayerWallclockMilliseconds;
+	};
+
+
 	void CalculateTargetSeekTime(FTimespan& OutTargetTime, const FTimespan& InTime);
 
 	bool PresentVideoFrame(const FVideoDecoderOutputPtr& InVideoFrame);
 	bool PresentAudioFrame(const IAudioDecoderOutputPtr& DecoderOutput);
-	
+
 	void PlatformNotifyOfOptionChange();
 
+	void OnMediaPlayerEventReceived(TSharedPtrTS<IAdaptiveStreamingPlayerAEMSEvent> InEvent, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode InDispatchMode);
+
 	// Methods from IAdaptiveStreamingPlayerMetrics
-	virtual void ReportOpenSource(const FString& URL) override;
-	virtual void ReportReceivedMasterPlaylist(const FString& EffectiveURL) override;
-	virtual void ReportReceivedPlaylists() override;
-	virtual void ReportPlaylistDownload(const Metrics::FPlaylistDownloadStats& PlaylistDownloadStats) override;
-	virtual void ReportBufferingStart(Metrics::EBufferingReason BufferingReason) override;
-	virtual void ReportBufferingEnd(Metrics::EBufferingReason BufferingReason) override;
-	virtual void ReportBandwidth(int64 EffectiveBps, int64 ThroughputBps, double LatencyInSeconds) override;
-	virtual void ReportBufferUtilization(const Metrics::FBufferStats& BufferStats) override;
-	virtual void ReportSegmentDownload(const Metrics::FSegmentDownloadStats& SegmentDownloadStats) override;
-	virtual void ReportLicenseKey(const Metrics::FLicenseKeyStats& LicenseKeyStats) override;
-	virtual void ReportDataAvailabilityChange(const Metrics::FDataAvailabilityChange& DataAvailability) override;
-	virtual void ReportVideoQualityChange(int32 NewBitrate, int32 PreviousBitrate, bool bIsDrasticDownswitch) override;
-	virtual void ReportPrerollStart() override;
-	virtual void ReportPrerollEnd() override;
-	virtual void ReportPlaybackStart() override;
-	virtual void ReportPlaybackPaused() override;
-	virtual void ReportPlaybackResumed() override;
-	virtual void ReportPlaybackEnded() override;
-	virtual void ReportJumpInPlayPosition(const FTimeValue& ToNewTime, const FTimeValue& FromTime, Metrics::ETimeJumpReason TimejumpReason) override;
-	virtual void ReportPlaybackStopped() override;
-	virtual void ReportError(const FString& ErrorReason) override;
-	virtual void ReportLogMessage(IInfoLog::ELevel InLogLevel, const FString& InLogMessage, int64 InPlayerWallclockMilliseconds) override;
-	virtual void ReportDroppedVideoFrame() override;
-	virtual void ReportDroppedAudioFrame() override;
-	
+	virtual void ReportOpenSource(const FString& URL) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_OpenSource>(URL)); }
+	virtual void ReportReceivedMasterPlaylist(const FString& EffectiveURL) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_ReceivedMasterPlaylist>(EffectiveURL)); }
+	virtual void ReportReceivedPlaylists() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::ReceivedPlaylists)); }
+	virtual void ReportTracksChanged() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::TracksChanged)); }
+	virtual void ReportPlaylistDownload(const Metrics::FPlaylistDownloadStats& PlaylistDownloadStats) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_PlaylistDownload>(PlaylistDownloadStats)); }
+	virtual void ReportBufferingStart(Metrics::EBufferingReason BufferingReason) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_BufferingStart>(BufferingReason)); }
+	virtual void ReportBufferingEnd(Metrics::EBufferingReason BufferingReason) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_BufferingEnd>(BufferingReason)); }
+	virtual void ReportBandwidth(int64 EffectiveBps, int64 ThroughputBps, double LatencyInSeconds) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_Bandwidth>(EffectiveBps, ThroughputBps, LatencyInSeconds)); }
+	virtual void ReportBufferUtilization(const Metrics::FBufferStats& BufferStats) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_BufferUtilization>(BufferStats)); }
+	virtual void ReportSegmentDownload(const Metrics::FSegmentDownloadStats& SegmentDownloadStats) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_SegmentDownload>(SegmentDownloadStats)); }
+	virtual void ReportLicenseKey(const Metrics::FLicenseKeyStats& LicenseKeyStats) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_LicenseKey>(LicenseKeyStats)); }
+	virtual void ReportDataAvailabilityChange(const Metrics::FDataAvailabilityChange& DataAvailability) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_DataAvailabilityChange>(DataAvailability)); }
+	virtual void ReportVideoQualityChange(int32 NewBitrate, int32 PreviousBitrate, bool bIsDrasticDownswitch) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_VideoQualityChange>(NewBitrate, PreviousBitrate, bIsDrasticDownswitch)); }
+	virtual void ReportPrerollStart() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PrerollStart)); }
+	virtual void ReportPrerollEnd() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PrerollEnd)); }
+	virtual void ReportPlaybackStart() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PlaybackStart)); }
+	virtual void ReportPlaybackPaused() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PlaybackPaused)); }
+	virtual void ReportPlaybackResumed() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PlaybackResumed)); }
+	virtual void ReportPlaybackEnded() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PlaybackEnded)); }
+	virtual void ReportJumpInPlayPosition(const FTimeValue& ToNewTime, const FTimeValue& FromTime, Metrics::ETimeJumpReason TimejumpReason) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_JumpInPlayPosition>(ToNewTime, FromTime, TimejumpReason)); }
+	virtual void ReportPlaybackStopped() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PlaybackStopped)); }
+	virtual void ReportError(const FString& ErrorReason) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_Error>(ErrorReason)); }
+	virtual void ReportLogMessage(IInfoLog::ELevel InLogLevel, const FString& InLogMessage, int64 InPlayerWallclockMilliseconds) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_LogMessage>(InLogLevel, InLogMessage, InPlayerWallclockMilliseconds)); }
+	virtual void ReportDroppedVideoFrame() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::DroppedVideoFrame)); }
+	virtual void ReportDroppedAudioFrame() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::DroppedAudioFrame)); }
+
 	void LogPresentationFramesQueues(FTimespan DeltaTime);
+
+	void ClearToDefaultState();
 
 	void MediaStateOnPreparingFinished();
 	bool MediaStateOnPlay();
 	bool MediaStateOnPause();
 	void MediaStateOnEndReached();
 	void MediaStateOnSeekFinished();
-	void MediaStateOnError();
+	void TriggerFirstSeekIfNecessary();
 
-	TSharedPtr<FStreamMetadata, ESPMode::ThreadSafe> GetTrackStreamMetadata(EPlayerTrackType TrackType, int32 TrackIndex) const;
+	TSharedPtr<FTrackMetadata, ESPMode::ThreadSafe> GetTrackStreamMetadata(EPlayerTrackType TrackType, int32 TrackIndex) const;
 
 	// Delegate to talk back to adapter host
 	TWeakPtr<IElectraPlayerAdapterDelegate, ESPMode::ThreadSafe>	AdapterDelegate;
@@ -171,7 +332,10 @@ private:
 	int32											NumTracksVideo;
 	int32											SelectedQuality;
 	int32											SelectedVideoTrackIndex;
-	int32											SelectedAudioTrackIndex;
+	mutable int32									SelectedAudioTrackIndex;
+	mutable bool									bAudioTrackIndexDirty;
+
+	bool											bInitialSeekPerformed;
 
 	FIntPoint										LastPresentedFrameDimension;
 
@@ -190,12 +354,16 @@ private:
 	/**  */
 	TAtomic<EPlayerState>							State;
 	TAtomic<EPlayerStatus>							Status;
-	bool											bWasClosedOnError;
+
+	TAtomic<bool>									bPlayerHasClosed;
+	TAtomic<bool>									bHasPendingError;
 
 	bool											bAllowKillAfterCloseEvent;
 
 	/** Queued events */
 	TQueue<IElectraPlayerAdapterDelegate::EPlayerEvent>	DeferredEvents;
+	TQueue<TSharedPtrTS<FPlayerMetricEventBase>>	DeferredPlayerEvents;
+	TSharedPtrTS<FAEMSEventReceiver>				MediaPlayerEventReceiver;
 
 	/** The URL of the currently opened media. */
 	FString											MediaUrl;
@@ -214,7 +382,9 @@ private:
 		static void DoCloseAsync(TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> && Player, TSharedPtr<IAsyncResourceReleaseNotifyContainer, ESPMode::ThreadSafe> AsyncDestructNotification);
 	};
 
+	FCriticalSection												PlayerLock;
 	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe>			CurrentPlayer;
+	FEvent*															WaitForPlayerDestroyedEvent;
 
 	TSharedPtr<IAsyncResourceReleaseNotifyContainer, ESPMode::ThreadSafe> AsyncResourceReleaseNotification;
 
@@ -223,7 +393,7 @@ private:
 	public:
 		FAdaptiveStreamingPlayerResourceProvider(const TWeakPtr<IElectraPlayerAdapterDelegate, ESPMode::ThreadSafe> & AdapterDelegate);
 		virtual ~FAdaptiveStreamingPlayerResourceProvider() = default;
-		
+
 		virtual void ProvideStaticPlaybackDataForURL(TSharedPtr<IAdaptiveStreamingPlayerResourceRequest, ESPMode::ThreadSafe> InOutRequest) override;
 
 		void ProcessPendingStaticResourceRequests();
@@ -478,6 +648,35 @@ private:
 	FString									AnalyticsInstanceGuid;
 	/** Sequential analytics event number. Helps sorting events. **/
 	uint32									AnalyticsInstanceEventCount;
+
+
+	void HandleDeferredPlayerEvents();
+	void HandlePlayerEventOpenSource(const FString& URL);
+	void HandlePlayerEventReceivedMasterPlaylist(const FString& EffectiveURL);
+	void HandlePlayerEventReceivedPlaylists();
+	void HandlePlayerEventTracksChanged();
+	void HandlePlayerEventPlaylistDownload(const Metrics::FPlaylistDownloadStats& PlaylistDownloadStats);
+	void HandlePlayerEventBufferingStart(Metrics::EBufferingReason BufferingReason);
+	void HandlePlayerEventBufferingEnd(Metrics::EBufferingReason BufferingReason);
+	void HandlePlayerEventBandwidth(int64 EffectiveBps, int64 ThroughputBps, double LatencyInSeconds);
+	void HandlePlayerEventBufferUtilization(const Metrics::FBufferStats& BufferStats);
+	void HandlePlayerEventSegmentDownload(const Metrics::FSegmentDownloadStats& SegmentDownloadStats);
+	void HandlePlayerEventLicenseKey(const Metrics::FLicenseKeyStats& LicenseKeyStats);
+	void HandlePlayerEventDataAvailabilityChange(const Metrics::FDataAvailabilityChange& DataAvailability);
+	void HandlePlayerEventVideoQualityChange(int32 NewBitrate, int32 PreviousBitrate, bool bIsDrasticDownswitch);
+	void HandlePlayerEventPrerollStart();
+	void HandlePlayerEventPrerollEnd();
+	void HandlePlayerEventPlaybackStart();
+	void HandlePlayerEventPlaybackPaused();
+	void HandlePlayerEventPlaybackResumed();
+	void HandlePlayerEventPlaybackEnded();
+	void HandlePlayerEventJumpInPlayPosition(const FTimeValue& ToNewTime, const FTimeValue& FromTime, Metrics::ETimeJumpReason TimejumpReason);
+	void HandlePlayerEventPlaybackStopped();
+	void HandlePlayerEventError(const FString& ErrorReason);
+	void HandlePlayerEventLogMessage(IInfoLog::ELevel InLogLevel, const FString& InLogMessage, int64 InPlayerWallclockMilliseconds);
+	void HandlePlayerEventDroppedVideoFrame();
+	void HandlePlayerEventDroppedAudioFrame();
+
 };
 
 ENUM_CLASS_FLAGS(FElectraPlayer::EPlayerStatus);

@@ -40,9 +40,8 @@ void UNiagaraStackParameterStoreEntry::Initialize(
 	FNiagaraTypeDefinition InInputType,
 	FString InOwnerStackItemEditorDataKey)
 {
-	bool bParameterIsAdvanced = false;
 	FString ParameterStackEditorDataKey = FString::Printf(TEXT("Parameter-%s"), *InInputParameterHandle);
-	Super::Initialize(InRequiredEntryData, bParameterIsAdvanced, InOwnerStackItemEditorDataKey, ParameterStackEditorDataKey);
+	Super::Initialize(InRequiredEntryData, InOwnerStackItemEditorDataKey, ParameterStackEditorDataKey);
 	DisplayName = FText::FromString(InInputParameterHandle);
 	ParameterName = *InInputParameterHandle;
 	InputType = InInputType;
@@ -157,7 +156,7 @@ void UNiagaraStackParameterStoreEntry::Reset()
 	{
 		if (Var.IsDataInterface())
 		{
-			UNiagaraDataInterface* DefaultObject = NewObject<UNiagaraDataInterface>(this, const_cast<UClass*>(InputType.GetClass()));
+			UNiagaraDataInterface* DefaultObject = NewObject<UNiagaraDataInterface>(this, const_cast<UClass*>(InputType.GetClass()), NAME_None, RF_Transactional | RF_Public);
 			DefaultObject->CopyTo(ParameterStore->GetDataInterface(Var));
 			NotifyDataInterfaceChanged();
 		}
@@ -179,7 +178,7 @@ TArray<UEdGraphPin*> UNiagaraStackParameterStoreEntry::GetOwningPins()
 	UNiagaraScript* SystemScript = GetSystemViewModel()->GetSystem().GetSystemSpawnScript();
 	if (SystemScript != nullptr)
 	{
-		UNiagaraScriptSource* ScriptSource = Cast<UNiagaraScriptSource>(SystemScript->GetSource());
+		UNiagaraScriptSource* ScriptSource = Cast<UNiagaraScriptSource>(SystemScript->GetLatestSource());
 		if (ScriptSource != nullptr)
 		{
 			UNiagaraGraph* SystemGraph = ScriptSource->NodeGraph;
@@ -427,7 +426,8 @@ void UNiagaraStackParameterStoreEntry::Delete()
 	// Notify the system view model that the DI has been modifier.
 	if (CachedSystemViewModel.IsValid() && DataInterface != nullptr)
 	{
-		CachedSystemViewModel->NotifyDataObjectChanged(DataInterface);
+		TArray<UObject*> ChangedObjects = { DataInterface };
+		CachedSystemViewModel->NotifyDataObjectChanged(ChangedObjects, ENiagaraDataObjectChange::Removed);
 	}
 }
 
@@ -514,7 +514,8 @@ void UNiagaraStackParameterStoreEntry::NotifyDataInterfaceChanged()
 	if (ValueObject.IsValid())
 	{
 		TSharedRef<FNiagaraSystemViewModel> ViewModel = GetSystemViewModel(); 
-		ViewModel->NotifyDataObjectChanged(ValueObject.Get());
+		TArray<UObject*> ChangedObjects = { ValueObject.Get() };
+		ViewModel->NotifyDataObjectChanged(ChangedObjects, ENiagaraDataObjectChange::Changed);
 	}
 }
 

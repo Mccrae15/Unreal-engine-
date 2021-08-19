@@ -10,6 +10,9 @@
 #include "StreamTypes.h"
 #include "ParameterDictionary.h"
 
+#include "ElectraEncryptedSampleInfo.h"
+
+
 namespace Electra
 {
 	//
@@ -112,7 +115,7 @@ namespace Electra
 			};
 
 			/**
-			 * Notifies the caller of the start of a new box.
+			 * Notifies the caller of the start/end of a new box.
 			 *
 			 * The caller may continue to parse this box or ask to stop parsing.
 			 *
@@ -123,6 +126,7 @@ namespace Electra
 			 * @return Whether or not to continue parsing thix box.
 			 */
 			virtual EParseContinuation OnFoundBox(FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset) = 0;
+			virtual EParseContinuation OnEndOfBox(FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset) = 0;
 		};
 
 
@@ -131,8 +135,18 @@ namespace Electra
 		/**
 		 * Parses the header boxes (all non-MDAT boxes).
 		 */
-		virtual UEMediaError ParseHeader(IReader* DataReader, IBoxCallback* BoxParseCallback, const FParamDict& Options, IPlayerSessionServices* PlayerSession) = 0;
+		virtual UEMediaError ParseHeader(IReader* DataReader, IBoxCallback* BoxParseCallback, IPlayerSessionServices* PlayerSession, const IParserISO14496_12* OptionalInitSegment) = 0;
 
+
+		/** A brand is a 32 bit value in an mp4 file. */
+		typedef uint32 FBrandType;
+		#define MAKE_MP4_BRAND(a,b,c,d) (IParserISO14496_12::FBrandType)((uint32)a << 24) | ((uint32)b << 16) | ((uint32)c << 8) | ((uint32)d)
+		static const FBrandType BrandType_emsg = MAKE_MP4_BRAND('e', 'm', 's', 'g');
+		static const FBrandType BrandType_lmsg = MAKE_MP4_BRAND('l', 'm', 's', 'g');
+
+		virtual int32 GetNumberOfBrands() const = 0;
+		virtual FBrandType GetBrandByIndex(int32 Index) const = 0;
+		virtual bool HasBrand(const FBrandType InBrand) const = 0;
 
 
 
@@ -145,6 +159,9 @@ namespace Electra
 
 		virtual int32 GetNumberOfTracks() const = 0;
 
+		virtual int32 GetNumberOfSegmentIndices() const = 0;
+
+		virtual int32 GetNumberOfEventMessages() const = 0;
 
 		class ITrackIterator
 		{
@@ -177,6 +194,8 @@ namespace Electra
 			virtual int64 GetRawPTS() const = 0;
 			virtual int64 GetCompositionTimeEdit() const = 0;
 			virtual int64 GetEmptyEditOffset() const = 0;
+
+			virtual bool GetEncryptionInfo(ElectraCDM::FMediaCDMSampleInfo& OutSampleEncryptionInfo) const = 0;
 		};
 
 		class ITrack
@@ -196,16 +215,17 @@ namespace Electra
 			virtual ~ITrack() = default;
 
 			virtual uint32 GetID() const = 0;
+			virtual FString GetNameFromHandler() const = 0;
 			virtual FTimeFraction GetDuration() const = 0;
 
 			virtual ITrackIterator* CreateIterator() const = 0;
-			virtual ITrackIterator* CreateIterator(const FParamDict& InOptions) const = 0;
 
 			virtual const TArray<uint8>& GetCodecSpecificData() const = 0;
 			virtual const TArray<uint8>& GetCodecSpecificDataRAW() const = 0;
 			virtual const FStreamCodecInformation& GetCodecInformation() const = 0;
 			virtual const FBitrateInfo& GetBitrateInfo() const = 0;
 			virtual const FString GetLanguage() const = 0;
+			virtual void GetPSSHBoxes(TArray<TArray<uint8>>& OutBoxes, bool bFromMOOV, bool bFromMOOF) const = 0;
 		};
 
 
@@ -225,12 +245,53 @@ namespace Electra
 			virtual void GetAllIterators(TArray<const ITrackIterator*>& OutIterators) const = 0;
 		};
 
-		virtual TSharedPtr<IAllTrackIterator, ESPMode::ThreadSafe> CreateAllTrackIteratorByFilePos(int64 InFromFilePos) const = 0;
+
+		class ISegmentIndex
+		{
+		public:
+			struct FEntry
+			{
+				uint32		SubSegmentDuration;
+				uint32		IsReferenceType : 1;
+				uint32		Size : 31;
+				uint32		StartsWithSAP : 1;
+				uint32		SAPType : 3;
+				uint32		SAPDeltaTime : 28;
+			};
+
+			virtual ~ISegmentIndex() = default;
+			virtual uint64 GetEarliestPresentationTime() const = 0;
+			virtual uint64 GetFirstOffset() const = 0;
+			virtual uint32 GetReferenceID() const = 0;
+			virtual uint32 GetTimescale() const = 0;
+			virtual int32 GetNumEntries() const = 0;
+			virtual const FEntry& GetEntry(int32 Index) const = 0;
+		};
+
+		class IEventMessage
+		{
+		public:
+			virtual ~IEventMessage() = default;
+			virtual int32 GetVersion() const = 0;
+			virtual const FString& GetSchemeIdUri() const = 0;
+			virtual const FString& GetValue() const = 0;
+			virtual uint32 GetTimescale() const = 0;
+			virtual uint32 GetPresentationTimeDelta() const = 0;
+			virtual uint64 GetPresentationTime() const = 0;
+			virtual uint32 GetEventDuration() const = 0;
+			virtual uint32 GetID() const = 0;
+			virtual const TArray<uint8>& GetMessageData() const = 0;
+		};
+
+
+		virtual TSharedPtrTS<IAllTrackIterator> CreateAllTrackIteratorByFilePos(int64 InFromFilePos) const = 0;
 
 		virtual const ITrack* GetTrackByIndex(int32 Index) const = 0;
 		virtual const ITrack* GetTrackByTrackID(int32 TrackID) const = 0;
 
+		virtual const ISegmentIndex* GetSegmentIndexByIndex(int32 Index) const = 0;
 
+		virtual const IEventMessage* GetEventMessageByIndex(int32 Index) const = 0;
 	};
 
 } // namespace Electra

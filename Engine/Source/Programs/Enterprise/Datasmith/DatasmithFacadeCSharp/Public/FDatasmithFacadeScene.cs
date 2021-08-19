@@ -136,8 +136,51 @@ public class FDatasmithFacadeScene : global::System.IDisposable {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_RemoveMaterial(swigCPtr, FDatasmithFacadeBaseMaterial.getCPtr(InMaterialPtr));
   }
 
-  public void AddMesh(FDatasmithFacadeMesh InMeshPtr) {
-    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_AddMesh(swigCPtr, FDatasmithFacadeMesh.getCPtrAndDisown(InMeshPtr));
+  public FDatasmithFacadeMeshElement ExportDatasmithMesh(FDatasmithFacadeMesh Mesh, FDatasmithFacadeMesh CollisionMesh) {
+    global::System.IntPtr cPtr = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportDatasmithMesh__SWIG_0(swigCPtr, FDatasmithFacadeMesh.getCPtr(Mesh), FDatasmithFacadeMesh.getCPtr(CollisionMesh));
+    FDatasmithFacadeMeshElement ret = (cPtr == global::System.IntPtr.Zero) ? null : new FDatasmithFacadeMeshElement(cPtr, false);
+    return ret;
+  }
+
+  public FDatasmithFacadeMeshElement ExportDatasmithMesh(FDatasmithFacadeMesh Mesh) {
+    global::System.IntPtr cPtr = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportDatasmithMesh__SWIG_1(swigCPtr, FDatasmithFacadeMesh.getCPtr(Mesh));
+    FDatasmithFacadeMeshElement ret = (cPtr == global::System.IntPtr.Zero) ? null : new FDatasmithFacadeMeshElement(cPtr, false);
+    return ret;
+  }
+
+  public bool ExportDatasmithMesh(FDatasmithFacadeMeshElement MeshElement, FDatasmithFacadeMesh Mesh, FDatasmithFacadeMesh CollisionMesh) {
+    bool ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportDatasmithMesh__SWIG_2(swigCPtr, FDatasmithFacadeMeshElement.getCPtr(MeshElement), FDatasmithFacadeMesh.getCPtr(Mesh), FDatasmithFacadeMesh.getCPtr(CollisionMesh));
+    return ret;
+  }
+
+  public bool ExportDatasmithMesh(FDatasmithFacadeMeshElement MeshElement, FDatasmithFacadeMesh Mesh) {
+    bool ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportDatasmithMesh__SWIG_3(swigCPtr, FDatasmithFacadeMeshElement.getCPtr(MeshElement), FDatasmithFacadeMesh.getCPtr(Mesh));
+    return ret;
+  }
+
+  public void AddMesh(FDatasmithFacadeMeshElement InMeshPtr) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_AddMesh(swigCPtr, FDatasmithFacadeMeshElement.getCPtr(InMeshPtr));
+  }
+
+  public int GetMeshesCount() {
+    int ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetMeshesCount(swigCPtr);
+    return ret;
+  }
+
+  public FDatasmithFacadeMeshElement GetMesh(int MeshIndex) {
+	global::System.IntPtr objectPtr = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetMesh(swigCPtr, MeshIndex);
+	if(objectPtr == global::System.IntPtr.Zero)
+	{
+		return null;
+	}
+	else
+	{
+		return new FDatasmithFacadeMeshElement(objectPtr, true);
+	}
+}
+
+  public void RemoveMesh(FDatasmithFacadeMeshElement MeshElement) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_RemoveMesh(swigCPtr, FDatasmithFacadeMeshElement.getCPtr(MeshElement));
   }
 
   public void AddTexture(FDatasmithFacadeTexture InTexturePtr) {
@@ -150,13 +193,44 @@ public class FDatasmithFacadeScene : global::System.IDisposable {
   }
 
   public FDatasmithFacadeTexture GetTexture(int TextureIndex) {
-    global::System.IntPtr cPtr = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetTexture(swigCPtr, TextureIndex);
-    FDatasmithFacadeTexture ret = (cPtr == global::System.IntPtr.Zero) ? null : new FDatasmithFacadeTexture(cPtr, false);
-    return ret;
-  }
+	global::System.IntPtr objectPtr = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetTexture(swigCPtr, TextureIndex);
+	if(objectPtr == global::System.IntPtr.Zero)
+	{
+		return null;
+	}
+	else
+	{
+		return new FDatasmithFacadeTexture(objectPtr, true);
+	}
+}
 
   public void RemoveTexture(FDatasmithFacadeTexture InTexturePtr) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_RemoveTexture(swigCPtr, FDatasmithFacadeTexture.getCPtr(InTexturePtr));
+  }
+
+  public void AddLevelVariantSets(FDatasmithFacadeLevelVariantSets InLevelVariantSetsPtr) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_AddLevelVariantSets(swigCPtr, FDatasmithFacadeLevelVariantSets.getCPtr(InLevelVariantSetsPtr));
+  }
+
+  public int GetLevelVariantSetsCount() {
+    int ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetLevelVariantSetsCount(swigCPtr);
+    return ret;
+  }
+
+  public FDatasmithFacadeLevelVariantSets GetLevelVariantSets(int LevelVariantSetsIndex) {
+	global::System.IntPtr objectPtr = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetLevelVariantSets(swigCPtr, LevelVariantSetsIndex);
+	if(objectPtr == global::System.IntPtr.Zero)
+	{
+		return null;
+	}
+	else
+	{
+		return new FDatasmithFacadeLevelVariantSets(objectPtr, true);
+	}
+}
+
+  public void RemoveLevelVariantSets(FDatasmithFacadeLevelVariantSets InLevelVariantSetsPtr) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_RemoveLevelVariantSets(swigCPtr, FDatasmithFacadeLevelVariantSets.getCPtr(InLevelVariantSetsPtr));
   }
 
   public void AddMetaData(FDatasmithFacadeMetaData InMetaDataPtr) {
@@ -169,7 +243,19 @@ public class FDatasmithFacadeScene : global::System.IDisposable {
   }
 
   public FDatasmithFacadeMetaData GetMetaData(int MetaDataIndex) {
-	global::System.IntPtr objectPtr = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetMetaData(swigCPtr, MetaDataIndex);
+	global::System.IntPtr objectPtr = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetMetaData__SWIG_0(swigCPtr, MetaDataIndex);
+	if(objectPtr == global::System.IntPtr.Zero)
+	{
+		return null;
+	}
+	else
+	{
+		return new FDatasmithFacadeMetaData(objectPtr, true);
+	}
+}
+
+  public FDatasmithFacadeMetaData GetMetaData(FDatasmithFacadeElement Element) {
+	global::System.IntPtr objectPtr = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetMetaData__SWIG_1(swigCPtr, FDatasmithFacadeElement.getCPtr(Element));
 	if(objectPtr == global::System.IntPtr.Zero)
 	{
 		return null;
@@ -184,24 +270,59 @@ public class FDatasmithFacadeScene : global::System.IDisposable {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_RemoveMetaData(swigCPtr, FDatasmithFacadeMetaData.getCPtr(InMetaDataPtr));
   }
 
+  public void SetName(string InName) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_SetName(swigCPtr, InName);
+  }
+
+  public string GetName() {
+    string ret = global::System.Runtime.InteropServices.Marshal.PtrToStringUni(DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetName(swigCPtr));
+    return ret;
+  }
+
+  public void SetOutputPath(string InOutputPath) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_SetOutputPath(swigCPtr, InOutputPath);
+  }
+
+  public string GetOutputPath() {
+    string ret = global::System.Runtime.InteropServices.Marshal.PtrToStringUni(DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetOutputPath(swigCPtr));
+    return ret;
+  }
+
+  public string GetAssetsOutputPath() {
+    string ret = global::System.Runtime.InteropServices.Marshal.PtrToStringUni(DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetAssetsOutputPath(swigCPtr));
+    return ret;
+  }
+
   public void PreExport() {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_PreExport(swigCPtr);
+  }
+
+  public void CleanUp() {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_CleanUp(swigCPtr);
   }
 
   public static void Shutdown() {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_Shutdown();
   }
 
-  public void ExportScene(string InOutputPath) {
-    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportScene(swigCPtr, InOutputPath);
+  public bool ExportScene(string InOutputPath, bool bCleanupUnusedElements) {
+    bool ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportScene__SWIG_0(swigCPtr, InOutputPath, bCleanupUnusedElements);
+    return ret;
   }
 
-  public void ExportAssets(string InAssetFolder) {
-    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportAssets(swigCPtr, InAssetFolder);
+  public bool ExportScene(string InOutputPath) {
+    bool ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportScene__SWIG_1(swigCPtr, InOutputPath);
+    return ret;
   }
 
-  public void BuildScene(string InSceneName) {
-    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_BuildScene(swigCPtr, InSceneName);
+  public bool ExportScene(bool bCleanupUnusedElements) {
+    bool ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportScene__SWIG_2(swigCPtr, bCleanupUnusedElements);
+    return ret;
+  }
+
+  public bool ExportScene() {
+    bool ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_ExportScene__SWIG_3(swigCPtr);
+    return ret;
   }
 
   public void SetLabel(string InSceneLabel) {
@@ -211,6 +332,46 @@ public class FDatasmithFacadeScene : global::System.IDisposable {
   public string GetLabel() {
     string ret = global::System.Runtime.InteropServices.Marshal.PtrToStringUni(DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetLabel(swigCPtr));
     return ret;
+  }
+
+  public void Reset() {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_Reset(swigCPtr);
+  }
+
+  public string GetHost() {
+    string ret = global::System.Runtime.InteropServices.Marshal.PtrToStringUni(DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetHost(swigCPtr));
+    return ret;
+  }
+
+  public void SetHost(string InHost) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_SetHost(swigCPtr, InHost);
+  }
+
+  public string GetVendor() {
+    string ret = global::System.Runtime.InteropServices.Marshal.PtrToStringUni(DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetVendor(swigCPtr));
+    return ret;
+  }
+
+  public void SetVendor(string InApplicationVendorName) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_SetVendor(swigCPtr, InApplicationVendorName);
+  }
+
+  public string GetProductName() {
+    string ret = global::System.Runtime.InteropServices.Marshal.PtrToStringUni(DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetProductName(swigCPtr));
+    return ret;
+  }
+
+  public void SetProductName(string InApplicationProductName) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_SetProductName(swigCPtr, InApplicationProductName);
+  }
+
+  public string GetProductVersion() {
+    string ret = global::System.Runtime.InteropServices.Marshal.PtrToStringUni(DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_GetProductVersion(swigCPtr));
+    return ret;
+  }
+
+  public void SetProductVersion(string InApplicationProductVersion) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeScene_SetProductVersion(swigCPtr, InApplicationProductVersion);
   }
 
   public enum EActorRemovalRule {

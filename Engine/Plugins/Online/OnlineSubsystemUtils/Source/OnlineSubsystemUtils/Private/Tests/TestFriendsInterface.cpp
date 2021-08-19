@@ -34,7 +34,7 @@ void FTestFriendsInterface::Test(UWorld* InWorld, const TArray<FString>& Invites
 		// list of pending users to send invites to
 		for (int32 Idx=0; Idx < Invites.Num(); Idx++)
 		{
-			TSharedPtr<const FUniqueNetId> FriendId = OnlineSub->GetIdentityInterface()->CreateUniquePlayerId(Invites[Idx]);
+			FUniqueNetIdPtr FriendId = OnlineSub->GetIdentityInterface()->CreateUniquePlayerId(Invites[Idx]);
 			if (FriendId.IsValid())
 			{
 				InvitesToSend.Add(FriendId);
@@ -304,10 +304,10 @@ void FTestFriendsInterface::OnDeleteFriendComplete(int32 LocalPlayer, bool bWasS
 		FriendsToDelete.RemoveAt(0);
 	}
 
-	if (bWasSuccessful && FriendsToDelete.Num() == 0)
+	if (FriendsToDelete.Num() == 0)
 	{
 		bDeleteFriends = false;
-		bReadFriendsList = true;
+		bReadFriendsList = bWasSuccessful;
 	}
 	// kick off next test
 	StartNextTest();

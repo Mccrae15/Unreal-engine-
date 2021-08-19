@@ -390,10 +390,7 @@ void UDiffAssetRegistriesCommandlet::ConsistencyCheck(const FString& OldPath, co
 			UE_LOG(LogDiffAssets, Error, TEXT("Failed to load file '%s'."), *OldPath);
 			return;
 		}
-		FAssetRegistrySerializationOptions Options;
-		Options.ModifyForDevelopment();
-
-		if (!OldState.Serialize(SerializedAssetData, Options))
+		if (!OldState.Load(SerializedAssetData))
 		{
 			UE_LOG(LogDiffAssets, Error, TEXT("Failed to parse file '%s' as asset registry."), *OldPath);
 			return;
@@ -412,10 +409,8 @@ void UDiffAssetRegistriesCommandlet::ConsistencyCheck(const FString& OldPath, co
 			UE_LOG(LogDiffAssets, Error, TEXT("Failed to load file '%s'."), *NewPath);
 			return;
 		}
-		FAssetRegistrySerializationOptions Options;
-		Options.ModifyForDevelopment();
 
-		if (!OldState.Serialize(SerializedAssetData, Options))
+		if (!OldState.Load(SerializedAssetData))
 		{
 			UE_LOG(LogDiffAssets, Error, TEXT("Failed to parse file '%s' as asset registry."), *NewPath);
 			return;
@@ -444,7 +439,9 @@ void UDiffAssetRegistriesCommandlet::ConsistencyCheck(const FString& OldPath, co
 		}
 		else
 		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			if (Data->PackageGuid != PrevData->PackageGuid)
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			{
 				GuidModified.Add(Name);
 			}
@@ -511,7 +508,7 @@ bool	UDiffAssetRegistriesCommandlet::IsInRelevantChunk(FAssetRegistryState& InRe
 		return true;
 
 	}
-	TArray<const FAssetData*> Assets = InRegistryState.GetAssetsByPackageName(InAssetPath);
+	TArrayView<FAssetData const* const> Assets = InRegistryState.GetAssetsByPackageName(InAssetPath);
 
 	if (Assets.Num() && Assets[0]->ChunkIDs.Num())
 	{
@@ -525,7 +522,7 @@ FName UDiffAssetRegistriesCommandlet::GetClassName(FAssetRegistryState& InRegist
 {
 	if (AssetPathToClassName.Contains(InAssetPath) == false)
 	{
-		TArray<const FAssetData*> Assets = InRegistryState.GetAssetsByPackageName(InAssetPath);
+		TArrayView<FAssetData const * const> Assets = InRegistryState.GetAssetsByPackageName(InAssetPath);
 
 		FName NewName = NAME_None;
 		if (Assets.Num() > 0)
@@ -554,7 +551,7 @@ TArray<int32> UDiffAssetRegistriesCommandlet::GetAssetChunks(FAssetRegistryState
 {
 	if (ChunkIdByAssetPath.Contains(InAssetPath) == false)
 	{
-		TArray<const FAssetData*> Assets = InRegistryState.GetAssetsByPackageName(InAssetPath);
+		TArrayView<FAssetData const* const> Assets = InRegistryState.GetAssetsByPackageName(InAssetPath);
 
 		if (Assets.Num() > 0 && Assets[0]->ChunkIDs.Num() > 0)
 		{
@@ -1087,10 +1084,7 @@ void UDiffAssetRegistriesCommandlet::DiffAssetRegistries(const FString& OldPath,
 			UE_LOG(LogDiffAssets, Error, TEXT("Failed to load file '%s'."), *OldPath);
 			return;
 		}
-		FAssetRegistrySerializationOptions Options;
-		Options.ModifyForDevelopment();
-
-		if (!OldState.Serialize(SerializedAssetData, Options))
+		if (!OldState.Load(SerializedAssetData))
 		{
 			UE_LOG(LogDiffAssets, Error, TEXT("Failed to parse file '%s' as asset registry."), *OldPath);
 			return;
@@ -1109,10 +1103,7 @@ void UDiffAssetRegistriesCommandlet::DiffAssetRegistries(const FString& OldPath,
 			UE_LOG(LogDiffAssets, Error, TEXT("Failed to load file '%s'."), *NewPath);
 			return;
 		}
-		FAssetRegistrySerializationOptions Options;
-		Options.ModifyForDevelopment();
-
-		if (!NewState.Serialize(SerializedAssetData, Options))
+		if (!NewState.Load(SerializedAssetData))
 		{
 			UE_LOG(LogDiffAssets, Error, TEXT("Failed to parse file '%s' as asset registry."), *NewPath);
 			return;
@@ -1177,7 +1168,9 @@ void UDiffAssetRegistriesCommandlet::DiffAssetRegistries(const FString& OldPath,
 				New.Add(Name);
 				RecordAdd(Name, *Data);
 			}
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			else if (Data->PackageGuid != PrevData->PackageGuid)
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			{
 				Modified.Add(Name);
 			}
@@ -1251,7 +1244,9 @@ void UDiffAssetRegistriesCommandlet::DiffAssetRegistries(const FString& OldPath,
 			{
 				RecordEdit(Name, *Data, *PrevData);
 				AssetPathFlags.FindOrAdd(Name) |= EAssetFlags::HashChange;
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				if (Data->PackageGuid != PrevData->PackageGuid)
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				{
 					AssetPathFlags.FindOrAdd(Name) |= EAssetFlags::GuidChange;
 				}

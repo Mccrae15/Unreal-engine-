@@ -10,26 +10,10 @@
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "PlanarCut.h"
 #include "FractureEditorModeToolkit.h"
+#include "FractureToolContext.h"
 
 #define LOCTEXT_NAMESPACE "FractureSlice"
 
-void UFractureSliceSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
-{
-	if (OwnerTool != nullptr)
-	{
-		OwnerTool->PostEditChangeProperty(PropertyChangedEvent);
-	}
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-}
-
-void UFractureSliceSettings::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
-{
-	if (OwnerTool != nullptr)
-	{
-		OwnerTool->PostEditChangeChainProperty(PropertyChangedEvent);
-	}
-	Super::PostEditChangeChainProperty(PropertyChangedEvent);
-}
 
 
 UFractureToolSlice::UFractureToolSlice(const FObjectInitializer& ObjInit) 
@@ -63,37 +47,35 @@ void UFractureToolSlice::RegisterUICommand( FFractureEditorCommands* BindingCont
 TArray<UObject*> UFractureToolSlice::GetSettingsObjects() const 
 { 
 	TArray<UObject*> Settings; 
-	Settings.Add(GetMutableDefault<UFractureCommonSettings>());
-	Settings.Add(GetMutableDefault<UFractureSliceSettings>());
+	Settings.Add(CutterSettings);
+	Settings.Add(CollisionSettings);
+	Settings.Add(SliceSettings);
 	return Settings;
 }
 
-void UFractureToolSlice::GenerateSliceTransforms(const FFractureContext& Context, TArray<FTransform>& CuttingPlaneTransforms)
+void UFractureToolSlice::GenerateSliceTransforms(const FFractureToolContext& Context, TArray<FTransform>& CuttingPlaneTransforms)
 {
-	const UFractureSliceSettings* LocalSliceSettings = GetMutableDefault<UFractureSliceSettings>();
-
-	const FBox& Bounds = Context.Bounds;
-	const FVector& Min = Context.Bounds.Min;
-	const FVector& Max = Context.Bounds.Max;
-	const FVector  Center = Context.Bounds.GetCenter();
-	const FVector Extents(Context.Bounds.Max - Context.Bounds.Min);
+	const FBox& Bounds = Context.GetBounds();
+	const FVector& Min = Bounds.Min;
+	const FVector& Max = Bounds.Max;
+	const FVector  Center = Bounds.GetCenter();
+	const FVector Extents(Max - Min);
 	const FVector HalfExtents(Extents * 0.5f);
 
-	const FVector Step(Extents.X / (LocalSliceSettings->SlicesX+1), Extents.Y / (LocalSliceSettings->SlicesY+1), Extents.Z / (LocalSliceSettings->SlicesZ+1));
+	const FVector Step(Extents.X / (SliceSettings->SlicesX+1), Extents.Y / (SliceSettings->SlicesY+1), Extents.Z / (SliceSettings->SlicesZ+1));
 
-	CuttingPlaneTransforms.Reserve(LocalSliceSettings->SlicesX * LocalSliceSettings->SlicesY * LocalSliceSettings->SlicesZ);
+	CuttingPlaneTransforms.Reserve(SliceSettings->SlicesX * SliceSettings->SlicesY * SliceSettings->SlicesZ);
 
-	FRandomStream RandomStream(Context.RandomSeed);
+	FRandomStream RandomStream(Context.GetSeed());
 
-	const float SliceAngleVariationInRadians = FMath::DegreesToRadians(LocalSliceSettings->SliceAngleVariation);
-
+	const float SliceAngleVariationInRadians = FMath::DegreesToRadians(SliceSettings->SliceAngleVariation);
 
 	const FVector XMin(-Bounds.GetExtent() * FVector(1.0f, 1.0f, 0.0f));
 	const FVector XMax(Bounds.GetExtent() * FVector(1.0f, 1.0f, 0.0f));
 
-	for (int32 xx = 0; xx < LocalSliceSettings->SlicesX; ++xx)
+	for (int32 xx = 0; xx < SliceSettings->SlicesX; ++xx)
 	{
-		const FVector SlicePosition(FVector(Min.X, Center.Y, Center.Z) + FVector((Step.X * xx) + Step.X, 0.0f, 0.0f) + RandomStream.VRand() * RandomStream.GetFraction() * LocalSliceSettings->SliceOffsetVariation);
+		const FVector SlicePosition(FVector(Min.X, Center.Y, Center.Z) + FVector((Step.X * xx) + Step.X, 0.0f, 0.0f) + RandomStream.VRand() * RandomStream.GetFraction() * SliceSettings->SliceOffsetVariation);
 		FTransform Transform(FQuat(FVector::RightVector, FMath::DegreesToRadians(90)), SlicePosition);
 		const FQuat RotA(FVector::RightVector, RandomStream.FRandRange(0.0f, SliceAngleVariationInRadians));
 		const FQuat RotB(FVector::ForwardVector, RandomStream.FRandRange(0.0f, SliceAngleVariationInRadians));
@@ -101,14 +83,12 @@ void UFractureToolSlice::GenerateSliceTransforms(const FFractureContext& Context
 		CuttingPlaneTransforms.Emplace(Transform);
 	}
 
-
-
 	const FVector YMin(-Bounds.GetExtent() * FVector(1.0f, 1.0f, 0.0f));
 	const FVector YMax(Bounds.GetExtent() * FVector(1.0f, 1.0f, 0.0f));
 
-	for (int32 yy = 0; yy < LocalSliceSettings->SlicesY; ++yy)
+	for (int32 yy = 0; yy < SliceSettings->SlicesY; ++yy)
 	{
-		const FVector SlicePosition(FVector(Center.X, Min.Y, Center.Z) + FVector(0.0f, (Step.Y * yy) + Step.Y, 0.0f) + RandomStream.VRand() * RandomStream.GetFraction() * LocalSliceSettings->SliceOffsetVariation);
+		const FVector SlicePosition(FVector(Center.X, Min.Y, Center.Z) + FVector(0.0f, (Step.Y * yy) + Step.Y, 0.0f) + RandomStream.VRand() * RandomStream.GetFraction() * SliceSettings->SliceOffsetVariation);
 		FTransform Transform(FQuat(FVector::ForwardVector, FMath::DegreesToRadians(90)), SlicePosition);
 		const FQuat RotA(FVector::RightVector, RandomStream.FRandRange(0.0f, SliceAngleVariationInRadians));
 		const FQuat RotB(FVector::ForwardVector, RandomStream.FRandRange(0.0f, SliceAngleVariationInRadians));
@@ -116,15 +96,12 @@ void UFractureToolSlice::GenerateSliceTransforms(const FFractureContext& Context
 		CuttingPlaneTransforms.Emplace(Transform);
 	}
 
-
-
-
 	const FVector ZMin(-Bounds.GetExtent() * FVector(1.0f, 1.0f, 0.0f));
 	const FVector ZMax(Bounds.GetExtent() * FVector(1.0f, 1.0f, 0.0f));
 
-	for (int32 zz = 0; zz < LocalSliceSettings->SlicesZ; ++zz)
+	for (int32 zz = 0; zz < SliceSettings->SlicesZ; ++zz)
 	{
-		const FVector SlicePosition(FVector(Center.X, Center.Y, Min.Z) + FVector(0.0f, 0.0f, (Step.Z * zz) + Step.Z) + RandomStream.VRand() * RandomStream.GetFraction() * LocalSliceSettings->SliceOffsetVariation);
+		const FVector SlicePosition(FVector(Center.X, Center.Y, Min.Z) + FVector(0.0f, 0.0f, (Step.Z * zz) + Step.Z) + RandomStream.VRand() * RandomStream.GetFraction() * SliceSettings->SliceOffsetVariation);
 		FTransform Transform(SlicePosition);
 		const FQuat RotA(FVector::RightVector, RandomStream.FRandRange(0.0f, SliceAngleVariationInRadians));
 		const FQuat RotB(FVector::ForwardVector, RandomStream.FRandRange(0.0f, SliceAngleVariationInRadians));
@@ -133,96 +110,73 @@ void UFractureToolSlice::GenerateSliceTransforms(const FFractureContext& Context
 	}
 }
 
-
-#if WITH_EDITOR
-void UFractureToolSlice::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
-{
-	FractureContextChanged();
-}
-#endif
-
-
-
 void UFractureToolSlice::Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
 {
-	const UFractureCommonSettings* LocalCommonSettings = GetDefault<UFractureCommonSettings>();
-
-	for (const FTransform& Transform : RenderCuttingPlanesTransforms)
+	if (CutterSettings->bDrawDiagram)
 	{
-		PDI->DrawPoint(Transform.GetLocation(), FLinearColor::Green, 4.f, SDPG_Foreground);
+		for (const FTransform& Transform : RenderCuttingPlanesTransforms)
+		{
+			PDI->DrawPoint(Transform.GetLocation(), FLinearColor::Green, 4.f, SDPG_Foreground);
 
-		PDI->DrawLine(Transform.GetLocation(), Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize, FLinearColor(255, 0, 0), SDPG_Foreground);
-		PDI->DrawLine(Transform.GetLocation(), Transform.GetLocation() + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, FLinearColor(0, 255, 0), SDPG_Foreground);
+			PDI->DrawLine(Transform.GetLocation(), Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize, FLinearColor(255, 0, 0), SDPG_Foreground);
+			PDI->DrawLine(Transform.GetLocation(), Transform.GetLocation() + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, FLinearColor(0, 255, 0), SDPG_Foreground);
 
-		PDI->DrawLine(Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize, Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, FLinearColor(255, 0, 0), SDPG_Foreground);
-		PDI->DrawLine(Transform.GetLocation() + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, FLinearColor(0, 255, 0), SDPG_Foreground);
+			PDI->DrawLine(Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize, Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, FLinearColor(255, 0, 0), SDPG_Foreground);
+			PDI->DrawLine(Transform.GetLocation() + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, FLinearColor(0, 255, 0), SDPG_Foreground);
+		}
 	}
 }
 
 void UFractureToolSlice::FractureContextChanged()
 {
-	const UFractureCommonSettings* LocalCommonSettings = GetDefault<UFractureCommonSettings>();
-
-	TArray<FFractureContext> FractureContexts;
-	FFractureEditorModeToolkit::GetFractureContexts(FractureContexts);
+	TArray<FFractureToolContext> FractureContexts = GetFractureToolContexts();
 
 	RenderCuttingPlanesTransforms.Empty();
 
 	RenderCuttingPlaneSize = FLT_MAX;
-	for (FFractureContext& FractureContext : FractureContexts)
+	for (FFractureToolContext& FractureContext : FractureContexts)
 	{
-		// Move the local bounds to the actor so we weill draw in the correct location
-		FractureContext.Bounds = FractureContext.Bounds.TransformBy(FractureContext.Transform);
+		// Move the local bounds to the actor so we we'll draw in the correct location
+		FractureContext.TransformBoundsToWorld();
 		GenerateSliceTransforms(FractureContext, RenderCuttingPlanesTransforms);
 
-		if (FractureContext.Bounds.GetExtent().GetMax() < RenderCuttingPlaneSize)
+		if (FractureContext.GetBounds().GetExtent().GetMax() < RenderCuttingPlaneSize)
 		{
-			RenderCuttingPlaneSize = FractureContext.Bounds.GetExtent().GetMax();
+			RenderCuttingPlaneSize = FractureContext.GetBounds().GetExtent().GetMax();
 		}
 	}
 }
 
-
-void UFractureToolSlice::ExecuteFracture(const FFractureContext& FractureContext)
+int32 UFractureToolSlice::ExecuteFracture(const FFractureToolContext& FractureContext)
 {
-	const UFractureCommonSettings* LocalCommonSettings = GetDefault<UFractureCommonSettings>();
-	const UFractureSliceSettings* LocalSliceSettings = GetMutableDefault<UFractureSliceSettings>();
-
-	if (FractureContext.FracturedGeometryCollection != nullptr)
+	if(FractureContext.IsValid())
 	{
-		TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = FractureContext.FracturedGeometryCollection->GetGeometryCollection();
-		if (FGeometryCollection* GeometryCollection = GeometryCollectionPtr.Get())
+		TArray<FTransform> LocalCuttingPlanesTransforms;
+		GenerateSliceTransforms(FractureContext, LocalCuttingPlanesTransforms);
+
+		TArray<FPlane> CuttingPlanes;
+		CuttingPlanes.Reserve(LocalCuttingPlanesTransforms.Num());
+
+		for (const FTransform& Transform : LocalCuttingPlanesTransforms)
 		{
-			TArray<FTransform> LocalCuttingPlanesTransforms;
-			GenerateSliceTransforms(FractureContext, LocalCuttingPlanesTransforms);
-
-			TArray<FPlane> CuttingPlanes;
-			CuttingPlanes.Reserve(LocalCuttingPlanesTransforms.Num());
-
-			for (const FTransform& Transform : LocalCuttingPlanesTransforms)
-			{
-				CuttingPlanes.Add(FPlane(Transform.GetLocation(), Transform.GetUnitAxis(EAxis::Z)));
-			}
-
-			FInternalSurfaceMaterials InternalSurfaceMaterials;
-			FNoiseSettings NoiseSettings;
-			if (LocalCommonSettings->Amplitude > 0.0f)
-			{
-				NoiseSettings.Amplitude = LocalCommonSettings->Amplitude;
-				NoiseSettings.Frequency = LocalCommonSettings->Frequency;
-				NoiseSettings.Octaves = LocalCommonSettings->OctaveNumber;
-				NoiseSettings.PointSpacing = LocalCommonSettings->SurfaceResolution;
-				InternalSurfaceMaterials.NoiseSettings = NoiseSettings;
-			}
-
-			int32 AddedGeomIdx = CutMultipleWithMultiplePlanes(CuttingPlanes, InternalSurfaceMaterials, *GeometryCollection, FractureContext.SelectedBones);
+			CuttingPlanes.Add(FPlane(Transform.GetLocation(), Transform.GetUnitAxis(EAxis::Z)));
 		}
-	}
-}
 
-bool UFractureToolSlice::CanExecuteFracture() const
-{
-	return FFractureEditorModeToolkit::IsLeafBoneSelected();
+		FInternalSurfaceMaterials InternalSurfaceMaterials;
+		FNoiseSettings NoiseSettings;
+		if (CutterSettings->Amplitude > 0.0f)
+		{
+			NoiseSettings.Amplitude = CutterSettings->Amplitude;
+			NoiseSettings.Frequency = CutterSettings->Frequency;
+			NoiseSettings.Octaves = CutterSettings->OctaveNumber;
+			NoiseSettings.PointSpacing = CutterSettings->SurfaceResolution;
+			InternalSurfaceMaterials.NoiseSettings = NoiseSettings;
+		}
+
+		return CutMultipleWithMultiplePlanes(CuttingPlanes, InternalSurfaceMaterials, *FractureContext.GetGeometryCollection(), FractureContext.GetSelection(), 0, 0);
+	}
+
+	return INDEX_NONE;
 }
 
 #undef LOCTEXT_NAMESPACE

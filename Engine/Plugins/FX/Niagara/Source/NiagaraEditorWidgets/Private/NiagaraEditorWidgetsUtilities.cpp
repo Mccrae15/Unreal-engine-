@@ -4,11 +4,13 @@
 #include "ViewModels/Stack/NiagaraStackEntry.h"
 #include "ViewModels/Stack/NiagaraStackItem.h"
 #include "ViewModels/Stack/NiagaraStackModuleItem.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
 #include "Stack/SNiagaraStackItemGroupAddMenu.h"
 #include "NiagaraEditorWidgetsStyle.h"
 #include "NiagaraEditorCommon.h"
 #include "NiagaraClipboard.h"
 #include "NiagaraEditorModule.h"
+#include "NiagaraNodeFunctionCall.h"
 
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -17,6 +19,10 @@
 #include "Modules/ModuleManager.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
+#include "EditorFontGlyphs.h"
+#include "NiagaraMessages.h"
+#include "ViewModels/NiagaraSystemSelectionViewModel.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackEditorWidgetsUtilities"
 
@@ -128,29 +134,74 @@ FName FNiagaraStackEditorWidgetsUtilities::GetIconColorNameForExecutionCategory(
 	}
 }
 
-FName FNiagaraStackEditorWidgetsUtilities::GetColorNameForParameterScope(ENiagaraParameterScope ParameterScope)
+
+
+FText FNiagaraStackEditorWidgetsUtilities::GetIconTextForInputMode(UNiagaraStackFunctionInput::EValueMode InputValueMode)
 {
-	switch (ParameterScope) {
-	case ENiagaraParameterScope::Engine:
-		return "NiagaraEditor.Scope.Engine";
-	case ENiagaraParameterScope::Owner:
-		return "NiagaraEditor.Scope.Owner";
-	case ENiagaraParameterScope::User:
-		return "NiagaraEditor.Scope.User";
-	case ENiagaraParameterScope::System:
-		return "NiagaraEditor.Scope.System";
-	case ENiagaraParameterScope::Emitter:
-		return "NiagaraEditor.Scope.Emitter";
-	case ENiagaraParameterScope::Particles:
-		return "NiagaraEditor.Scope.Particles";
-	case ENiagaraParameterScope::ScriptPersistent:
-		return "NiagaraEditor.Scope.ScriptPersistent";
-	case ENiagaraParameterScope::ScriptTransient:
-		return "NiagaraEditor.Scope.ScriptTransient";
-	};
-	return NAME_None;
+	switch (InputValueMode)
+	{
+	case UNiagaraStackFunctionInput::EValueMode::Linked:
+		return FEditorFontGlyphs::Link;
+	case UNiagaraStackFunctionInput::EValueMode::Data:
+		return FEditorFontGlyphs::Database;
+	case UNiagaraStackFunctionInput::EValueMode::Dynamic:
+		return FEditorFontGlyphs::Line_Chart;
+	case UNiagaraStackFunctionInput::EValueMode::Expression:
+		return FEditorFontGlyphs::Terminal;
+	case UNiagaraStackFunctionInput::EValueMode::DefaultFunction:
+		return FEditorFontGlyphs::Plug;
+	case UNiagaraStackFunctionInput::EValueMode::InvalidOverride:
+		return FEditorFontGlyphs::Question;
+	case UNiagaraStackFunctionInput::EValueMode::UnsupportedDefault:
+		return FEditorFontGlyphs::Star;
+	default:
+		return FEditorFontGlyphs::Question;
+	}
 }
 
+FText FNiagaraStackEditorWidgetsUtilities::GetIconToolTipForInputMode(UNiagaraStackFunctionInput::EValueMode InputValueMode)
+{
+	static const FText InvalidText = LOCTEXT("InvalidInputIconToolTip", "Unsupported value.  Check the graph for issues.");
+	switch (InputValueMode)
+	{
+	case UNiagaraStackFunctionInput::EValueMode::Linked:
+		return LOCTEXT("LinkInputIconToolTip", "Linked Value");
+	case UNiagaraStackFunctionInput::EValueMode::Data:
+		return LOCTEXT("DataInterfaceInputIconToolTip", "Data Value");
+	case UNiagaraStackFunctionInput::EValueMode::Dynamic:
+		return LOCTEXT("DynamicInputIconToolTip", "Dynamic Value");
+	case UNiagaraStackFunctionInput::EValueMode::Expression:
+		return LOCTEXT("ExpressionInputIconToolTip", "Custom Expression");
+	case UNiagaraStackFunctionInput::EValueMode::DefaultFunction:
+		return LOCTEXT("DefaultFunctionIconToolTip", "Script Defined Default Function");
+	case UNiagaraStackFunctionInput::EValueMode::InvalidOverride:
+		return LOCTEXT("InvalidOverrideIconToolTip", "Invalid Script State");
+	case UNiagaraStackFunctionInput::EValueMode::UnsupportedDefault:
+		return LOCTEXT("UnsupportedDefaultIconToolTip", "Script Defined Custom Default");
+	default:
+		return InvalidText;
+	}
+}
+
+FName FNiagaraStackEditorWidgetsUtilities::GetIconColorNameForInputMode(UNiagaraStackFunctionInput::EValueMode InputValueMode)
+{
+	switch (InputValueMode)
+	{
+	case UNiagaraStackFunctionInput::EValueMode::Linked:
+		return "NiagaraEditor.Stack.InputValueIconColor.Linked";
+	case UNiagaraStackFunctionInput::EValueMode::Data:
+		return "NiagaraEditor.Stack.InputValueIconColor.Data";
+	case UNiagaraStackFunctionInput::EValueMode::Dynamic:
+		return "NiagaraEditor.Stack.InputValueIconColor.Dynamic";
+	case UNiagaraStackFunctionInput::EValueMode::Expression:
+		return "NiagaraEditor.Stack.InputValueIconColor.Expression";
+	case UNiagaraStackFunctionInput::EValueMode::InvalidOverride:
+	case UNiagaraStackFunctionInput::EValueMode::UnsupportedDefault:
+	case UNiagaraStackFunctionInput::EValueMode::DefaultFunction:
+	default:
+		return "NiagaraEditor.Stack.InputValueIconColor.Default";
+	}
+}
 
 void OpenSourceAsset(TWeakObjectPtr<UNiagaraStackEntry> StackEntryWeak)
 {
@@ -208,11 +259,71 @@ void DeleteItem(TWeakObjectPtr<UNiagaraStackItem> StackItemWeak)
 
 void ToggleEnabledState(TWeakObjectPtr<UNiagaraStackItem> StackItemWeak)
 {
+	TSet<UNiagaraStackItem*> ItemsToToggle;
+
 	UNiagaraStackItem* StackItem = StackItemWeak.Get();
 	if (StackItem != nullptr)
 	{
-		StackItem->SetIsEnabled(!StackItem->GetIsEnabled());
+		ItemsToToggle.Add(StackItem);
+		bool bShouldBeEnabled = !StackItem->GetIsEnabled();
+		
+		TArray<UNiagaraStackEntry*> StackEntries;
+		StackItem->GetSystemViewModel()->GetSelectionViewModel()->GetSelectedEntries(StackEntries);
+
+		for(UNiagaraStackEntry* StackEntry : StackEntries)
+		{
+			UNiagaraStackItem* AdditionalStackItem = Cast<UNiagaraStackItem>(StackEntry);
+
+			if (AdditionalStackItem != nullptr)
+			{
+				ItemsToToggle.Add(AdditionalStackItem);
+			}
+		}
+
+		// we assume the same state for all of the selected entries rather than toggling item-by-item
+		for(UNiagaraStackItem* CurrentStackItem : ItemsToToggle)
+		{
+			CurrentStackItem->SetIsEnabled(bShouldBeEnabled);		
+		}
 	}
+
+}
+
+void ToggleShouldDebugDraw(TWeakObjectPtr<UNiagaraStackItem> StackItemWeak)
+{
+	TSet<UNiagaraStackModuleItem*> ItemsToToggle;
+
+	UNiagaraStackModuleItem* ModuleItem = Cast<UNiagaraStackModuleItem>(StackItemWeak.Get());
+	if (ModuleItem != nullptr)
+	{
+		ItemsToToggle.Add(ModuleItem);
+		bool bShouldBeEnabled = !ModuleItem->IsDebugDrawEnabled();
+
+		TArray<UNiagaraStackEntry*> StackEntries;
+		ModuleItem->GetSystemViewModel()->GetSelectionViewModel()->GetSelectedEntries(StackEntries);
+
+		for(UNiagaraStackEntry* StackEntry : StackEntries)
+		{
+			UNiagaraStackModuleItem* AdditionalStackModuleItem = Cast<UNiagaraStackModuleItem>(StackEntry);
+
+			if (AdditionalStackModuleItem != nullptr)
+			{
+				ItemsToToggle.Add(AdditionalStackModuleItem);
+			}
+		}
+
+		// we assume the same state for all of the selected entries rather than toggling item-by-item
+		for(UNiagaraStackModuleItem* CurrentStackItem : ItemsToToggle)
+		{
+			CurrentStackItem->SetDebugDrawEnabled(bShouldBeEnabled);
+		}
+	}
+}
+
+void EnableNoteMode(TWeakObjectPtr<UNiagaraStackModuleItem> ModuleItem)
+{
+	ModuleItem->GetSystemViewModel()->GetSelectionViewModel()->UpdateSelectedEntries({ModuleItem.Get()}, {}, true);
+	ModuleItem->SetNoteMode(true);
 }
 
 bool FNiagaraStackEditorWidgetsUtilities::AddStackItemContextMenuActions(FMenuBuilder& MenuBuilder, UNiagaraStackItem& StackItem)
@@ -234,6 +345,32 @@ bool FNiagaraStackEditorWidgetsUtilities::AddStackItemContextMenuActions(FMenuBu
 					NAME_None,
 					EUserInterfaceActionType::Check);
 			}
+
+			UNiagaraStackModuleItem* ModuleItem = Cast<UNiagaraStackModuleItem>(&StackItem);
+			
+			if (ModuleItem && ModuleItem->GetModuleNode().ContainsDebugSwitch())
+			{
+				FUIAction Action(FExecuteAction::CreateStatic(&ToggleShouldDebugDraw, TWeakObjectPtr<UNiagaraStackItem>(&StackItem)),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateUObject(ModuleItem, &UNiagaraStackModuleItem::IsDebugDrawEnabled));
+				MenuBuilder.AddMenuEntry(
+					LOCTEXT("ShouldDebugDraw", "Enable Debug Draw"),
+					LOCTEXT("ToggleShouldDebugDrawToolTip", "Toggle debug draw enable/disabled"),
+					FSlateIcon(),
+					Action,
+					NAME_None,
+					EUserInterfaceActionType::Check);
+			}
+
+			if(ModuleItem)
+			{
+				MenuBuilder.AddMenuEntry(
+					LOCTEXT("AddNote", "Add Note"),
+					LOCTEXT("AddNoteToolTip", "Add a note to this module item."),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateStatic(&EnableNoteMode, TWeakObjectPtr<UNiagaraStackModuleItem>(ModuleItem))));
+			}
+
 		}
 		MenuBuilder.EndSection();
 		return true;
@@ -247,18 +384,19 @@ void ShowInsertModuleMenu(TWeakObjectPtr<UNiagaraStackModuleItem> StackModuleIte
 	TSharedPtr<SWidget> TargetWidget = TargetWidgetWeak.Pin();
 	if (StackModuleItem != nullptr && TargetWidget.IsValid())
 	{
-		TSharedRef<SWidget> MenuContent = SNew(SNiagaraStackItemGroupAddMenu, StackModuleItem->GetGroupAddUtilities(), StackModuleItem->GetModuleIndex() + InsertOffset);
+		TSharedRef<SNiagaraStackItemGroupAddMenu> MenuContent = SNew(SNiagaraStackItemGroupAddMenu, StackModuleItem->GetGroupAddUtilities(), StackModuleItem->GetModuleIndex() + InsertOffset);
 		FGeometry ThisGeometry = TargetWidget->GetCachedGeometry();
 		bool bAutoAdjustForDpiScale = false; // Don't adjust for dpi scale because the push menu command is expecting an unscaled position.
 		FVector2D MenuPosition = FSlateApplication::Get().CalculatePopupWindowPosition(ThisGeometry.GetLayoutBoundingRect(), MenuContent->GetDesiredSize(), bAutoAdjustForDpiScale);
 		FSlateApplication::Get().PushMenu(TargetWidget.ToSharedRef(), FWidgetPath(), MenuContent, MenuPosition, FPopupTransitionEffect::ContextMenu);
+		FSlateApplication::Get().SetKeyboardFocus(MenuContent->GetFilterTextBox());
 	}
 }
 
 bool FNiagaraStackEditorWidgetsUtilities::AddStackModuleItemContextMenuActions(FMenuBuilder& MenuBuilder, UNiagaraStackModuleItem& StackModuleItem, TSharedRef<SWidget> TargetWidget)
 {
 	MenuBuilder.BeginSection("ModuleActions", LOCTEXT("ModuleActions", "Module Actions"));
-	{
+	{		
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("InsertModuleAbove", "Insert Above"),
 			LOCTEXT("InsertModuleAboveToolTip", "Insert a new module above this module in the stack."),

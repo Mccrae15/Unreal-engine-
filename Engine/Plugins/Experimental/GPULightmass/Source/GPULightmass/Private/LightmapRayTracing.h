@@ -5,13 +5,24 @@
 #include "GPULightmassCommon.h"
 #include "ShaderParameterStruct.h"
 #include "GlobalShader.h"
-#include "PathTracingUniformBuffers.h"
 #include "RayTracing/RayTracingSkyLight.h"
 #include "SceneView.h"
 #include "RayTracing/RayTracingMaterialHitShaders.h"
 #include "IrradianceCaching.h"
+#include "RayTracingTypes.h"
 
 #if RHI_RAYTRACING
+
+BEGIN_SHADER_PARAMETER_STRUCT(FPathTracingLightGrid, RENDERER_API)
+	SHADER_PARAMETER(uint32, SceneInfiniteLightCount)
+	SHADER_PARAMETER(FVector, SceneLightsBoundMin)
+	SHADER_PARAMETER(FVector, SceneLightsBoundMax)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, LightGrid)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, LightGridData)
+	SHADER_PARAMETER(unsigned, LightGridResolution)
+	SHADER_PARAMETER(unsigned, LightGridMaxCount)
+	SHADER_PARAMETER(int, LightGridAxis)
+END_SHADER_PARAMETER_STRUCT()
 
 class FLightmapRayTracingMeshProcessor : public FRayTracingMeshProcessor
 {
@@ -43,7 +54,7 @@ class FLightmapPathTracingRGS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -68,10 +79,24 @@ class FLightmapPathTracingRGS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, RayGuidingCDFX)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, RayGuidingCDFY)
 		SHADER_PARAMETER_SRV(StructuredBuffer<FGPUTileDescription>, BatchedTiles)
-		SHADER_PARAMETER_STRUCT_REF(FPathTracingLightData, LightParameters)
-		SHADER_PARAMETER_STRUCT_REF(FSkyLightData, SkyLight)
+
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FPathTracingLight>, SceneLights)
+		SHADER_PARAMETER(uint32, SceneLightCount)
+		SHADER_PARAMETER(uint32, SceneVisibleLightCount)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FPathTracingLightGrid, LightGridParameters)
+		// Skylight
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SkylightTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SkylightPdf)
+		SHADER_PARAMETER_SAMPLER(SamplerState, SkylightTextureSampler)
+		SHADER_PARAMETER(float, SkylightInvResolution)
+		SHADER_PARAMETER(int32, SkylightMipCount)
+
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FIrradianceCachingParameters, IrradianceCachingParameters)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2DArray, IESTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, IESTextureSampler)
+		// Subsurface data
+		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -86,7 +111,7 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -111,17 +136,27 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 		SHADER_PARAMETER_UAV(RWTexture3D<float4>, SHCoefficients1G)
 		SHADER_PARAMETER_UAV(RWTexture3D<float4>, SHCoefficients0B)
 		SHADER_PARAMETER_UAV(RWTexture3D<float4>, SHCoefficients1B)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, OutAmbientVector)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, OutSHCoefficients0R)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, OutSHCoefficients1R)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, OutSHCoefficients0G)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, OutSHCoefficients1G)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, OutSHCoefficients0B)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, OutSHCoefficients1B)
-		SHADER_PARAMETER_STRUCT_REF(FPathTracingLightData, LightParameters)
-		SHADER_PARAMETER_STRUCT_REF(FSkyLightData, SkyLight)
+		SHADER_PARAMETER_UAV(RWTexture3D<float>, DirectionalLightShadowing)
+
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FPathTracingLight>, SceneLights)
+		SHADER_PARAMETER(uint32, SceneLightCount)
+		SHADER_PARAMETER(uint32, SceneVisibleLightCount)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FPathTracingLightGrid, LightGridParameters)
+		// Skylight
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SkylightTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SkylightPdf)
+		SHADER_PARAMETER_SAMPLER(SamplerState, SkylightTextureSampler)
+		SHADER_PARAMETER(float, SkylightInvResolution)
+		SHADER_PARAMETER(int32, SkylightMipCount)
+
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FIrradianceCachingParameters, IrradianceCachingParameters)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2DArray, IESTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, IESTextureSampler)
+		// Subsurface data
+		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
+
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FLightShaderParameters>, LightShaderParametersArray)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -132,7 +167,7 @@ class FStationaryLightShadowTracingRGS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -153,6 +188,11 @@ class FStationaryLightShadowTracingRGS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, GBufferShadingNormal)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ShadowMask)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ShadowMaskSampleCount)
+
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FPathTracingLight>, SceneLights)
+		SHADER_PARAMETER(uint32, SceneLightCount)
+		SHADER_PARAMETER(uint32, SceneVisibleLightCount)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FPathTracingLightGrid, LightGridParameters)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -163,7 +203,7 @@ class FFirstBounceRayGuidingCDFBuildCS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return RHISupportsRayTracingShaders(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && RHISupportsRayTracingShaders(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)

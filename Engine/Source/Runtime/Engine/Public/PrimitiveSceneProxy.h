@@ -466,6 +466,7 @@ public:
 	inline float GetMaxDrawDistance() const { return MaxDrawDistance; }
 	inline int32 GetVisibilityId() const { return VisibilityId; }
 	inline int16 GetTranslucencySortPriority() const { return TranslucencySortPriority; }
+	inline float GetTranslucencySortDistanceOffset() const { return TranslucencySortDistanceOffset; }
 	inline bool HasMotionBlurVelocityMeshes() const { return bHasMotionBlurVelocityMeshes; }
 
 	inline int32 GetVirtualTextureLodBias() const { return VirtualTextureLodBias; }
@@ -485,6 +486,8 @@ public:
 		return Mobility == EComponentMobility::Movable || !bGoodCandidateForCachedShadowmap; 
 	}
 
+	bool IsUsingWPOMaterial() const { return bUsingWPOMaterial; }
+
 	inline ELightmapType GetLightmapType() const { return LightmapType; }
 	inline bool IsStatic() const { return Mobility == EComponentMobility::Static; }
 	inline bool IsSelectable() const { return bSelectable; }
@@ -493,6 +496,8 @@ public:
 	inline bool IsSelected() const { return IsParentSelected() || IsIndividuallySelected(); }
 	inline bool WantsSelectionOutline() const { return bWantsSelectionOutline; }
 	inline bool ShouldRenderCustomDepth() const { return bRenderCustomDepth; }
+	inline bool IsVisibleInSceneCaptureOnly() const { return bVisibleInSceneCaptureOnly; }
+	inline bool IsHiddenInSceneCapture() const { return bHiddenInSceneCapture; }
 	inline uint8 GetCustomDepthStencilValue() const { return CustomDepthStencilValue; }
 	inline EStencilMask GetStencilWriteMask() const { return CustomDepthStencilWriteMask; }
 	inline uint8 GetLightingChannelMask() const { return LightingChannelMask; }
@@ -522,6 +527,7 @@ public:
 	inline EIndirectLightingCacheQuality GetIndirectLightingCacheQuality() const { return IndirectLightingCacheQuality; }
 	inline bool CastsVolumetricTranslucentShadow() const { return bCastVolumetricTranslucentShadow; }
 	inline bool CastsContactShadow() const { return bCastContactShadow; }
+	inline bool CastsDeepShadow() const { return bCastDeepShadow; }
 	inline bool CastsCapsuleDirectShadow() const { return bCastCapsuleDirectShadow; }
 	inline bool CastsDynamicIndirectShadow() const { return bCastsDynamicIndirectShadow; }
 	inline float GetDynamicIndirectShadowMinVisibility() const { return DynamicIndirectShadowMinVisibility; }
@@ -554,9 +560,17 @@ public:
 	inline bool NeedsLevelAddedToWorldNotification() const { return bNeedsLevelAddedToWorldNotification; }
 	inline bool IsComponentLevelVisible() const { return bIsComponentLevelVisible; }
 	inline bool ShouldReceiveMobileCSMShadows() const { return bReceiveMobileCSMShadows; }
+	inline void SetPatchingFrameNumber(int32 FrameNumber)
+	{
+		if (GetUniformBuffer() != nullptr)
+		{
+			UniformBuffer->SetPatchingFrameNumber(FrameNumber);
+		}
+	}
 
 	/** Returns whether draws velocity in base pass. */
-	inline bool DrawsVelocity() const {
+	inline bool DrawsVelocity() const 
+	{
 		return IsMovable();
 	}
 
@@ -724,8 +738,9 @@ public:
 	ENGINE_API const FCustomPrimitiveData* GetCustomPrimitiveData() const { return &CustomPrimitiveData; }
 
 protected:
-
-	/** Returns true if primitive should be hidden because it is drawn only to the runtime virtual texture. */
+	/** Returns true if a primitive can never be rendered outside of a runtime virtual texture. */
+	ENGINE_API bool IsVirtualTextureOnly() const { return bVirtualTextureMainPassDrawNever; }
+	/** Returns true if a primitive should currently be hidden because it is drawn only to the runtime virtual texture. The result can depend on the current scene state. */
 	bool DrawInVirtualTextureOnly(bool bEditor) const;
 
 	/** Allow subclasses to override the primitive name. Used primarily by BSP. */
@@ -752,6 +767,9 @@ private:
 
 	/** The translucency sort priority */
 	int16 TranslucencySortPriority;
+
+	/** Translucent sort distance offset */
+	float TranslucencySortDistanceOffset;
 
 	TEnumAsByte<EComponentMobility::Type> Mobility;
 	ELightmapType LightmapType;
@@ -825,6 +843,9 @@ protected:
 	/** Whether this proxy's mesh is unlikely to be constantly changing. */
 	uint8 bGoodCandidateForCachedShadowmap : 1;
 
+	/** Whether this proxy's mesh uses WPO materials. */
+	uint8 bUsingWPOMaterial : 1;
+
 	/** Whether the primitive should be statically lit but has unbuilt lighting, and a preview should be used. */
 	uint8 bNeedsUnbuiltPreviewLighting : 1;
 
@@ -854,6 +875,9 @@ protected:
 
 	/** Whether the object should cast a contact shadow */
 	uint8 bCastContactShadow : 1;
+
+	/** Whether the object should cast a deep shadow */
+	uint8 bCastDeepShadow : 1;
 
 	/** Whether the primitive should use capsules for direct shadowing, if present.  Forces inset shadows. */
 	uint8 bCastCapsuleDirectShadow : 1;
@@ -947,6 +971,12 @@ private:
 
 	/** This primitive has bRenderCustomDepth enabled */
 	uint8 bRenderCustomDepth : 1;
+
+	/** This primitive is only visible in Scene Capture */
+	uint8 bVisibleInSceneCaptureOnly : 1;
+
+	/** This primitive should be hidden in Scene Capture */
+	uint8 bHiddenInSceneCapture : 1;
 
 	/** Optionally write this stencil value during the CustomDepth pass */
 	uint8 CustomDepthStencilValue;

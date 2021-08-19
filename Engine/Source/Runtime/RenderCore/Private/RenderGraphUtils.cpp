@@ -804,13 +804,27 @@ BEGIN_SHADER_PARAMETER_STRUCT(FTextureAccessDynamicPassParameters, )
 	RDG_TEXTURE_ACCESS_DYNAMIC(Texture)
 END_SHADER_PARAMETER_STRUCT()
 
-void ConvertToUntrackedExternalTexture(
+// This is a 4.26 hack to get async compute SSAO to pass validation without multi-pipe transitions.
+void AddAsyncComputeSRVTransitionHackPass(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture)
+{
+	auto* PassParameters = GraphBuilder.AllocParameters<FTextureAccessDynamicPassParameters>();
+	PassParameters->Texture = FRDGTextureAccess(Texture, ERHIAccess::SRVMask);
+	GraphBuilder.AddPass({}, PassParameters,
+		// Use all of the work flags so that any access is valid.
+		ERDGPassFlags::Copy |
+		ERDGPassFlags::Compute |
+		ERDGPassFlags::Raster |
+		ERDGPassFlags::SkipRenderPass |
+		// We're not writing to anything, so we have to tell the pass not to cull.
+		ERDGPassFlags::NeverCull,
+		[](FRHICommandList&) {});
+}
+
+void ConvertToUntrackedTexture(
 	FRDGBuilder& GraphBuilder,
 	FRDGTextureRef Texture,
-	TRefCountPtr<IPooledRenderTarget>& OutPooledRenderTarget,
 	ERHIAccess AccessFinal)
 {
-	ConvertToExternalTexture(GraphBuilder, Texture, OutPooledRenderTarget);
 	GraphBuilder.SetTextureAccessFinal(Texture, AccessFinal);
 
 	auto* PassParameters = GraphBuilder.AllocParameters<FTextureAccessDynamicPassParameters>();
@@ -830,13 +844,11 @@ BEGIN_SHADER_PARAMETER_STRUCT(FBufferAccessDynamicPassParameters, )
 	RDG_BUFFER_ACCESS_DYNAMIC(Buffer)
 END_SHADER_PARAMETER_STRUCT()
 
-void ConvertToUntrackedExternalBuffer(
+void ConvertToUntrackedBuffer(
 	FRDGBuilder& GraphBuilder,
 	FRDGBufferRef Buffer,
-	TRefCountPtr<FRDGPooledBuffer>& OutPooledBuffer,
 	ERHIAccess AccessFinal)
 {
-	ConvertToExternalBuffer(GraphBuilder, Buffer, OutPooledBuffer);
 	GraphBuilder.SetBufferAccessFinal(Buffer, AccessFinal);
 
 	auto* PassParameters = GraphBuilder.AllocParameters<FBufferAccessDynamicPassParameters>();

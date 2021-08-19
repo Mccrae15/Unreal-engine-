@@ -71,7 +71,7 @@ void UGameplayTask::ReadyForActivation()
 void UGameplayTask::InitTask(IGameplayTaskOwnerInterface& InTaskOwner, uint8 InPriority)
 {
 	Priority = InPriority;
-	TaskOwner = InTaskOwner;
+	TaskOwner = &InTaskOwner;
 	TaskState = EGameplayTaskState::AwaitingActivation;
 
 	if (bClaimRequiredResources)
@@ -84,7 +84,7 @@ void UGameplayTask::InitTask(IGameplayTaskOwnerInterface& InTaskOwner, uint8 InP
 
 	UGameplayTasksComponent* GTComponent = InTaskOwner.GetGameplayTasksComponent(*this);
 	TasksComponent = GTComponent;
-	bOwnedByTasksComponent = (TaskOwner == GTComponent);
+	bOwnedByTasksComponent = (TaskOwner.GetObject() == GTComponent);
 
 	// make sure that task component knows about new task
 	if (GTComponent && !bOwnedByTasksComponent)
@@ -385,7 +385,7 @@ void UGameplayTask::PauseInTaskQueue()
 	}
 }
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if WITH_GAMEPLAYTASK_DEBUG
 //----------------------------------------------------------------------//
 // debug
 //----------------------------------------------------------------------//
@@ -411,7 +411,7 @@ FString UGameplayTask::GetTaskStateName() const
 	return Enum->GetNameStringByValue(int64(TaskState));
 }
 
-#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#endif // WITH_GAMEPLAYTASK_DEBUG
 
 //////////////////////////////////////////////////////////////////////////
 // Child tasks

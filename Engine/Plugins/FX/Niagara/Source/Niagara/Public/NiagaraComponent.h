@@ -27,7 +27,7 @@ class NiagaraEmitterInstanceBatcher;
 // Called when the particle system is done
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNiagaraSystemFinished, class UNiagaraComponent*, PSystem);
 
-#define WITH_NIAGARA_COMPONENT_PREVIEW_DATA (!UE_BUILD_SHIPPING)
+#define WITH_NIAGARA_COMPONENT_PREVIEW_DATA (!UE_BUILD_SHIPPING) || NIAGARA_PERF_BASELINES
 
 USTRUCT()
 struct FNiagaraMaterialOverride
@@ -35,13 +35,13 @@ struct FNiagaraMaterialOverride
 	GENERATED_USTRUCT_BODY();
 
 	UPROPERTY()
-	class UMaterialInterface* Material;
+	class UMaterialInterface* Material = nullptr;
 
 	UPROPERTY()
-	uint32 MaterialSubIndex;
+	uint32 MaterialSubIndex = 0;
 
 	UPROPERTY()
-	UNiagaraRendererProperties* EmitterRendererProperty;
+	UNiagaraRendererProperties* EmitterRendererProperty = nullptr;
 };
 
 /**
@@ -84,6 +84,15 @@ private:
 	/** Allows you to control how Niagara selects the tick group, changing this while an instance is active will result in not change as it is cached. */
 	UPROPERTY(EditAnywhere, Category = "Niagara", meta = (DisplayName = "Niagara Tick Behavior"))
 	ENiagaraTickBehavior TickBehavior = ENiagaraTickBehavior::UsePrereqs;
+
+	/**
+	 * Offsets the deterministic random seed of all emitters. Used to achieve variety between components, while still achieving determinism.
+	 * WARNINGS:
+	 * - If this value is set in a non-deterministic way, it has the potential to break determinism of the entire system.
+	 * - This value is applied when emitters are activated/reset, and changing them while the emitter is active has no effect.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Randomness")
+	int32 RandomSeedOffset;
 
 	UPROPERTY()
 	FNiagaraUserRedirectionParameterStore OverrideParameters;
@@ -130,6 +139,8 @@ private:
 	/** The delta time used when seeking to the desired age.  This is only relevant when using the DesiredAge age update mode. */
 	float SeekDelta;
 
+	bool bLockDesiredAgeDeltaTimeToSeekDelta;
+
 	/** The maximum amount of time in seconds to spend seeking to the desired age in a single frame. */
 	float MaxSimTime;
 
@@ -149,11 +160,13 @@ protected:
 	virtual void OnUnregister() override;
 	virtual void OnEndOfFrameUpdateDuringTick() override;
 	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
+	virtual void DestroyRenderState_Concurrent() override;
 	virtual void SendRenderDynamicData_Concurrent() override;
 	virtual void BeginDestroy() override;
 	//virtual void OnAttachmentChanged() override;
 
 	void UpdateEmitterMaterials(bool bForceUpdateEmitterMaterials = false);
+
 public:
 	/**
 	* True if we should automatically attach to AutoAttachParent when activated, and detach from our parent when completed.
@@ -186,9 +199,9 @@ public:
 	/** How to handle pooling for this component instance. */
 	ENCPoolMethod PoolingMethod;
 
-	virtual void Activate(bool bReset = false)override;
-	virtual void Deactivate()override;
-	void DeactivateImmediate();
+	virtual void Activate(bool bReset = false) override;
+	virtual void Deactivate() override;
+	virtual void DeactivateImmediate() override;
 
 	FORCEINLINE ENiagaraExecutionState GetRequestedExecutionState()const { return SystemInstance ? SystemInstance->GetRequestedExecutionState() : ENiagaraExecutionState::Complete; }
 	FORCEINLINE ENiagaraExecutionState GetExecutionState()const { return SystemInstance ? SystemInstance->GetActualExecutionState() : ENiagaraExecutionState::Complete; }
@@ -219,6 +232,7 @@ public:
 	virtual const UObject* AdditionalStatObject() const override;
 	virtual bool IsReadyForOwnerToAutoDestroy() const override;
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
+	virtual void OnComponentCreated() override;
 	//~ End UActorComponent Interface.
 
 	//~ Begin UPrimitiveComponent Interface
@@ -242,8 +256,13 @@ public:
 
 	void OnPooledReuse(UWorld* NewWorld);
 
+	/*
+	Switch which asset the component is using.
+	This requires Niagara to wait for concurrent execution and the override parameter store to be synchronized with the new asset.
+	By default existing parameters are reset when we call SetAsset, modify bResetExistingOverrideParameters to leave existing parameter data as is.
+	*/
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara System Asset"))
-	void SetAsset(UNiagaraSystem* InAsset);
+	void SetAsset(UNiagaraSystem* InAsset, bool bResetExistingOverrideParameters = true);
 
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Get Niagara System Asset"))
 	UNiagaraSystem* GetAsset() const { return Asset; }
@@ -291,6 +310,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Desired Age Seek Delta"))
 	void SetSeekDelta(float InSeekDelta);
 
+	/** Gets whether or not the delta time used to tick the system instance when using desired age is locked to the seek delta.  When true, the system instance
+	will only be ticked when the desired age has changed by more than the seek delta.  When false the system instance will be ticked by the change in desired 
+	age when not seeking. */
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Get whether or not to lock the desired age delta time to the seek delta."))
+	bool GetLockDesiredAgeDeltaTimeToSeekDelta() const;
+
+	/** Sets whether or not the delta time used to tick the system instance when using desired age is locked to the seek delta.  When true, the system instance
+	will only be ticked when the desired age has changed by more than the seek delta.  When false the system instance will be ticked by the change in desired 
+	age when not seeking. */
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set whether or not to lock the desired age delta time to the seek delta."))
+	void SetLockDesiredAgeDeltaTimeToSeekDelta(bool bLock);
+
 	/** Sets the maximum time that you can jump within a tick which is used when seeking from the current age, to the desired age.  This is only relevant
 	when using the DesiredAge age update mode. */
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Get Max Desired Age Tick Delta"))
@@ -311,6 +342,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Get Tick Behavior"))
 	ENiagaraTickBehavior GetTickBehavior() const { return TickBehavior; }
+
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Random Seed Offset"))
+	void SetRandomSeedOffset(int32 NewRandomSeedOffset);
+
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Get Random Seed Offset"))
+	int32 GetRandomSeedOffset() const { return RandomSeedOffset; }
 
 	/** Sets a Niagara FLinearColor parameter by name, overriding locally if necessary.*/
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (LinearColor)"))
@@ -437,6 +474,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Niagara)
 	bool IsPaused() const;
 
+	UE_DEPRECATED(4.27, "This method will be removed in a future release. Use the method provided by the Niagara Function Library instead.")
 	UFUNCTION(BlueprintCallable, Category = Niagara)
 	UNiagaraDataInterface* GetDataInterface(const FString &Name);
 
@@ -447,17 +485,24 @@ public:
 	FORCEINLINE void SetSystemSignificanceIndex(int32 InIndex) 	{ if(SystemInstance) SystemInstance->SetSystemSignificanceIndex(InIndex); }
 
 	//~ Begin UObject Interface.
+	virtual void Serialize(FStructuredArchive::FRecord Record) override;
 	virtual void PostLoad() override;
 
 #if WITH_EDITOR
 	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
-	/** 
-	  * Find the value of an overridden parameter. 
+	/**
+	  * Find the value of an overridden parameter.  The value returned may not be the current value being used by the simulation but
+	  * will reflect the last value which has been set through the editor on a component placed in a level, or on a component in the 
+	  * blueprint editor.
 	  * Returns null if the parameter isn't overridden by this component.
 	  */
 	FNiagaraVariant FindParameterOverride(const FNiagaraVariableBase& InKey) const;
+
+	/** Gets the current value of a parameter which is being used by the simulation.  This value will reflect runtime changes such as
+	  * those made by sequencer, or in PIE through code or blueprint. */
+	FNiagaraVariant GetCurrentParameterValue(const FNiagaraVariableBase& InKey) const;
 
 	bool HasParameterOverride(const FNiagaraVariableBase& InKey) const;
 	void SetParameterOverride(const FNiagaraVariableBase& InKey, const FNiagaraVariant& InValue);
@@ -477,18 +522,19 @@ public:
 	FORCEINLINE bool GetPreviewLODDistanceEnabled()const;
 
 	UFUNCTION(BlueprintCallable, Category = Preview, meta = (Keywords = "preview LOD Distance scalability"))
-	FORCEINLINE int32 GetPreviewLODDistance()const;
+	FORCEINLINE float GetPreviewLODDistance()const;
 
+	/**
+	Initializes this component for capturing a performance baseline.
+	This will do things such as disabling distance culling and setting a LODDistance of 0 to ensure the effect is at it's maximum cost.
+	*/
+	UFUNCTION(BlueprintCallable, Category = Performance, meta = (Keywords = "Niagara Performance"))
+	void InitForPerformanceBaseline();
 
 	FORCEINLINE void SetLODDistance(float InLODDistance, float InMaxLODDistance) { if (SystemInstance) SystemInstance->SetLODDistance(InLODDistance, InMaxLODDistance); }
 
 #if WITH_EDITOR
 	void PostLoadNormalizeOverrideNames();
-	UE_DEPRECATED(4.25, "This function is replaced by HasParameterOverride().")
-	bool IsParameterValueOverriddenLocally(const FName& InParamName) { return false; }
-
-	UE_DEPRECATED(4.25, "This function is replaced by SetParameterOverride().")
-	void SetParameterValueOverriddenLocally(const FNiagaraVariable& InParam, bool bInOverridden, bool bRequiresSystemInstanceReset) {}
 	
 	FOnSystemInstanceChanged& OnSystemInstanceChanged() { return OnSystemInstanceChangedDelegate; }
 
@@ -514,13 +560,22 @@ private:
 	/** Compare local overrides with the source System. Remove any that have mismatched types or no longer exist on the System.*/
 	void SynchronizeWithSourceSystem();
 
+	void FixInvalidUserParameterOverrideData();
+
 	void AssetExposedParametersChanged();
 
-	void CopyParametersFromAsset();
+	void CopyParametersFromAsset(bool bResetExistingOverrideParameters = true);
 	
 #if WITH_EDITOR
 	void SetOverrideParameterStoreValue(const FNiagaraVariableBase& InKey, const FNiagaraVariant& InValue);
 	void ApplyOverridesToParameterStore();
+
+	/** 
+	 * Ensures that the data interfaces in the template parameter overrides, instance parameter overrides, and in the override parameters
+	 * parameter store have this component as their outer and have their archetype cleared.  This is required to hack around issues with
+	 * subobject handling on components when they're spawned from templates which can cause invalid cross package references.
+ 	 */
+	void FixDataInterfaceOuters();
 #endif
 
 public:
@@ -594,6 +649,11 @@ public:
 	FORCEINLINE void BeginUpdateContextReset(){ bDuringUpdateContextReset = true; }
 	FORCEINLINE void EndUpdateContextReset(){ bDuringUpdateContextReset = false; }
 
+#if WITH_NIAGARA_DEBUGGER	
+	//Cache our scalability state in the component so we have access to it easily and also after it has been removed from the scalability manager.
+	FNiagaraScalabilityState DebugCachedScalabilityState;
+#endif
+
 private:
 	/** Did we try and activate but fail due to the asset being not yet ready. Keep looping.*/
 	uint32 bAwaitingActivationDueToNotReady : 1;
@@ -633,16 +693,19 @@ private:
 
 	float ForceUpdateTransformTime;
 	FBox CurrLocalBounds;
+
+
+public:
+	FORCEINLINE FParticlePerfStatsContext GetPerfStatsContext(){ return FParticlePerfStatsContext(GetWorld(), Asset, this); }
 };
 
 #if WITH_NIAGARA_COMPONENT_PREVIEW_DATA
 FORCEINLINE bool UNiagaraComponent::GetPreviewLODDistanceEnabled()const { return bEnablePreviewLODDistance; }
-FORCEINLINE int32 UNiagaraComponent::GetPreviewLODDistance()const { return bEnablePreviewLODDistance ? PreviewLODDistance : 0.0f; }
+FORCEINLINE float UNiagaraComponent::GetPreviewLODDistance()const { return bEnablePreviewLODDistance ? PreviewLODDistance : 0.0f; }
 #else
 FORCEINLINE bool UNiagaraComponent::GetPreviewLODDistanceEnabled()const { return false; }
-FORCEINLINE int32 UNiagaraComponent::GetPreviewLODDistance()const { return 0.0f; }
+FORCEINLINE float UNiagaraComponent::GetPreviewLODDistance()const { return 0.0f; }
 #endif
-
 
 /**
 * Scene proxy for drawing niagara particle simulations.
@@ -652,7 +715,7 @@ class NIAGARA_API FNiagaraSceneProxy : public FPrimitiveSceneProxy
 public:
 	SIZE_T GetTypeHash() const override;
 
-	FNiagaraSceneProxy(const UNiagaraComponent* InComponent);
+	FNiagaraSceneProxy(UNiagaraComponent* InComponent);
 	~FNiagaraSceneProxy();
 
 	/** Called on render thread to assign new dynamic data */
@@ -660,6 +723,9 @@ public:
 
 	void CreateRenderers(const UNiagaraComponent* InComponent);
 	void ReleaseRenderers();
+
+	/** Called to allow renderers to free render state */
+	void DestroyRenderState_Concurrent();
 
 	/** Gets whether or not this scene proxy should be rendered. */
 	bool GetRenderingEnabled() const;
@@ -729,7 +795,12 @@ private:
 #endif
 #if WITH_PARTICLE_PERF_STATS
 public:
-	class UNiagaraSystem* PerfAsset;
+	FParticlePerfStatsContext PerfStatsContext;
+#endif
+
+#if WITH_NIAGARA_COMPONENT_PREVIEW_DATA
+public:
+	float PreviewLODDistance;
 #endif
 };
 

@@ -743,6 +743,22 @@ UBlueprint* USimpleConstructionScript::GetBlueprint() const
 }
 #endif
 
+#if WITH_EDITOR
+void USimpleConstructionScript::SaveToTransactionBuffer()
+{
+	Modify();
+
+	const TArray<USCS_Node*>& SCS_RootNodes = GetRootNodes();
+	for (USCS_Node* Node : GetRootNodes())
+	{
+		if (Node)
+		{
+			Node->SaveToTransactionBuffer();
+		}
+	}
+}
+#endif //if WITH_EDITOR
+
 UClass* USimpleConstructionScript::GetOwnerClass() const
 {
 	if (UClass* OwnerClass = Cast<UClass>(GetOuter()))
@@ -795,11 +811,6 @@ const TArray<USCS_Node*>& USimpleConstructionScript::GetAllNodes() const
 	return AllNodes;
 }
 #endif
-
-TArray<const USCS_Node*> USimpleConstructionScript::GetAllNodesConst() const
-{
-	return TArray<const USCS_Node*>(GetAllNodes());
-}
 
 void FSCSAllNodesHelper::Remove(USimpleConstructionScript* SCS, USCS_Node* SCSNode)
 {
@@ -1038,12 +1049,12 @@ USceneComponent* USimpleConstructionScript::GetSceneRootComponentTemplate(bool b
 	if(!RootComponentTemplate)
 	{
 		// Get the Blueprint hierarchy
-		TArray<UBlueprint*> BPStack;
-		if(GeneratedClass != nullptr)
+		TArray<UBlueprintGeneratedClass*> BPStack;
+		if (GeneratedClass)
 		{
 			UBlueprint::GetBlueprintHierarchyFromClass(GeneratedClass, BPStack);
 		}
-		else if(ParentClass != nullptr)
+		else if (ParentClass)
 		{
 			UBlueprint::GetBlueprintHierarchyFromClass(ParentClass, BPStack);
 		}
@@ -1051,18 +1062,20 @@ USceneComponent* USimpleConstructionScript::GetSceneRootComponentTemplate(bool b
 		// Note: Normally if the Blueprint has a parent, we can assume that the parent already has a scene root component set,
 		// ...but we'll run through the hierarchy just in case there are legacy BPs out there that might not adhere to this assumption.
 		TArray<const USimpleConstructionScript*> SCSStack;
+		SCSStack.Reserve(BPStack.Num() + 1);
+
 		SCSStack.Add(this);
 
-		for(int32 StackIndex = 0; StackIndex < BPStack.Num(); ++StackIndex)
+		for(UBlueprintGeneratedClass* BPGC : BPStack)
 		{
-			if(BPStack[StackIndex] && BPStack[StackIndex]->SimpleConstructionScript && !SCSStack.Contains(BPStack[StackIndex]->SimpleConstructionScript))
+			if (BPGC && BPGC->SimpleConstructionScript)
 			{
-				// UBlueprint::GetBlueprintHierarchyFromClass returns first children then parents. So we need to revert the order.
-				SCSStack.Insert(BPStack[StackIndex]->SimpleConstructionScript, 0);
+				SCSStack.AddUnique(BPGC->SimpleConstructionScript);
 			}
 		}
 
-		for(int32 StackIndex = 0; StackIndex < SCSStack.Num() && !RootComponentTemplate; ++StackIndex)
+		// UBlueprint::GetBlueprintHierarchyFromClass returns first children then parents. So we need to revert the order.
+		for (int32 StackIndex = SCSStack.Num() - 1; StackIndex >= 0 && !RootComponentTemplate; --StackIndex)
 		{
 			const TArray<USCS_Node*>& SCSRootNodes = SCSStack[StackIndex]->GetRootNodes();
 
@@ -1221,7 +1234,6 @@ EDataValidationResult USimpleConstructionScript::IsDataValid(TArray<FText>& Vali
 
 void USimpleConstructionScript::GenerateListOfExistingNames(TSet<FName>& CurrentNames) const
 {
-	TArray<const USCS_Node*> ChildrenNodes = GetAllNodesConst();
 	const UBlueprintGeneratedClass* OwnerClass = Cast<const UBlueprintGeneratedClass>(GetOuter());
 	const UBlueprint* Blueprint = Cast<const UBlueprint>(OwnerClass ? OwnerClass->ClassGeneratedBy : NULL);
 	// >>> Backwards Compatibility:  VER_UE4_EDITORONLY_BLUEPRINTS
@@ -1253,9 +1265,8 @@ void USimpleConstructionScript::GenerateListOfExistingNames(TSet<FName>& Current
 	}
 
 	// And add their names
-	for (int32 NodeIndex = 0; NodeIndex < ChildrenNodes.Num(); ++NodeIndex)
+	for (const USCS_Node* ChildNode : GetAllNodes())
 	{
-		const USCS_Node* ChildNode = ChildrenNodes[NodeIndex];
 		if (ChildNode)
 		{
 			const FName VariableName = ChildNode->GetVariableName();

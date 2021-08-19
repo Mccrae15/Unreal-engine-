@@ -142,6 +142,7 @@ bool IsUniformBufferBound( GLuint Buffer )
 extern void BeginFrame_UniformBufferPoolCleanup();
 extern void BeginFrame_VertexBufferCleanup();
 extern void BeginFrame_QueryBatchCleanup();
+extern void BeginFrame_PollAllFences();
 
 
 FOpenGLContextState& FOpenGLDynamicRHI::GetContextStateForCurrentContext(bool bAssertIfInvalid)
@@ -181,6 +182,8 @@ void FOpenGLDynamicRHI::RHIBeginFrame()
 #if PLATFORM_ANDROID && !PLATFORM_LUMINGL4 //adding #if since not sure if this is required for any other platform.
 	PendingState.DepthStencil = 0 ;
 #endif
+
+	BeginFrame_PollAllFences();
 }
 
 void FOpenGLDynamicRHI::RHIEndFrame()
@@ -229,10 +232,10 @@ JNI_METHOD void Java_com_epicgames_ue4_MediaPlayer14_nativeClearCachedAttributeS
 
 	// update vertex attributes state
 	ContextState.SetVertexAttrEnabled(PositionAttrib, false);
-	ContextState.VertexAttrs[PositionAttrib].Stride = -1;
+	ContextState.VertexAttrs[PositionAttrib].Size = -1; // will force attribute update
 
 	ContextState.SetVertexAttrEnabled(TexCoordsAttrib, false);
-	ContextState.VertexAttrs[TexCoordsAttrib].Stride = -1;
+	ContextState.VertexAttrs[TexCoordsAttrib].Size = -1; // will force attribute update
 
 	// make sure the texture is set again
 	ContextState.ActiveTexture = 0;
@@ -711,8 +714,6 @@ static void InitRHICapabilitiesForGL()
 	LOG_AND_GET_GL_INT_TEMP(GL_MAX_VERTEX_ATTRIBS, 0);
 
 	LOG_AND_GET_GL_INT_TEMP(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, 0);
-	LOG_AND_GET_GL_INT_TEMP(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0);
-	LOG_AND_GET_GL_INT_TEMP(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0);
 	LOG_AND_GET_GL_INT_TEMP(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, 0);
 	
 
@@ -739,7 +740,7 @@ static void InitRHICapabilitiesForGL()
 	// Verify some assumptions.
 	// Android seems like reports one color attachment even when it supports MRT
 #if !PLATFORM_ANDROID
-	check(Value_GL_MAX_COLOR_ATTACHMENTS >= MaxSimultaneousRenderTargets || !FOpenGL::SupportsMultipleRenderTargets());
+	check(Value_GL_MAX_COLOR_ATTACHMENTS >= MaxSimultaneousRenderTargets);
 #endif
 
 	// We don't check for compressed formats right now because vendors have not
@@ -842,7 +843,6 @@ static void InitRHICapabilitiesForGL()
 
 	GSupportsRenderTargetFormat_PF_FloatRGBA = FOpenGL::SupportsColorBufferHalfFloat();
 
-	GSupportsMultipleRenderTargets = FOpenGL::SupportsMultipleRenderTargets();
 	GSupportsWideMRT = FOpenGL::SupportsWideMRT();
 	GSupportsTexture3D = FOpenGL::SupportsTexture3D();
 	GSupportsMobileMultiView = FOpenGL::SupportsMobileMultiView();
@@ -999,6 +999,8 @@ static void InitRHICapabilitiesForGL()
 	// Temporary fix for nvidia driver issue with non-power-of-two shadowmaps (9/8/2016) UE-35312
 	// @TODO revisit this with newer drivers
 	GRHINeedsUnatlasedCSMDepthsWorkaround = true;
+
+	GRHISupportsPipelineFileCache = true;
 }
 
 FDynamicRHI* FOpenGLDynamicRHIModule::CreateRHI(ERHIFeatureLevel::Type InRequestedFeatureLevel)
@@ -1084,7 +1086,7 @@ static bool VerifyCompiledShader(GLuint Shader, const ANSICHAR* GlslCode, bool I
 			for (int i = 0; i < 30 && (*Temp != '\0'); ++i)
 			{
 				FString Converted = ANSI_TO_TCHAR(Temp);
-				Converted.LeftChop(256);
+				Converted = Converted.LeftChop(256);
 
 				UE_LOG(LogRHI, Display, TEXT("%s"), *Converted);
 				Temp += Converted.Len();
@@ -1209,8 +1211,6 @@ void FOpenGLDynamicRHI::Cleanup()
 	// Release dynamic vertex and index buffers.
 	DynamicVertexBuffers.Cleanup();
 	DynamicIndexBuffers.Cleanup();
-
-	FreeZeroStrideBuffers();
 
 	// Release the point sampler state.
 	PointSamplerState.SafeRelease();

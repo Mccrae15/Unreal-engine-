@@ -219,7 +219,7 @@ public:
 	~FAudioDeviceManager();
 
 	/** Returns the handle to the main audio device. */
-	FAudioDeviceHandle GetMainAudioDeviceHandle() const { return MainAudioDeviceHandle; }
+	const FAudioDeviceHandle & GetMainAudioDeviceHandle() const { return MainAudioDeviceHandle; }
 	FAudioDevice* GetMainAudioDeviceRaw() const { return MainAudioDeviceHandle.GetAudioDevice(); }
 	Audio::FDeviceId GetMainAudioDeviceID() const { return MainAudioDeviceHandle.GetDeviceID(); }
 
@@ -315,7 +315,7 @@ public:
 	void InitSoundClasses();
 
 	/** Registers the Sound Mix for all active devices. */
-	void RegisterSoundSubmix(const USoundSubmixBase* SoundSubmix);
+	void RegisterSoundSubmix(USoundSubmixBase* SoundSubmix);
 
 	/** Registers the Sound Mix for all active devices. */
 	void UnregisterSoundSubmix(const USoundSubmixBase* SoundSubmix);

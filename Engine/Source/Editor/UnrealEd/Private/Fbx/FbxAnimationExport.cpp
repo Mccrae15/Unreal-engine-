@@ -7,6 +7,7 @@
 #include "CoreMinimal.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/FeedbackContext.h"
+#include "Misc/ScopedSlowTask.h"
 #include "Animation/AnimTypes.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Matinee/InterpData.h"
@@ -661,18 +662,25 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 	TArray<USkeletalMeshComponent*> SkeletalMeshComponents;
 	Actor->GetComponents(SkeletalMeshComponents);
 
+	const float TickRate = 1.0f/FrameRate;
+
+	FScopedSlowTask SlowTask(AnimationLength, NSLOCTEXT("UnrealEd", "ExportAnimationProgress", "Exporting Animation"));
+	SlowTask.MakeDialog(true);
+
 	for (int32 FrameCount = 0; FrameCount <= AnimationLength; ++FrameCount)
 	{
-		if (FrameCount == 0)
-		{
-			InitialInvParentTransform = Actor->GetRootComponent()->GetComponentTransform().Inverse();
-		}
-
+		SlowTask.EnterProgressFrame();
+		
 		int32 LocalFrame = LocalStartFrame + FrameCount;
 		float SampleTime = (StartFrame + FrameCount) / FrameRate;
 
 		// This will call UpdateSkelPose on the skeletal mesh component to move bones based on animations in the matinee group
 		AnimTrackAdapter.UpdateAnimation(LocalFrame);
+
+		if (FrameCount == 0)
+		{
+			InitialInvParentTransform = Actor->GetRootComponent()->GetComponentTransform().Inverse();
+		}
 
 		// This will retrieve the currently active anim sequence (topmost) for custom attributes
 		const UAnimSequence* AnimSeq = AnimTrackAdapter.GetAnimSequence(LocalFrame);
@@ -682,14 +690,28 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 		// @todo - hack - this will be removed at some point
 		for (USkeletalMeshComponent* SkeletalMeshComponent : SkeletalMeshComponents)
 		{
-			SkeletalMeshComponent->TickAnimation(0.03f, false);
+			USceneComponent* Child = SkeletalMeshComponent;
+			while (Child)
+			{
+				if (USkeletalMeshComponent* ChildSkeletalMeshComponent = Cast<USkeletalMeshComponent>(Child))
+				{
+					SkeletalMeshComponent->TickAnimation(TickRate, false);
 
-			SkeletalMeshComponent->RefreshBoneTransforms();
-			SkeletalMeshComponent->RefreshSlaveComponents();
-			SkeletalMeshComponent->UpdateComponentToWorld();
-			SkeletalMeshComponent->FinalizeBoneTransform();
-			SkeletalMeshComponent->MarkRenderTransformDirty();
-			SkeletalMeshComponent->MarkRenderDynamicDataDirty();
+					SkeletalMeshComponent->RefreshBoneTransforms();
+					SkeletalMeshComponent->RefreshSlaveComponents();
+					SkeletalMeshComponent->UpdateComponentToWorld();
+					SkeletalMeshComponent->FinalizeBoneTransform();
+					SkeletalMeshComponent->MarkRenderTransformDirty();
+					SkeletalMeshComponent->MarkRenderDynamicDataDirty();
+				}
+
+				if (Child->GetOwner())
+				{
+					Child->GetOwner()->Tick(TickRate);
+				}
+
+				Child = Child->GetAttachParent();
+			}
 		}
 
 		FbxTime ExportTime; 
@@ -713,7 +735,7 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 		// Add the animation data to the bone nodes
 		for(int32 BoneIndex = 0; BoneIndex < BoneNodes.Num(); ++BoneIndex)
 		{
-			FName BoneName = InSkeletalMeshComponent->SkeletalMesh->RefSkeleton.GetBoneName(BoneIndex);
+			FName BoneName = InSkeletalMeshComponent->SkeletalMesh->GetRefSkeleton().GetBoneName(BoneIndex);
 			FbxNode* CurrentBoneNode = BoneNodes[BoneIndex];
 
 			// Create the AnimCurves

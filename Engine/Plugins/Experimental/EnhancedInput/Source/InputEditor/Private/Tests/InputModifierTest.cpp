@@ -130,17 +130,17 @@ bool FInputModifierScalarTest::RunTest(const FString& Parameters)
 		WHEN(AKeyIsActuated(Data, TestAxis, TestValue));
 		Scalar->Scalar = FVector::OneVector * 1.f;
 		AND(InputIsTicked(Data));
-		TestEqual(TEXT("Input value (new)"), GetActionValue(Data, TestAction), TestValue * Scalar->Scalar.X);
+		TestEqual(TEXT("Input value (new)"), GetActionValue(Data, TestAction), TestValue * (float)Scalar->Scalar.X);
 
 		// Test 3 - Modify scalar on the fly.
 		Scalar->Scalar = FVector::OneVector * 0.5f;
 		WHEN(InputIsTicked(Data));
-		TestEqual(TEXT("Input value (modify)"), GetActionValue(Data, TestAction), TestValue * Scalar->Scalar.X);
+		TestEqual(TEXT("Input value (modify)"), GetActionValue(Data, TestAction), TestValue * (float)Scalar->Scalar.X);
 
 		// Test 4 - negate
 		Scalar->Scalar = FVector::OneVector * -2.f;
 		WHEN(InputIsTicked(Data));
-		TestEqual(TEXT("Input value (negate)"), GetActionValue(Data, TestAction), TestValue * Scalar->Scalar.X);
+		TestEqual(TEXT("Input value (negate)"), GetActionValue(Data, TestAction), TestValue * (float)Scalar->Scalar.X);
 	}
 
 	return true;
@@ -183,6 +183,25 @@ bool FInputModifierDeadzoneTest::RunTest(const FString& Parameters)
 	WHEN(AKeyIsReleased(Data, TestAxis));
 	AND(InputIsTicked(Data));
 	THEN(ReleasingKeyDoesNotTrigger(Data, TestAction));
+
+
+	// Upper threshold testing
+	DeadZone->UpperThreshold = 0.9f;
+	WHEN(AKeyIsActuated(Data, TestAxis, 0.5f));
+	AND(InputIsTicked(Data));
+	THEN(PressingKeyTriggersAction(Data, TestAction));
+
+	// At threshold response is 1
+	WHEN(AKeyIsActuated(Data, TestAxis, 0.9f));
+	AND(InputIsTicked(Data));
+	THEN(HoldingKeyTriggersAction(Data, TestAction));
+	AND(TestEqual(TEXT("Upper threshold value at threshold"), GetActionValue(Data, TestAction), 1.f));
+
+	// Past threshold response is clamped to 1
+	WHEN(AKeyIsActuated(Data, TestAxis, 0.99f));
+	AND(InputIsTicked(Data));
+	THEN(HoldingKeyTriggersAction(Data, TestAction));
+	AND(TestEqual(TEXT("Upper threshold value beyond threshold"), GetActionValue(Data, TestAction), 1.f));
 
 	return true;
 }

@@ -21,10 +21,15 @@
 #include "Misc/EngineVersion.h"
 #include "GlobalShader.h"
 #include "RHIValidation.h"
+#include "IHeadMountedDisplayModule.h"
 
 static_assert(sizeof(VkStructureType) == sizeof(int32), "ZeroVulkanStruct() assumes VkStructureType is int32!");
 
 extern RHI_API bool GUseTexture3DBulkDataRHI;
+
+#if NV_AFTERMATH
+bool GVulkanNVAftermathModuleLoaded = false;
+#endif
 
 TAtomic<uint64> GVulkanBufferHandleIdCounter{ 0 };
 TAtomic<uint64> GVulkanBufferViewHandleIdCounter{ 0 };
@@ -61,13 +66,12 @@ TAutoConsoleVariable<int32> GRHIThreadCvar(
 	TEXT("2 to use multiple RHI Thread\n")
 );
 
-int32 GVulkanInputAttachmentShaderRead = -1;
+int32 GVulkanInputAttachmentShaderRead = 0;
 static FAutoConsoleVariableRef GCVarInputAttachmentShaderRead(
 	TEXT("r.Vulkan.InputAttachmentShaderRead"),
 	GVulkanInputAttachmentShaderRead,
 	TEXT("Whether to use VK_ACCESS_SHADER_READ_BIT an input attachments to workaround rendering issues\n")
-	TEXT("-1 decide automatically (default)\n")
-	TEXT("0 use: VK_ACCESS_INPUT_ATTACHMENT_READ_BIT\n")
+	TEXT("0 use: VK_ACCESS_INPUT_ATTACHMENT_READ_BIT (default)\n")
 	TEXT("1 use: VK_ACCESS_INPUT_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT\n"),
 	ECVF_ReadOnly
 );
@@ -77,6 +81,8 @@ bool GGPUCrashDebuggingEnabled = false;
 
 extern TAutoConsoleVariable<int32> GRHIAllowAsyncComputeCvar;
 
+// All shader stages supported by VK device - VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, FRAGMENT etc
+uint32 GVulkanDeviceShaderStageBits = 0;
 
 #if VULKAN_HAS_VALIDATION_FEATURES
 static inline TArray<VkValidationFeatureEnableEXT> GetValidationFeaturesEnabled(bool bEnableValidation)
@@ -210,6 +216,7 @@ FVulkanDynamicRHI::FVulkanDynamicRHI()
 	GPoolSizeVRAMPercentage = 0;
 	GTexturePoolSize = 0;
 	GRHISupportsMultithreading = true;
+	GRHISupportsPipelineFileCache = true;
 	GRHITransitionPrivateData_SizeInBytes = sizeof(FVulkanPipelineBarrier);
 	GRHITransitionPrivateData_AlignInBytes = alignof(FVulkanPipelineBarrier);
 	GConfig->GetInt(TEXT("TextureStreaming"), TEXT("PoolSizeVRAMPercentage"), GPoolSizeVRAMPercentage, GEngineIni);
@@ -244,6 +251,7 @@ void FVulkanDynamicRHI::Init()
 	LLM(VulkanLLM::Initialize());
 #endif
 
+	bIsStandaloneStereoDevice = IHeadMountedDisplayModule::IsAvailable() && IHeadMountedDisplayModule::Get().IsStandaloneStereoOnlyDevice();
 
 	static const auto CVarStreamingTexturePoolSize = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Streaming.PoolSize"));
 	int32 StreamingPoolSizeValue = CVarStreamingTexturePoolSize->GetValueOnAnyThread();
@@ -706,11 +714,15 @@ void FVulkanDynamicRHI::InitInstance()
 		// Initialize the RHI capabilities.
 		GRHISupportsFirstInstance = true;
 		GRHISupportsDynamicResolution = FVulkanPlatform::SupportsDynamicResolution();
+		GRHISupportsFrameCyclesBubblesRemoval = true;
 		GSupportsDepthBoundsTest = Device->GetPhysicalFeatures().depthBounds != 0;
 		GSupportsRenderTargetFormat_PF_G8 = false;	// #todo-rco
 		GRHISupportsTextureStreaming = true;
 		GSupportsTimestampRenderQueries = FVulkanPlatform::SupportsTimestampRenderQueries();
-		GSupportsMobileMultiView = true;
+#if VULKAN_SUPPORTS_MULTIVIEW
+		GSupportsMobileMultiView = Device->GetMultiviewFeatures().multiview == VK_TRUE ? true : false;
+#endif
+
 #if VULKAN_ENABLE_DUMP_LAYER
 		// Disable RHI thread by default if the dump layer is enabled
 		GRHISupportsRHIThread = false;
@@ -740,15 +752,46 @@ void FVulkanDynamicRHI::InitInstance()
 		GMaxTextureMipCount = FPlatformMath::CeilLogTwo( GMaxTextureDimensions ) + 1;
 		GMaxTextureMipCount = FPlatformMath::Min<int32>( MAX_TEXTURE_MIP_COUNT, GMaxTextureMipCount );
 		GMaxCubeTextureDimensions = Props.limits.maxImageDimensionCube;
+		GMaxVolumeTextureDimensions = Props.limits.maxImageDimension3D;
+		GMaxWorkGroupInvocations = Props.limits.maxComputeWorkGroupInvocations;
 		GMaxTextureArrayLayers = Props.limits.maxImageArrayLayers;
 		GRHISupportsBaseVertexIndex = true;
 		GSupportsSeparateRenderTargetBlendState = true;
+
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
+		GRHISupportsAttachmentVariableRateShading = (GetDevice()->GetOptionalExtensions().HasEXTFragmentDensityMap && Device->GetFragmentDensityMapFeatures().fragmentDensityMap);
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2
+		GRHISupportsLateVariableRateShadingUpdate = GetDevice()->GetOptionalExtensions().HasEXTFragmentDensityMap2 && Device->GetFragmentDensityMap2Features().fragmentDensityMapDeferred;
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+		// TODO: Complete logic when render pass support is complete for the KHR_Fragment_shading_rate extension.
+		// GRHISupportsAttachmentVariableRateShading = GetDevice()->GetOptionalExtensions().HasKHRFragmentShadingRate && Device->GetFragmentShadingRateFeatures().attachmentFragmentShadingRate;
+#endif
 
 		FVulkanPlatform::SetupFeatureLevels();
 
 		GRHIRequiresRenderTargetForPixelShaderUAVs = true;
 
 		GUseTexture3DBulkDataRHI = false;
+
+		// these are supported by all devices
+		GVulkanDeviceShaderStageBits = 	VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | 
+										VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+										VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		// optional shader stages
+		if (Device->GetPhysicalFeatures().geometryShader) 
+		{
+			GVulkanDeviceShaderStageBits|= VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
+		}
+		
+		if (Device->GetPhysicalFeatures().tessellationShader)
+		{
+			GVulkanDeviceShaderStageBits|= VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT;
+			GVulkanDeviceShaderStageBits|= VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
+		}
 
 		FHardwareInfo::RegisterHardwareInfo(NAME_RHI, TEXT("Vulkan"));
 
@@ -817,12 +860,6 @@ void FVulkanDynamicRHI::InitInstance()
 
 #endif
 
-		if (Device->GetVendorId() == EGpuVendorId::Qualcomm && GVulkanInputAttachmentShaderRead == -1)
-		{
-			GVulkanInputAttachmentShaderRead = 1;
-		}
-		UE_CLOG((GVulkanInputAttachmentShaderRead == 1), LogVulkanRHI, Display, TEXT("Using VK_ACCESS_SHADER_READ_BIT workaround for input attachments."));
-		
 		// Command lists need the validation RHI context if enabled, so call the global scope version of RHIGetDefaultContext() and RHIGetDefaultAsyncComputeContext().
 		GRHICommandList.GetImmediateCommandList().SetContext(::RHIGetDefaultContext());
 		GRHICommandList.GetImmediateAsyncComputeCommandList().SetComputeContext(::RHIGetDefaultAsyncComputeContext());
@@ -894,7 +931,6 @@ void FVulkanCommandListContext::RHIEndDrawingViewport(FRHIViewport* ViewportRHI,
 
 	RHI->DrawingViewport = nullptr;
 
-	ReadAndCalculateGPUFrameTime();
 	WriteBeginTimestamp(CommandBufferManager->GetActiveCmdBuffer());
 }
 
@@ -902,6 +938,8 @@ void FVulkanCommandListContext::RHIEndFrame()
 {
 	check(IsImmediate());
 	//FRCLog::Printf(FString::Printf(TEXT("FVulkanCommandListContext::RHIEndFrame()")));
+	
+	ReadAndCalculateGPUFrameTime();
 
 	GetGPUProfiler().EndFrame();
 
@@ -1034,6 +1072,21 @@ void FVulkanDynamicRHI::RHIReleaseThreadOwnership()
 void* FVulkanDynamicRHI::RHIGetNativeDevice()
 {
 	return (void*)Device->GetInstanceHandle();
+}
+
+void* FVulkanDynamicRHI::RHIGetNativePhysicalDevice()
+{
+	return (void*)Device->GetPhysicalHandle();
+}
+
+void* FVulkanDynamicRHI::RHIGetNativeGraphicsQueue()
+{
+	return (void*)Device->GetGraphicsQueue()->GetHandle();
+}
+
+void* FVulkanDynamicRHI::RHIGetNativeComputeQueue()
+{
+	return (void*)Device->GetComputeQueue()->GetHandle();
 }
 
 void* FVulkanDynamicRHI::RHIGetNativeInstance()
@@ -1180,7 +1233,7 @@ FVulkanBuffer::FVulkanBuffer(FVulkanDevice& InDevice, uint32 InSize, VkFlags InU
 	VkMemoryRequirements MemoryRequirements;
 	VulkanRHI::vkGetBufferMemoryRequirements(Device.GetInstanceHandle(), Buf, &MemoryRequirements);
 
-	Allocation = InDevice.GetDeviceMemoryManager().Alloc(false, MemoryRequirements.size, MemoryRequirements.memoryTypeBits, InMemPropertyFlags, nullptr, VULKAN_MEMORY_MEDIUM_PRIORITY, File ? File : __FILE__, Line ? Line : __LINE__);
+	Allocation = InDevice.GetDeviceMemoryManager().Alloc(false, MemoryRequirements.size, MemoryRequirements.memoryTypeBits, InMemPropertyFlags, nullptr, VULKAN_MEMORY_MEDIUM_PRIORITY, false, File ? File : __FILE__, Line ? Line : __LINE__);
 	check(Allocation);
 	VERIFYVULKANRESULT_EXPANDED(VulkanRHI::vkBindBufferMemory(Device.GetInstanceHandle(), Buf, Allocation->GetHandle(), 0));
 }
@@ -1596,18 +1649,18 @@ static VkRenderPass CreateRenderPass(FVulkanDevice& InDevice, const FVulkanRende
 
 	// Two subpasses for deferred shading
 	VkAttachmentReference InputAttachments2[MaxSimultaneousRenderTargets + 1];
-	VkAttachmentReference DepthStencilAttachment[1];
+	VkAttachmentReference DepthStencilAttachment;
 	if (bDeferredShadingSubpass)
 	{
 		// both sub-passes only test DepthStencil
-		DepthStencilAttachment[0].attachment = RTLayout.GetDepthStencilAttachmentReference()->attachment;
-		DepthStencilAttachment[0].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		DepthStencilAttachment.attachment = RTLayout.GetDepthStencilAttachmentReference()->attachment;
+		DepthStencilAttachment.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
 		const VkAttachmentReference* ColorRef = RTLayout.GetColorAttachmentReferences();
 		uint32 NumColorAttachments = RTLayout.GetNumColorAttachments();
-		check(NumColorAttachments == 5); //current layout is SceneColor, GBufferA/B/C, DepthAux
+		check(NumColorAttachments == 4); //current layout is SceneColor, GBufferA/B/C
 
-		// 1. Write to SceneColor and GBuffer, input DepthAux, readonly DepthStencil
+		// 1. Write to SceneColor and GBuffer, input DepthStencil
 		{
 			VkSubpassDescription& SubpassDesc = SubpassDescriptions[NumSubpasses++];
 			FMemory::Memzero(&SubpassDesc, sizeof(VkSubpassDescription));
@@ -1615,17 +1668,10 @@ static VkRenderPass CreateRenderPass(FVulkanDevice& InDevice, const FVulkanRende
 			SubpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 			SubpassDesc.colorAttachmentCount = 4;
 			SubpassDesc.pColorAttachments = ColorRef;
-			SubpassDesc.pDepthStencilAttachment = DepthStencilAttachment;
-			// DepthAux as Input5
-			for (int32 i = 0; i < 5; ++i)
-			{
-				InputAttachments1[i].attachment = VK_ATTACHMENT_UNUSED;
-				InputAttachments1[i].attachment = VK_IMAGE_LAYOUT_UNDEFINED;
-			}
-			InputAttachments1[5].attachment = ColorRef[4].attachment;
-			InputAttachments1[5].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			SubpassDesc.inputAttachmentCount = 6;
-			SubpassDesc.pInputAttachments = InputAttachments1;
+			SubpassDesc.pDepthStencilAttachment = &DepthStencilAttachment;
+			// depth as Input0
+			SubpassDesc.inputAttachmentCount = 1;
+			SubpassDesc.pInputAttachments = &DepthStencilAttachment;
 						
 			VkSubpassDependency& SubpassDep = SubpassDependencies[NumDependencies++];
 			SubpassDep.srcSubpass = 0;
@@ -1634,14 +1680,10 @@ static VkRenderPass CreateRenderPass(FVulkanDevice& InDevice, const FVulkanRende
 			SubpassDep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 			SubpassDep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 			SubpassDep.dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
-			if (GVulkanInputAttachmentShaderRead == 1)
-			{
-				SubpassDep.dstAccessMask|= VK_ACCESS_SHADER_READ_BIT; // this is not required, but flickers on some device without
-			}
 			SubpassDep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 		}
 
-		// 2. Write to SceneColor, input GBuffer and DepthAux, readonly DepthStencil
+		// 2. Write to SceneColor, input GBuffer and DepthStencil
 		{
 			VkSubpassDescription& SubpassDesc = SubpassDescriptions[NumSubpasses++];
 			FMemory::Memzero(&SubpassDesc, sizeof(VkSubpassDescription));
@@ -1649,18 +1691,18 @@ static VkRenderPass CreateRenderPass(FVulkanDevice& InDevice, const FVulkanRende
 			SubpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 			SubpassDesc.colorAttachmentCount = 1; // SceneColor only
 			SubpassDesc.pColorAttachments = ColorRef;
-			SubpassDesc.pDepthStencilAttachment = DepthStencilAttachment;
-			// GBuffer,DepthAux as Input2/3/4/5
-			InputAttachments2[0].attachment = VK_ATTACHMENT_UNUSED;
-			InputAttachments2[0].layout = VK_IMAGE_LAYOUT_UNDEFINED;
+			SubpassDesc.pDepthStencilAttachment = &DepthStencilAttachment;
+			// GBuffer as Input2/3/4
+			InputAttachments2[0].attachment = DepthStencilAttachment.attachment;
+			InputAttachments2[0].layout = DepthStencilAttachment.layout;
 			InputAttachments2[1].attachment = VK_ATTACHMENT_UNUSED;
 			InputAttachments2[1].layout = VK_IMAGE_LAYOUT_UNDEFINED;
-			for (int32 i = 2; i < 6; ++i)
+			for (int32 i = 2; i < 5; ++i)
 			{
 				InputAttachments2[i].attachment = ColorRef[i-1].attachment;
 				InputAttachments2[i].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			}
-			SubpassDesc.inputAttachmentCount = 6;
+			SubpassDesc.inputAttachmentCount = 5;
 			SubpassDesc.pInputAttachments = InputAttachments2;
 
 			VkSubpassDependency& SubpassDep = SubpassDependencies[NumDependencies++];
@@ -1672,7 +1714,8 @@ static VkRenderPass CreateRenderPass(FVulkanDevice& InDevice, const FVulkanRende
 			SubpassDep.dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
 			if (GVulkanInputAttachmentShaderRead == 1)
 			{
-				SubpassDep.dstAccessMask|= VK_ACCESS_SHADER_READ_BIT; // this is not required, but flickers on some device without
+				// this is not required, but might flicker on some devices without
+				SubpassDep.dstAccessMask|= VK_ACCESS_SHADER_READ_BIT;
 			}
 			SubpassDep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 		}

@@ -13,7 +13,7 @@ static TAutoConsoleVariable<int32> CVarD3D12GPUTimeout(
 );
 
 static int32 GD3D12ExecuteCommandListTask = 0;
-static TAutoConsoleVariable<int32> CVarD3D12ExecuteCommandListTask(
+static FAutoConsoleVariableRef CVarD3D12ExecuteCommandListTask(
 	TEXT("r.D3D12.ExecuteCommandListTask"),
 	GD3D12ExecuteCommandListTask,
 	TEXT("0: Execute command lists on RHI Thread instead of separate task!\n")
@@ -205,7 +205,7 @@ void FD3D12Fence::GpuWait(uint32 DeviceGPUIndex, ED3D12CommandQueueType InQueueT
 	check(FenceCore);
 
 #if DEBUG_FENCES
-	UE_LOG(LogD3D12RHI, Log, TEXT("*** GPU WAIT (CmdQueueType: %d) Fence: %016llX (%s), Gpu (%d <- %d) Value: %llu ***"), (uint32)InQueueType, FenceCore->GetFence(), *Name.ToString(), Device->GetGPUIndex(), FenceGPUIndex, FenceValue);
+	UE_LOG(LogD3D12RHI, Log, TEXT("*** GPU WAIT (CmdQueueType: %d) Fence: %016llX (%s), Gpu (%d <- %d) Value: %llu ***"), (uint32)InQueueType, FenceCore->GetFence(), *Name.ToString(), DeviceGPUIndex, FenceGPUIndex, FenceValue);
 #endif
 	VERIFYD3D12RESULT(CommandQueue->Wait(FenceCore->GetFence(), FenceValue));}
 
@@ -330,6 +330,7 @@ FD3D12CommandListManager::FD3D12CommandListManager(FD3D12Device* InParent, D3D12
 	, CommandListType(InCommandListType)
 	, QueueType(InQueueType)
 	, BreadCrumbResourceAddress(nullptr)
+	, bExcludeBackbufferWriteTransitionTime(false)
 #if WITH_PROFILEGPU || D3D12_SUBMISSION_GAP_RECORDER
 	, bShouldTrackCmdListTime(false)
 #endif
@@ -497,7 +498,7 @@ FGPUTimingCalibrationTimestamp FD3D12CommandListManager::GetCalibrationTimestamp
 	return Result;
 }
 
-FD3D12CommandListHandle FD3D12CommandListManager::ObtainCommandList(FD3D12CommandAllocator& CommandAllocator)
+FD3D12CommandListHandle FD3D12CommandListManager::ObtainCommandList(FD3D12CommandAllocator& CommandAllocator, bool bHasBackbufferWriteTransition)
 {
 	FD3D12CommandListHandle List;
 	if (!ReadyLists.Dequeue(List))
@@ -507,7 +508,7 @@ FD3D12CommandListHandle FD3D12CommandListManager::ObtainCommandList(FD3D12Comman
 	}
 
 	check(List.GetCommandListType() == CommandListType);
-	List.Reset(CommandAllocator, ShouldTrackCommandListTime());
+	List.Reset(CommandAllocator, ShouldTrackCommandListTime() && !(bHasBackbufferWriteTransition && bExcludeBackbufferWriteTransitionTime));
 	return List;
 }
 
@@ -583,6 +584,11 @@ uint64 FD3D12CommandListManager::ExecuteAndIncrementFence(FD3D12CommandListPaylo
 	}
 
 	checkf(Fence.GetGPUMask() == GetGPUMask(), TEXT("Fence GPU masks does not fit with the command list mask!"));
+
+#if DEBUG_FENCES
+	LogExecuteCommandLists(Payload.NumCommandLists, Payload.CommandLists);
+#endif
+
 	return Fence.Signal(QueueType);
 }
 
@@ -897,9 +903,8 @@ uint32 FD3D12CommandListManager::GetResourceBarrierCommandList(FD3D12CommandList
 		// Reserve space for the descs
 		TArray<D3D12_RESOURCE_BARRIER> BarrierDescs;
 		BarrierDescs.Reserve(NumPendingResourceBarriers);
-#if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
-		TArray<D3D12_RESOURCE_BARRIER> BackBufferBarrierDescs;
-#endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
+
+		TArray<D3D12_RESOURCE_BARRIER, TInlineAllocator<2>> BackBufferBarrierDescs;
 
 		// Fill out the descs
 		D3D12_RESOURCE_BARRIER Desc = {};
@@ -926,13 +931,11 @@ uint32 FD3D12CommandListManager::GetResourceBarrierCommandList(FD3D12CommandList
 				Desc.Transition.StateAfter = After;
 
 				// Add the desc
-#if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 				if (PRB.Resource->IsBackBuffer() && (After & BackBufferBarrierWriteTransitionTargets))
 				{
 					BackBufferBarrierDescs.Add(Desc);
 				}
 				else
-#endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 				{
 					BarrierDescs.Add(Desc);
 				}
@@ -948,12 +951,7 @@ uint32 FD3D12CommandListManager::GetResourceBarrierCommandList(FD3D12CommandList
 			}
 		}
 
-#if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 		const uint32 BarrierCount = BarrierDescs.Num() + BackBufferBarrierDescs.Num();
-		if (BarrierDescs.Num() > 0 || BackBufferBarrierDescs.Num() > 0)
-#else // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
-		const uint32 BarrierCount = BarrierDescs.Num();
-#endif // #else // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 
 		if (BarrierCount > 0)
 		{
@@ -963,7 +961,7 @@ uint32 FD3D12CommandListManager::GetResourceBarrierCommandList(FD3D12CommandList
 				ResourceBarrierCommandAllocator = ResourceBarrierCommandAllocatorManager.ObtainCommandAllocator();
 			}
 
-			hResourceBarrierList = ObtainCommandList(*ResourceBarrierCommandAllocator);
+			hResourceBarrierList = ObtainCommandList(*ResourceBarrierCommandAllocator, BackBufferBarrierDescs.Num() > 0);
 
 #if ENABLE_RESIDENCY_MANAGEMENT
 			//TODO: Update the logic so that this loop can occur above!
@@ -975,9 +973,7 @@ uint32 FD3D12CommandListManager::GetResourceBarrierCommandList(FD3D12CommandList
 #endif // #if ENABLE_RESIDENCY_MANAGEMENT
 #if DEBUG_RESOURCE_STATES
 			LogResourceBarriers(BarrierDescs.Num(), BarrierDescs.GetData(), hResourceBarrierList.CommandList());
-#if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 			LogResourceBarriers(BackBufferBarrierDescs.Num(), BackBufferBarrierDescs.GetData(), BackBufferBarrierDescs.CommandList());
-#endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 #endif // #if DEBUG_RESOURCE_STATES
 			const int32 BarrierBatchMax = FD3D12DynamicRHI::GetResourceBarrierBatchSizeLimit();
 
@@ -1005,6 +1001,9 @@ uint32 FD3D12CommandListManager::GetResourceBarrierCommandList(FD3D12CommandList
 			}
 
 			if (BarrierDescs.Num())
+#else
+			BarrierDescs.Append(BackBufferBarrierDescs);
+			BackBufferBarrierDescs.Empty();
 #endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 			{
 				if (BarrierDescs.Num() > BarrierBatchMax)
@@ -1045,14 +1044,15 @@ bool FD3D12CommandListManager::IsComplete(const FD3D12CLSyncPoint& hSyncPoint, u
 
 CommandListState FD3D12CommandListManager::GetCommandListState(const FD3D12CLSyncPoint& hSyncPoint)
 {
-	check(hSyncPoint);
-	if (hSyncPoint.IsComplete())
-	{
-		return CommandListState::kFinished;
-	}
-	else if (hSyncPoint.Generation == hSyncPoint.CommandList.CurrentGeneration())
+	// hSyncPoint in rare conditions goes invalid in multi-gpu environment so "check(hSyncPoint)" causes engine to crash. 
+	// Instead this plug would let the command list continue if synchpoint is invalid.
+	if (!hSyncPoint || hSyncPoint.Generation == hSyncPoint.CommandList.CurrentGeneration())
 	{
 		return CommandListState::kOpen;
+	}
+	else if (hSyncPoint.IsComplete())
+	{
+		return CommandListState::kFinished;
 	}
 	else
 	{

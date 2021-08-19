@@ -2,9 +2,14 @@
 
 #include "DMXSubsystem.h"
 
-#include "Interfaces/IDMXProtocol.h"
-#include "Interfaces/IDMXProtocolUniverse.h"
+#include "DMXAttribute.h"
+#include "DMXProtocolSettings.h"
 #include "DMXProtocolTypes.h"
+#include "DMXRuntimeUtils.h"
+#include "Interfaces/IDMXProtocol.h"
+#include "IO/DMXPortManager.h"
+#include "IO/DMXInputPort.h"
+#include "IO/DMXOutputPort.h"
 #include "Library/DMXLibrary.h"
 #include "Library/DMXEntityReference.h"
 #include "Library/DMXEntity.h"
@@ -13,105 +18,237 @@
 #include "Library/DMXEntityFixturePatch.h"
 
 #include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "EngineAnalytics.h"
 #include "EngineUtils.h"
-#include "UObject/UObjectIterator.h"
 #include "Async/Async.h"
 #include "Engine/Engine.h"
-#include "DMXAttribute.h"
-#include "DMXUtils.h"
+#include "Engine/ObjectLibrary.h"
+#include "Engine/StreamableManager.h"
+#include "UObject/UObjectIterator.h"
 
-const FName InvalidUniverseError = FName("InvalidUniverseError");
+#if WITH_EDITOR
+#include "AssetRegistryModule.h"
+#endif // WITH_EDITOR
 
 DECLARE_LOG_CATEGORY_CLASS(DMXSubsystemLog, Log, All);
 
+namespace
+{
+	const FName InvalidUniverseError = FName("InvalidUniverseError");
+
+#if WITH_EDITOR
+	/** Helper to create analytics for dmx libraries in use */
+	void CreateEngineAnalytics(const TArray<UDMXLibrary*>& DMXLibraries)
+	{
+		if (FEngineAnalytics::IsAvailable())
+		{
+			// DMX Library usage statistics
+			{
+				int32 CountLibraries = 0;
+				int32 CountPatches = 0;
+				int32 CountChannels = 0;
+
+				for (UDMXLibrary* Library : DMXLibraries)
+				{
+					CountLibraries++;
+
+					for (UDMXEntity* Entity : Library->GetEntities())
+					{
+						if (UDMXEntityFixturePatch* Patch = Cast<UDMXEntityFixturePatch>(Entity))
+						{
+							CountPatches++;
+							CountChannels += Patch->GetChannelSpan();
+						}
+					}
+				}
+
+				TArray<FAnalyticsEventAttribute> LibraryEventAttributes;
+				LibraryEventAttributes.Add(FAnalyticsEventAttribute(TEXT("NumDMXLibraries"), CountLibraries));
+				LibraryEventAttributes.Add(FAnalyticsEventAttribute(TEXT("NumDMXPatches"), CountPatches));
+				LibraryEventAttributes.Add(FAnalyticsEventAttribute(TEXT("NumDMXChannels"), CountChannels));
+				FEngineAnalytics::GetProvider().RecordEvent(TEXT("Usage.DMX.DMXLibraries"), LibraryEventAttributes);
+			}
+
+			// DMX Port usage statistics
+			{
+				int32 CountArtNetPorts = 0;
+				int32 CountSACNPorts = 0;
+				int32 CountOtherPorts = 0;
+				const UDMXProtocolSettings* ProtocolSettings = GetDefault<UDMXProtocolSettings>();
+				for (const FDMXInputPortConfig& Config : ProtocolSettings->InputPortConfigs)
+				{
+					if (Config.GetProtocolName() == "Art-Net")
+					{
+						CountArtNetPorts++;
+					}
+					else if (Config.GetProtocolName() == "sACN")
+					{
+						CountSACNPorts++;
+					}
+					else
+					{
+						CountOtherPorts++;
+					}
+				}
+
+				for (const FDMXOutputPortConfig& Config : ProtocolSettings->OutputPortConfigs)
+				{
+					if (Config.GetProtocolName() == "Art-Net")
+					{
+						CountArtNetPorts++;
+					}
+					else if (Config.GetProtocolName() == "sACN")
+					{
+						CountSACNPorts++;
+					}
+					else
+					{
+						CountOtherPorts++;
+					}
+				}
+
+				TArray<FAnalyticsEventAttribute> PortEventAttributes;
+				PortEventAttributes.Add(FAnalyticsEventAttribute(TEXT("NumArtNetPorts"), CountArtNetPorts));
+				PortEventAttributes.Add(FAnalyticsEventAttribute(TEXT("NumSACNPorts"), CountSACNPorts));
+				PortEventAttributes.Add(FAnalyticsEventAttribute(TEXT("NumOtherPorts"), CountOtherPorts));
+				FEngineAnalytics::GetProvider().RecordEvent(TEXT("Usage.DMX.DMXPorts"), PortEventAttributes);
+			}
+		}
+	}
+#endif // WITH_EDITOR
+}
+
+
 void UDMXSubsystem::SendDMX(UDMXEntityFixturePatch* FixturePatch, TMap<FDMXAttributeName, int32> AttributeMap, EDMXSendResult& OutResult)
 {
-	OutResult = EDMXSendResult::ErrorSetBuffer;
-
-	if (FixturePatch != nullptr)
+	OutResult = EDMXSendResult::Success;
+	if (FixturePatch)
 	{
-		IDMXFragmentMap DMXFragmentMap;
-		for (const TPair<FDMXAttributeName, int32>& Elem : AttributeMap)
+		FixturePatch->SendDMX(AttributeMap);
+	}
+}
+
+void UDMXSubsystem::SendDMXRaw(FDMXProtocolName SelectedProtocol, int32 RemoteUniverse, TMap<int32, uint8> ChannelToValueMap, EDMXSendResult& OutResult)
+{
+	// DEPRECATED 4.27
+	
+	for (const FDMXOutputPortSharedRef& OutputPort : FDMXPortManager::Get().GetOutputPorts())
+	{
+		const IDMXProtocolPtr& Protocol = OutputPort->GetProtocol();
+		if (Protocol.IsValid() && Protocol->GetProtocolName() == SelectedProtocol)
 		{
-			if (const UDMXEntityFixtureType* ParentType = FixturePatch->ParentFixtureTypeTemplate)
-			{
-				if (ParentType->Modes.Num() < 1)
-				{
-					UE_LOG(DMXSubsystemLog, Error, TEXT("%S: Tried to use Fixture Patch which Parent Fixture Type has no Modes set up."));
-					return;
-				}
-
-				const int32 ActiveMode = FMath::Min(FixturePatch->ActiveMode, ParentType->Modes.Num() - 1);
-				const FDMXFixtureMode& RelevantMode = ParentType->Modes[ActiveMode];
-				for (const FDMXFixtureFunction& Function : RelevantMode.Functions)
-				{
-					const FDMXAttributeName FunctionAttr = Function.Attribute;
-					if (FunctionAttr == Elem.Key)
-					{
-						if (!UDMXEntityFixtureType::IsFunctionInModeRange(Function, RelevantMode, FixturePatch->GetStartingChannel() - 1))
-						{
-							continue;
-						}
-
-						const int32 Channel = Function.Channel + FixturePatch->GetStartingChannel() - 1;
-
-						uint32 ChannelValue = 0;
-						uint8* ChannelValueBytes = reinterpret_cast<uint8*>(&ChannelValue);
-						UDMXEntityFixtureType::FunctionValueToBytes(Function, Elem.Value, ChannelValueBytes);
-
-						const uint8 NumBytesInSignalFormat = UDMXEntityFixtureType::NumChannelsToOccupy(Function.DataType);
-						for (uint8 ChannelIt = 0; ChannelIt < NumBytesInSignalFormat; ++ChannelIt)
-						{
-							DMXFragmentMap.Add(Channel + ChannelIt, ChannelValueBytes[ChannelIt]);
-						}
-					}
-				}
-			}
+			// Using deprecated function in deprecated node to send to the remote universe.
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			OutputPort->SendDMXToRemoteUniverse(ChannelToValueMap, RemoteUniverse);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
+	}
 
-		if (FixturePatch->GetRelevantControllers().Num() > 0)
+	OutResult = EDMXSendResult::Success;
+}
+
+void UDMXSubsystem::SendDMXToOutputPort(FDMXOutputPortReference OutputPortReference, TMap<int32, uint8> ChannelToValueMap, int32 LocalUniverse)
+{
+	const FGuid& PortGuid = OutputPortReference.GetPortGuid();
+	const FDMXOutputPortSharedRef* OutputPortPtr = FDMXPortManager::Get().GetOutputPorts().FindByPredicate([PortGuid](const FDMXOutputPortSharedRef& OutputPort) {
+		return OutputPort->GetPortGuid() == PortGuid;
+	});
+
+	if (OutputPortPtr)
+	{
+		(*OutputPortPtr)->SendDMX(LocalUniverse, ChannelToValueMap);
+	}
+	else
+	{
+		UE_LOG(DMXSubsystemLog, Error, TEXT("Unexpected: Cannot find DMX Port, failed sending DMX with node Send DMX To Outputport."));
+	}
+}
+
+void UDMXSubsystem::GetRawBuffer(FDMXProtocolName SelectedProtocol, int32 RemoteUniverse, TArray<uint8>& DMXBuffer)
+{
+	// DEPRECATED 4.27
+	TMap<int32, uint8> ChannelToValueMap;
+	
+	for (const FDMXInputPortSharedRef& InputPort : FDMXPortManager::Get().GetInputPorts())
+	{
+		const IDMXProtocolPtr& Protocol = InputPort->GetProtocol();
+		if (Protocol.IsValid() && Protocol->GetProtocolName() == SelectedProtocol)
 		{
-			const int32& Universe = FixturePatch->UniverseID;
-			const TArray<UDMXEntityController*>&& RelevantControllers = FixturePatch->GetRelevantControllers();
-			TArray<EDMXSendResult> Results;
-			TSet<uint32> UniversesUsed;
+			FDMXSignalSharedPtr Signal;
 
-			Results.Reserve(RelevantControllers.Num());
-			UniversesUsed.Reserve(RelevantControllers.Num());
-
-			// Send using the Remote Offset from each Controller with this Fixture's Universe in its range
-			for (const UDMXEntityController* Controller : RelevantControllers)
+			// Using deprecated function in deprecated node to get data from a remote universe.
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			if (InputPort->GameThreadGetDMXSignalFromRemoteUniverse(Signal, RemoteUniverse))
 			{
-				const uint32 RemoteUniverse = Universe + Controller->RemoteOffset;
-				if (!UniversesUsed.Contains(RemoteUniverse))
-				{
-					const IDMXProtocolPtr Protocol = Controller->DeviceProtocol.GetProtocol();
-					if (Protocol.IsValid())
-					{
-						bool bNeedsInternalLoopback = !Protocol->IsReceiveDMXEnabled() || !Protocol->IsSendDMXEnabled();						
-						if (bNeedsInternalLoopback)
-						{
-							Results.Add(Protocol->InputDMXFragment(Universe + Controller->RemoteOffset, DMXFragmentMap));
-						}
-						
-						Results.Add(Protocol->SendDMXFragmentCreate(Universe + Controller->RemoteOffset, DMXFragmentMap));
-						UniversesUsed.Add(RemoteUniverse); // Avoid setting values in the same Universe more than once							
-					}
-				}
+				DMXBuffer = Signal->ChannelData;
 			}
-
-			for (const EDMXSendResult& Result : Results)
-			{
-				if (Result != EDMXSendResult::Success)
-				{
-					OutResult = Result;
-					return;
-				}
-			}
-
-			OutResult = EDMXSendResult::Success;
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
+	}
+
+	for (const FDMXOutputPortSharedRef& OutputPort : FDMXPortManager::Get().GetOutputPorts())
+	{
+		const IDMXProtocolPtr& Protocol = OutputPort->GetProtocol();
+		if (Protocol.IsValid() && Protocol->GetProtocolName() == SelectedProtocol)
+		{
+			FDMXSignalSharedPtr Signal;
+
+			// Using deprecated function in deprecated node to get data from a remote universe.
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			constexpr bool bWhenLoopbackIsDisabled = false;
+			if (OutputPort->GameThreadGetDMXSignalFromRemoteUniverse(Signal, RemoteUniverse, bWhenLoopbackIsDisabled))
+			{
+				DMXBuffer = Signal->ChannelData;
+			}
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		}
+	}
+}
+
+void UDMXSubsystem::GetDMXDataFromInputPort(FDMXInputPortReference InputPortReference, TArray<uint8>& DMXData, int32 LocalUniverse)
+{
+	const FGuid& PortGuid = InputPortReference.GetPortGuid();
+	const FDMXInputPortSharedRef* InputPortPtr = FDMXPortManager::Get().GetInputPorts().FindByPredicate([PortGuid](const FDMXInputPortSharedRef& InputPort) {
+		return InputPort->GetPortGuid() == PortGuid;
+		});
+
+	if (InputPortPtr)
+	{
+		const FDMXInputPortSharedRef& InputPort = *InputPortPtr;
+
+		FDMXSignalSharedPtr Signal;
+		if (InputPort->GameThreadGetDMXSignal(LocalUniverse, Signal))
+		{
+			DMXData = Signal->ChannelData;
+		}
+	}
+	else
+	{
+		UE_LOG(DMXSubsystemLog, Error, TEXT("Unexpected: Cannot find DMX Port, failed reading DMX in node 'Get DMX Data from Input Port'."));
+	}
+}
+
+void UDMXSubsystem::GetDMXDataFromOutputPort(FDMXOutputPortReference OutputPortReference, TArray<uint8>& DMXData, int32 LocalUniverse)
+{
+	const FGuid& PortGuid = OutputPortReference.GetPortGuid();
+	const FDMXOutputPortSharedRef* OutputPortPtr = FDMXPortManager::Get().GetOutputPorts().FindByPredicate([PortGuid](const FDMXOutputPortSharedRef& OutputPort) {
+		return OutputPort->GetPortGuid() == PortGuid;
+		});
+
+	if (OutputPortPtr)
+	{
+		const FDMXOutputPortSharedRef& OutputPort = *OutputPortPtr;
+
+		FDMXSignalSharedPtr Signal;
+		constexpr bool bWhenLoopbackIsDisabled = false;
+		if (OutputPort->GameThreadGetDMXSignal(LocalUniverse, Signal, bWhenLoopbackIsDisabled))
+		{
+			DMXData = Signal->ChannelData;
+		}
+	}
+	else
+	{
+		UE_LOG(DMXSubsystemLog, Error, TEXT("Unexpected: Cannot find DMX Port, failed reading DMX in node 'Get DMX Data from Input Port'."));
 	}
 }
 
@@ -197,42 +334,7 @@ bool UDMXSubsystem::GetAllMatrixCells(UDMXEntityFixturePatch* FixturePatch, TArr
 
 void UDMXSubsystem::PixelMappingDistributionSort(EDMXPixelMappingDistribution InDistribution, int32 InNumXPanels, int32 InNumYPanels, const TArray<int32>& InUnorderedList, TArray<int32>& OutSortedList)
 {
-	FDMXUtils::PixelMappingDistributionSort(InDistribution, InNumXPanels, InNumYPanels, InUnorderedList, OutSortedList);
-}
-
-void UDMXSubsystem::SendDMXRaw(FDMXProtocolName SelectedProtocol, int32 RemoteUniverse, TMap<int32, uint8> AddressValueMap, EDMXSendResult& OutResult)
-{
-	OutResult = EDMXSendResult::ErrorSetBuffer;
-
-	if (RemoteUniverse < 0)
-	{
-		OutResult = EDMXSendResult::ErrorGetUniverse;
-		FFrame::KismetExecutionMessage(TEXT("Invalid Universe Number: SendDMXRaw"), ELogVerbosity::Error, InvalidUniverseError);
-		return;
-	}
-
-	if (SelectedProtocol)
-	{
-		IDMXFragmentMap DMXFragmentMap;
-		for (auto& Elem : AddressValueMap)
-		{
-			if (Elem.Key != 0)
-			{
-				DMXFragmentMap.Add(Elem.Key, Elem.Value);
-			}
-		}
-		IDMXProtocolPtr Protocol = SelectedProtocol.GetProtocol();
-		if (Protocol.IsValid())
-		{
-			bool bNeedsInternalLoopback = !Protocol->IsReceiveDMXEnabled() || !Protocol->IsSendDMXEnabled();
-			if (bNeedsInternalLoopback)
-			{
-				Protocol->InputDMXFragment(RemoteUniverse, DMXFragmentMap);
-			}
-
-			OutResult = Protocol->SendDMXFragmentCreate(RemoteUniverse, DMXFragmentMap);
-		}
-	}
+	FDMXRuntimeUtils::PixelMappingDistributionSort(InDistribution, InNumXPanels, InNumYPanels, InUnorderedList, OutSortedList);
 }
 
 void UDMXSubsystem::GetAllFixturesOfType(const FDMXEntityFixtureTypeRef& FixtureType, TArray<UDMXEntityFixturePatch*>& OutResult)
@@ -243,7 +345,7 @@ void UDMXSubsystem::GetAllFixturesOfType(const FDMXEntityFixtureTypeRef& Fixture
 	{
 		FixtureTypeObj->GetParentLibrary()->ForEachEntityOfType<UDMXEntityFixturePatch>([&](UDMXEntityFixturePatch* Fixture)
 		{
-			if (Fixture->ParentFixtureTypeTemplate == FixtureTypeObj)
+			if (Fixture->GetFixtureType() == FixtureTypeObj)
 			{
 				OutResult.Add(Fixture);
 			}
@@ -257,11 +359,11 @@ void UDMXSubsystem::GetAllFixturesOfCategory(const UDMXLibrary* DMXLibrary, FDMX
 
 	if (DMXLibrary != nullptr)
 	{
-		DMXLibrary->ForEachEntityOfType<UDMXEntityFixturePatch>([&](UDMXEntityFixturePatch* Fixture)
+		DMXLibrary->ForEachEntityOfType<UDMXEntityFixturePatch>([&](UDMXEntityFixturePatch* FixturePatch)
 		{
-			if (Fixture->ParentFixtureTypeTemplate != nullptr && Fixture->ParentFixtureTypeTemplate->DMXCategory == Category)
+			if (FixturePatch->GetFixtureType() && FixturePatch->GetFixtureType()->DMXCategory == Category)
 			{
-				OutResult.Add(Fixture);
+				OutResult.Add(FixturePatch);
 			}
 		});
 	}
@@ -275,52 +377,11 @@ void UDMXSubsystem::GetAllFixturesInUniverse(const UDMXLibrary* DMXLibrary, int3
 	{
 		DMXLibrary->ForEachEntityOfType<UDMXEntityFixturePatch>([&](UDMXEntityFixturePatch* Fixture)
 		{
-			if (Fixture->UniverseID == UniverseId)
+			if (Fixture->GetUniverseID() == UniverseId)
 			{
 				OutResult.Add(Fixture);
 			}
 		});
-	}
-}
-
-void UDMXSubsystem::GetAllUniversesInController(const UDMXLibrary* DMXLibrary, FString ControllerName, TArray<int32>& OutResult)
-{
-	OutResult.Reset();
-
-	if (DMXLibrary != nullptr)
-	{
-		const UDMXEntityController* Controller = Cast<UDMXEntityController>(DMXLibrary->FindEntity(ControllerName));
-		if (Controller != nullptr)
-		{
-			OutResult.Reserve(Controller->Endpoints.Num());
-			const int32& RemoteOffset = Controller->RemoteOffset;
-
-			// Get All Universes
-			for (const FDMXCommunicationEndpoint& Endpoint : Controller->Endpoints)
-			{
-				// Remove remote offset to get local Universe IDs
-				OutResult.Add(Endpoint.UniverseNumber - RemoteOffset);
-			}
-		}
-	}
-}
-
-void UDMXSubsystem::GetRawBuffer(FDMXProtocolName SelectedProtocol, int32 RemoteUniverse, TArray<uint8>& DMXBuffer)
-{
-	DMXBuffer.Reset();
-	if (SelectedProtocol)
-	{
-		IDMXProtocolPtr Protocol = SelectedProtocol.GetProtocol();
-		if (Protocol.IsValid())
-		{
-			const IDMXUniverseSignalMap InboundSignalMap = Protocol->GameThreadGetInboundSignals();
-
-			const TSharedPtr<FDMXSignal>* SignalPtr = InboundSignalMap.Find(RemoteUniverse);
-			if (SignalPtr)
-			{
-				DMXBuffer = (*SignalPtr)->ChannelData;
-			}
-		}
 	}
 }
 
@@ -330,34 +391,35 @@ void UDMXSubsystem::GetFixtureAttributes(const UDMXEntityFixturePatch* InFixture
 
 	if (InFixturePatch != nullptr)
 	{
-		if (const UDMXEntityFixtureType* FixtureType = InFixturePatch->ParentFixtureTypeTemplate)
+		if (const UDMXEntityFixtureType* FixtureType = InFixturePatch->GetFixtureType())
 		{
 			const int32 StartingAddress = InFixturePatch->GetStartingChannel() - 1;
 
-			if (FixtureType->Modes.Num() < 1)
+			const FDMXFixtureMode* ActiveModePtr = InFixturePatch->GetActiveMode();
+			if (ActiveModePtr)
 			{
-				UE_LOG(DMXSubsystemLog, Error, TEXT("%S: Tried to use Fixture Patch which Parent Fixture Type has no Modes set up."));
-				return;
+				for (const FDMXFixtureFunction& Function : ActiveModePtr->Functions)
+				{
+					if (!UDMXEntityFixtureType::IsFunctionInModeRange(Function, *ActiveModePtr, StartingAddress))
+					{
+						// This function and the following ones are outside the Universe's range.
+						break;
+					}
+
+					const int32 ChannelIndex = Function.Channel - 1 + StartingAddress;
+					if (ChannelIndex >= DMXBuffer.Num())
+					{
+						continue;
+					}
+					const uint32 ChannelVal = UDMXEntityFixtureType::BytesToFunctionValue(Function, DMXBuffer.GetData() + ChannelIndex);
+
+					OutResult.Add(Function.Attribute, ChannelVal);
+				}
 			}
-			const int32 ActiveMode = FMath::Min(InFixturePatch->ActiveMode, FixtureType->Modes.Num() - 1);
-			const FDMXFixtureMode& CurrentMode = FixtureType->Modes[ActiveMode];
-
-			for (const FDMXFixtureFunction& Function : CurrentMode.Functions)
+			else
 			{
-				if (!UDMXEntityFixtureType::IsFunctionInModeRange(Function, CurrentMode, StartingAddress))
-				{
-					// This function and the following ones are outside the Universe's range.
-					break;
-				}
-
-				const int32 ChannelIndex = Function.Channel - 1 + StartingAddress;
-				if (ChannelIndex >= DMXBuffer.Num())
-				{
-					continue;
-				}
-				const uint32 ChannelVal = UDMXEntityFixtureType::BytesToFunctionValue(Function, DMXBuffer.GetData() + ChannelIndex);
-
-				OutResult.Add(Function.Attribute, ChannelVal);
+				UE_LOG(DMXSubsystemLog, Error, TEXT("Tried to use Fixture Patch %s, but its Fixture Type has no Modes set up."), *InFixturePatch->Name);
+				return;
 			}
 		}
 	}
@@ -379,50 +441,22 @@ bool UDMXSubsystem::GetFunctionsMap(UDMXEntityFixturePatch* InFixturePatch, TMap
 		return false;
 	}
 
-	UDMXEntityFixtureType* TypeTemplate = InFixturePatch->ParentFixtureTypeTemplate;
-	if (TypeTemplate == nullptr)
+	const FDMXFixtureMode* ModePtr = InFixturePatch->GetActiveMode();
+	if (!ModePtr)
 	{
-		UE_LOG(DMXSubsystemLog, Warning, TEXT("%S: InFixturePatch '%s' ParentFixtureTypeTemplate is null."), __FUNCTION__, *InFixturePatch->GetDisplayName());
-
+		UE_LOG(DMXSubsystemLog, Warning, TEXT("Cannot get function map, fixture Patch %s has no valid active mode"), *InFixturePatch->Name);
 		return false;
 	}
 
-	if (!InFixturePatch->CanReadActiveMode())
-	{
-		UE_LOG(DMXSubsystemLog, Warning, TEXT("Wrong ActiveMode %d, Num of modes %d"), InFixturePatch->ActiveMode, TypeTemplate->Modes.Num());
+	const FDMXSignalSharedPtr& Signal = InFixturePatch->GetLastReceivedDMXSignal();
 
-		return false;
-	}
-
-	if (!InFixturePatch->GetFirstRelevantController())
-	{
-		UE_LOG(DMXSubsystemLog, Warning, TEXT("%s has no controller to receive DMX from."), *InFixturePatch->GetDisplayName());
-
-		return false;
-	}
-
-	FDMXProtocolName ProtocolName = InFixturePatch->GetFirstRelevantController()->DeviceProtocol;
-	IDMXProtocolPtr Protocol = ProtocolName.GetProtocol();
-	if (!Protocol.IsValid())
-	{
-		UE_LOG(DMXSubsystemLog, Warning, TEXT("%s has no valid protocol"), *InFixturePatch->GetDisplayName());
-
-		return false;
-	}
-
-	const IDMXUniverseSignalMap& SingalMap = Protocol->GameThreadGetInboundSignals();
-	int32 UniverseID = InFixturePatch->GetRemoteUniverse();
-	
-	const TSharedPtr<FDMXSignal>* SignalPtr = SingalMap.Find(UniverseID);
-
-	if(SignalPtr)
+	if(Signal.IsValid())
 	{ 
-		const TArray<uint8>& ChannelData = (*SignalPtr)->ChannelData;
+		const TArray<uint8>& ChannelData = Signal->ChannelData;
 		
-		const FDMXFixtureMode& Mode = TypeTemplate->Modes[InFixturePatch->ActiveMode];
 		const int32 PatchStartingIndex = InFixturePatch->GetStartingChannel() - 1;
 
-		for (const FDMXFixtureFunction& Function : Mode.Functions)
+		for (const FDMXFixtureFunction& Function : ModePtr->Functions)
 		{
 			const int32 FunctionStartIndex = Function.Channel - 1 + PatchStartingIndex;
 			const int32 FunctionLastIndex = FunctionStartIndex + UDMXEntityFixtureType::NumChannelsToOccupy(Function.DataType) - 1;
@@ -441,16 +475,8 @@ bool UDMXSubsystem::GetFunctionsMap(UDMXEntityFixturePatch* InFixturePatch, TMap
 
 bool UDMXSubsystem::GetFunctionsMapForPatch(UDMXEntityFixturePatch* InFixturePatch, TMap<FDMXAttributeName, int32>& OutAttributesMap)
 {
-	TArray<UDMXEntityController*> Controllers = InFixturePatch->GetRelevantControllers();
-
-	for(UDMXEntity* ControllerEntity : Controllers)
-	{
-		UDMXEntityController* Controller = Cast< UDMXEntityController>(ControllerEntity);
-		bool success = GetFunctionsMap(InFixturePatch, OutAttributesMap);		
-		return success;
-	}
-
-	return false;
+	// TODO: This is a duplicate..
+	return GetFunctionsMap(InFixturePatch, OutAttributesMap);
 }
 
 int32 UDMXSubsystem::GetFunctionsValue(const FName FunctionAttributeName, const TMap<FDMXAttributeName, int32>& InAttributesMap)
@@ -516,7 +542,7 @@ TArray<UDMXEntityFixturePatch*> UDMXSubsystem::GetAllFixturesWithTag(const UDMXL
 	{
 		DMXLibrary->ForEachEntityOfType<UDMXEntityFixturePatch>([&](UDMXEntityFixturePatch* Patch)
 		{
-			if (Patch->CustomTags.Contains(CustomTag))
+			if (Patch->GetCustomTags().Contains(CustomTag))
 			{
 				FoundPatches.Add(Patch);
 			}
@@ -541,12 +567,12 @@ TArray<UDMXEntityFixturePatch*> UDMXSubsystem::GetAllFixturesInLibrary(const UDM
 	// Sort patches by universes and channels
 	FoundPatches.Sort([](const UDMXEntityFixturePatch& FixturePatchA, const UDMXEntityFixturePatch& FixturePatchB) {
 
-		if (FixturePatchA.UniverseID < FixturePatchB.UniverseID)
+		if (FixturePatchA.GetUniverseID() < FixturePatchB.GetUniverseID())
 		{
 			return true;
 		}
 
-		bool bSameUniverse = FixturePatchA.UniverseID == FixturePatchB.UniverseID;
+		bool bSameUniverse = FixturePatchA.GetUniverseID() == FixturePatchB.GetUniverseID();
 		if (bSameUniverse)
 		{
 			return FixturePatchA.GetStartingChannel() <= FixturePatchB.GetStartingChannel();
@@ -607,22 +633,21 @@ UDMXEntityFixtureType* UDMXSubsystem::GetFixtureTypeByName(const UDMXLibrary* DM
 
 TArray<UDMXEntityController*> UDMXSubsystem::GetAllControllersInLibrary(const UDMXLibrary* DMXLibrary)
 {
-	TArray<UDMXEntityController*> FoundControllers;
+	// DEPRECATED 4.27, controllers are no longer in use
+	TArray<UDMXEntityController*> EmptyArray;
+	return EmptyArray;
+}
 
-	if (DMXLibrary != nullptr)
-	{
-		DMXLibrary->ForEachEntityOfType<UDMXEntityController>([&](UDMXEntityController* Controller)
-		{
-			FoundControllers.Add(Controller);
-		});
-	}
-
-	return FoundControllers;
+void UDMXSubsystem::GetAllUniversesInController(const UDMXLibrary* DMXLibrary, FString ControllerName, TArray<int32>& OutResult)
+{
+	// DEPRECATED 4.27, controllers are no longer in use
+	OutResult.Reset();
 }
 
 UDMXEntityController* UDMXSubsystem::GetControllerByName(const UDMXLibrary* DMXLibrary, const FString& Name)
 {
-	return GetDMXEntityByName<UDMXEntityController>(DMXLibrary, Name);
+	// DEPRECATED 4.27, controllers are no longer in use
+	return nullptr;
 }
 
 const TArray<UDMXLibrary*>& UDMXSubsystem::GetAllDMXLibraries()
@@ -700,40 +725,28 @@ float UDMXSubsystem::IntToNormalizedValue(int32 InValue, EDMXFixtureSignalFormat
 
 float UDMXSubsystem::GetNormalizedAttributeValue(UDMXEntityFixturePatch* InFixturePatch, FDMXAttributeName InFunctionAttribute, int32 InValue) const
 {
-	if (InFixturePatch == nullptr)
+	if (InFixturePatch)
 	{
-		UE_LOG(DMXSubsystemLog, Error, TEXT("%S: InFixturePatch is null!"), __FUNCTION__);
-		return 0.0f;
-	}
-
-	UDMXEntityFixtureType* ParentType = InFixturePatch->ParentFixtureTypeTemplate;
-	if (ParentType == nullptr)
-	{
-		UE_LOG(DMXSubsystemLog, Error, TEXT("%S: InFixturePatch->ParentFixtureTypeTemplate is null!"), __FUNCTION__);
-		return 0.0f;
-	}
-
-	if (ParentType->Modes.Num() == 0)
-	{
-		UE_LOG(DMXSubsystemLog, Error, TEXT("%S: InFixturePatch's Fixture Type has no Modes!"), __FUNCTION__);
-		return 0.0f;
-	}
-
-	if (InFixturePatch->ActiveMode >= InFixturePatch->ParentFixtureTypeTemplate->Modes.Num())
-	{
-		UE_LOG(DMXSubsystemLog, Error, TEXT("%S: InFixturePatch' ActiveMode is not an existing mode from its Fixture Type!"), __FUNCTION__);
-		return 0.0f;
-	}
-
-	const FDMXFixtureMode& Mode = ParentType->Modes[InFixturePatch->ActiveMode];
-
-	// Search for a Function named InFunctionName in the Fixture Type current mode
-	for (const FDMXFixtureFunction& Function : Mode.Functions)
-	{
-		if (Function.Attribute == InFunctionAttribute)
+		const FDMXFixtureMode* ActiveModePtr = InFixturePatch->GetActiveMode();
+		if (ActiveModePtr)
 		{
-			return IntToNormalizedValue(InValue, Function.DataType);
+			// Search for a Function named InFunctionName in the Fixture Type current mode
+			for (const FDMXFixtureFunction& Function : ActiveModePtr->Functions)
+			{
+				if (Function.Attribute == InFunctionAttribute)
+				{
+					return IntToNormalizedValue(InValue, Function.DataType);
+				}
+			}
 		}
+		else
+		{
+			UE_LOG(DMXSubsystemLog, Error, TEXT("%S: Cannot access the Mode of Fixture Patch %s. Either it is of fixture type none, or the fixture type has no mode."), __FUNCTION__, *InFixturePatch->Name);
+		}
+	}
+	else
+	{
+		UE_LOG(DMXSubsystemLog, Error, TEXT("%S: InFixturePatch is invalid."), __FUNCTION__);
 	}
 
 	return -1.0f;
@@ -741,81 +754,62 @@ float UDMXSubsystem::GetNormalizedAttributeValue(UDMXEntityFixturePatch* InFixtu
 
 void UDMXSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
+	// Load all available dmx libraries
+	constexpr bool bHasBlueprintClasses = true;
+	UObjectLibrary* LibraryOfDMXLibraries = UObjectLibrary::CreateLibrary(UDMXLibrary::StaticClass(), bHasBlueprintClasses, GIsEditor);
+	LibraryOfDMXLibraries->LoadAssetDataFromPath(TEXT("/Game"));
+	LibraryOfDMXLibraries->LoadAssetsFromAssetData();
+
+	TArray<FAssetData> AssetDatas;
+	LibraryOfDMXLibraries->GetAssetDataList(AssetDatas);
+
+	for (const FAssetData& AssetData : AssetDatas)
+	{
+		if (!AssetData.IsAssetLoaded())
+		{
+			LoadedDMXLibraries.Add(CastChecked<UDMXLibrary>(AssetData.ToSoftObjectPath().TryLoad()));
+		}
+		else
+		{
+			LoadedDMXLibraries.Add(CastChecked<UDMXLibrary>(AssetData.ToSoftObjectPath().ResolveObject()));
+		}
+	}
+	OnAllDMXLibraryAssetsLoaded.Broadcast();
+
+#if WITH_EDITOR
+	// Handle adding/removing new libraries
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(FName("AssetRegistry")).Get();
-	AssetRegistry.OnFilesLoaded().AddUObject(this, &UDMXSubsystem::OnAssetRegistryFinishedLoadingFiles);
 	AssetRegistry.OnAssetAdded().AddUObject(this, &UDMXSubsystem::OnAssetRegistryAddedAsset);
 	AssetRegistry.OnAssetRemoved().AddUObject(this, &UDMXSubsystem::OnAssetRegistryRemovedAsset);
-
-	// Register delegates
-	TArray<FName> ProtocolNames = IDMXProtocol::GetProtocolNames();
-	for (const FName& ProtocolName : ProtocolNames)
-	{
-		IDMXProtocolPtr Protocol = IDMXProtocol::Get(ProtocolName);
-		check(Protocol.IsValid());
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS // ~Begin Hide Warnings to keep DEPRECATED OnProtocolReceived functional 4.26, raised via OnGameThreadOnlyBufferUpdated
-		Protocol->GetOnGameThreadOnlyBufferUpdated().AddUObject(this, &UDMXSubsystem::OnGameThreadOnlyBufferUpdated);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS  // ~End Hide Warnings to keep DEPRECATED OnProtocolReceived functional 4.26, raised via OnGameThreadOnlyBufferUpdated
-	}
+#endif
 }
 
-void UDMXSubsystem::Deinitialize()
-{
-
-}
-
-void UDMXSubsystem::OnAssetRegistryFinishedLoadingFiles()
-{
-	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(FName("AssetRegistry")).Get();
-
-	TArray<FAssetData> Assets;
-	AssetRegistry.GetAssetsByClass(UDMXLibrary::StaticClass()->GetFName(), Assets, true);
-
-	for (const FAssetData& Asset : Assets)
-	{
-		UObject* AssetObject = Asset.GetAsset();
-		UDMXLibrary* Library = Cast<UDMXLibrary>(AssetObject);
-		LoadedDMXLibraries.AddUnique(Library);
-	}
-}
-
+#if WITH_EDITOR
 void UDMXSubsystem::OnAssetRegistryAddedAsset(const FAssetData& Asset)
 {
 	if (Asset.AssetClass == UDMXLibrary::StaticClass()->GetFName())
 	{
 		UObject* AssetObject = Asset.GetAsset();
-		UDMXLibrary* Library = Cast<UDMXLibrary>(AssetObject);
-		LoadedDMXLibraries.AddUnique(Library);
+		if (UDMXLibrary* Library = Cast<UDMXLibrary>(AssetObject))
+		{
+			LoadedDMXLibraries.AddUnique(Library);
+			OnDMXLibraryAssetAdded.Broadcast(Library);
+		}
 	}
 }
+#endif // WITH_EDITOR
 
+#if WITH_EDITOR
 void UDMXSubsystem::OnAssetRegistryRemovedAsset(const FAssetData& Asset)
 {
 	if (Asset.AssetClass == UDMXLibrary::StaticClass()->GetFName())
 	{
 		UObject* AssetObject = Asset.GetAsset();
-		UDMXLibrary* Library = Cast<UDMXLibrary>(AssetObject);
-		LoadedDMXLibraries.Remove(Library);
-	}
-}
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS // ~Begin Hide Warnings to keep DEPRECATED OnProtocolReceived functional 4.26
-void UDMXSubsystem::OnGameThreadOnlyBufferUpdated(const FName& InProtocolName, int32 InUniverseID)
-{
-	if (OnProtocolReceived_DEPRECATED.IsBound())
-	{
-		if (IDMXProtocolPtr DMXProtocolPtr = IDMXProtocol::Get(InProtocolName))
+		if (UDMXLibrary* Library = Cast<UDMXLibrary>(AssetObject))
 		{
-			const IDMXUniverseSignalMap& InboundSignalMap = DMXProtocolPtr->GameThreadGetInboundSignals();
-
-			const TSharedPtr<FDMXSignal>* DMXSignalPtr = InboundSignalMap.Find(InUniverseID);
-			if (DMXSignalPtr != nullptr)
-			{
-				const TSharedPtr<FDMXSignal>& DMXSignal = *DMXSignalPtr;
-				const TArray<uint8>& DMXBuffer = DMXSignal.Get()->ChannelData;
-				OnProtocolReceived_DEPRECATED.Broadcast(FDMXProtocolName(InProtocolName), InUniverseID, DMXBuffer);
-			}
+			LoadedDMXLibraries.Remove(Library);
+			OnDMXLibraryAssetRemoved.Broadcast(Library);
 		}
 	}
 }
-PRAGMA_ENABLE_DEPRECATION_WARNINGS // ~End Hide Warnings to keep DEPRECATED OnProtocolReceived functional 4.26
+#endif // WITH_EDITOR

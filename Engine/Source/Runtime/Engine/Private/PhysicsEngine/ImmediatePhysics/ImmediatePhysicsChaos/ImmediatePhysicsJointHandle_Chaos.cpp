@@ -112,7 +112,9 @@ namespace ImmediatePhysics_Chaos
 		ConstraintSettings.AngularDriveForceMode = EJointForceMode::Acceleration;
 
 		ConstraintSettings.LinearBreakForce = (Profile.bLinearBreakable) ? Chaos::ConstraintSettings::LinearBreakScale() * Profile.LinearBreakThreshold : FLT_MAX;
+		ConstraintSettings.LinearPlasticityLimit = (Profile.bLinearPlasticity) ? FMath::Clamp((float)Profile.LinearPlasticityThreshold, 0.f, 1.f) : FLT_MAX;
 		ConstraintSettings.AngularBreakTorque = (Profile.bAngularBreakable) ? Chaos::ConstraintSettings::AngularBreakScale() * Profile.AngularBreakThreshold : FLT_MAX;
+		ConstraintSettings.AngularPlasticityLimit = (Profile.bAngularPlasticity) ? Profile.AngularPlasticityThreshold : FLT_MAX;
 
 		// UE Disables Soft Limits when the Limit is less than some threshold. This is not necessary in Chaos but for now we also do it for parity's sake (See FLinearConstraint::UpdateLinearLimit_AssumesLocked).
 		if (ConstraintSettings.LinearLimit < RB_MinSizeToLockDOF)
@@ -150,13 +152,13 @@ namespace ImmediatePhysics_Chaos
 		using namespace Chaos;
 
 		FPBDJointSettings ConstraintSettings;
-		TVector<FRigidTransform3, 2> ConstraintFrames;
+		TVec2<FRigidTransform3> ConstraintFrames;
 
 		if (ConstraintInstance != nullptr)
 		{
 			// BodyInstance/PhysX has the constraint locations in actor-space, but we need them in Center-of-Mass space
-			ConstraintFrames[0] = FParticleUtilities::ActorLocalToParticleLocal(TGenericParticleHandle<FReal, 3>(Actor1->GetParticle()), ConstraintInstance->GetRefFrame(EConstraintFrame::Frame1));
-			ConstraintFrames[1] = FParticleUtilities::ActorLocalToParticleLocal(TGenericParticleHandle<FReal, 3>(Actor2->GetParticle()), ConstraintInstance->GetRefFrame(EConstraintFrame::Frame2));
+			ConstraintFrames[0] = FParticleUtilities::ActorLocalToParticleLocal(FGenericParticleHandle(Actor1->GetParticle()), ConstraintInstance->GetRefFrame(EConstraintFrame::Frame1));
+			ConstraintFrames[1] = FParticleUtilities::ActorLocalToParticleLocal(FGenericParticleHandle(Actor2->GetParticle()), ConstraintInstance->GetRefFrame(EConstraintFrame::Frame2));
 			FReal JointScale = ConstraintInstance->GetLastKnownScale();
 			ConstraintFrames[0].ScaleTranslation(JointScale);
 			ConstraintFrames[1].ScaleTranslation(JointScale);
@@ -198,14 +200,14 @@ namespace ImmediatePhysics_Chaos
 		return ConstraintHandle;
 	}
 
-	const Chaos::TVector<FActorHandle*, 2>& FJointHandle::GetActorHandles()
+	const Chaos::TVec2<FActorHandle*>& FJointHandle::GetActorHandles()
 	{
 		return ActorHandles;
 	}
 
-	const Chaos::TVector<const FActorHandle*, 2>& FJointHandle::GetActorHandles() const
+	const Chaos::TVec2<const FActorHandle*>& FJointHandle::GetActorHandles() const
 	{
-		return reinterpret_cast<const Chaos::TVector<const FActorHandle*, 2>&>(ActorHandles);
+		return reinterpret_cast<const Chaos::TVec2<const FActorHandle*>&>(ActorHandles);
 	}
 
 	void FJointHandle::SetSoftLinearSettings(bool bLinearSoft, FReal LinearStiffness, FReal LinearDamping)

@@ -139,17 +139,17 @@ void UOpenColorIOColorTransform::Serialize(FArchive& Ar)
 }
 
 
-void UOpenColorIOColorTransform::CacheResourceShadersForCooking(EShaderPlatform InShaderPlatform, const ITargetPlatform* TargetPlatform, const FString& InShaderHash, const FString& InShaderCode, TArray<FOpenColorIOTransformResource*>& OutCachedResources)
+void UOpenColorIOColorTransform::CacheResourceShadersForCooking(EShaderPlatform InShaderPlatform, const ITargetPlatform* TargetPlatform, const FString& InShaderHash, const FString& InShaderCode, const FString& InRawConfigHash, TArray<FOpenColorIOTransformResource*>& OutCachedResources)
 {
 	const ERHIFeatureLevel::Type TargetFeatureLevel = GetMaxSupportedFeatureLevel(InShaderPlatform);
 
 	FOpenColorIOTransformResource* NewResource = AllocateResource();
 #if WITH_EDITOR
-	FString AssetFilePath = FPackageName::LongPackageNameToFilename(GetOutermost()->GetName(), TEXT(".uasset"));
+	FName AssetPath = GetOutermost()->GetFName();
 #else
-	FString AssetFilePath;
+	FName AssetPath;
 #endif
-	NewResource->SetupResource((ERHIFeatureLevel::Type)TargetFeatureLevel, InShaderHash, InShaderCode, GetTransformFriendlyName(), AssetFilePath);
+	NewResource->SetupResource((ERHIFeatureLevel::Type)TargetFeatureLevel, InShaderHash, InShaderCode, InRawConfigHash, GetTransformFriendlyName(), AssetPath);
 
 	const bool bApplyCompletedShaderMap = false;
 	const bool bIsCooking = true;
@@ -237,7 +237,7 @@ void UOpenColorIOColorTransform::CacheResourceTextures()
 #if !PLATFORM_EXCEPTIONS_DISABLED
 			catch (OCIO_NAMESPACE::Exception& exception)
 			{
-				UE_LOG(LogOpenColorIO, Error, TEXT("Failed to cache 3dLUT for color transform %s. Error message: %s."), *GetTransformFriendlyName(), StringCast<TCHAR>(exception.what()).Get());
+				UE_LOG(LogOpenColorIO, Log, TEXT("Failed to cache 3dLUT for color transform %s. Error message: %s."), *GetTransformFriendlyName(), StringCast<TCHAR>(exception.what()).Get());
 			}
 #endif
 		}
@@ -261,7 +261,8 @@ void UOpenColorIOColorTransform::CacheResourceShadersForRendering(bool bRegenera
 		//Update shader hash to fetch pre-compiled shader from DDC and grab shader code to be able to compile it on the fly if it's missing
 		FString ShaderCodeHash;
 		FString ShaderCode;
-		if (UpdateShaderInfo(ShaderCodeHash, ShaderCode))
+		FString RawConfigHash;
+		if (UpdateShaderInfo(ShaderCodeHash, ShaderCode, RawConfigHash))
 		{
 			//OCIO shaders are simple, we should be compatible with any feature levels. Use the levels required for materials.
 			uint32 FeatureLevelsToCompile = UMaterialInterface::GetFeatureLevelsToCompileForAllMaterials();
@@ -277,23 +278,26 @@ void UOpenColorIOColorTransform::CacheResourceShadersForRendering(bool bRegenera
 				}
 
 #if WITH_EDITOR
-				FString AssetFilePath = FPackageName::LongPackageNameToFilename(GetOutermost()->GetName(), TEXT(".uasset"));
+				FName AssetPath = GetOutermost()->GetFName();
 #else
-				FString AssetFilePath;
+				FName AssetPath;
 #endif
-				TransformResource->SetupResource(CacheFeatureLevel, ShaderCodeHash, ShaderCode, GetTransformFriendlyName(), AssetFilePath);
+				TransformResource->SetupResource(CacheFeatureLevel, ShaderCodeHash, ShaderCode, RawConfigHash, GetTransformFriendlyName(), AssetPath);
 
 				const bool bApplyCompletedShaderMap = true;
-				const bool bIsCooking = false;
-				CacheShadersForResources(ShaderPlatform, TransformResource, bApplyCompletedShaderMap, bIsCooking);
+
+				// If PIE or -game - we don't want to be doing shader cooking asynchronosly.
+				bool bIsSynchronous = FApp::IsGame();
+				
+				CacheShadersForResources(ShaderPlatform, TransformResource, bApplyCompletedShaderMap, bIsSynchronous);
 			}
 		}
 	}
 }
 
-void UOpenColorIOColorTransform::CacheShadersForResources(EShaderPlatform InShaderPlatform, FOpenColorIOTransformResource* InResourceToCache, bool bApplyCompletedShaderMapForRendering, bool bIsCooking, const ITargetPlatform* TargetPlatform)
+void UOpenColorIOColorTransform::CacheShadersForResources(EShaderPlatform InShaderPlatform, FOpenColorIOTransformResource* InResourceToCache, bool bApplyCompletedShaderMapForRendering, bool bIsSynchronous, const ITargetPlatform* TargetPlatform)
 {
-	const bool bSuccess = InResourceToCache->CacheShaders(InShaderPlatform, TargetPlatform, bApplyCompletedShaderMapForRendering, bIsCooking);
+	const bool bSuccess = InResourceToCache->CacheShaders(InShaderPlatform, TargetPlatform, bApplyCompletedShaderMapForRendering, bIsSynchronous);
 
 	if (!bSuccess)
 	{
@@ -374,7 +378,7 @@ FString UOpenColorIOColorTransform::GetTransformFriendlyName()
 	return SourceColorSpace + TEXT(" to ") + DestinationColorSpace;
 }
 
-bool UOpenColorIOColorTransform::UpdateShaderInfo(FString& OutShaderCodeHash, FString& OutShaderCode)
+bool UOpenColorIOColorTransform::UpdateShaderInfo(FString& OutShaderCodeHash, FString& OutShaderCode, FString& OutRawConfigHash)
 {
 #if WITH_EDITOR
 #if WITH_OCIO
@@ -395,6 +399,7 @@ bool UOpenColorIOColorTransform::UpdateShaderInfo(FString& OutShaderCodeHash, FS
 
 				OutShaderCodeHash = StringCast<TCHAR>(TransformProcessor->getGpuShaderTextCacheID(ShaderDescription)).Get();
 				FString GLSLShaderCode = StringCast<TCHAR>(TransformProcessor->getGpuShaderText(ShaderDescription)).Get();
+				OutRawConfigHash = StringCast<TCHAR>(CurrentConfig->getCacheID()).Get();
 
 				//CG language works with HLSL. Just update texture sampling to work with newest method
 				const FString SamplerString = FString::Printf(TEXT("%s.Sample"), OpenColorIOShader::OCIOLut3dName);
@@ -412,7 +417,7 @@ bool UOpenColorIOColorTransform::UpdateShaderInfo(FString& OutShaderCodeHash, FS
 #if !PLATFORM_EXCEPTIONS_DISABLED
 		catch (OCIO_NAMESPACE::Exception& exception)
 		{
-			UE_LOG(LogOpenColorIO, Error, TEXT("Failed to fetch shader info for color transform %s. Error message: %s."), *GetTransformFriendlyName(), StringCast<TCHAR>(exception.what()).Get());
+			UE_LOG(LogOpenColorIO, Log, TEXT("Failed to fetch shader info for color transform %s. Error message: %s."), *GetTransformFriendlyName(), StringCast<TCHAR>(exception.what()).Get());
 		}
 #endif
 	}
@@ -557,14 +562,15 @@ void UOpenColorIOColorTransform::BeginCacheForCookedPlatformData(const ITargetPl
 		//Need to re-update shader data when cooking. They won't have been previously fetched.
 		FString ShaderCodeHash;
 		FString ShaderCode;
-		if (UpdateShaderInfo(ShaderCodeHash, ShaderCode))
+		FString RawConfigHash;
+		if (UpdateShaderInfo(ShaderCodeHash, ShaderCode, RawConfigHash))
 		{
 			// Cache for all the shader formats that the cooking target requires
 			for (int32 FormatIndex = 0; FormatIndex < DesiredShaderFormats.Num(); FormatIndex++)
 			{
 				const EShaderPlatform LegacyShaderPlatform = ShaderFormatToLegacyShaderPlatform(DesiredShaderFormats[FormatIndex]);
 				// Begin caching shaders for the target platform and store the FOpenColorIOTransformResource being compiled into CachedColorTransformResourcesForCooking
-				CacheResourceShadersForCooking(LegacyShaderPlatform, TargetPlatform, ShaderCodeHash, ShaderCode, *CachedColorTransformResourceForPlatformPtr);
+				CacheResourceShadersForCooking(LegacyShaderPlatform, TargetPlatform, ShaderCodeHash, ShaderCode, RawConfigHash, *CachedColorTransformResourceForPlatformPtr);
 			}
 		}
 	}

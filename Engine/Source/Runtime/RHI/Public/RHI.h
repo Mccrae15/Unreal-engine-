@@ -101,6 +101,9 @@ extern RHI_API uint32 GRHIDeviceRevision;
 // 0 means not defined yet, use functions like IsRHIDeviceAMD() to access
 extern RHI_API uint32 GRHIVendorId;
 
+// true if the RHI supports Pixel Shader UAV
+extern RHI_API bool GRHISupportsPixelShaderUAVs;
+
 // to trigger GPU specific optimizations and fallbacks
 RHI_API bool IsRHIDeviceAMD();
 
@@ -139,26 +142,20 @@ RHI_API int32 RHIGetPreferredClearUAVRectPSResourceType(const FStaticShaderPlatf
 
 inline bool RHISupportsInstancedStereo(const FStaticShaderPlatform Platform)
 {
-	// Only D3D SM5, PS4 and Metal SM5 supports Instanced Stereo
-	return Platform == EShaderPlatform::SP_PCD3D_SM5 || Platform == EShaderPlatform::SP_PS4 || Platform == EShaderPlatform::SP_METAL_SM5 || Platform == EShaderPlatform::SP_METAL_SM5_NOTESS
+	return Platform == EShaderPlatform::SP_PCD3D_SM5 || Platform == EShaderPlatform::SP_METAL_SM5 || Platform == EShaderPlatform::SP_METAL_SM5_NOTESS
 		|| Platform == EShaderPlatform::SP_PCD3D_ES3_1 || FDataDrivenShaderPlatformInfo::GetSupportsInstancedStereo(Platform);
 }
 
 inline bool RHISupportsMultiView(const FStaticShaderPlatform Platform)
 {
-	// Only PS4 and Metal SM5 from 10.13 onward supports Multi-View
-	return (Platform == EShaderPlatform::SP_PS4) || ((Platform == EShaderPlatform::SP_METAL_SM5 || Platform == SP_METAL_SM5_NOTESS))
+	return ((Platform == EShaderPlatform::SP_METAL_SM5 || Platform == SP_METAL_SM5_NOTESS))
 		|| FDataDrivenShaderPlatformInfo::GetSupportsMultiView(Platform);
 }
 
 inline bool RHISupportsMSAA(const FStaticShaderPlatform Platform)
 {
-	return 
-		(
-		// @todo optimise MSAA for XboxOne, currently uses significant eRAM.
-		Platform != SP_XBOXONE_D3D12)
-		// @todo platplug: Maybe this should become bDisallowMSAA to default of 0 is a better default (since now MSAA is opt-out more than opt-in) 
-		|| FDataDrivenShaderPlatformInfo::GetSupportsMSAA(Platform);
+	// @todo platplug: Maybe this should become bDisallowMSAA to default of 0 is a better default (since now MSAA is opt-out more than opt-in) 
+	return FDataDrivenShaderPlatformInfo::GetSupportsMSAA(Platform);
 }
 
 inline bool RHISupportsBufferLoadTypeConversion(const FStaticShaderPlatform Platform)
@@ -191,7 +188,7 @@ inline bool RHISupports4ComponentUAVReadWrite(const FStaticShaderPlatform Platfo
 {
 	// Must match usf PLATFORM_SUPPORTS_4COMPONENT_UAV_READ_WRITE
 	// D3D11 does not support multi-component loads from a UAV: "error X3676: typed UAV loads are only allowed for single-component 32-bit element types"
-	return Platform == SP_XBOXONE_D3D12 || Platform == SP_PS4 || IsMetalPlatform(Platform) 
+	return IsMetalPlatform(Platform) 
 		|| FDataDrivenShaderPlatformInfo::GetSupports4ComponentUAVReadWrite(Platform);
 }
 
@@ -199,10 +196,11 @@ inline bool RHISupports4ComponentUAVReadWrite(const FStaticShaderPlatform Platfo
 	Shader Platform must not use the mobile renderer, and for Metal, the shader language must be at least 2. */
 inline bool RHISupportsManualVertexFetch(const FStaticShaderPlatform InShaderPlatform)
 {
-	bool bIsMetalMobilePlatform = IsMetalPlatform(InShaderPlatform) && !IsPCPlatform(InShaderPlatform);
-	bool bIsUnsupportedGL = IsOpenGLPlatform(InShaderPlatform) && !IsSwitchPlatform(InShaderPlatform);
+	bool bIsMetalMobilePlatform = IsMetalMobilePlatform(InShaderPlatform);
+	bool bIsUnsupportedGL = IsOpenGLPlatform(InShaderPlatform);
 
-	return !bIsUnsupportedGL && !IsMobilePlatform(InShaderPlatform) && !bIsMetalMobilePlatform;
+	return (!bIsUnsupportedGL && !IsMobilePlatform(InShaderPlatform) && !bIsMetalMobilePlatform)
+		|| FDataDrivenShaderPlatformInfo::GetSupportsManualVertexFetch(InShaderPlatform);
 }
 
 /** 
@@ -232,9 +230,7 @@ inline RHI_API bool RHISupportsWaveOperations(const FStaticShaderPlatform Platfo
 /** True if the given shader platform supports a render target write mask */
 inline bool RHISupportsRenderTargetWriteMask(const FStaticShaderPlatform Platform)
 {
-	return
-		Platform == SP_XBOXONE_D3D12 ||
-		FDataDrivenShaderPlatformInfo::GetSupportsRenderTargetWriteMask(Platform);
+	return FDataDrivenShaderPlatformInfo::GetSupportsRenderTargetWriteMask(Platform);
 }
 
 // Wrapper for GRHI## global variables, allows values to be overridden for mobile preview modes.
@@ -347,9 +343,6 @@ extern RHI_API bool GSupportsVolumeTextureRendering;
 /** True if the RHI supports separate blend states per render target. */
 extern RHI_API bool GSupportsSeparateRenderTargetBlendState;
 
-/** True if the RHI can render to a depth-only render target with no additional color render target. */
-extern RHI_API bool GSupportsDepthRenderTargetWithoutColorRenderTarget;
-
 /** True if the RHI has artifacts with atlased CSM depths. */
 extern RHI_API bool GRHINeedsUnatlasedCSMDepthsWorkaround;
 
@@ -361,9 +354,6 @@ extern RHI_API bool GSupportsMobileMultiView;
 
 /** true if the RHI supports image external */
 extern RHI_API bool GSupportsImageExternal;
-
-/** true if the RHI supports MRT */
-extern RHI_API TRHIGlobal<bool> GSupportsMultipleRenderTargets;
 
 /** true if the RHI supports 256bit MRT */
 extern RHI_API bool GSupportsWideMRT;
@@ -526,14 +516,13 @@ extern RHI_API int32 GPoolSizeVRAMPercentage;
 
 /** Some simple runtime stats, reset on every call to RHIBeginFrame */
 /** Num draw calls & primitives on previous frame (accurate on any thread)*/
-extern RHI_API int32 GNumDrawCallsRHI;
-extern RHI_API int32 GNumPrimitivesDrawnRHI;
+extern RHI_API int32 GNumDrawCallsRHI[MAX_NUM_GPUS];
+extern RHI_API int32 GNumPrimitivesDrawnRHI[MAX_NUM_GPUS];
 
 /** Num draw calls and primitives this frame (only accurate on RenderThread) */
-extern RHI_API int32 GCurrentNumDrawCallsRHI;
-extern RHI_API int32* GCurrentNumDrawCallsRHIPtr;
-extern RHI_API int32 GCurrentNumPrimitivesDrawnRHI;
-
+extern RHI_API int32 GCurrentNumDrawCallsRHI[MAX_NUM_GPUS];
+extern RHI_API int32(*GCurrentNumDrawCallsRHIPtr)[MAX_NUM_GPUS];
+extern RHI_API int32 GCurrentNumPrimitivesDrawnRHI[MAX_NUM_GPUS];
 
 /** Whether or not the RHI can handle a non-zero BaseVertexIndex - extra SetStreamSource calls will be needed if this is false */
 extern RHI_API bool GRHISupportsBaseVertexIndex;
@@ -555,6 +544,9 @@ extern RHI_API bool GRHISupportsRayTracingPSOAdditions;
 
 /** Whether or not the RHI supports async building ray tracing acceleration structures. */
 extern RHI_API bool GRHISupportsRayTracingAsyncBuildAccelerationStructure;
+
+/** Whether or not the RHI supports the AMD Hit Token extension. */
+extern RHI_API bool GRHISupportsRayTracingAMDHitToken;
 
 /** Whether or not the RHI supports shader wave operations (shader model 6.0). */
 extern RHI_API bool GRHISupportsWaveOperations;
@@ -594,14 +586,44 @@ extern RHI_API bool GRHIIsHDREnabled;
 /** Whether the present adapter/display offers HDR output capabilities. */
 extern RHI_API bool GRHISupportsHDROutput;
 
-/** Whether or not the RHI can support Variable Rate Shading. */
-extern RHI_API bool GRHISupportsVariableRateShading;
+/** Whether VRS (in all flavors) is currently enabled (separate from whether it's supported/available). */
+extern RHI_API bool GRHIVariableRateShadingEnabled;
 
-/** Size of the tiles in a screen space texture that can be used to drive Variable Rate Shading. */
-extern RHI_API int32 GVariableRateShadingImageTileSize;
+/** Whether attachment (image-based) VRS is currently enabled (separate from whether it's supported/available). */
+extern RHI_API bool GRHIAttachmentVariableRateShadingEnabled;
 
-/** What tier of Variable Rate Shading the HW supports */
-extern RHI_API int32 GVariableRateShadingTier;
+/** Whether or not the RHI can support per-draw Variable Rate Shading. */
+extern RHI_API bool GRHISupportsPipelineVariableRateShading;
+
+/** Whether or not the RHI can support image-based Variable Rate Shading. */
+extern RHI_API bool GRHISupportsAttachmentVariableRateShading;
+
+/** Whether or not the RHI can support complex combiner operatations between per-draw (pipeline) VRS and image VRS. */
+extern RHI_API bool GRHISupportsComplexVariableRateShadingCombinerOps;
+
+/** Whether or not the RHI can support shading rate attachments as array textures. */
+extern RHI_API bool GRHISupportsVariableRateShadingAttachmentArrayTextures;
+
+/** Maximum tile width in a screen space texture that can be used to drive Variable Rate Shading. */
+extern RHI_API int32 GRHIVariableRateShadingImageTileMaxWidth;
+
+/** Maximum tile height in a screen space texture that can be used to drive Variable Rate Shading. */
+extern RHI_API int32 GRHIVariableRateShadingImageTileMaxHeight;
+
+/** Minimum tile width in a screen space texture that can be used to drive Variable Rate Shading. */
+extern RHI_API int32 GRHIVariableRateShadingImageTileMinWidth;
+
+/** Minimum tile height in a screen space texture that can be used to drive Variable Rate Shading. */
+extern RHI_API int32 GRHIVariableRateShadingImageTileMinHeight;
+
+/** Data type contained in a shading-rate image for image-based Variable Rate Shading. */
+extern RHI_API EVRSImageDataType GRHIVariableRateShadingImageDataType;
+
+/** Image format for the shading rate image for image-based Variable Rate Shading. */
+extern RHI_API EPixelFormat GRHIVariableRateShadingImageFormat;
+
+/** Whether Variable Rate Shading deferred shading rate texture update is supported. */
+extern RHI_API bool GRHISupportsLateVariableRateShadingUpdate;
 
 /** Format used for the backbuffer when outputting to a HDR display. */
 extern RHI_API EPixelFormat GRHIHDRDisplayOutputFormat;
@@ -612,6 +634,8 @@ extern RHI_API uint64 GRHIPresentCounter;
 /** True if the RHI supports setting the render target array index from any shader stage */
 extern RHI_API bool GRHISupportsArrayIndexFromAnyShader;
 
+/** True if the pipeline file cache can be used with this RHI */
+extern RHI_API bool GRHISupportsPipelineFileCache;
 
 /** Information about a pixel format. */
 struct FPixelFormatInfo
@@ -683,6 +707,11 @@ inline EShaderPlatform GetFeatureLevelShaderPlatform(const FStaticFeatureLevel I
 	return GShaderPlatformForFeatureLevel[InFeatureLevel];
 }
 
+/** Stringifies EShaderPlatform */
+extern RHI_API FString LexToString(EShaderPlatform Platform);
+
+/** Stringifies ERHIFeatureLevel */
+extern RHI_API FString LexToString(ERHIFeatureLevel::Type Level);
 
 /** Finds a corresponding ERHIShadingPath::Type given an FName, or returns false if one could not be found. */
 extern RHI_API bool GetShadingPathFromName(FName Name, ERHIShadingPath::Type& OutShadingPath);
@@ -737,6 +766,9 @@ enum class ERHIAccess
 	ResolveDst          = 1 << 13,
 	DSVWrite            = 1 << 14,
 
+	// Custom (special) states:
+	ShadingRateSource	= 1 << 15,
+
 	Last = DSVWrite,
 	None = Unknown,
 	Mask = (Last << 1) - 1,
@@ -751,7 +783,7 @@ enum class ERHIAccess
 	ReadOnlyExclusiveMask = CPURead | Present | IndirectArgs | VertexOrIndexBuffer | SRVGraphics | SRVCompute | CopySrc | ResolveSrc,
 
 	// A mask of all bits representing read-only states which may be combined with other write states.
-	ReadOnlyMask = ReadOnlyExclusiveMask | DSVRead,
+	ReadOnlyMask = ReadOnlyExclusiveMask | DSVRead | ShadingRateSource,
 
 	// A mask of all bits representing readable states which may also include writable states.
 	ReadableMask = ReadOnlyMask | UAVMask,
@@ -1033,18 +1065,18 @@ struct FSamplerStateInitializerRHI
 	,	SamplerComparisonFunction(InSamplerComparisonFunction)
 	{
 	}
-	TEnumAsByte<ESamplerFilter> Filter;
-	TEnumAsByte<ESamplerAddressMode> AddressU;
-	TEnumAsByte<ESamplerAddressMode> AddressV;
-	TEnumAsByte<ESamplerAddressMode> AddressW;
-	float MipBias;
+	TEnumAsByte<ESamplerFilter> Filter = SF_Point;
+	TEnumAsByte<ESamplerAddressMode> AddressU = AM_Wrap;
+	TEnumAsByte<ESamplerAddressMode> AddressV = AM_Wrap;
+	TEnumAsByte<ESamplerAddressMode> AddressW = AM_Wrap;
+	float MipBias = 0.0f;
 	/** Smallest mip map level that will be used, where 0 is the highest resolution mip level. */
-	float MinMipLevel;
+	float MinMipLevel = 0.0f;
 	/** Largest mip map level that will be used, where 0 is the highest resolution mip level. */
-	float MaxMipLevel;
-	int32 MaxAnisotropy;
-	uint32 BorderColor;
-	TEnumAsByte<ESamplerCompareFunction> SamplerComparisonFunction;
+	float MaxMipLevel = FLT_MAX;
+	int32 MaxAnisotropy = 0;
+	uint32 BorderColor = 0;
+	TEnumAsByte<ESamplerCompareFunction> SamplerComparisonFunction = SCF_Never;
 
 
 	RHI_API friend uint32 GetTypeHash(const FSamplerStateInitializerRHI& Initializer);
@@ -2187,13 +2219,21 @@ struct FTextureMemoryStats
 struct RHI_API FDrawCallCategoryName
 {
 	FDrawCallCategoryName() 
-	{ 
+	{
+		for (int32& Counter : Counters)
+		{
+			Counter = -1;
+		}
 	}
 
 	FDrawCallCategoryName(FName InName)
 		: Name(InName)
-		, Counter(0)
 	{
+		for (int32& Counter : Counters)
+		{
+			Counter = 0;
+		}
+
 		check(NumCategory < MAX_DRAWCALL_CATEGORY);
 		if (NumCategory < MAX_DRAWCALL_CATEGORY)
 		{
@@ -2203,11 +2243,11 @@ struct RHI_API FDrawCallCategoryName
 	}
 
 	FName Name;
-	int32 Counter = -1;
+	int32 Counters[MAX_NUM_GPUS];
 
 	static constexpr int32 MAX_DRAWCALL_CATEGORY = 256;
 	static FDrawCallCategoryName* Array[MAX_DRAWCALL_CATEGORY];
-	static int32 DisplayCounts[MAX_DRAWCALL_CATEGORY]; // A backup of the counts that can be used to display on screen to avoid flickering.
+	static int32 DisplayCounts[MAX_DRAWCALL_CATEGORY][MAX_NUM_GPUS]; // A backup of the counts that can be used to display on screen to avoid flickering.
 	static int32 NumCategory;
 };
 
@@ -2217,23 +2257,27 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Triangles drawn"),STAT_RHITriangles,STAT
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Lines drawn"),STAT_RHILines,STATGROUP_RHI,RHI_API);
 
 #if STATS
-	#define RHI_DRAW_CALL_INC() \
+#define RHI_DRAW_CALL_INC_MGPU(GPUIndex) \
 		INC_DWORD_STAT(STAT_RHIDrawPrimitiveCalls); \
-		FPlatformAtomics::InterlockedIncrement(GCurrentNumDrawCallsRHIPtr);
+		FPlatformAtomics::InterlockedIncrement(&(*GCurrentNumDrawCallsRHIPtr)[GPUIndex]);
 
-	#define RHI_DRAW_CALL_STATS(PrimitiveType,NumPrimitives) \
-		RHI_DRAW_CALL_INC(); \
+#define RHI_DRAW_CALL_STATS_MGPU(GPUIndex,PrimitiveType,NumPrimitives) \
+		RHI_DRAW_CALL_INC_MGPU(GPUIndex); \
 		INC_DWORD_STAT_BY(STAT_RHITriangles,(uint32)(PrimitiveType != PT_LineList ? (NumPrimitives) : 0)); \
 		INC_DWORD_STAT_BY(STAT_RHILines,(uint32)(PrimitiveType == PT_LineList ? (NumPrimitives) : 0)); \
-		FPlatformAtomics::InterlockedAdd(&GCurrentNumPrimitivesDrawnRHI, NumPrimitives);
+		FPlatformAtomics::InterlockedAdd(&GCurrentNumPrimitivesDrawnRHI[GPUIndex], NumPrimitives);
 #else
-	#define RHI_DRAW_CALL_INC() \
-		FPlatformAtomics::InterlockedIncrement(GCurrentNumDrawCallsRHIPtr);
+#define RHI_DRAW_CALL_INC_MGPU(GPUIndex) \
+		FPlatformAtomics::InterlockedIncrement(&(*GCurrentNumDrawCallsRHIPtr)[GPUIndex]);
 
-	#define RHI_DRAW_CALL_STATS(PrimitiveType,NumPrimitives) \
-		FPlatformAtomics::InterlockedAdd(&GCurrentNumPrimitivesDrawnRHI, NumPrimitives); \
-		FPlatformAtomics::InterlockedIncrement(GCurrentNumDrawCallsRHIPtr);
+#define RHI_DRAW_CALL_STATS_MGPU(GPUIndex,PrimitiveType,NumPrimitives) \
+		FPlatformAtomics::InterlockedAdd(&GCurrentNumPrimitivesDrawnRHI[GPUIndex], NumPrimitives); \
+		FPlatformAtomics::InterlockedIncrement(&(*GCurrentNumDrawCallsRHIPtr)[GPUIndex]);
 #endif
+
+#define RHI_DRAW_CALL_INC() RHI_DRAW_CALL_INC_MGPU(0)
+#define RHI_DRAW_CALL_STATS(PrimitiveType,NumPrimitives) RHI_DRAW_CALL_STATS_MGPU(0, PrimitiveType,NumPrimitives)
+
 
 // RHI memory stats.
 DECLARE_MEMORY_STAT_POOL_EXTERN(TEXT("Render target memory 2D"),STAT_RenderTargetMemory2D,STATGROUP_RHI,FPlatformMemory::MCR_GPU,RHI_API);

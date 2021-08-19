@@ -6,6 +6,7 @@
 #include "EngineStats.h"
 #include "EngineGlobals.h"
 #include "Engine/NetSerialization.h"
+#include "Engine/NetworkDelegates.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/Level.h"
 #include "TimerManager.h"
@@ -147,6 +148,14 @@ static FAutoConsoleVariableRef CVarNetCheckNoLoadPackages(
 	TEXT("net.CheckNoLoadPackages"),
 	GbNetCheckNoLoadPackages,
 	TEXT("If enabled, check the no load flag in GetObjectFromNetGUID before forcing a sync load on packages that are not marked IsFullyLoaded")
+);
+
+static bool bNetReportSyncLoads = false;
+static FAutoConsoleVariableRef CVarNetReportSyncLoads(
+	TEXT("net.ReportSyncLoads"),
+	bNetReportSyncLoads,
+	TEXT("If enabled, the engine will track objects loaded by the networking system and broadcast FNetDelegates::OnSyncLoadDetected to report them."
+		"By default they are logged to the LogNetSyncLoads category.")
 );
 
 void BroadcastNetFailure(UNetDriver* Driver, ENetworkFailure::Type FailureType, const FString& ErrorStr)
@@ -305,6 +314,18 @@ bool UPackageMapClient::SerializeObject( FArchive& Ar, UClass* Class, UObject*& 
 				}
 			}
 
+			if (bNetReportSyncLoads && NetGUID.IsValid())
+			{
+				// Track the GUID of anything in the outer chain that was sync loaded, to catch packages.
+				for (FNetworkGUID CurrentGUID = NetGUID; CurrentGUID.IsValid(); CurrentGUID = GuidCache->GetOuterNetGUID(CurrentGUID))
+				{
+					if (GuidCache->WasGUIDSyncLoaded(CurrentGUID))
+					{
+						TrackedSyncLoadedGUIDs.Add(CurrentGUID);
+					}
+				}
+			}
+
 			UE_LOG(LogNetPackageMap, VeryVerbose, TEXT("UPackageMapClient::SerializeObject Serialized Object %s as <%s>"), Object ? *Object->GetPathName() : TEXT("NULL"), *NetGUID.ToString());
 		}
 		
@@ -368,6 +389,8 @@ bool UPackageMapClient::SerializeNewActor(FArchive& Ar, class UActorChannel *Cha
 		FInBunch* InBunch = (FInBunch*)&Ar;
 		bIsClosingChannel = InBunch->bClose;		// This is so we can determine that this channel was opened/closed for destruction
 		UE_LOG(LogNetPackageMap, Log, TEXT("UPackageMapClient::SerializeNewActor BitPos: %d"), InBunch->GetPosBits() );
+
+		ResetTrackedSyncLoadedGuids();
 	}
 
 	NET_CHECKSUM(Ar);
@@ -658,6 +681,11 @@ bool UPackageMapClient::SerializeNewActor(FArchive& Ar, class UActorChannel *Cha
 				GuidCache->ImportedNetGuids.Remove( NetGUID );
 			}
 		}
+	}
+
+	if (Ar.IsLoading())
+	{
+		ReportSyncLoadsForActorSpawn(Actor);
 	}
 
 	UE_LOG( LogNetPackageMap, Log, TEXT( "SerializeNewActor END: Finished Serializing. Actor: %s, FullNetGUIDPath: %s, Channel: %d, IsLoading: %i, IsDynamic: %i" ), Actor ? *Actor->GetName() : TEXT("NULL"), *GuidCache->FullNetGUIDPath( NetGUID ), Channel->ChIndex, (int)Ar.IsLoading(), (int)NetGUID.IsDynamic() );
@@ -1140,8 +1168,14 @@ bool UPackageMapClient::ExportNetGUIDForReplay(FNetworkGUID& NetGUID, UObject* O
 		TArray<uint8>& GUIDMemory = ExportGUIDArchives.Emplace_GetRef();
 		GUIDMemory.Reserve(MaxReservedSize);
 
+		FNetGUIDCache::ENetworkChecksumMode RestoreMode = GuidCache->NetworkChecksumMode;
+
+		GuidCache->SetNetworkChecksumMode(FNetGUIDCache::ENetworkChecksumMode::None);
+
 		FMemoryWriter Writer(GUIDMemory);
 		InternalWriteObject(Writer, NetGUID, Object, PathName, ObjOuter);
+
+		GuidCache->SetNetworkChecksumMode(RestoreMode);
 
 		check(!Writer.IsError());
 		ensureMsgf(GUIDMemory.Num() <= MaxReservedSize, TEXT("ExportNetGUIDForReplay exceeded CVarReservedNetGuidSize. Max=%l Count=%l"), MaxReservedSize, GUIDMemory.Num());
@@ -1449,13 +1483,25 @@ void UPackageMapClient::SerializeNetFieldExportGroupMap( FArchive& Ar, bool bCle
 		uint32 NumNetFieldExportGroups = 0;
 		Ar << NumNetFieldExportGroups;
 
-		// Read each export group
-		for ( int32 i = 0; i < ( int32 )NumNetFieldExportGroups; i++ )
+		if (Ar.IsError())
 		{
-			TSharedPtr< FNetFieldExportGroup > NetFieldExportGroup = TSharedPtr< FNetFieldExportGroup >( new FNetFieldExportGroup() );
+			UE_LOG(LogNetPackageMap, Warning, TEXT("UPackageMapClient::SerializeNetFieldExportGroupMap - Archive error while reading NumNetFieldExportGroups"));
+			return;
+		}
+
+		// Read each export group
+		for (uint32 i = 0; i < NumNetFieldExportGroups; ++i)
+		{
+			TSharedPtr<FNetFieldExportGroup> NetFieldExportGroup = MakeShared<FNetFieldExportGroup>();
 
 			// Read in the export group
 			Ar << *NetFieldExportGroup.Get();
+
+			if (Ar.IsError())
+			{
+				UE_LOG(LogNetPackageMap, Warning, TEXT("UPackageMapClient::SerializeNetFieldExportGroupMap - Archive error while loading FNetFieldExportGroup, Index: %u"), i);
+				return;
+			}
 
 			GEngine->NetworkRemapPath(Connection, NetFieldExportGroup->PathName, true);
 
@@ -2069,6 +2115,53 @@ bool UPackageMapClient::ShouldSendFullPath( const UObject* Object, const FNetwor
 	}
 
 	return !NetGUIDHasBeenAckd( NetGUID );
+}
+
+void UPackageMapClient::ReportSyncLoadsForProperty(const FProperty* Property, const UObject* Object)
+{
+	if (bNetReportSyncLoads)
+	{
+		for (FNetworkGUID SyncLoadedGUID : TrackedSyncLoadedGUIDs)
+		{
+			const UObject* LoadedObject = GetObjectFromNetGUID(SyncLoadedGUID, false);
+		
+			FNetSyncLoadReport Report;
+			Report.Type = ENetSyncLoadType::PropertyReference;
+			Report.NetDriver = Connection ? Connection->Driver : nullptr;
+			Report.OwningObject = Object;
+			Report.Property = Property;
+			Report.LoadedObject = LoadedObject;
+			FNetDelegates::OnSyncLoadDetected.Broadcast(Report);
+
+			// Remove the GUID from cache tracking so we don't log duplicates.
+			GuidCache->ClearSyncLoadedGUID(SyncLoadedGUID);
+		}
+	}
+
+	ResetTrackedSyncLoadedGuids();
+}
+
+void UPackageMapClient::ReportSyncLoadsForActorSpawn(const AActor* Actor)
+{
+	if (bNetReportSyncLoads)
+	{
+		for (FNetworkGUID SyncLoadedGUID : TrackedSyncLoadedGUIDs)
+		{
+			const UObject* LoadedObject = GetObjectFromNetGUID(SyncLoadedGUID, false);
+		
+			FNetSyncLoadReport Report;
+			Report.Type = ENetSyncLoadType::ActorSpawn;
+			Report.NetDriver = Connection ? Connection->Driver : nullptr;
+			Report.OwningObject = Actor;
+			Report.LoadedObject = LoadedObject;
+			FNetDelegates::OnSyncLoadDetected.Broadcast(Report);
+
+			// Remove the GUID from cache tracking so we don't log duplicates.
+			GuidCache->ClearSyncLoadedGUID(SyncLoadedGUID);
+		}
+	}
+
+	ResetTrackedSyncLoadedGuids();
 }
 
 /**
@@ -3199,6 +3292,7 @@ UObject* FNetGUIDCache::GetObjectFromNetGUID( const FNetworkGUID& NetGUID, const
 			{
 				// Async loading disabled
 				Object = LoadPackage( NULL, *CacheObjectPtr->PathName.ToString(), LOAD_None );
+				SyncLoadedGUIDs.AddUnique(NetGUID);
 			}
 		}
 		else
@@ -3256,6 +3350,7 @@ UObject* FNetGUIDCache::GetObjectFromNetGUID( const FNetworkGUID& NetGUID, const
 				// If package isn't fully loaded, load it now
 				UE_LOG(LogNetPackageMap, Log, TEXT("GetObjectFromNetGUID: Blocking load of %s, NetGUID: %s"), *CacheObjectPtr->PathName.ToString(), *NetGUID.ToString());
 				Object = LoadPackage(NULL, *CacheObjectPtr->PathName.ToString(), LOAD_None);
+				SyncLoadedGUIDs.AddUnique(NetGUID);
 			}
 			else
 			{
@@ -3755,6 +3850,25 @@ void FNetGUIDCache::UpdateQueuedBunchObjectReference(const FNetworkGUID NetGUID,
 			ObjectReference->Object = NewObject;
 		}
 	}
+}
+
+void FNetGUIDCache::ReportSyncLoadedGUIDs()
+{
+	if (bNetReportSyncLoads)
+	{
+		// Log all sync loaded packages that weren't logged previously for being associated with specific properties
+		for (FNetworkGUID SyncLoadedGUID : SyncLoadedGUIDs)
+		{	
+			const UObject* LoadedObject = GetObjectFromNetGUID(SyncLoadedGUID, false);
+
+			FNetSyncLoadReport Report;
+			Report.Type = ENetSyncLoadType::Unknown;
+			Report.NetDriver = Driver;
+			Report.LoadedObject = LoadedObject;
+			FNetDelegates::OnSyncLoadDetected.Broadcast(Report);
+		}
+	}
+	SyncLoadedGUIDs.Reset();
 }
 
 //------------------------------------------------------

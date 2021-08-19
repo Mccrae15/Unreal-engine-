@@ -168,7 +168,7 @@ class ULandscapeHeightfieldCollisionComponent : public UPrimitiveComponent
 	/** Cached PxHeightFieldSamples values for navmesh generation. Note that it's being used only if navigation octree is set up for lazy geometry exporting */
 	int32 HeightfieldRowsCount;
 	int32 HeightfieldColumnsCount;
-	mutable FNavHeightfieldSamples CachedHeightFieldSamples;
+	FNavHeightfieldSamples CachedHeightFieldSamples;
 
 	enum ECollisionQuadFlags : uint8
 	{
@@ -269,8 +269,15 @@ public:
 	LANDSCAPE_API void SnapFoliageInstances();
 #endif
 
-	public:
+public:
 	TOptional<float> GetHeight(float X, float Y);
+
+	/**
+	 * Populates a supplied array with the heights from the heightfield.  Samples are placed
+	 * in a tile defined by the starting point (Offset) and the stride/row
+	 */
+	LANDSCAPE_API bool FillHeightTile(TArrayView<float> Heights, int32 Offset, int32 Stride) const;
+	LANDSCAPE_API bool FillMaterialIndexTile(TArrayView<uint8> Materials, int32 Offset, int32 Stride) const;
 };
 
 

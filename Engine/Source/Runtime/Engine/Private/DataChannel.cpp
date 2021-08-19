@@ -165,9 +165,6 @@ int64 UChannel::Close(EChannelCloseReason Reason)
 			check(!CloseBunch.IsError());
 			check(CloseBunch.bClose);
 			CloseBunch.bReliable = 1;
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			CloseBunch.bDormant = Dormant;
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			CloseBunch.CloseReason = Reason;
 			SendBunch( &CloseBunch, 0 );
 			NumBits = CloseBunch.GetNumBits();
@@ -236,6 +233,11 @@ bool UChannel::CleanUp(const bool bForDestroy, EChannelCloseReason CloseReason)
 	{
 		delete InPartialBunch;
 		InPartialBunch = NULL;
+	}
+
+	if (ChIndex != INDEX_NONE && Connection->IsReservingDestroyedChannels())
+	{
+		Connection->AddReservedChannel(ChIndex);
 	}
 
 	// Remove from connection's channel table.
@@ -411,9 +413,7 @@ bool UChannel::ReceivedSequencedBunch( FInBunch& Bunch )
 	// We have fully received the bunch, so process it.
 	if( Bunch.bClose )
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		Dormant = Bunch.bDormant || (Bunch.CloseReason == EChannelCloseReason::Dormancy);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		Dormant = (Bunch.CloseReason == EChannelCloseReason::Dormancy);
 
 		// Handle a close-notify.
 		if( InRec )
@@ -426,7 +426,7 @@ bool UChannel::ReceivedSequencedBunch( FInBunch& Bunch )
 			UE_LOG(LogNet, Log, TEXT("UChannel::ReceivedSequencedBunch: Bunch.bClose == true. ChIndex == 0. Calling ConditionalCleanUp.") );
 		}
 
-		UE_LOG(LogNetTraffic, Log, TEXT("UChannel::ReceivedSequencedBunch: Bunch.bClose == true. Calling ConditionalCleanUp. ChIndex: %i"), ChIndex );
+		UE_LOG(LogNetTraffic, Log, TEXT("UChannel::ReceivedSequencedBunch: Bunch.bClose == true. Calling ConditionalCleanUp. ChIndex: %i Reason: %s"), ChIndex, LexToString(Bunch.CloseReason));
 
 		ConditionalCleanUp(false, Bunch.CloseReason);
 		return true;
@@ -695,9 +695,6 @@ bool UChannel::ReceivedNextBunch( FInBunch & Bunch, bool & bOutSkipAck )
 
 					InPartialBunch->bPartialFinal			= true;
 					InPartialBunch->bClose					= Bunch.bClose;
-					PRAGMA_DISABLE_DEPRECATION_WARNINGS
-					InPartialBunch->bDormant				= Bunch.bDormant;
-					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 					InPartialBunch->CloseReason				= Bunch.CloseReason;
 					InPartialBunch->bIsReplicationPaused	= Bunch.bIsReplicationPaused;
 					InPartialBunch->bHasMustBeMappedGUIDs	= Bunch.bHasMustBeMappedGUIDs;
@@ -880,9 +877,6 @@ UActorChannel::UActorChannel(const FObjectInitializer& ObjectInitializer)
 	, bBlockChannelFailure(false)
 #endif
 {
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	ChType = CHTYPE_Actor;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	ChName = NAME_Actor;
 	bClearRecentActorRefs = true;
 	bHoldQueuedExportBunchesAndGUIDs = false;
@@ -949,7 +943,6 @@ void UActorChannel::AppendMustBeMappedGuids( FOutBunch* Bunch )
 	Super::AppendMustBeMappedGuids( Bunch );
 }
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FPacketIdRange UChannel::SendBunch( FOutBunch* Bunch, bool Merge )
 {
 	if (!ensure(ChIndex != -1))
@@ -1154,11 +1147,9 @@ FPacketIdRange UChannel::SendBunch( FOutBunch* Bunch, bool Merge )
 		NextBunch->bReliable = Bunch->bReliable;
 		NextBunch->bOpen = Bunch->bOpen;
 		NextBunch->bClose = Bunch->bClose;
-		NextBunch->bDormant = Bunch->bDormant;
 		NextBunch->CloseReason = Bunch->CloseReason;
 		NextBunch->bIsReplicationPaused = Bunch->bIsReplicationPaused;
 		NextBunch->ChIndex = Bunch->ChIndex;
-		NextBunch->ChType = Bunch->ChType;
 		NextBunch->ChName = Bunch->ChName;
 
 		if ( !NextBunch->bHasPackageMapExports )
@@ -1216,7 +1207,6 @@ FPacketIdRange UChannel::SendBunch( FOutBunch* Bunch, bool Merge )
 
 	return PacketIdRange;
 }
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /** This returns a pointer to Bunch, but it may either be a direct pointer, or a pointer to a copied instance of it */
 
@@ -1980,7 +1970,7 @@ int64 UActorChannel::Close(EChannelCloseReason Reason)
 						Actor->NetDormancy = DORM_DormantAll;
 					}
 
-					check( Actor->NetDormancy > DORM_Awake ); // Dormancy should have been canceled if game code changed NetDormancy
+					ensureMsgf(Actor->NetDormancy > DORM_Awake, TEXT("Dormancy should have been canceled if game code changed NetDormancy: %s [%s]"), *GetFullNameSafe(Actor), *UEnum::GetValueAsString(TEXT("/Script/Engine.ENetDormancy"), Actor->NetDormancy));
 					Connection->Driver->NotifyActorFullyDormantForConnection(Actor, Connection);
 				}
 
@@ -2403,10 +2393,7 @@ int64 UActorChannel::SetChannelActorForDestroy( FActorDestructionInfo *DestructI
 		check(!CloseBunch.IsError());
 		check(CloseBunch.bClose);
 		CloseBunch.bReliable = 1;
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		CloseBunch.bDormant = 0;
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
-			CloseBunch.CloseReason = DestructInfo->Reason;
+		CloseBunch.CloseReason = DestructInfo->Reason;
 
 		// Serialize DestructInfo
 		NET_CHECKSUM(CloseBunch); // This is to mirror the Checksum in UPackageMapClient::SerializeNewActor
@@ -2664,7 +2651,7 @@ void UActorChannel::ReceivedBunch( FInBunch & Bunch )
 		{
 			if (Connection->KeepProcessingActorChannelBunchesMap.Contains(ActorNetGUID))
 			{
-				UE_LOG(LogNet, Log, TEXT("UActorChannel::ReceivedBunch: Queuing bunch because another channel (that closed) is processing bunches for this guid still. ActorNetGUID: %s"), *ActorNetGUID.ToString());
+				UE_LOG(LogNet, Verbose, TEXT("UActorChannel::ReceivedBunch: Queuing bunch because another channel (that closed) is processing bunches for this guid still. ActorNetGUID: %s"), *ActorNetGUID.ToString());
 			}
 
 			if (QueuedBunches.Num() == 0)
@@ -4325,7 +4312,7 @@ FAutoConsoleCommandWithWorld DeleteDormantActorCommand(
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 static void	FindNetGUID( const TArray<FString>& Args, UWorld* InWorld )
 {
-	for (FObjectIterator ObjIt(UNetDriver::StaticClass()); ObjIt; ++ObjIt)
+	for (FThreadSafeObjectIterator ObjIt(UNetDriver::StaticClass()); ObjIt; ++ObjIt)
 	{
 		UNetDriver * Driver = Cast< UNetDriver >( *ObjIt );
 

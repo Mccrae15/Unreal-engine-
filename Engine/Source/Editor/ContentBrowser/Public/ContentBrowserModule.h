@@ -11,6 +11,8 @@
 class IContentBrowserSingleton;
 struct FARFilter;
 class FMainMRUFavoritesList;
+class FContentBrowserPluginFilter;
+
 
 /** Extra state generator that adds an icon and a corresponding legend entry on an asset. */
 class FAssetViewExtraStateGenerator
@@ -53,6 +55,8 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam( FOnSourcesViewChanged, bool /*bExpanded*/ );
 	/** */
 	DECLARE_MULTICAST_DELEGATE_OneParam( FOnAssetPathChanged, const FString& /*NewPath*/ );
+	/** */
+	DECLARE_DELEGATE_OneParam( FAddPathViewPluginFilters, TArray<TSharedRef<FContentBrowserPluginFilter>>& /*Filters*/ );
 
 	/**
 	 * Called right after the plugin DLL has been loaded and the plugin object has been created
@@ -97,6 +101,9 @@ public:
 	/** Delegates to be called to extend the drag-and-drop support of the asset view */
 	virtual TArray<FAssetViewDragAndDropExtender>& GetAssetViewDragAndDropExtenders() { return AssetViewDragAndDropExtenders; }
 
+	/** Delegates to be called to extend list of content browser Plugin Filters*/
+	virtual TArray<FAddPathViewPluginFilters>& GetAddPathViewPluginFilters() { return PathViewPluginFilters; }
+
 	/** Delegate accessors */
 	FOnFilterChanged& GetOnFilterChanged() { return OnFilterChanged; } 
 	FOnSearchBoxChanged& GetOnSearchBoxChanged() { return OnSearchBoxChanged; } 
@@ -111,9 +118,30 @@ public:
 
 	static const FName NumberOfRecentAssetsName;
 
+	void AddDynamicTagAssetClass(const FName& InName) 
+	{
+		AssetClassesRequiringDynamicTags.AddUnique(InName);
+	}
+
+
+	void RemoveDynamicTagAssetClass(const FName& InName)
+	{
+		AssetClassesRequiringDynamicTags.Remove(InName);
+	}
+		
+	bool IsDynamicTagAssetClass(const FName& InName)
+	{
+		return AssetClassesRequiringDynamicTags.Contains(InName);
+	}
+	
+	
+
 private:
 	/** Resize the recently opened asset list */
 	void ResizeRecentAssetList(FName InName);
+	
+	/** List of asset classes whose tags are dynamic and therefore we should union all asset's tags rather than grabbing the first available. */
+	TArray<FName> AssetClassesRequiringDynamicTags;
 
 private:
 	IContentBrowserSingleton* ContentBrowserSingleton;
@@ -133,6 +161,9 @@ private:
 
 	/** All extender delegates for the drag-and-drop support of the asset view */
 	TArray<FAssetViewDragAndDropExtender> AssetViewDragAndDropExtenders;
+
+	/** All delegates that extend available path view plugin filters */
+	TArray<FAddPathViewPluginFilters> PathViewPluginFilters;
 
 	TUniquePtr<FMainMRUFavoritesList> RecentlyOpenedAssets;
 

@@ -15,20 +15,25 @@ public class RemoteControlUI : ModuleRules
 				"ApplicationCore",
 				"AssetRegistry",
 				"AssetTools",
-				"PropertyEditor",
+				"ClassViewer",
 				"Core",
 				"CoreUObject",
+				"DeveloperSettings",
 				"EditorWidgets",
 				"EditorStyle",
 				"Engine",
 				"HotReload",
 				"InputCore",
+				"MessageLog",
 				"Projects",
+				"PropertyEditor",
 				"RemoteControl",
+				"RemoteControlCommon",
+				"RemoteControlProtocolWidgets",
+				"SceneOutliner",
 				"Slate",
 				"SlateCore",
-				"UnrealEd",
-				"WebRemoteControl"
+				"UnrealEd"
 			}
 		);
     }

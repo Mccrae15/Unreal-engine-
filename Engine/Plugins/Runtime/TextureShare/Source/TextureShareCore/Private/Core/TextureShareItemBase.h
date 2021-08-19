@@ -34,6 +34,7 @@ namespace TextureShareItem
 
 		virtual bool SetTextureGPUIndex(const FString& TextureName, uint32 GPUIndex) override;
 		virtual bool SetDefaultGPUIndex(uint32 GPUIndex) override;
+		virtual void SetSyncWaitTime(float InSyncWaitTime) override;
 
 		virtual bool IsLocalTextureUsed(const FString& TextureName) const override
 			{ return IsTextureUsed(true, TextureName); }
@@ -50,6 +51,9 @@ namespace TextureShareItem
 		virtual bool EndFrame_RenderThread() override;
 		virtual bool SetLocalAdditionalData(const FTextureShareAdditionalData& InAdditionalData) override;
 		virtual bool GetRemoteAdditionalData(FTextureShareAdditionalData& OutAdditionalData) override;
+
+		virtual bool SetCustomProjectionData(const FTextureShareCustomProjectionData& InCustomProjectionData) override;
+
 
 		virtual ETextureShareDevice GetDeviceType() const override
 			{ return ETextureShareDevice::Undefined; }
@@ -129,6 +133,7 @@ namespace TextureShareItem
 		FSharedResource*           SharedResource = nullptr;
 		bool                       bIsSessionStarted = false;
 		bool                       bRemoteConnectionValid = false;
+		float                      SyncWaitTime = 0.03f;
 
 	private:
 		mutable FCriticalSection FrameLockGuard;

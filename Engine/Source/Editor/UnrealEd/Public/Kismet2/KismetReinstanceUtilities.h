@@ -19,7 +19,8 @@ enum class EBlueprintCompileReinstancerFlags
 
 	BytecodeOnly			= 0x1,
 	AutoInferSaveOnCompile	= 0x2,
-	AvoidCDODuplication		= 0x4
+	AvoidCDODuplication		= 0x4,
+	UseDeltaSerialization	= 0x8,
 };
 
 ENUM_CLASS_FLAGS(EBlueprintCompileReinstancerFlags)
@@ -103,9 +104,6 @@ protected:
 	/** Children of this blueprint, which will need to be recompiled and relinked temporarily to maintain the class layout */
 	TArray<UBlueprint*> Children;
 
-	/** Bytecode dependent blueprints, which will need to be updated after the compilation */
-	TArray<UBlueprint*> Dependencies;
-
 	/** Mappings from old fields before recompilation to their new equivalents */
 	TMap<FName, FProperty*> PropertyMap;
 	TMap<FName, UFunction*> FunctionMap;
@@ -133,6 +131,9 @@ protected:
 
 	/** TRUE if this reinstancer should resave compiled Blueprints if the user has requested it */
 	bool bAllowResaveAtTheEndIfRequested;
+
+	/** TRUE if delta serialization should be forced during FBlueprintCompileReinstancer::CopyPropertiesForUnrelatedObjects */
+	bool bUseDeltaSerializationToCopyProperties;
 
 public:
 	// FSerializableObject interface
@@ -173,6 +174,20 @@ public:
 	
 	/** Function used to safely discard a CDO, so that the class can have its layout changed, callers must move parent CDOs aside before moving child CDOs aside: */
 	static UClass* MoveCDOToNewClass(UClass* OwnerClass, const TMap<UClass*, UClass*>& OldToNewMap, bool bAvoidCDODuplication);
+
+	/**
+	* Moves CDOs aside to immutable versions of classes(`REINST`) so that the CDO's can safely be GC'd.
+	* These `REINST` classes will be re-parented to a native parent that we know will not be churning
+	* through this function again later, so we avoid O(N^2) processing of REINST classes.
+	* Maps each given `SKEL` class to its appropriate `REINST` version of itself
+	*/
+	static void MoveDependentSkelToReinst(UClass* OwnerClass, TMap<UClass*, UClass*>& OldToNewMap);
+
+	/** Gathers the full class Hierarchy of the ClassToSearch, sorted top down (0 index being UObject, n being the subclasses) */
+	static void GetSortedClassHierarchy(UClass* ClassToSearch, TArray<UClass*>& OutHierarchy, UClass** OutNativeParent);
+
+	/** Returns true if the given class is a REINST class (starts with the 'REINST_' prefix) */
+	static bool IsReinstClass(const UClass* Class);
 
 	/**
 	 * When re-instancing a component, we have to make sure all instance owners' 
@@ -227,9 +242,21 @@ protected:
 	/** Determine whether reinstancing actors should preserve the root component of the new actor */
 	virtual bool ShouldPreserveRootComponentOfReinstancedActor() const { return true; }
 
-	static void CopyPropertiesForUnrelatedObjects(UObject* OldObject, UObject* NewObject, bool bClearExternalReferences);
+	/**
+	* Attempts to copy as many properties as possible from the old object to the new. 
+	* Use during BP compilation to copy properties from the old CDO to the new one.
+	* 
+	* @param OldObject						The old object to copy properties from
+	* @param NewObject						The new Object to copy properties to
+	* @param bClearExternalReferences		If true then attempt to replace references to old classes and instances on this object with the corresponding new ones
+	* @param bForceDeltaSerialization		If true the delta serialization will be used when copying
+	*/
+	static void CopyPropertiesForUnrelatedObjects(UObject* OldObject, UObject* NewObject, bool bClearExternalReferences, bool bForceDeltaSerialization = false);
 
 private:
 	/** Handles the work of ReplaceInstancesOfClass, handling both normal replacement of instances and batch */
 	static void ReplaceInstancesOfClass_Inner(TMap<UClass*, UClass*>& InOldToNewClassMap, UObject* InOriginalCDO, TSet<UObject*>* ObjectsThatShouldUseOldStuff = NULL, bool bClassObjectReplaced = false, bool bPreserveRootComponent = true, bool bArchetypesAreUpToDate = false, const TSet<UObject*>* InstancesThatShouldUseOldClass = nullptr, bool bReplaceReferencesToOldClasses = false);
+
+	/** Returns true if A is higher up the class hierarchy  */
+	static bool ReinstancerOrderingFunction(UClass* A, UClass* B);
 };

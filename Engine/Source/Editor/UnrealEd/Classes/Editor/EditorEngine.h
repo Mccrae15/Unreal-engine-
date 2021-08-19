@@ -30,6 +30,7 @@
 #include "Subsystems/SubsystemCollection.h"
 #include "RHI.h"
 #include "UnrealEngine.h"
+#include "Templates/UniqueObj.h"
 
 #include "EditorEngine.generated.h"
 
@@ -968,25 +969,24 @@ public:
 	FText GetTransactionName() const;
 	bool IsObjectInTransactionBuffer( const UObject* Object ) const;
 
-	/**
-	 * Rebuilds the map.
-	 *
-	 * @param bBuildAllVisibleMaps	Whether or not to rebuild all visible maps, if false only the current level will be built.
-	 */
 	enum EMapRebuildType
 	{
+		/** Rebuild only the current level */
 		MRT_Current				= 0,
+		/** Rebuild all levels currently marked as visible */
 		MRT_AllVisible			= 1,
+		/** Rebuilt all levels currently marked as dirty for lighting */
 		MRT_AllDirtyForLighting	= 2,
 	};
 
 	/**
 	 * Rebuilds the map.
 	 *
-	 * @param bBuildAllVisibleMaps	Whether or not to rebuild all visible maps, if false only the current level will be built.
+	 * @param RebuildMap	The map to be rebuilt
+	 * @param RebuildType	Allows to filter which of the map's level should be rebuilt
 	 */
-	void RebuildMap(UWorld* InWorld, EMapRebuildType RebuildType);
-
+	void RebuildMap(UWorld* RebuildMap, EMapRebuildType RebuildType);
+	
 	/**
 	 * Quickly rebuilds a single level (no bounds build, visibility testing or Bsp tree optimization).
 	 *
@@ -2533,7 +2533,7 @@ public:
 	/**
 	 * Prompts the user to save the current map if necessary, then creates a new (blank) map.
 	 */
-	void CreateNewMapForEditing();
+	void CreateNewMapForEditing(bool bPromptUserToSave = true);
 
 	/**
 	 * If a PIE world exists, give the user the option to terminate it.
@@ -3264,7 +3264,7 @@ public:
 	UEditorSubsystem* GetEditorSubsystemBase(TSubclassOf<UEditorSubsystem> SubsystemClass) const
 	{
 		checkSlow(this != nullptr);
-		return EditorSubsystemCollection.GetSubsystem<UEditorSubsystem>(SubsystemClass);
+		return EditorSubsystemCollection->GetSubsystem<UEditorSubsystem>(SubsystemClass);
 	}
 
 	/**
@@ -3274,7 +3274,7 @@ public:
 	TSubsystemClass* GetEditorSubsystem() const
 	{
 		checkSlow(this != nullptr);
-		return EditorSubsystemCollection.GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
+		return EditorSubsystemCollection->GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
 	}
 
 	/**
@@ -3285,11 +3285,15 @@ public:
 	template <typename TSubsystemClass>
 	const TArray<TSubsystemClass*>& GetEditorSubsystemArray() const
 	{
-		return EditorSubsystemCollection.GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
+		return EditorSubsystemCollection->GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
 	}
 
 private:
-	FSubsystemCollection<UEditorSubsystem> EditorSubsystemCollection;
+	// TUniqueObj is used here to work around a hot reload issue caused by FSubsystemCollection inheriting FGCObject.
+	// When hot reload occurs, the CDO for this type can be reconstructed over the same object at the same address without
+	// destroying it first, which breaks FGCObject.
+	// TUniquePtr makes sure the object is allocated on the heap, giving it a unique address.
+	TUniqueObj<FSubsystemCollection<UEditorSubsystem>> EditorSubsystemCollection;
 
 	// DEPRECATED VARIABLES ONLY
 public:

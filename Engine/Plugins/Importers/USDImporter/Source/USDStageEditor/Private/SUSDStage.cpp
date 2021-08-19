@@ -9,7 +9,10 @@
 #include "UnrealUSDWrapper.h"
 #include "USDErrorUtils.h"
 #include "USDLayerUtils.h"
+#include "USDSchemasModule.h"
+#include "USDSchemaTranslator.h"
 #include "USDStageActor.h"
+#include "USDStageEditorSettings.h"
 #include "USDStageImportContext.h"
 #include "USDStageImporter.h"
 #include "USDStageImporterModule.h"
@@ -29,6 +32,7 @@
 #include "ScopedTransaction.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Widgets/Layout/SSplitter.h"
+#include "Engine/Selection.h"
 
 #define LOCTEXT_NAMESPACE "SUsdStage"
 
@@ -39,19 +43,74 @@ namespace SUSDStageConstants
 	static const FMargin SectionPadding( 1.f, 4.f, 1.f, 1.f );
 }
 
+namespace SUSDStageImpl
+{
+	void SelectGeneratedComponentsAndActors( AUsdStageActor* StageActor, const TArray<FString>& PrimPaths )
+	{
+		if ( !StageActor )
+		{
+			return;
+		}
+
+		TSet<USceneComponent*> ComponentsToSelect;
+		for ( const FString& PrimPath : PrimPaths )
+		{
+			if ( USceneComponent* GeneratedComponent = StageActor->GetGeneratedComponent( PrimPath ) )
+			{
+				ComponentsToSelect.Add( GeneratedComponent );
+			}
+		}
+
+		TSet<AActor*> ActorsToSelect;
+		for ( USceneComponent* ComponentToSelect : ComponentsToSelect )
+		{
+			if ( AActor* Owner = ComponentToSelect->GetOwner() )
+			{
+				// We always need the parent actor selected to select a component
+				ActorsToSelect.Add( Owner );
+			}
+		}
+
+		// Don't deselect anything if we're not going to select anything
+		if ( ActorsToSelect.Num() == 0 && ComponentsToSelect.Num() == 0 )
+		{
+			return;
+		}
+
+		const bool bSelected = true;
+		const bool bNotifySelectionChanged = true;
+		const bool bDeselectBSPSurfs = true;
+		GEditor->SelectNone( bNotifySelectionChanged, bDeselectBSPSurfs );
+
+		for ( AActor* Actor : ActorsToSelect )
+		{
+			GEditor->SelectActor( Actor, bSelected, bNotifySelectionChanged );
+		}
+
+		for ( USceneComponent* Component : ComponentsToSelect )
+		{
+			GEditor->SelectComponent( Component, bSelected, bNotifySelectionChanged );
+		}
+	}
+}
+
 void SUsdStage::Construct( const FArguments& InArgs )
 {
 	OnStageActorPropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP( SharedThis( this ), &SUsdStage::OnStageActorPropertyChanged );
 	OnActorLoadedHandle = AUsdStageActor::OnActorLoaded.AddSP( SharedThis( this ), &SUsdStage::OnStageActorLoaded );
 
+	OnViewportSelectionChangedHandle = USelection::SelectionChangedEvent.AddRaw( this, &SUsdStage::OnViewportSelectionChanged );
+
 	IUsdStageModule& UsdStageModule = FModuleManager::Get().LoadModuleChecked< IUsdStageModule >( "UsdStage" );
 	ViewModel.UsdStageActor = &UsdStageModule.GetUsdStageActor( GWorld );
+
+	bUpdatingViewportSelection = false;
 
 	UE::FUsdStage UsdStage;
 
 	if ( ViewModel.UsdStageActor.IsValid() )
 	{
-		UsdStage = ViewModel.UsdStageActor->GetUsdStage();
+		UsdStage = ViewModel.UsdStageActor->GetOrLoadUsdStage();
 	}
 
 	ChildSlot
@@ -66,18 +125,6 @@ void SUsdStage::Construct( const FArguments& InArgs )
 			.AutoHeight()
 			[
 				MakeMainMenu()
-			]
-
-			// Stage Info
-			+SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding( SUSDStageConstants::SectionPadding )
-			[
-				SNew(SBorder)
-				.BorderImage( FEditorStyle::GetBrush(TEXT("ToolPanel.GroupBorder")) )
-				[
-					SAssignNew( UsdStageInfoWidget, SUsdStageInfo, ViewModel.UsdStageActor.Get() )
-				]
 			]
 
 			+SVerticalBox::Slot()
@@ -100,7 +147,7 @@ void SUsdStage::Construct( const FArguments& InArgs )
 						.BorderImage( FEditorStyle::GetBrush(TEXT("ToolPanel.GroupBorder")) )
 						[
 							SAssignNew( UsdStageTreeView, SUsdStageTreeView, ViewModel.UsdStageActor.Get() )
-							.OnPrimSelected( this, &SUsdStage::OnPrimSelected )
+							.OnPrimSelectionChanged( this, &SUsdStage::OnPrimSelectionChanged )
 						]
 					]
 
@@ -134,21 +181,33 @@ void SUsdStage::Construct( const FArguments& InArgs )
 
 void SUsdStage::SetupStageActorDelegates()
 {
+	ClearStageActorDelegates();
+
 	if ( ViewModel.UsdStageActor.IsValid() )
 	{
-		ClearStageActorDelegates();
-
 		OnPrimChangedHandle = ViewModel.UsdStageActor->OnPrimChanged.AddLambda(
 			[ this ]( const FString& PrimPath, bool bResync )
 			{
 				if ( this->UsdStageTreeView )
 				{
 					this->UsdStageTreeView->RefreshPrim( PrimPath, bResync );
+					UsdStageTreeView->RequestTreeRefresh();
 				}
 
-				if ( this->UsdPrimInfoWidget && ViewModel.UsdStageActor.IsValid() && SelectedPrimPath.Equals( PrimPath, ESearchCase::IgnoreCase ) )
+				const bool bViewingTheUpdatedPrim = SelectedPrimPath.Equals( PrimPath, ESearchCase::IgnoreCase );
+				const bool bViewingStageProperties = SelectedPrimPath.IsEmpty() || SelectedPrimPath == TEXT("/");
+				const bool bStageUpdated = PrimPath == TEXT("/");
+
+				if ( this->UsdPrimInfoWidget &&
+					 ViewModel.UsdStageActor.IsValid() &&
+					 ( bViewingTheUpdatedPrim || ( bViewingStageProperties && bStageUpdated ) ) )
 				{
-					this->UsdPrimInfoWidget->SetPrimPath( ViewModel.UsdStageActor->GetUsdStage(), *PrimPath );
+					this->UsdPrimInfoWidget->SetPrimPath( ViewModel.UsdStageActor->GetOrLoadUsdStage(), *PrimPath );
+				}
+
+				if ( PrimPath == TEXT("/") && this->UsdStageInfoWidget )
+				{
+					this->UsdStageInfoWidget->RefreshStageInfos( ViewModel.UsdStageActor.Get() );
 				}
 			}
 		);
@@ -157,26 +216,19 @@ void SUsdStage::SetupStageActorDelegates()
 		OnStageChangedHandle = ViewModel.UsdStageActor->OnStageChanged.AddLambda(
 			[ this ]()
 			{
-				if ( ViewModel.UsdStageActor.IsValid() )
+				// So we can reset even if our actor is being destroyed right now
+				const bool bEvenIfPendingKill = true;
+				if ( ViewModel.UsdStageActor.IsValid( bEvenIfPendingKill ) )
 				{
 					if ( this->UsdPrimInfoWidget )
 					{
-						this->UsdPrimInfoWidget->SetPrimPath( ViewModel.UsdStageActor->GetUsdStage(), TEXT("/") );
+						// The cast here forces us to use the const version of GetUsdStage, that won't force-load the stage in case it isn't opened yet
+						const UE::FUsdStage& UsdStage = static_cast< const AUsdStageActor* >( ViewModel.UsdStageActor.Get( bEvenIfPendingKill ) )->GetUsdStage();
+						this->UsdPrimInfoWidget->SetPrimPath( UsdStage, TEXT("/") );
 					}
 				}
 
 				this->Refresh();
-			}
-		);
-
-		// Fired when the currently opened stage changes its info (e.g. startTimeSeconds, framesPerSecond, etc.)
-		OnStageInfoChangedHandle = ViewModel.UsdStageActor->GetUsdListener().GetOnStageInfoChanged().AddLambda(
-			[ this ]( const TArray< FString >& ChangedFields )
-			{
-				if ( this->UsdStageInfoWidget )
-				{
-					this->UsdStageInfoWidget->RefreshStageInfos( ViewModel.UsdStageActor.Get() );
-				}
 			}
 		);
 
@@ -204,14 +256,14 @@ void SUsdStage::SetupStageActorDelegates()
 
 void SUsdStage::ClearStageActorDelegates()
 {
-	if ( ViewModel.UsdStageActor.IsValid() )
+	const bool bEvenIfPendingKill = true;
+	if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get( bEvenIfPendingKill ) )
 	{
-		ViewModel.UsdStageActor->OnStageChanged.Remove( OnStageChangedHandle );
-		ViewModel.UsdStageActor->OnPrimChanged.Remove( OnPrimChangedHandle );
-		ViewModel.UsdStageActor->OnActorDestroyed.Remove ( OnActorDestroyedHandle );
+		StageActor->OnStageChanged.Remove( OnStageChangedHandle );
+		StageActor->OnPrimChanged.Remove( OnPrimChangedHandle );
+		StageActor->OnActorDestroyed.Remove ( OnActorDestroyedHandle );
 
-		ViewModel.UsdStageActor->GetUsdListener().GetOnStageEditTargetChanged().Remove( OnStageEditTargetChangedHandle );
-		ViewModel.UsdStageActor->GetUsdListener().GetOnStageInfoChanged().Remove( OnStageInfoChangedHandle );
+		StageActor->GetUsdListener().GetOnStageEditTargetChanged().Remove( OnStageEditTargetChangedHandle );
 	}
 }
 
@@ -219,6 +271,7 @@ SUsdStage::~SUsdStage()
 {
 	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove( OnStageActorPropertyChangedHandle );
 	AUsdStageActor::OnActorLoaded.Remove( OnActorLoadedHandle );
+	USelection::SelectionChangedEvent.Remove( OnViewportSelectionChangedHandle );
 
 	ClearStageActorDelegates();
 }
@@ -258,7 +311,7 @@ void SUsdStage::FillFileMenu( FMenuBuilder& MenuBuilder )
 	MenuBuilder.BeginSection( "File", LOCTEXT("File", "File") );
 	{
 		MenuBuilder.AddMenuEntry(
-			LOCTEXT("New", "New..."),
+			LOCTEXT("New", "New"),
 			LOCTEXT("New_ToolTip", "Creates a new layer and opens the stage with it at its root"),
 			FSlateIcon(),
 			FUIAction(
@@ -348,8 +401,6 @@ void SUsdStage::FillOptionsMenu(FMenuBuilder& MenuBuilder)
 			LOCTEXT("Payloads_ToolTip", "What to do with payloads when initially opening the stage"),
 			FNewMenuDelegate::CreateSP(this, &SUsdStage::FillPayloadsSubMenu));
 
-		MenuBuilder.AddMenuSeparator();
-
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("PurposesToLoad", "Purposes to load"),
 			LOCTEXT("PurposesToLoad_ToolTip", "Only load prims with these specific purposes from the USD stage"),
@@ -357,6 +408,18 @@ void SUsdStage::FillOptionsMenu(FMenuBuilder& MenuBuilder)
 			false,
 			FSlateIcon(),
 			false);
+
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("RenderContext", "Render Context"),
+			LOCTEXT("RenderContext_ToolTip", "Choose which render context to use when parsing materials"),
+			FNewMenuDelegate::CreateSP(this, &SUsdStage::FillRenderContextSubMenu));
+
+		MenuBuilder.AddMenuSeparator();
+
+		MenuBuilder.AddSubMenu(
+			LOCTEXT( "SelectionText", "Selection" ),
+			LOCTEXT( "SelectionText_ToolTip", "How the selection of prims, actors and components should behave" ),
+			FNewMenuDelegate::CreateSP( this, &SUsdStage::FillSelectionSubMenu ) );
 	}
 	MenuBuilder.EndSection();
 }
@@ -484,14 +547,120 @@ void SUsdStage::FillPurposesToLoadSubMenu(FMenuBuilder& MenuBuilder)
 	AddPurposeEntry(EUsdPurpose::Guide,  LOCTEXT("GuidePurpose",  "Guide"));
 }
 
+void SUsdStage::FillRenderContextSubMenu( FMenuBuilder& MenuBuilder )
+{
+	auto AddRenderContextEntry = [&](const FName& RenderContext)
+	{
+		FText RenderContextName = FText::FromName( RenderContext );
+		if ( RenderContext.IsNone() )
+		{
+			RenderContextName = LOCTEXT("UniversalRenderContext", "Universal");
+		}
+
+		MenuBuilder.AddMenuEntry(
+			RenderContextName,
+			FText::GetEmpty(),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([this, RenderContext]()
+				{
+					if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+					{
+						FScopedTransaction Transaction(FText::Format(
+							LOCTEXT("RenderContextToLoadTransaction", "Change render context to load for USD stage actor '{0}'"),
+							FText::FromString(StageActor->GetActorLabel())
+						));
+
+						StageActor->Modify();
+						StageActor->RenderContext = RenderContext;
+
+						FPropertyChangedEvent PropertyChangedEvent(
+							FindFieldChecked< FProperty >( StageActor->GetClass(), GET_MEMBER_NAME_CHECKED( AUsdStageActor, RenderContext ) )
+						);
+						StageActor->PostEditChangeProperty(PropertyChangedEvent);
+					}
+				}),
+				FCanExecuteAction::CreateLambda([this]()
+				{
+					return ViewModel.UsdStageActor.Get() != nullptr;
+				}),
+				FIsActionChecked::CreateLambda([this, RenderContext]()
+				{
+					if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
+					{
+						return StageActor->RenderContext == RenderContext;
+					}
+					return false;
+				})
+			),
+			NAME_None,
+			EUserInterfaceActionType::RadioButton
+		);
+	};
+
+	IUsdSchemasModule& UsdSchemasModule = FModuleManager::Get().LoadModuleChecked< IUsdSchemasModule >( TEXT("USDSchemas") );
+
+	for ( const FName& RenderContext : UsdSchemasModule.GetRenderContextRegistry().GetRenderContexts() )
+	{
+		AddRenderContextEntry( RenderContext );
+	}
+}
+
+void SUsdStage::FillSelectionSubMenu( FMenuBuilder& MenuBuilder )
+{
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT( "SynchronizeText", "Synchronize with Editor" ),
+		FText::GetEmpty(),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([this]()
+			{
+				if ( UUsdStageEditorSettings* Settings = GetMutableDefault<UUsdStageEditorSettings>() )
+				{
+					Settings->bSelectionSynced = !Settings->bSelectionSynced;
+					Settings->SaveConfig();
+				}
+
+				// Immediately sync the selection, but only if the results are obvious (i.e. either our prim selection or viewport selection are empty)
+				if ( GEditor )
+				{
+					int32 NumPrimsSelected = UsdStageTreeView->GetNumItemsSelected();
+					int32 NumViewportSelected = FMath::Max( GEditor->GetSelectedComponentCount(), GEditor->GetSelectedActorCount() );
+
+					if ( NumPrimsSelected == 0 )
+					{
+						USelection* Selection = GEditor->GetSelectedComponentCount() > 0
+							? GEditor->GetSelectedComponents()
+							: GEditor->GetSelectedActors();
+
+						OnViewportSelectionChanged(Selection);
+					}
+					else if ( NumViewportSelected == 0 )
+					{
+						TGuardValue<bool> SelectionLoopGuard( bUpdatingViewportSelection, true );
+
+						SUSDStageImpl::SelectGeneratedComponentsAndActors( ViewModel.UsdStageActor.Get(), UsdStageTreeView->GetSelectedPrims() );
+					}
+				}
+			}),
+			FCanExecuteAction::CreateLambda([]()
+			{
+				return true;
+			}),
+			FIsActionChecked::CreateLambda([this]()
+			{
+				const UUsdStageEditorSettings* Settings = GetDefault<UUsdStageEditorSettings>();
+				return Settings && Settings->bSelectionSynced;
+			})
+		),
+		NAME_None,
+		EUserInterfaceActionType::Check
+	);
+}
+
 void SUsdStage::OnNew()
 {
-	TOptional< FString > UsdFilePath = UsdUtils::BrowseUsdFile( UsdUtils::EBrowseFileMode::Save, AsShared() );
-
-	if ( UsdFilePath )
-	{
-		ViewModel.NewStage( *UsdFilePath.GetValue() );
-	}
+	ViewModel.NewStage( nullptr );
 }
 
 void SUsdStage::OnOpen()
@@ -506,7 +675,31 @@ void SUsdStage::OnOpen()
 
 void SUsdStage::OnSave()
 {
-	ViewModel.SaveStage();
+	UE::FUsdStage UsdStage;
+	if ( ViewModel.UsdStageActor.IsValid() )
+	{
+		UsdStage = ViewModel.UsdStageActor->GetOrLoadUsdStage();
+	}
+
+	if ( UsdStage )
+	{
+		if ( UE::FSdfLayer RootLayer = UsdStage.GetRootLayer() )
+		{
+			FString RealPath = RootLayer.GetRealPath();
+			if ( FPaths::FileExists( RealPath ) )
+			{
+				ViewModel.SaveStage();
+			}
+			else
+			{
+				TOptional< FString > UsdFilePath = UsdUtils::BrowseUsdFile( UsdUtils::EBrowseFileMode::Save, AsShared() );
+				if ( UsdFilePath )
+				{
+					ViewModel.SaveStageAs( *UsdFilePath.GetValue() );
+				}
+			}
+		}
+	}
 }
 
 void SUsdStage::OnReloadStage()
@@ -534,53 +727,54 @@ void SUsdStage::OnImport()
 	ViewModel.ImportStage();
 }
 
-void SUsdStage::OnPrimSelected( FString PrimPath )
+void SUsdStage::OnPrimSelectionChanged( const TArray<FString>& PrimPaths )
 {
+	AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get();
+	if ( !StageActor )
+	{
+		return;
+	}
+
 	if ( UsdPrimInfoWidget )
 	{
-		UE::FUsdStage UsdStage;
+		UE::FUsdStage UsdStage = StageActor->GetOrLoadUsdStage();
 
-		if ( ViewModel.UsdStageActor.IsValid() )
-		{
-			UsdStage = ViewModel.UsdStageActor->GetUsdStage();
-		}
+		SelectedPrimPath = PrimPaths.Num() == 1 ? PrimPaths[ 0 ] : TEXT( "" );
+		UsdPrimInfoWidget->SetPrimPath( UsdStage, *SelectedPrimPath );
+	}
 
-		SelectedPrimPath = PrimPath;
-		UsdPrimInfoWidget->SetPrimPath( UsdStage, *PrimPath );
+	const UUsdStageEditorSettings* Settings = GetDefault<UUsdStageEditorSettings>();
+	if ( Settings && Settings->bSelectionSynced && GEditor )
+	{
+		TGuardValue<bool> SelectionLoopGuard( bUpdatingViewportSelection, true );
+
+		SUSDStageImpl::SelectGeneratedComponentsAndActors( StageActor, PrimPaths );
 	}
 }
 
 void SUsdStage::OpenStage( const TCHAR* FilePath )
 {
-	// This scope is important so that we can resume monitoring the level sequence after our scoped transaction is finished
+	// Create the transaction before calling UsdStageModule.GetUsdStageActor as that may create the actor, and we want
+	// the actor spawning to be part of the transaction
+	FScopedTransaction Transaction( FText::Format(
+		LOCTEXT( "OpenStageTransaction", "Open USD stage '{0}'" ),
+		FText::FromString( FilePath )
+	) );
+
+	if ( !ViewModel.UsdStageActor.IsValid() )
 	{
-		// Create the transaction before calling UsdStageModule.GetUsdStageActor as that may create the actor, and we want
-		// the actor spawning to be part of the transaction
-		FScopedTransaction Transaction( FText::Format(
-			LOCTEXT( "OpenStageTransaction", "Open USD stage '{0}'" ),
-			FText::FromString( FilePath )
-		) );
+		IUsdStageModule& UsdStageModule = FModuleManager::Get().LoadModuleChecked< IUsdStageModule >( "UsdStage" );
+		ViewModel.UsdStageActor = &UsdStageModule.GetUsdStageActor( GWorld );
 
-		if ( !ViewModel.UsdStageActor.IsValid() )
-		{
-			IUsdStageModule& UsdStageModule = FModuleManager::Get().LoadModuleChecked< IUsdStageModule >( "UsdStage" );
-			ViewModel.UsdStageActor = &UsdStageModule.GetUsdStageActor( GWorld );
-
-			SetupStageActorDelegates();
-		}
-
-		// Block writing level sequence changes back to the USD stage until we finished this transaction, because once we do
-		// the movie scene and tracks will all trigger OnObjectTransacted. We listen for those on FUsdLevelSequenceHelperImpl::OnObjectTransacted,
-		// and would otherwise end up writing all of the data we just loaded back to the USD stage
-		ViewModel.UsdStageActor->StopMonitoringLevelSequence();
-
-		ViewModel.OpenStage( FilePath );
+		SetupStageActorDelegates();
 	}
 
-	if ( AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get() )
-	{
-		StageActor->ResumeMonitoringLevelSequence();
-	}
+	// Block writing level sequence changes back to the USD stage until we finished this transaction, because once we do
+	// the movie scene and tracks will all trigger OnObjectTransacted. We listen for those on FUsdLevelSequenceHelperImpl::OnObjectTransacted,
+	// and would otherwise end up writing all of the data we just loaded back to the USD stage
+	ViewModel.UsdStageActor->BlockMonitoringLevelSequenceForThisTransaction();
+
+	ViewModel.OpenStage( FilePath );
 }
 
 void SUsdStage::Refresh()
@@ -629,6 +823,59 @@ void SUsdStage::OnStageActorPropertyChanged( UObject* ObjectBeingModified, FProp
 		{
 			UsdStageInfoWidget->RefreshStageInfos( ViewModel.UsdStageActor.Get() );
 		}
+	}
+}
+
+void SUsdStage::OnViewportSelectionChanged( UObject* NewSelection )
+{
+	// This may be called when first opening a project, before the our widgets are fully initialized
+	if ( !UsdStageTreeView )
+	{
+		return;
+	}
+
+	const UUsdStageEditorSettings* Settings = GetDefault<UUsdStageEditorSettings>();
+	if ( !Settings || !Settings->bSelectionSynced || bUpdatingViewportSelection )
+	{
+		return;
+	}
+
+	AUsdStageActor* StageActor = ViewModel.UsdStageActor.Get();
+	USelection* Selection = Cast<USelection>( NewSelection );
+	if ( !Selection || !StageActor )
+	{
+		return;
+	}
+
+	TArray<USceneComponent*> SelectedComponents;
+	{
+		Selection->GetSelectedObjects<USceneComponent>( SelectedComponents );
+
+		TArray<AActor*> SelectedActors;
+		Selection->GetSelectedObjects<AActor>( SelectedActors );
+
+		for ( AActor* SelectedActor : SelectedActors )
+		{
+			if ( SelectedActor )
+			{
+				SelectedComponents.Add( SelectedActor->GetRootComponent() );
+			}
+		}
+	}
+
+	TArray<FString> PrimPaths;
+	for ( USceneComponent* Component : SelectedComponents )
+	{
+		FString FoundPrimPath = StageActor->GetSourcePrimPath( Component );
+		if ( !FoundPrimPath.IsEmpty() )
+		{
+			PrimPaths.Add( FoundPrimPath );
+		}
+	}
+
+	if ( PrimPaths.Num() > 0 )
+	{
+		UsdStageTreeView->SelectPrims( PrimPaths );
 	}
 }
 

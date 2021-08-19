@@ -2,30 +2,30 @@
 
 
 #include "NiagaraSystem.h"
-#include "NiagaraRendererProperties.h"
-#include "NiagaraRenderer.h"
+
+#include "INiagaraEditorOnlyDataUtlities.h"
 #include "NiagaraConstants.h"
-#include "NiagaraScriptSourceBase.h"
 #include "NiagaraCustomVersion.h"
+#include "NiagaraEditorDataBase.h"
+#include "NiagaraEmitter.h"
+#include "NiagaraEmitterHandle.h"
+#include "NiagaraEmitterInstanceBatcher.h"
 #include "NiagaraModule.h"
+#include "NiagaraPrecompileContainer.h"
+#include "NiagaraRendererProperties.h"
+#include "NiagaraScriptSourceBase.h"
+#include "NiagaraSettings.h"
+#include "NiagaraStats.h"
 #include "NiagaraTrace.h"
 #include "NiagaraTypes.h"
-#include "Modules/ModuleManager.h"
-#include "NiagaraEmitter.h"
-#include "UObject/Package.h"
-#include "NiagaraEmitterHandle.h"
-#include "AssetData.h"
-#include "NiagaraStats.h"
-#include "NiagaraEditorDataBase.h"
-#include "INiagaraEditorOnlyDataUtlities.h"
 #include "NiagaraWorldManager.h"
-#include "NiagaraEmitterInstanceBatcher.h"
-#include "NiagaraSettings.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "NiagaraPrecompileContainer.h"
-#include "ProfilingDebugging/CookStats.h"
 #include "Algo/RemoveIf.h"
+#include "Async/Async.h"
+#include "Interfaces/ITargetPlatform.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Modules/ModuleManager.h"
+#include "ProfilingDebugging/CookStats.h"
+#include "UObject/Package.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraSystem"
 
@@ -82,6 +82,7 @@ UNiagaraSystem::UNiagaraSystem(const FObjectInitializer& ObjectInitializer)
 , bBakeOutRapidIterationOnCook(true)
 , bTrimAttributes(false)
 , bTrimAttributesOnCook(true)
+, bDisableAllDebugSwitches(false)
 #endif
 , bFixedBounds(false)
 #if WITH_EDITORONLY_DATA
@@ -93,10 +94,10 @@ UNiagaraSystem::UNiagaraSystem(const FObjectInitializer& ObjectInitializer)
 , WarmupTickCount(0)
 , WarmupTickDelta(1.0f / 15.0f)
 , bHasSystemScriptDIsWithPerInstanceData(false)
+, bNeedsGPUContextInitForDataInterfaces(false)
 , bHasAnyGPUEmitters(false)
 , bNeedsSortedSignificanceCull(false)
 , ActiveInstances(0)
-, ActiveInstancesTemp(0)
 {
 	ExposedParameters.SetOwner(this);
 #if WITH_EDITORONLY_DATA
@@ -135,6 +136,8 @@ void UNiagaraSystem::BeginDestroy()
 void UNiagaraSystem::PreSave(const class ITargetPlatform * TargetPlatform)
 {
 	Super::PreSave(TargetPlatform);
+
+	EnsureFullyLoaded();
 #if WITH_EDITORONLY_DATA
 	WaitForCompilationComplete();
 #endif
@@ -146,8 +149,8 @@ void UNiagaraSystem::BeginCacheForCookedPlatformData(const ITargetPlatform *Targ
 	//UE_LOG(LogNiagara, Display, TEXT("UNiagaraSystem::BeginCacheForCookedPlatformData %s %s"), *GetFullName(), GIsSavingPackage ? TEXT("Saving...") : TEXT("Not Saving..."));
 	Super::BeginCacheForCookedPlatformData(TargetPlatform);
 	
+	EnsureFullyLoaded();
 #if WITH_EDITORONLY_DATA
-
 	WaitForCompilationComplete();
 #endif
 }
@@ -198,6 +201,33 @@ void UNiagaraSystem::HandleVariableRemoved(const FNiagaraVariable& InOldVariable
 		FNiagaraSystemUpdateContext UpdateCtx(this, true);
 	}
 }
+
+TArray<UNiagaraScriptSourceBase*> UNiagaraSystem::GetAllSourceScripts()
+{
+	EnsureFullyLoaded();
+	return { SystemSpawnScript->GetLatestSource(), SystemUpdateScript->GetLatestSource() };
+}
+
+FString UNiagaraSystem::GetSourceObjectPathName() const
+{
+	return GetPathName();
+}
+
+TArray<UNiagaraEditorParametersAdapterBase*> UNiagaraSystem::GetEditorOnlyParametersAdapters()
+{
+	return { GetEditorParameters() };
+}
+
+TArray<INiagaraParameterDefinitionsSubscriber*> UNiagaraSystem::GetOwnedParameterDefinitionsSubscribers()
+{
+	TArray<INiagaraParameterDefinitionsSubscriber*> OutSubscribers;
+	for (const FNiagaraEmitterHandle& EmitterHandle : GetEmitterHandles())
+	{
+		OutSubscribers.Add(EmitterHandle.GetInstance());
+	}
+	return OutSubscribers;
+}
+
 #endif
 
 void UNiagaraSystem::PostInitProperties()
@@ -217,6 +247,11 @@ void UNiagaraSystem::PostInitProperties()
 #if WITH_EDITORONLY_DATA && WITH_EDITOR
 		INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
 		EditorData = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultEditorData(this);
+
+		if (EditorParameters == nullptr)
+		{
+			EditorParameters = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultEditorParameters(this);
+		}
 #endif
 	}
 
@@ -249,9 +284,204 @@ bool UNiagaraSystem::UsesCollection(const UNiagaraParameterCollection* Collectio
 	return false;
 }
 
-#if WITH_EDITORONLY_DATA
-bool UNiagaraSystem::UsesScript(const UNiagaraScript* Script)const
+void UNiagaraSystem::UpdateSystemAfterLoad()
 {
+	// guard against deadlocks by having wait called on it during the update
+	if (bFullyLoaded)
+	{
+		return;
+	}
+	bFullyLoaded = true;
+
+	for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
+	{
+		if (EmitterHandle.GetInstance() != nullptr)
+		{
+			EmitterHandle.GetInstance()->UpdateEmitterAfterLoad();
+		}
+	}
+
+#if WITH_EDITORONLY_DATA
+	// We remove emitters and scripts on dedicated servers, so skip further work.
+	const bool bIsDedicatedServer = !GIsClient && GIsServer;
+
+	if (!GetOutermost()->bIsCookedForEditor && !bIsDedicatedServer)
+	{
+		TArray<UNiagaraScript*> AllSystemScripts;
+		UNiagaraScriptSourceBase* SystemScriptSource;
+		if (SystemSpawnScript == nullptr)
+		{
+			SystemSpawnScript = NewObject<UNiagaraScript>(this, "SystemSpawnScript", RF_Transactional);
+			SystemSpawnScript->SetUsage(ENiagaraScriptUsage::SystemSpawnScript);
+			INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
+			SystemScriptSource = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultScriptSource(this);
+			SystemSpawnScript->SetLatestSource(SystemScriptSource);
+		}
+		else
+		{
+			SystemSpawnScript->ConditionalPostLoad();
+			SystemScriptSource = SystemSpawnScript->GetLatestSource();
+		}
+		AllSystemScripts.Add(SystemSpawnScript);
+
+		if (SystemUpdateScript == nullptr)
+		{
+			SystemUpdateScript = NewObject<UNiagaraScript>(this, "SystemUpdateScript", RF_Transactional);
+			SystemUpdateScript->SetUsage(ENiagaraScriptUsage::SystemUpdateScript);
+			SystemUpdateScript->SetLatestSource(SystemScriptSource);
+		}
+		else
+		{
+			SystemUpdateScript->ConditionalPostLoad();
+		}
+		AllSystemScripts.Add(SystemUpdateScript);
+
+		bool bSystemScriptsAreSynchronized = true;
+		for (UNiagaraScript* SystemScript : AllSystemScripts)
+		{
+			bSystemScriptsAreSynchronized &= SystemScript->AreScriptAndSourceSynchronized();
+		}
+
+		// Synchronize with parameter definitions
+		PostLoadDefinitionsSubscriptions();
+
+		bool bEmitterScriptsAreSynchronized = true;
+#if 0
+		UE_LOG(LogNiagara, Log, TEXT("PreMerger"));
+		for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
+		{
+			UE_LOG(LogNiagara, Log, TEXT("Emitter Handle: %s"), *EmitterHandle.GetUniqueInstanceName());
+			UNiagaraScript* UpdateScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleUpdateScript, FGuid());
+			UNiagaraScript* SpawnScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleSpawnScript, FGuid());
+			UE_LOG(LogNiagara, Log, TEXT("Spawn Parameters"));
+			SpawnScript->GetVMExecutableData().Parameters.DumpParameters();
+			UE_LOG(LogNiagara, Log, TEXT("Spawn RI Parameters"));
+			SpawnScript->RapidIterationParameters.DumpParameters();
+			UE_LOG(LogNiagara, Log, TEXT("Update Parameters"));
+			UpdateScript->GetVMExecutableData().Parameters.DumpParameters();
+			UE_LOG(LogNiagara, Log, TEXT("Update RI Parameters"));
+			UpdateScript->RapidIterationParameters.DumpParameters();
+		}
+#endif
+
+		for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
+		{
+			if (EmitterHandle.GetIsEnabled() && EmitterHandle.GetInstance() && !EmitterHandle.GetInstance()->AreAllScriptAndSourcesSynchronized())
+			{
+				bEmitterScriptsAreSynchronized = false;
+			}
+		}
+
+		if (UNiagaraEmitter::GetForceCompileOnLoad())
+		{
+			ForceGraphToRecompileOnNextCheck();
+			UE_LOG(LogNiagara, Log, TEXT("System %s being rebuilt because UNiagaraEmitter::GetForceCompileOnLoad() == true."), *GetPathName());
+		}
+
+		if (bSystemScriptsAreSynchronized == false && GEnableVerboseNiagaraChangeIdLogging)
+		{
+			UE_LOG(LogNiagara, Log, TEXT("System %s being compiled because there were changes to a system script Change ID."), *GetPathName());
+		}
+
+		if (bEmitterScriptsAreSynchronized == false && GEnableVerboseNiagaraChangeIdLogging)
+		{
+			UE_LOG(LogNiagara, Log, TEXT("System %s being compiled because there were changes to an emitter script Change ID."), *GetPathName());
+		}
+
+		if (EmitterCompiledData.Num() == 0 || EmitterCompiledData[0]->DataSetCompiledData.Variables.Num() == 0)
+		{
+			InitEmitterCompiledData();
+		}
+
+		if (SystemCompiledData.InstanceParamStore.ReadParameterVariables().Num() == 0 ||SystemCompiledData.DataSetCompiledData.Variables.Num() == 0)
+		{
+			InitSystemCompiledData();
+		}
+
+#if 0
+		UE_LOG(LogNiagara, Log, TEXT("Before"));
+		for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
+		{
+			UE_LOG(LogNiagara, Log, TEXT("Emitter Handle: %s"), *EmitterHandle.GetUniqueInstanceName());
+			UNiagaraScript* UpdateScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleUpdateScript, FGuid());
+			UNiagaraScript* SpawnScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleSpawnScript, FGuid());
+			UE_LOG(LogNiagara, Log, TEXT("Spawn Parameters"));
+			SpawnScript->GetVMExecutableData().Parameters.DumpParameters();
+			UE_LOG(LogNiagara, Log, TEXT("Spawn RI Parameters"));
+			SpawnScript->RapidIterationParameters.DumpParameters();
+			UE_LOG(LogNiagara, Log, TEXT("Update Parameters"));
+			UpdateScript->GetVMExecutableData().Parameters.DumpParameters();
+			UE_LOG(LogNiagara, Log, TEXT("Update RI Parameters"));
+			UpdateScript->RapidIterationParameters.DumpParameters();
+		}
+#endif
+
+		if (bSystemScriptsAreSynchronized == false || bEmitterScriptsAreSynchronized == false)
+		{
+			if (IsRunningCommandlet())
+			{
+				// Call modify here so that the system will resave the compile ids and script vm when running the resave
+				// commandlet. We don't need it for normal post-loading.
+				Modify();
+			}
+			RequestCompile(false);
+		}
+
+#if 0
+		UE_LOG(LogNiagara, Log, TEXT("After"));
+		for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
+		{
+			UE_LOG(LogNiagara, Log, TEXT("Emitter Handle: %s"), *EmitterHandle.GetUniqueInstanceName());
+			UNiagaraScript* UpdateScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleUpdateScript, FGuid());
+			UNiagaraScript* SpawnScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleSpawnScript, FGuid());
+			UE_LOG(LogNiagara, Log, TEXT("Spawn Parameters"));
+			SpawnScript->GetVMExecutableData().Parameters.DumpParameters();
+			UE_LOG(LogNiagara, Log, TEXT("Spawn RI Parameters"));
+			SpawnScript->RapidIterationParameters.DumpParameters();
+			UE_LOG(LogNiagara, Log, TEXT("Update Parameters"));
+			UpdateScript->GetVMExecutableData().Parameters.DumpParameters();
+			UE_LOG(LogNiagara, Log, TEXT("Update RI Parameters"));
+			UpdateScript->RapidIterationParameters.DumpParameters();
+		}
+#endif
+	}
+	if (GNiagaraForceSystemsToCookOutRapidIterationOnLoad == 1 && !bBakeOutRapidIteration)
+	{
+		WaitForCompilationComplete();
+		bBakeOutRapidIteration = true;
+		RequestCompile(false);
+	}
+#endif
+
+	if ( FPlatformProperties::RequiresCookedData() )
+	{
+		bIsValidCached = IsValidInternal();
+		bIsReadyToRunCached = IsReadyToRunInternal();
+	}
+
+	ResolveScalabilitySettings();
+
+	ComputeEmittersExecutionOrder();
+
+	ComputeRenderersDrawOrder();
+
+	CacheFromCompiledData();
+
+	//TODO: Move to serialized properties?
+	UpdateDITickFlags();
+	UpdateHasGPUEmitters();
+
+	// Run task to prime pools this must happen on the GameThread
+	if (PoolPrimeSize > 0 && MaxPoolSize > 0)
+	{
+		FNiagaraWorldManager::PrimePoolForAllWorlds(this);
+	}
+}
+
+#if WITH_EDITORONLY_DATA
+bool UNiagaraSystem::UsesScript(const UNiagaraScript* Script) const
+{
+	EnsureFullyLoaded();
 	if (SystemSpawnScript == Script ||
 		SystemUpdateScript == Script)
 	{
@@ -388,6 +618,8 @@ void UNiagaraSystem::Serialize(FArchive& Ar)
 
 		bBakeOutRapidIteration = bBakeOutRapidIteration || bBakeOutRapidIterationOnCook;
 		bTrimAttributes = bTrimAttributes || bTrimAttributesOnCook;
+
+		bDisableAllDebugSwitches = true;
 	}
 #endif
 }
@@ -517,232 +749,48 @@ void UNiagaraSystem::PostLoad()
 	ExposedParameters.RecreateRedirections();
 #endif
 
-#if WITH_EDITORONLY_DATA
-	// We remove emitters and scripts on dedicated servers, so skip further work.
-	const bool bIsDedicatedServer = !GIsClient && GIsServer;
-
-	if (!GetOutermost()->bIsCookedForEditor && !bIsDedicatedServer)
+	for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
 	{
-		TArray<UNiagaraScript*> AllSystemScripts;
-		UNiagaraScriptSourceBase* SystemScriptSource = nullptr;
-		if (SystemSpawnScript == nullptr)
+#if WITH_EDITORONLY_DATA
+		EmitterHandle.ConditionalPostLoad(NiagaraVer);
+#else
+		if (UNiagaraEmitter* NiagaraEmitter = EmitterHandle.GetInstance())
 		{
-			SystemSpawnScript = NewObject<UNiagaraScript>(this, "SystemSpawnScript", RF_Transactional);
-			SystemSpawnScript->SetUsage(ENiagaraScriptUsage::SystemSpawnScript);
-			INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
-			SystemScriptSource = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultScriptSource(this);
-			SystemSpawnScript->SetSource(SystemScriptSource);
-		}
-		else
-		{
-			SystemSpawnScript->ConditionalPostLoad();
-			SystemScriptSource = SystemSpawnScript->GetSource();
-		}
-		AllSystemScripts.Add(SystemSpawnScript);
-
-		if (SystemUpdateScript == nullptr)
-		{
-			SystemUpdateScript = NewObject<UNiagaraScript>(this, "SystemUpdateScript", RF_Transactional);
-			SystemUpdateScript->SetUsage(ENiagaraScriptUsage::SystemUpdateScript);
-			SystemUpdateScript->SetSource(SystemScriptSource);
-		}
-		else
-		{
-			SystemUpdateScript->ConditionalPostLoad();
-		}
-		AllSystemScripts.Add(SystemUpdateScript);
-
-		//TODO: This causes a crash becuase the script source ptr is null? Fix
-		//For existing emitters before the lifecylce rework, ensure they have the system lifecycle module.
-		if (NiagaraVer < FNiagaraCustomVersion::LifeCycleRework)
-		{
-			/*UNiagaraScriptSourceBase* SystemScriptSource = SystemUpdateScript->GetSource();
-			if (SystemScriptSource)
-			{
-				bool bFoundModule;
-				if (SystemScriptSource->AddModuleIfMissing(TEXT("/Niagara/Modules/System/SystemLifeCycle.SystemLifeCycle"), ENiagaraScriptUsage::SystemUpdateScript, bFoundModule))
-				{
-					bNeedsRecompile = true;
-				}
-			}*/
-		}
-
-		bool bSystemScriptsAreSynchronized = true;
-		for (UNiagaraScript* SystemScript : AllSystemScripts)
-		{
-			bSystemScriptsAreSynchronized &= SystemScript->AreScriptAndSourceSynchronized();
-		}
-
-		bool bEmitterScriptsAreSynchronized = true;
-
-#if 0
-		UE_LOG(LogNiagara, Log, TEXT("PreMerger"));
-		for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
-		{
-			UE_LOG(LogNiagara, Log, TEXT("Emitter Handle: %s"), *EmitterHandle.GetUniqueInstanceName());
-			UNiagaraScript* UpdateScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleUpdateScript, FGuid());
-			UNiagaraScript* SpawnScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleSpawnScript, FGuid());
-			UE_LOG(LogNiagara, Log, TEXT("Spawn Parameters"));
-			SpawnScript->GetVMExecutableData().Parameters.DumpParameters();
-			UE_LOG(LogNiagara, Log, TEXT("Spawn RI Parameters"));
-			SpawnScript->RapidIterationParameters.DumpParameters();
-			UE_LOG(LogNiagara, Log, TEXT("Update Parameters"));
-			UpdateScript->GetVMExecutableData().Parameters.DumpParameters();
-			UE_LOG(LogNiagara, Log, TEXT("Update RI Parameters"));
-			UpdateScript->RapidIterationParameters.DumpParameters();
-		}
-#endif
-
-		for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
-		{
-			EmitterHandle.ConditionalPostLoad(NiagaraVer);
-			if (EmitterHandle.GetIsEnabled() && EmitterHandle.GetInstance() && !EmitterHandle.GetInstance()->AreAllScriptAndSourcesSynchronized())
-			{
-				bEmitterScriptsAreSynchronized = false;
-			}
-		}
-
-		if (EditorData == nullptr)
-		{
-			INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
-			EditorData = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultEditorData(this);
-		}
-		else
-		{
-			EditorData->PostLoadFromOwner(this);
-		}
-
-		if (UNiagaraEmitter::GetForceCompileOnLoad())
-		{
-			ForceGraphToRecompileOnNextCheck();
-			UE_LOG(LogNiagara, Log, TEXT("System %s being rebuilt because UNiagaraEmitter::GetForceCompileOnLoad() == true."), *GetPathName());
-		}
-
-		if (bSystemScriptsAreSynchronized == false && GEnableVerboseNiagaraChangeIdLogging)
-		{
-			UE_LOG(LogNiagara, Log, TEXT("System %s being compiled because there were changes to a system script Change ID."), *GetPathName());
-		}
-
-		if (bEmitterScriptsAreSynchronized == false && GEnableVerboseNiagaraChangeIdLogging)
-		{
-			UE_LOG(LogNiagara, Log, TEXT("System %s being compiled because there were changes to an emitter script Change ID."), *GetPathName());
-		}
-
-		if (EmitterCompiledData.Num() == 0 || EmitterCompiledData[0]->DataSetCompiledData.Variables.Num() == 0)
-		{
-			InitEmitterCompiledData();
-		}
-
-		if (SystemCompiledData.InstanceParamStore.ReadParameterVariables().Num() == 0 ||SystemCompiledData.DataSetCompiledData.Variables.Num() == 0)
-		{
-			InitSystemCompiledData();
-		}
-
-#if 0
-		UE_LOG(LogNiagara, Log, TEXT("Before"));
-		for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
-		{
-			UE_LOG(LogNiagara, Log, TEXT("Emitter Handle: %s"), *EmitterHandle.GetUniqueInstanceName());
-			UNiagaraScript* UpdateScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleUpdateScript, FGuid());
-			UNiagaraScript* SpawnScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleSpawnScript, FGuid());
-			UE_LOG(LogNiagara, Log, TEXT("Spawn Parameters"));
-			SpawnScript->GetVMExecutableData().Parameters.DumpParameters();
-			UE_LOG(LogNiagara, Log, TEXT("Spawn RI Parameters"));
-			SpawnScript->RapidIterationParameters.DumpParameters();
-			UE_LOG(LogNiagara, Log, TEXT("Update Parameters"));
-			UpdateScript->GetVMExecutableData().Parameters.DumpParameters();
-			UE_LOG(LogNiagara, Log, TEXT("Update RI Parameters"));
-			UpdateScript->RapidIterationParameters.DumpParameters();
-		}
-#endif
-
-		if (bSystemScriptsAreSynchronized == false || bEmitterScriptsAreSynchronized == false)
-		{
-			// Call modify here so that the system will resave the compile ids and script vm when running the resave
-			// commandlet.  In normal post load, it will be ignored.
-			Modify();
-			RequestCompile(false);
-		}
-
-#if 0
-		UE_LOG(LogNiagara, Log, TEXT("After"));
-		for (FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
-		{
-			UE_LOG(LogNiagara, Log, TEXT("Emitter Handle: %s"), *EmitterHandle.GetUniqueInstanceName());
-			UNiagaraScript* UpdateScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleUpdateScript, FGuid());
-			UNiagaraScript* SpawnScript = EmitterHandle.GetInstance()->GetScript(ENiagaraScriptUsage::ParticleSpawnScript, FGuid());
-			UE_LOG(LogNiagara, Log, TEXT("Spawn Parameters"));
-			SpawnScript->GetVMExecutableData().Parameters.DumpParameters();
-			UE_LOG(LogNiagara, Log, TEXT("Spawn RI Parameters"));
-			SpawnScript->RapidIterationParameters.DumpParameters();
-			UE_LOG(LogNiagara, Log, TEXT("Update Parameters"));
-			UpdateScript->GetVMExecutableData().Parameters.DumpParameters();
-			UE_LOG(LogNiagara, Log, TEXT("Update RI Parameters"));
-			UpdateScript->RapidIterationParameters.DumpParameters();
+			NiagaraEmitter->ConditionalPostLoad();
 		}
 #endif
 	}
-	if (GNiagaraForceSystemsToCookOutRapidIterationOnLoad == 1 && !bBakeOutRapidIteration)
+
+#if WITH_EDITORONLY_DATA
+	if (EditorData == nullptr)
 	{
-		WaitForCompilationComplete();
-		bBakeOutRapidIteration = true;
-		RequestCompile(false);
+		INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
+		EditorData = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultEditorData(this);
+	}
+	else
+	{
+		EditorData->PostLoadFromOwner(this);
+	}
+
+	if (EditorParameters == nullptr)
+	{
+		INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
+		EditorParameters = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultEditorParameters(this);
+	}
+
+	// see the equivalent in NiagaraEmitter for details
+	if (bIsTemplateAsset_DEPRECATED)
+	{
+		TemplateSpecification = bIsTemplateAsset_DEPRECATED ? ENiagaraScriptTemplateSpecification::Template : ENiagaraScriptTemplateSpecification::None;
 	}
 #endif // WITH_EDITORONLY_DATA
 
-	if ( FPlatformProperties::RequiresCookedData() )
-	{
-		bIsValidCached = IsValidInternal();
-		bIsReadyToRunCached = IsReadyToRunInternal();
-	}
-
-	ResolveScalabilitySettings();
-
-	ComputeEmittersExecutionOrder();
-
-	ComputeRenderersDrawOrder();
-
-	CacheFromCompiledData();
-
-	//TODO: Move to serialized properties?
-	UpdateDITickFlags();
-	UpdateHasGPUEmitters();
-
-	PostLoadPrimePools();
+#if !WITH_EDITOR
+	// When running without the editor in a cooked build we run the update immediately in post load since
+	// there will be no merging or compiling which makes it safe to do so.
+	UpdateSystemAfterLoad();
+#endif
 }
-
-void UNiagaraSystem::PostLoadPrimePools()
-{
-	if (PoolPrimeSize > 0 && MaxPoolSize > 0)
-	{
-		if (IsInGameThread())
-		{
-			FNiagaraWorldManager::PrimePoolForAllWorlds(this);
-		}
-		else
-		{
-			//If we're post loading off the game thread the add a game thread task to prime the pools.
-			class FPrimePoolsTask
-			{
-				UNiagaraSystem* Target;
-			public:
-				FPrimePoolsTask(UNiagaraSystem* InTarget) : Target(InTarget) {}
-
-				FORCEINLINE TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FPrimePoolsTask, STATGROUP_TaskGraphTasks); }
-				ENamedThreads::Type GetDesiredThread() { return ENamedThreads::GameThread; }
-				static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::FireAndForget; }
-
-				void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
-				{
-					Target->PostLoadPrimePools();
-				}
-			};
-
-			TGraphTask<FPrimePoolsTask>::CreateTask(nullptr).ConstructAndDispatchWhenReady(this);
-		}
-	}
-}
-
 
 #if WITH_EDITORONLY_DATA
 
@@ -754,6 +802,11 @@ UNiagaraEditorDataBase* UNiagaraSystem::GetEditorData()
 const UNiagaraEditorDataBase* UNiagaraSystem::GetEditorData() const
 {
 	return EditorData;
+}
+
+UNiagaraEditorParametersAdapterBase* UNiagaraSystem::GetEditorParameters()
+{
+	return EditorParameters;
 }
 
 bool UNiagaraSystem::ReferencesInstanceEmitter(UNiagaraEmitter& Emitter)
@@ -817,6 +870,13 @@ const TArray<FNiagaraEmitterHandle>& UNiagaraSystem::GetEmitterHandles()const
 
 bool UNiagaraSystem::IsReadyToRunInternal() const
 {
+	//TODO: Ideally we'd never even load Niagara assets on the server but this is a larger issue. Tracked in FORT-342580
+	if (!FApp::CanEverRender())
+	{
+		return false;
+	}
+
+	EnsureFullyLoaded();
 	if (!SystemSpawnScript || !SystemUpdateScript)
 	{
 		if (FPlatformProperties::RequiresCookedData())
@@ -882,6 +942,203 @@ bool UNiagaraSystem::IsReadyToRunInternal() const
 	}
 
 	return true;
+}
+
+void UNiagaraSystem::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
+{
+	if (HasAnyFlags(RF_ClassDefaultObject) == false)
+	{
+		EnsureFullyLoaded();
+	}
+
+#if WITH_EDITOR
+	OutTags.Add(FAssetRegistryTag("HasGPUEmitter", HasAnyGPUEmitters() ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+
+	const float BoundsSize = FixedBounds.GetSize().GetMax();
+	OutTags.Add(FAssetRegistryTag("FixedBoundsSize", bFixedBounds ? FString::Printf(TEXT("%.2f"), BoundsSize) : FString(TEXT("None")), FAssetRegistryTag::TT_Numerical));
+
+	OutTags.Add(FAssetRegistryTag("NumEmitters", LexToString(EmitterHandles.Num()), FAssetRegistryTag::TT_Numerical));
+
+	uint32 GPUSimsMissingFixedBounds = 0;
+
+	// Gather up generic NumActive values
+	uint32 NumActiveEmitters = 0;
+	uint32 NumActiveRenderers = 0;
+	TArray<const UNiagaraRendererProperties*> ActiveRenderers;
+	for (const FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetIsEnabled())
+		{
+
+			NumActiveEmitters++;
+			const UNiagaraEmitter* Emitter = Handle.GetInstance();
+			if (Emitter)
+			{
+				// Only register fixed bounds requirement for GPU if the system itself isn't fixed bounds.
+				if (bFixedBounds == false && Emitter->bFixedBounds == false && Emitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
+				{
+					GPUSimsMissingFixedBounds++;
+				}
+
+				for (const UNiagaraRendererProperties* Props : Emitter->GetRenderers())
+				{
+					if (Props)
+					{
+						NumActiveRenderers++;
+						ActiveRenderers.Add(Props);
+					}
+				}
+			}
+		}
+	}
+
+	OutTags.Add(FAssetRegistryTag("ActiveEmitters", LexToString(NumActiveEmitters), FAssetRegistryTag::TT_Numerical));
+	OutTags.Add(FAssetRegistryTag("ActiveRenderers", LexToString(NumActiveRenderers), FAssetRegistryTag::TT_Numerical));
+	OutTags.Add(FAssetRegistryTag("GPUSimsMissingFixedBounds", LexToString(GPUSimsMissingFixedBounds), FAssetRegistryTag::TT_Numerical));
+	OutTags.Add(FAssetRegistryTag("EffectType", EffectType != nullptr ? EffectType->GetName() : FString(TEXT("None")), FAssetRegistryTag::TT_Alphabetical));
+	OutTags.Add(FAssetRegistryTag("WarmupTime", LexToString(WarmupTime), FAssetRegistryTag::TT_Numerical));
+	OutTags.Add(FAssetRegistryTag("HasOverrideScalabilityForSystem", bOverrideScalabilitySettings ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+	OutTags.Add(FAssetRegistryTag("HasDIsWithPostSimulateTick", bHasDIsWithPostSimulateTick ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+	OutTags.Add(FAssetRegistryTag("NeedsSortedSignificanceCull", bNeedsSortedSignificanceCull ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+
+	// Gather up NumActive emitters based off of quality level.
+	const UNiagaraSettings* Settings = GetDefault<UNiagaraSettings>();
+	if (Settings)
+	{
+		int32 NumQualityLevels = Settings->QualityLevels.Num();
+		TArray<int32> QualityLevelsNumActive;
+		QualityLevelsNumActive.AddZeroed(NumQualityLevels);
+
+		for (const FNiagaraEmitterHandle& Handle : EmitterHandles)
+		{
+			if (Handle.GetIsEnabled())
+			{
+				const UNiagaraEmitter* Emitter = Handle.GetInstance();
+				if (Emitter)
+				{
+					for (int32 i = 0; i < NumQualityLevels; i++)
+					{
+						if (Emitter->Platforms.IsEffectQualityEnabled(i))
+						{
+							QualityLevelsNumActive[i]++;
+						}
+					}
+				}
+			}
+		}
+
+		for (int32 i = 0; i < NumQualityLevels; i++)
+		{
+			FString QualityLevelKey = Settings->QualityLevels[i].ToString() + TEXT("Emitters");
+			OutTags.Add(FAssetRegistryTag(*QualityLevelKey, LexToString(QualityLevelsNumActive[i]), FAssetRegistryTag::TT_Numerical));
+		}
+	}
+
+
+	TMap<FName, uint32> NumericKeys;
+	TMap<FName, FString> StringKeys;
+
+	// Gather up custom asset tags for  RendererProperties
+	{
+		TArray<UClass*> RendererClasses;
+		GetDerivedClasses(UNiagaraRendererProperties::StaticClass(), RendererClasses);
+
+		for (UClass* RendererClass : RendererClasses)
+		{
+			const UNiagaraRendererProperties* PropDefault = RendererClass->GetDefaultObject< UNiagaraRendererProperties>();
+			if (PropDefault)
+			{
+				PropDefault->GetAssetTagsForContext(this, ActiveRenderers, NumericKeys, StringKeys);
+			}
+		}
+	}
+
+	// Gather up custom asset tags for DataInterfaces
+	{
+		TArray<const UNiagaraDataInterface*> DataInterfaces;
+		auto AddDIs = [&](UNiagaraScript* Script)
+		{
+			if (Script)
+			{
+				for (FNiagaraScriptDataInterfaceCompileInfo& Info : Script->GetVMExecutableData().DataInterfaceInfo)
+				{
+					UNiagaraDataInterface* DefaultDataInterface = Info.GetDefaultDataInterface();
+					DataInterfaces.AddUnique(DefaultDataInterface);
+				}
+			}
+		};
+
+		AddDIs(SystemSpawnScript);
+		AddDIs(SystemUpdateScript);
+		for (const FNiagaraEmitterHandle& Handle : EmitterHandles)
+		{
+			if (Handle.GetIsEnabled())
+			{
+				if (UNiagaraEmitter* Emitter = Handle.GetInstance())
+				{
+					TArray<UNiagaraScript*> Scripts;
+					Emitter->GetScripts(Scripts);
+					for (UNiagaraScript* Script : Scripts)
+					{
+						AddDIs(Script);
+					}
+				}
+			}
+		}
+
+		TArray<UClass*> DIClasses;
+		GetDerivedClasses(UNiagaraDataInterface::StaticClass(), DIClasses);
+
+		for (UClass* DIClass : DIClasses)
+		{
+			const UNiagaraDataInterface* PropDefault = DIClass->GetDefaultObject< UNiagaraDataInterface>();
+			if (PropDefault)
+			{
+				PropDefault->GetAssetTagsForContext(this, DataInterfaces, NumericKeys, StringKeys);
+			}
+		}
+		OutTags.Add(FAssetRegistryTag("ActiveDIs", LexToString(DataInterfaces.Num()), FAssetRegistryTag::TT_Numerical));
+	}
+
+
+	// Now propagate the custom numeric and string tags from the DataInterfaces and RendererProperties above
+	auto NumericIter = NumericKeys.CreateConstIterator();
+	while (NumericIter)
+	{
+
+		OutTags.Add(FAssetRegistryTag(NumericIter.Key(), LexToString(NumericIter.Value()), FAssetRegistryTag::TT_Numerical));
+		++NumericIter;
+	}
+
+	auto StringIter = StringKeys.CreateConstIterator();
+	while (StringIter)
+	{
+
+		OutTags.Add(FAssetRegistryTag(StringIter.Key(), LexToString(StringIter.Value()), FAssetRegistryTag::TT_Alphabetical));
+		++StringIter;
+	}
+
+	// TemplateSpecialization
+	FName TemplateSpecificationName = GET_MEMBER_NAME_CHECKED(UNiagaraSystem, TemplateSpecification);
+	FText TemplateSpecializationValueString = StaticEnum<ENiagaraScriptTemplateSpecification>()->GetDisplayNameTextByValue((int64) TemplateSpecification);
+	OutTags.Add(FAssetRegistryTag(TemplateSpecificationName, TemplateSpecializationValueString.ToString(), FAssetRegistryTag::TT_Alphabetical));
+
+	/*for (const UNiagaraDataInterface* DI : DataInterfaces)
+	{
+		FString ClassName;
+		DI->GetClass()->GetName(ClassName);
+		OutTags.Add(FAssetRegistryTag(*(TEXT("bHas")+ClassName), TEXT("True"), FAssetRegistryTag::TT_Alphabetical));
+	}*/
+
+
+	//OutTags.Add(FAssetRegistryTag("CPUCollision", UsesCPUCollision() ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+	//OutTags.Add(FAssetRegistryTag("Looping", bAnyEmitterLoopsForever ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+	//OutTags.Add(FAssetRegistryTag("Immortal", IsImmortal() ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+	//OutTags.Add(FAssetRegistryTag("Becomes Zombie", WillBecomeZombie() ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+	//OutTags.Add(FAssetRegistryTag("CanBeOccluded", OcclusionBoundsMethod == EParticleSystemOcclusionBoundsMethod::EPSOBM_None ? TEXT("False") : TEXT("True"), FAssetRegistryTag::TT_Alphabetical));
+
+#endif
+	Super::GetAssetRegistryTags(OutTags);
 }
 
 #if WITH_EDITORONLY_DATA
@@ -1068,7 +1325,11 @@ void UNiagaraSystem::ComputeEmittersExecutionOrder()
 	TArray<UNiagaraEmitter*> EmitterDependencies;
 	EmitterDependencies.Reserve(3 * NumEmitters);
 
+	RendererPostTickOrder.Reset();
+	RendererCompletionOrder.Reset();
+
 	bool bHasEmitterDependencies = false;
+	uint32 SystemRendererIndex = 0;
 	for (int32 EmitterIdx = 0; EmitterIdx < NumEmitters; ++EmitterIdx)
 	{
 		const FNiagaraEmitterHandle& EmitterHandle = EmitterHandles[EmitterIdx];
@@ -1077,8 +1338,14 @@ void UNiagaraSystem::ComputeEmittersExecutionOrder()
 		EmitterExecutionOrder[EmitterIdx].EmitterIndex = EmitterIdx;
 		EmitterPriorities[EmitterIdx] = -1;
 
-		if (Emitter == nullptr || !EmitterHandle.GetIsEnabled())
+		if (Emitter == nullptr)
 		{
+			continue;
+		}
+
+		if (!EmitterHandle.GetIsEnabled())
+		{
+			Emitter->ForEachEnabledRenderer([&] (const UNiagaraRendererProperties*) { ++SystemRendererIndex; });
 			continue;
 		}
 
@@ -1127,6 +1394,29 @@ void UNiagaraSystem::ComputeEmittersExecutionOrder()
 					}
 					break;
 				}
+			}
+		}
+
+		// Determine renderer execution order for PostTick and Completion for any renderers that opt into it
+		for (int32 RendererIndex = 0; RendererIndex < Emitter->GetRenderers().Num(); ++RendererIndex)
+		{
+			const UNiagaraRendererProperties* Renderer = Emitter->GetRenderers()[RendererIndex];
+			if (Renderer && Renderer->GetIsEnabled() && Renderer->IsSimTargetSupported(Emitter->SimTarget))
+			{
+				FNiagaraRendererExecutionIndex ExecutionIndex;
+				ExecutionIndex.EmitterIndex = EmitterIdx;
+				ExecutionIndex.EmitterRendererIndex = RendererIndex;
+				ExecutionIndex.SystemRendererIndex = SystemRendererIndex;
+
+				if (Renderer->NeedsSystemPostTick())
+				{
+					RendererPostTickOrder.Add(ExecutionIndex);
+				}
+				if (Renderer->NeedsSystemCompletion())
+				{
+					RendererCompletionOrder.Add(ExecutionIndex);
+				}
+				++SystemRendererIndex;
 			}
 		}
 	}
@@ -1302,9 +1592,30 @@ void UNiagaraSystem::UpdatePostCompileDIInfo()
 {
 	bHasSystemScriptDIsWithPerInstanceData = false;
 	UserDINamesReadInSystemScripts.Empty();
+	bNeedsGPUContextInitForDataInterfaces = false;
 
 	CheckDICompileInfo(SystemSpawnScript->GetVMExecutableData().DataInterfaceInfo, bHasSystemScriptDIsWithPerInstanceData, UserDINamesReadInSystemScripts);
 	CheckDICompileInfo(SystemUpdateScript->GetVMExecutableData().DataInterfaceInfo, bHasSystemScriptDIsWithPerInstanceData, UserDINamesReadInSystemScripts);
+
+	for (const FNiagaraEmitterHandle& EmitterHandle : GetEmitterHandles())
+	{
+		if (EmitterHandle.GetIsEnabled() == false || !EmitterHandle.GetInstance())
+		{
+			continue;
+		}
+		if (EmitterHandle.GetInstance()->SimTarget == ENiagaraSimTarget::GPUComputeSim)
+		{
+			UNiagaraScript* GPUScript = EmitterHandle.GetInstance()->GetGPUComputeScript();
+			if (GPUScript)
+			{
+				FNiagaraVMExecutableData& VMData = GPUScript->GetVMExecutableData();
+				if (VMData.IsValid() && VMData.bNeedsGPUContextInit)
+				{
+					bNeedsGPUContextInitForDataInterfaces = true;
+				}
+			}
+		}
+	}
 }
 
 void UNiagaraSystem::UpdateDITickFlags()
@@ -1388,6 +1699,12 @@ bool UNiagaraSystem::IsValidInternal() const
 	return true;
 }
 
+void UNiagaraSystem::EnsureFullyLoaded() const
+{
+	UNiagaraSystem* System = const_cast<UNiagaraSystem*>(this);
+	System->UpdateSystemAfterLoad();
+}
+
 
 bool UNiagaraSystem::CanObtainEmitterAttribute(const FNiagaraVariableBase& InVarWithUniqueNameNamespace) const
 {
@@ -1412,15 +1729,21 @@ FNiagaraEmitterHandle UNiagaraSystem::AddEmitterHandle(UNiagaraEmitter& InEmitte
 {
 	UNiagaraEmitter* NewEmitter = UNiagaraEmitter::CreateWithParentAndOwner(InEmitter, this, EmitterName, ~(RF_Public | RF_Standalone));
 	FNiagaraEmitterHandle EmitterHandle(*NewEmitter);
-	if (InEmitter.bIsTemplateAsset)
+	if (InEmitter.TemplateSpecification == ENiagaraScriptTemplateSpecification::Template || InEmitter.TemplateSpecification == ENiagaraScriptTemplateSpecification::Behavior)
 	{
-		NewEmitter->bIsTemplateAsset = false;
+		NewEmitter->TemplateSpecification = ENiagaraScriptTemplateSpecification::None;
 		NewEmitter->TemplateAssetDescription = FText();
 		NewEmitter->RemoveParent();
 	}
 	EmitterHandles.Add(EmitterHandle);
 	RefreshSystemParametersFromEmitter(EmitterHandle);
 	return EmitterHandle;
+}
+
+void UNiagaraSystem::AddEmitterHandleDirect(FNiagaraEmitterHandle& EmitterHandle)
+{
+	EmitterHandles.Add(EmitterHandle);
+	RefreshSystemParametersFromEmitter(EmitterHandle);
 }
 
 FNiagaraEmitterHandle UNiagaraSystem::DuplicateEmitterHandle(const FNiagaraEmitterHandle& EmitterHandleToDuplicate, FName EmitterName)
@@ -1464,6 +1787,16 @@ UNiagaraScript* UNiagaraSystem::GetSystemUpdateScript()
 	return SystemUpdateScript;
 }
 
+const UNiagaraScript* UNiagaraSystem::GetSystemSpawnScript() const
+{
+	return SystemSpawnScript;
+}
+
+const UNiagaraScript* UNiagaraSystem::GetSystemUpdateScript() const
+{
+	return SystemUpdateScript;
+}
+
 #if WITH_EDITORONLY_DATA
 
 bool UNiagaraSystem::GetIsolateEnabled() const
@@ -1488,8 +1821,8 @@ UNiagaraSystem::FOnSystemPostEditChange& UNiagaraSystem::OnSystemPostEditChange(
 
 void UNiagaraSystem::ForceGraphToRecompileOnNextCheck()
 {
-	check(SystemSpawnScript->GetSource() == SystemUpdateScript->GetSource());
-	SystemSpawnScript->GetSource()->ForceGraphToRecompileOnNextCheck();
+	check(SystemSpawnScript->GetLatestSource() == SystemUpdateScript->GetLatestSource());
+	SystemSpawnScript->GetLatestSource()->ForceGraphToRecompileOnNextCheck();
 
 	for (FNiagaraEmitterHandle Handle : EmitterHandles)
 	{
@@ -1535,8 +1868,11 @@ void UNiagaraSystem::WaitForCompilationComplete(bool bIncludingGPUShaders, bool 
 
 	while (ActiveCompilations.Num() > 0)
 	{
-		Progress.EnterProgressFrame();
-		QueryCompileComplete(true, ActiveCompilations.Num() == 1);
+		if (QueryCompileComplete(true, ActiveCompilations.Num() == 1))
+		{
+			// make sure to only mark progress if we actually have accomplished something in the QueryCompileComplete
+			Progress.EnterProgressFrame();
+		}
 	}
 	
 	for (FNiagaraShaderScript* ShaderScript : GPUScripts)
@@ -1578,7 +1914,7 @@ bool InternalCompileGuardCheck(void* TestValue)
 	return bCompileGuardInProgress;
 }
 
-bool UNiagaraSystem::CompilationResultsValid(const FNiagaraSystemCompileRequest& CompileRequest) const
+bool UNiagaraSystem::CompilationResultsValid(FNiagaraSystemCompileRequest& CompileRequest) const
 {
 	// for now the only thing we're concerned about is if we've got results for SystemSpawn and SystemUpdate scripts
 	// then we need to make sure that they agree in terms of the dataset attributes
@@ -1599,10 +1935,98 @@ bool UNiagaraSystem::CompilationResultsValid(const FNiagaraSystemCompileRequest&
 	{
 		if (SpawnScriptRequest->CompileResults->Attributes != UpdateScriptRequest->CompileResults->Attributes)
 		{
-			UE_LOG(LogNiagara, Warning, TEXT("Failed to generate consistent results for System spawn and update scripts for system %s."), *GetFullName());
+			// if we had requested a full rebuild, then we've got a case where the generated scripts are not compatible.  This indicates
+			// a significant issue where we're allowing graphs to generate invalid collections of scripts.  One known example is using
+			// the Script.Context static switch that isn't fully processed in all scripts, leading to attributes differing between the
+			// SystemSpawnScript and the SystemUpdateScript
+			if (CompileRequest.bForced)
+			{
+				FString MissingAttributes;
+				FString AdditionalAttributes;
+
+				for (const auto& SpawnAttrib : SpawnScriptRequest->CompileResults->Attributes)
+				{
+					if (!UpdateScriptRequest->CompileResults->Attributes.Contains(SpawnAttrib))
+					{
+						MissingAttributes.Appendf(TEXT("%s%s"), MissingAttributes.Len() ? TEXT(", ") : TEXT(""), *SpawnAttrib.GetName().ToString());
+					}
+				}
+
+				for (const auto& UpdateAttrib : UpdateScriptRequest->CompileResults->Attributes)
+				{
+					if (!SpawnScriptRequest->CompileResults->Attributes.Contains(UpdateAttrib))
+					{
+						AdditionalAttributes.Appendf(TEXT("%s%s"), AdditionalAttributes.Len() ? TEXT(", ") : TEXT(""), *UpdateAttrib.GetName().ToString());
+					}
+				}
+
+				FNiagaraCompileEvent AttributeMismatchEvent(
+					FNiagaraCompileEventSeverity::Error,
+					FText::Format(LOCTEXT("SystemScriptAttributeMismatchError", "System Spawn/Update scripts have attributes which don't match!\n\tMissing update attributes: {0}\n\tAdditional update attributes: {1}"),
+						FText::FromString(MissingAttributes),
+						FText::FromString(AdditionalAttributes))
+					.ToString());
+
+				SpawnScriptRequest->CompileResults->LastCompileStatus = ENiagaraScriptCompileStatus::NCS_Error;
+				SpawnScriptRequest->CompileResults->LastCompileEvents.Add(AttributeMismatchEvent);
+			}
+			else
+			{
+				UE_LOG(LogNiagara, Log, TEXT("Failed to generate consistent results for System spawn and update scripts for system %s."), *GetFullName());
+			}
+
 			return false;
 		}
 	}
+
+	// Now iterate over all dependencies and verify that they are met. If not, emit an error.
+	for (FEmitterCompiledScriptPair& CompilePair : CompileRequest.EmitterCompiledScriptPairs)
+	{
+		bool bValid = CompilePair.CompileResults.IsValid()
+			&& CompilePair.CompileResults->LastCompileStatus != ENiagaraScriptCompileStatus::NCS_Error;
+
+		if (CompilePair.CompileResults.IsValid() && CompilePair.CompileResults->ExternalDependencies.Num() != 0)
+		{
+			for (const FNiagaraCompileDependency& Dependency : CompilePair.CompileResults->ExternalDependencies)
+			{
+				FNiagaraVariable TestVar = Dependency.DependentVariable;
+				ensure(TestVar.GetName() != NAME_None);
+				if (CompilePair.Emitter)
+				{
+					FName NewName = GetEmitterVariableAliasName(TestVar, CompilePair.Emitter);
+					TestVar.SetName(NewName);
+				}
+
+				bool bDependencyMet = false;
+				int32 TestIdx = CompilePair.ParentIndex;
+				while (TestIdx != INDEX_NONE && bDependencyMet == false)
+				{
+					if (CompileRequest.EmitterCompiledScriptPairs.IsValidIndex(TestIdx))
+					{
+						const FEmitterCompiledScriptPair& TestPair = CompileRequest.EmitterCompiledScriptPairs[TestIdx];
+						if (TestPair.CompileResults.IsValid() && TestPair.CompileResults->AttributesWritten.Num() > 0)
+						{
+							if (TestPair.CompileResults->AttributesWritten.Contains(TestVar))
+							{
+								bDependencyMet = true;
+								break;
+							}
+						}
+						TestIdx = TestPair.ParentIndex;
+					}
+				}
+				if (!bDependencyMet)
+				{
+					FNiagaraCompileEvent LinkerErrorEvent(
+						FNiagaraCompileEventSeverity::Error, Dependency.LinkerErrorMessage, FString(), false, Dependency.NodeGuid, Dependency.PinGuid, Dependency.StackGuids);
+					CompilePair.CompileResults->LastCompileEvents.Add(LinkerErrorEvent);
+					CompilePair.CompileResults->LastCompileStatus = ENiagaraScriptCompileStatus::NCS_Error;
+				}
+			}
+		}
+	}
+	
+	
 
 	return true;
 }
@@ -1646,7 +2070,8 @@ bool UNiagaraSystem::QueryCompileComplete(bool bWait, bool bDoPost, bool bDoNotA
 		{
 			// if we've gotten all the results, run a quick check to see if the data is valid, if it's not then that indicates that
 			// we've run into a compatibility issue and so we should see if we should issue a full rebuild
-			if (!ActiveCompilations[ActiveCompileIdx].bForced && !CompilationResultsValid(ActiveCompilations[ActiveCompileIdx]))
+			const bool ResultsValid = CompilationResultsValid(ActiveCompilations[ActiveCompileIdx]);
+			if (!ResultsValid && !ActiveCompilations[ActiveCompileIdx].bForced)
 			{
 				ActiveCompilations[ActiveCompileIdx].RootObjects.Empty();
 				ActiveCompilations.RemoveAt(ActiveCompileIdx);
@@ -1830,11 +2255,11 @@ bool UNiagaraSystem::GetFromDDC(FEmitterCompiledScriptPair& ScriptPair)
 	COOK_STAT(auto Timer = NiagaraScriptCookStats::UsageStats.TimeSyncWork());
 
 	FNiagaraVMExecutableDataId NewID;
-	ScriptPair.CompiledScript->ComputeVMCompilationId(NewID);
+	ScriptPair.CompiledScript->ComputeVMCompilationId(NewID, FGuid());
 	ScriptPair.CompileId = NewID;
 
 	TArray<uint8> Data;
-	if (GetDerivedDataCacheRef().GetSynchronous(*ScriptPair.CompiledScript->GetNiagaraDDCKeyString(), Data, GetPathName()))
+	if (GetDerivedDataCacheRef().GetSynchronous(*ScriptPair.CompiledScript->GetNiagaraDDCKeyString(FGuid()), Data, GetPathName()))
 	{
 		TSharedPtr<FNiagaraVMExecutableData> ExeData = MakeShared<FNiagaraVMExecutableData>();
 		if (ScriptPair.CompiledScript->BinaryToExecData(ScriptPair.CompiledScript, Data, *ExeData))
@@ -1859,6 +2284,7 @@ bool UNiagaraSystem::GetFromDDC(FEmitterCompiledScriptPair& ScriptPair)
 	COOK_STAT(Timer.TrackCyclesOnly());
 	return false;
 }
+
 
 #if WITH_EDITORONLY_DATA
 
@@ -1946,7 +2372,7 @@ bool UNiagaraSystem::RequestCompile(bool bForce, FNiagaraSystemUpdateContext* Op
 
 	SCOPE_CYCLE_COUNTER(STAT_Niagara_System_Precompile);
 	
-	check(SystemSpawnScript->GetSource() == SystemUpdateScript->GetSource());
+	check(SystemSpawnScript->GetLatestSource() == SystemUpdateScript->GetLatestSource());
 	TArray<FNiagaraVariable> OriginalExposedParams;
 	GetExposedParameters().GetParameters(OriginalExposedParams);
 
@@ -1959,11 +2385,9 @@ bool UNiagaraSystem::RequestCompile(bool bForce, FNiagaraSystemUpdateContext* Op
 
 
 		//Compile all emitters
-		bool bTrulyAsync = true;
 		bool bAnyUnsynchronized = false;	
 
 		// Pass one... determine if any need to be compiled.
-		bool bForceSystems = false;
 		{
 
 			for (int32 i = 0; i < EmitterHandles.Num(); i++)
@@ -1971,11 +2395,10 @@ bool UNiagaraSystem::RequestCompile(bool bForce, FNiagaraSystemUpdateContext* Op
 				FNiagaraEmitterHandle Handle = EmitterHandles[i];
 				if (Handle.GetInstance() && Handle.GetIsEnabled())
 				{
-					UNiagaraScriptSourceBase* GraphSource = Handle.GetInstance()->GraphSource;
-
 					TArray<UNiagaraScript*> EmitterScripts;
-					Handle.GetInstance()->GetScripts(EmitterScripts, false);
+					Handle.GetInstance()->GetScripts(EmitterScripts, false, true);
 					check(EmitterScripts.Num() > 0);
+					int32 Parent = INDEX_NONE;
 					for (UNiagaraScript* EmitterScript : EmitterScripts)
 					{
 
@@ -1983,21 +2406,22 @@ bool UNiagaraSystem::RequestCompile(bool bForce, FNiagaraSystemUpdateContext* Op
 						Pair.bResultsReady = false;
 						Pair.Emitter = Handle.GetInstance();
 						Pair.CompiledScript = EmitterScript;
+						Pair.ParentIndex = Parent;
 						if (!GetFromDDC(Pair) && EmitterScript->IsCompilable() && !EmitterScript->AreScriptAndSourceSynchronized())
 						{
 							ScriptsNeedingCompile.Add(EmitterScript);
 							bAnyUnsynchronized = true;
 						}
-						ActiveCompilation.EmitterCompiledScriptPairs.Add(Pair);
+						Parent = ActiveCompilation.EmitterCompiledScriptPairs.Add(Pair);
 					}
 
 				}
 			}
 
-			bForceSystems = bForce || bAnyUnsynchronized;
 			bAnyCompiled = bAnyUnsynchronized || bForce;
 
 			// Now add the system scripts for compilation...
+			int32 Parent = INDEX_NONE;
 			{
 				FEmitterCompiledScriptPair Pair;
 				Pair.bResultsReady = false;
@@ -2008,7 +2432,7 @@ bool UNiagaraSystem::RequestCompile(bool bForce, FNiagaraSystemUpdateContext* Op
 					ScriptsNeedingCompile.Add(SystemSpawnScript);
 					bAnyCompiled = true;
 				}
-				ActiveCompilation.EmitterCompiledScriptPairs.Add(Pair);
+				Parent = ActiveCompilation.EmitterCompiledScriptPairs.Add(Pair);
 			}
 
 			{
@@ -2016,76 +2440,79 @@ bool UNiagaraSystem::RequestCompile(bool bForce, FNiagaraSystemUpdateContext* Op
 				Pair.bResultsReady = false;
 				Pair.Emitter = nullptr;
 				Pair.CompiledScript = SystemUpdateScript;
+				Pair.ParentIndex = Parent;
 				if (!GetFromDDC(Pair) && !SystemUpdateScript->AreScriptAndSourceSynchronized())
 				{
 					ScriptsNeedingCompile.Add(SystemUpdateScript);
 					bAnyCompiled = true;
 				}
-				ActiveCompilation.EmitterCompiledScriptPairs.Add(Pair);
+				Parent = ActiveCompilation.EmitterCompiledScriptPairs.Add(Pair);
+			}
+
+			// Need to set the EmitterParent on the emitter spawn scripts
+			for (FEmitterCompiledScriptPair & Pair: ActiveCompilation.EmitterCompiledScriptPairs)
+			{
+				if (Pair.Emitter != nullptr && Pair.ParentIndex == INDEX_NONE)
+				{
+					Pair.ParentIndex = Parent;
+				}
 			}
 		}
 
 
-	
+		// We found things needing compilation, now we have to go through an static duplicate everything that will be translated...
 		{
+			UNiagaraPrecompileContainer* Container = NewObject<UNiagaraPrecompileContainer>(GetTransientPackage());
+			Container->System = this;
+			Container->Scripts = ScriptsNeedingCompile;
+			TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> SystemPrecompiledData = NiagaraModule.Precompile(Container, FGuid());
 
-			// We found things needing compilation, now we have to go through an static duplicate everything that will be translated...
+			if (SystemPrecompiledData.IsValid() == false)
 			{
-				UNiagaraPrecompileContainer* Container = NewObject<UNiagaraPrecompileContainer>(GetTransientPackage());
-				Container->System = this;
-				Container->Scripts = ScriptsNeedingCompile;
-				TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> SystemPrecompiledData = NiagaraModule.Precompile(Container);
+				UE_LOG(LogNiagara, Error, TEXT("Failed to precompile %s.  This is due to unexpected invalid or broken data.  Additional details should be in the log."), *GetPathName());
+				return false;
+			}
 
-				if (SystemPrecompiledData.IsValid() == false)
+			SystemPrecompiledData->GetReferencedObjects(ActiveCompilation.RootObjects);
+			ActiveCompilation.MappedData.Add(SystemSpawnScript, SystemPrecompiledData);
+			ActiveCompilation.MappedData.Add(SystemUpdateScript, SystemPrecompiledData);
+
+			check(EmitterHandles.Num() == SystemPrecompiledData->GetDependentRequestCount());
+
+
+			// Grab the list of user variables that were actually encountered so that we can add to them later.
+			TArray<FNiagaraVariable> EncounteredExposedVars;
+			SystemPrecompiledData->GatherPreCompiledVariables(TEXT("User"), EncounteredExposedVars);
+
+			for (int32 i = 0; i < EmitterHandles.Num(); i++)
+			{
+				FNiagaraEmitterHandle Handle = EmitterHandles[i];
+				if (Handle.GetInstance() && Handle.GetIsEnabled())
 				{
-					UE_LOG(LogNiagara, Error, TEXT("Failed to precompile %s.  This is due to unexpected invalid or broken data.  Additional details should be in the log."), *GetPathName());
-					return false;
-				}
+					TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> EmitterPrecompiledData = SystemPrecompiledData->GetDependentRequest(i);
+					EmitterPrecompiledData->GetReferencedObjects(ActiveCompilation.RootObjects);
 
-				SystemPrecompiledData->GetReferencedObjects(ActiveCompilation.RootObjects);
-				ActiveCompilation.MappedData.Add(SystemSpawnScript, SystemPrecompiledData);
-				ActiveCompilation.MappedData.Add(SystemUpdateScript, SystemPrecompiledData);
-
-				check(EmitterHandles.Num() == SystemPrecompiledData->GetDependentRequestCount());
-
-
-				// Grab the list of user variables that were actually encountered so that we can add to them later.
-				TArray<FNiagaraVariable> EncounteredExposedVars;
-				SystemPrecompiledData->GatherPreCompiledVariables(TEXT("User"), EncounteredExposedVars);
-
-				for (int32 i = 0; i < EmitterHandles.Num(); i++)
-				{
-					FNiagaraEmitterHandle Handle = EmitterHandles[i];
-					if (Handle.GetInstance() && Handle.GetIsEnabled())
+					TArray<UNiagaraScript*> EmitterScripts;
+					Handle.GetInstance()->GetScripts(EmitterScripts, false, true);
+					check(EmitterScripts.Num() > 0);
+					for (UNiagaraScript* EmitterScript : EmitterScripts)
 					{
-						UNiagaraScriptSourceBase* GraphSource = Handle.GetInstance()->GraphSource;
-						TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> EmitterPrecompiledData = SystemPrecompiledData->GetDependentRequest(i);
-						EmitterPrecompiledData->GetReferencedObjects(ActiveCompilation.RootObjects);
-
-						TArray<UNiagaraScript*> EmitterScripts;
-						Handle.GetInstance()->GetScripts(EmitterScripts, false);
-						check(EmitterScripts.Num() > 0);
-						for (UNiagaraScript* EmitterScript : EmitterScripts)
-						{
-							ActiveCompilation.MappedData.Add(EmitterScript, EmitterPrecompiledData);
-						}
-
-
-						// Add the emitter's User variables to the encountered list to expose for later.
-						EmitterPrecompiledData->GatherPreCompiledVariables(TEXT("User"), EncounteredExposedVars);
-
+						ActiveCompilation.MappedData.Add(EmitterScript, EmitterPrecompiledData);
 					}
+
+					// Add the emitter's User variables to the encountered list to expose for later.
+					EmitterPrecompiledData->GatherPreCompiledVariables(TEXT("User"), EncounteredExposedVars);
 				}
+			}
 
 
-				// Now let's synchronize the variables that we actually encountered during precompile so that we can expose them to the end user.
-				for (int32 i = 0; i < EncounteredExposedVars.Num(); i++)
+			// Now let's synchronize the variables that we actually encountered during precompile so that we can expose them to the end user.
+			for (int32 i = 0; i < EncounteredExposedVars.Num(); i++)
+			{
+				if (OriginalExposedParams.Contains(EncounteredExposedVars[i]) == false)
 				{
-					if (OriginalExposedParams.Contains(EncounteredExposedVars[i]) == false)
-					{
-						// Just in case it wasn't added previously..
-						ExposedParameters.AddParameter(EncounteredExposedVars[i]);
-					}
+					// Just in case it wasn't added previously..
+					ExposedParameters.AddParameter(EncounteredExposedVars[i]);
 				}
 			}
 		}
@@ -2412,6 +2839,13 @@ void UNiagaraSystem::ResolveScalabilitySettings()
 					CurrentScalabilitySettings.bCullByMaxTimeWithoutRender = Override.bCullByMaxTimeWithoutRender;
 					CurrentScalabilitySettings.MaxTimeWithoutRender = Override.MaxTimeWithoutRender;
 				}
+
+ 				if (Override.bOverrideGlobalBudgetCullingSettings)
+				{
+ 					CurrentScalabilitySettings.bCullByGlobalBudget = Override.bCullByGlobalBudget;
+ 					CurrentScalabilitySettings.MaxGlobalBudgetUsage = Override.MaxGlobalBudgetUsage;
+ 				}
+
 				break;//These overrides *should* be for orthogonal platform sets so we can exit after we've found a match.
 			}
 		}
@@ -2545,6 +2979,15 @@ void FNiagaraParameterDataSetBindingCollection::BuildInternal(const TArray<FNiag
 
 	FloatOffsets.Shrink();
 	Int32Offsets.Shrink();
+}
+
+UNiagaraBakerSettings* UNiagaraSystem::GetBakerSettings()
+{
+	if ( BakerSettings == nullptr )
+	{
+		BakerSettings = NewObject<UNiagaraBakerSettings>(this, "BakerSettings", RF_Transactional);
+	}
+	return BakerSettings;
 }
 #endif
 

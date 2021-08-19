@@ -5,6 +5,7 @@
 #include "HAL/PlatformStackWalk.h"
 #include "HAL/PlatformOutputDevices.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "HAL/MallocFrameProfiler.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Misc/QueuedThreadPool.h"
@@ -61,6 +62,12 @@
 
 #if !(IS_PROGRAM || WITH_EDITOR)
 #include "IPlatformFilePak.h"
+#endif
+
+#ifndef USE_IO_DISPATCHER 
+#define USE_IO_DISPATCHER (WITH_IOSTORE_IN_EDITOR || !(IS_PROGRAM || WITH_EDITOR))
+#endif
+#if USE_IO_DISPATCHER
 #include "IO/IoDispatcher.h"
 #endif
 
@@ -169,6 +176,10 @@
 
 #if WITH_AUTOMATION_WORKER
 	#include "IAutomationWorkerModule.h"
+#endif
+
+#if WITH_ODSC
+	#include "ODSC/ODSCManager.h"
 #endif
 #endif  //WITH_ENGINE
 
@@ -1140,9 +1151,13 @@ private:
 	}
 
 	TSet<FFileInPakFileHistory> History;
+	FCriticalSection HistoryLock;
 
 	void OnFileOpenedForRead(const TCHAR* PakFileName, const TCHAR* FileName)
 	{
+		//UE_LOG(LogInit, Warning, TEXT("OnFileOpenedForRead %u: %s - %s"), FPlatformTLS::GetCurrentThreadId(), PakFileName, FileName);
+
+		FScopeLock ScopeLock(&HistoryLock);
 		History.Emplace(FFileInPakFileHistory{ PakFileName, FileName });
 	}
 
@@ -1159,6 +1174,18 @@ public:
 
 	void DumpHistory()
 	{
+		FScopeLock ScopeLock(&HistoryLock);
+
+		History.Sort([](const FFileInPakFileHistory& A, const FFileInPakFileHistory& B)
+		{
+			if (A.PakFileName == B.PakFileName)
+			{
+				return A.FileName < B.FileName;
+			}
+
+			return A.PakFileName < B.PakFileName;
+		});
+
 		const FString SavePath = FPaths::ProjectLogDir() / TEXT("FilesLoadedFromPakFiles.csv");
 
 		FArchive* Writer = IFileManager::Get().CreateFileWriter(*SavePath, FILEWRITE_NoFail);
@@ -1575,6 +1602,15 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 	{
 		SetEmitDrawEvents(true);
 	}
+
+	// Activates malloc frame profiler from the command line 
+	// Recommend enabling bGenerateSymbols to ensure callstacks can resolve and bRetainFramePointers to ensure frame pointers remain valid.
+	// Also disabling the hitch detector ALLOW_HITCH_DETECTION=0 helps ensure quicker more accurate runs.
+	if (FParse::Param(FCommandLine::Get(), TEXT("mallocframeprofiler")))
+	{
+		GMallocFrameProfilerEnabled = true;
+		GMalloc = FMallocFrameProfiler::OverrideIfEnabled(GMalloc);
+	}
 #endif // !UE_BUILD_SHIPPING
 
 #if RHI_COMMAND_LIST_DEBUG_TRACES
@@ -1656,6 +1692,13 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 		SCOPED_BOOT_TIMING("BeginPreInitTextLocalization");
 		BeginPreInitTextLocalization();
 	}
+
+#if WITH_ENGINE
+	{
+		SCOPED_BOOT_TIMING("PreInitShaderLibrary");
+		FShaderCodeLibrary::PreInit();
+	}
+#endif // WITH_ENGINE
 
 	// allow the command line to override the platform file singleton
 	bool bFileOverrideFound = false;
@@ -2097,7 +2140,9 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 	{
 		SCOPED_BOOT_TIMING("Init FQueuedThreadPool's");
 
-		int StackSize = 128;
+		int32 StackSize = 128 * 1024;
+		GConfig->GetInt(TEXT("Core.System"), TEXT("PoolThreadStackSize"), StackSize, GEngineIni);
+
 		bool bForceEditorStackSize = false;
 #if WITH_EDITOR
 		bForceEditorStackSize = true;
@@ -2105,9 +2150,8 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 
 		if (bHasEditorToken || bForceEditorStackSize)
 		{
-			StackSize = 1000;
+			StackSize = 1024 * 1024;
 		}
-
 
 		{
 			GThreadPool = FQueuedThreadPool::Allocate();
@@ -2118,7 +2162,7 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 			{
 				NumThreadsInThreadPool = 1;
 			}
-			verify(GThreadPool->Create(NumThreadsInThreadPool, StackSize * 1024, TPri_SlightlyBelowNormal, TEXT("ThreadPool")));
+			verify(GThreadPool->Create(NumThreadsInThreadPool, StackSize, TPri_SlightlyBelowNormal, TEXT("ThreadPool")));
 		}
 		{
 			GBackgroundPriorityThreadPool = FQueuedThreadPool::Allocate();
@@ -2128,7 +2172,7 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 				NumThreadsInThreadPool = 1;
 			}
 
-			verify(GBackgroundPriorityThreadPool->Create(NumThreadsInThreadPool, StackSize * 1024, TPri_Lowest, TEXT("BackgroundThreadPool")));
+			verify(GBackgroundPriorityThreadPool->Create(NumThreadsInThreadPool, StackSize, TPri_Lowest, TEXT("BackgroundThreadPool")));
 		}
 
 #if WITH_EDITOR
@@ -2140,7 +2184,7 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 
 			// The default priority is above normal on Windows, which WILL make the system unresponsive when the thread-pool is heavily used.
 			// Also need to be lower than the game-thread to avoid impacting the frame rate with too much preemption. 
-			verify(GLargeThreadPool->Create(NumThreadsInLargeThreadPool, StackSize * 1024, TPri_SlightlyBelowNormal, TEXT("LargeThreadPool")));
+			verify(GLargeThreadPool->Create(NumThreadsInLargeThreadPool, StackSize, TPri_SlightlyBelowNormal, TEXT("LargeThreadPool")));
 		}
 #endif
 	}
@@ -2275,7 +2319,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		FPlatformMemory::Init();
 	}
 
-#if !(IS_PROGRAM || WITH_EDITOR)
+#if USE_IO_DISPATCHER
 	if (FIoDispatcher::IsInitialized())
 	{
 		SCOPED_BOOT_TIMING("InitIoDispatcher");
@@ -2293,7 +2337,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 
 #if CHECK_PUREVIRTUALS
-	FMessageDialog::Open(EAppMsgType::Ok, *NSLOCTEXT("Engine", "Error_PureVirtualsEnabled", "The game cannot run with CHECK_PUREVIRTUALS enabled.  Please disable CHECK_PUREVIRTUALS and rebuild the executable.").ToString());
+	FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("Engine", "Error_PureVirtualsEnabled", "The game cannot run with CHECK_PUREVIRTUALS enabled.  Please disable CHECK_PUREVIRTUALS and rebuild the executable."));
 	FPlatformMisc::RequestExit(false);
 #endif
 
@@ -2585,22 +2629,29 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 
+#if WITH_ODSC
+	check(!GODSCManager);
+	GODSCManager = new FODSCManager();
+#endif
 
 	bool bEnableShaderCompile = !FParse::Param(FCommandLine::Get(), TEXT("NoShaderCompile"));
 
-	if (bEnableShaderCompile && !FPlatformProperties::RequiresCookedData())
+	if (!FPlatformProperties::RequiresCookedData())
 	{
-		check(!GShaderCompilerStats);
-		GShaderCompilerStats = new FShaderCompilerStats();
-
-		check(!GShaderCompilingManager);
-		GShaderCompilingManager = new FShaderCompilingManager();
-
 		check(!GDistanceFieldAsyncQueue);
 		GDistanceFieldAsyncQueue = new FDistanceFieldAsyncQueue();
 
-		// Shader hash cache is required only for shader compilation.
-		InitializeShaderHashCache();
+		if (bEnableShaderCompile)
+		{
+			check(!GShaderCompilerStats);
+			GShaderCompilerStats = new FShaderCompilerStats();
+
+			check(!GShaderCompilingManager);
+			GShaderCompilingManager = new FShaderCompilingManager();
+
+			// Shader hash cache is required only for shader compilation.
+			InitializeShaderHashCache();
+		}
 	}
 
 	{
@@ -2619,15 +2670,13 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		FDelayedAutoRegisterHelper::RunAndClearDelayedAutoRegisterDelegates(EDelayedRegisterRunPhase::ShaderTypesReady);
 
-		SlowTask.EnterProgressFrame(30);
+		SlowTask.EnterProgressFrame(25, LOCTEXT("CompileGlobalShaderMap", "Compiling Global Shaders..."));
 
-		// Load the global shaders.
-		// if (!IsRunningCommandlet())
-		// hack: don't load global shaders if we are cooking we will load the shaders for the correct platform later
+		// Load the global shaders
+		// Commandlets and dedicated servers don't load global shaders (the cook commandlet will load for the necessary target platform(s) later).
 		if (bEnableShaderCompile &&
 			!IsRunningDedicatedServer() &&
-			!bIsCook)
-			// if (FParse::Param(FCommandLine::Get(), TEXT("Multiprocess")) == false)
+			(!IsRunningCommandlet() || IsAllowCommandletRendering()))
 		{
 			LLM_SCOPE(ELLMTag::Shaders);
 			SCOPED_BOOT_TIMING("CompileGlobalShaderMap");
@@ -2642,6 +2691,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			GetDerivedDataCacheRef();
 		}
+
+		SlowTask.EnterProgressFrame(5);
 
 		{
 			SCOPED_BOOT_TIMING("CreateMoviePlayer");
@@ -2798,6 +2849,8 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 
 #if WITH_ENGINE
 	{
+		TSharedPtr<IInstallBundleManager> BundleManager = IInstallBundleManager::GetPlatformInstallBundleManager();
+
 #if !UE_SERVER// && !UE_EDITOR
 		if (!IsRunningDedicatedServer() && !IsRunningCommandlet())
 		{
@@ -2821,7 +2874,6 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 				}
 			}
 
-			IInstallBundleManager* BundleManager = IInstallBundleManager::GetPlatformInstallBundleManager();
 			if (BundleManager != nullptr && !BundleManager->IsNullInterface())
 			{
 				IInstallBundleManager::InstallBundleCompleteDelegate.AddStatic(
@@ -2941,7 +2993,6 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 
 		//Now that our EarlyStartupScreen is finished, lets take the necessary steps to mount paks, apply .ini cvars, and open the shader libraries if we installed content we expect to handle
 		//If using a bundle manager, assume its handling all this stuff and that we don't have to do it.
-		IInstallBundleManager* BundleManager = IInstallBundleManager::GetPlatformInstallBundleManager();
 		if (BundleManager == nullptr || BundleManager->IsNullInterface())
 		{
 			// Mount Paks that were installed during EarlyStartupScreen
@@ -2986,8 +3037,21 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 				FShaderPipelineCache::OpenPipelineFileCache(GMaxRHIShaderPlatform);
 			}
 		}
+#if WITH_EDITOR
+		else if (GAllowCookedDataInEditorBuilds)
+		{
+			//Handle opening shader library after our EarlyLoadScreen
+			{
+				LLM_SCOPE(ELLMTag::Shaders);
+				SCOPED_BOOT_TIMING("FShaderCodeLibrary::OpenLibrary");
 
-		InitGameTextLocalization();
+				// Open the game library which contains the material shaders.
+				FShaderCodeLibrary::OpenLibrary(FApp::GetProjectName(), FPaths::ProjectContentDir());
+			}
+		}
+#endif
+
+		BeginInitGameTextLocalization();
 
 		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Initial UObject load"), STAT_InitialUObjectLoad, STATGROUP_LoadTime);
 
@@ -2996,6 +3060,7 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 		FPackageName::RegisterShortPackageNamesForUObjectModules();
 
 		SlowTask.EnterProgressFrame(5);
+
 
 #if USE_EVENT_DRIVEN_ASYNC_LOAD_AT_BOOT_TIME && !USE_PER_MODULE_UOBJECT_BOOTSTRAP
 		{
@@ -3013,6 +3078,8 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 
 		// Make sure all UObject classes are registered and default properties have been initialized
 		ProcessNewlyLoadedUObjects();
+
+		EndInitGameTextLocalization();
 
 		FDelayedAutoRegisterHelper::RunAndClearDelayedAutoRegisterDelegates(EDelayedRegisterRunPhase::ObjectSystemReady);
 
@@ -4098,36 +4165,22 @@ void FEngineLoop::Exit()
 
 	IInstallBundleManager::InstallBundleCompleteDelegate.RemoveAll(this);
 
+	if (FPreLoadScreenManager::Get())
+	{
+		// If we exit before the preload screen is done, clean it up before shutting down
+		if (FPreLoadScreenManager::Get()->HasActivePreLoadScreenType(EPreLoadScreenTypes::EngineLoadingScreen))
+		{
+			FPreLoadScreenManager::Get()->SetEngineLoadingComplete(true);
+			FPreLoadScreenManager::Get()->WaitForEngineLoadingScreenToFinish();
+		}
+
+		FPreLoadScreenManager::Destroy();
+	}
+
 	// shutdown visual logger and flush all data
 #if ENABLE_VISUAL_LOG
 	FVisualLogger::Get().Shutdown();
 #endif
-
-
-	// Make sure we're not in the middle of loading something.
-	{
-		bool bFlushOnExit = true;
-		if (GConfig)
-		{
-			FBoolConfigValueHelper FlushStreamingOnExitHelper(TEXT("/Script/Engine.StreamingSettings"), TEXT("s.FlushStreamingOnExit"), GEngineIni);
-			bFlushOnExit = FlushStreamingOnExitHelper;			
-		}
-		if (bFlushOnExit)
-		{
-	FlushAsyncLoading();
-		}
-		else
-		{
-			CancelAsyncLoading();
-		}
-	}
-
-	// Block till all outstanding resource streaming requests are fulfilled.
-	if (!IStreamingManager::HasShutdown())
-	{
-		UTexture2D::CancelPendingTextureStreaming();
-		IStreamingManager::Get().BlockTillAllRequestsFinished();
-	}
 
 #if WITH_ENGINE
 	// shut down messaging
@@ -4157,6 +4210,37 @@ void FEngineLoop::Exit()
 		GEngine->PreExit();
 	}
 
+
+	// Make sure we're not in the middle of loading something.
+	{
+		// From now on it's not allowed to request new async loads
+		SetAsyncLoadingAllowed(false);
+
+		bool bFlushOnExit = true;
+		if (GConfig)
+		{
+			FBoolConfigValueHelper FlushStreamingOnExitHelper(TEXT("/Script/Engine.StreamingSettings"), TEXT("s.FlushStreamingOnExit"), GEngineIni);
+			bFlushOnExit = FlushStreamingOnExitHelper;
+		}
+		if (bFlushOnExit)
+		{
+			FlushAsyncLoading();
+		}
+		else
+		{
+			CancelAsyncLoading();
+		}
+	}
+
+	// Block till all outstanding resource streaming requests are fulfilled.
+	if (!IStreamingManager::HasShutdown())
+	{
+		UTexture2D::CancelPendingTextureStreaming();
+		if (FStreamingManagerCollection* StreamingManager = IStreamingManager::Get_Concurrent())
+		{
+			StreamingManager->BlockTillAllRequestsFinished();
+		}
+	}
 	FAudioDeviceManager::Shutdown();
 
 	// close all windows
@@ -4182,7 +4266,6 @@ void FEngineLoop::Exit()
 	AppPreExit();
 
 	TermGamePhys();
-	ParticleVertexFactoryPool_FreePool();
 #else
 	// AppPreExit() stops malloc profiler, do it here instead
 	MALLOC_PROFILER( GMalloc->Exec(nullptr, TEXT("MPROF STOP"), *GLog);	);
@@ -4307,7 +4390,14 @@ void DumpEarlyReads(bool bDumpEarlyConfigReads, bool bDumpEarlyPakFileReads, boo
 	if (bForceQuitAfterEarlyReads)
 	{
 		GLog->Flush();
-		GEngine->DeferredCommands.Emplace(TEXT("Quit force"));
+		if (GEngine)
+		{
+			GEngine->DeferredCommands.Emplace(TEXT("Quit force"));
+		}
+		else
+		{
+			FPlatformMisc::RequestExit(true);
+		}
 	}
 }
 
@@ -4523,7 +4613,7 @@ static inline void BeginFrameRenderThread(FRHICommandListImmediate& RHICmdList, 
 
 	RHICmdList.EnqueueLambda([CurrentFrameCounter](FRHICommandListImmediate& InRHICmdList)
 	{
-		GEngine->SetRenderLatencyMarkerStart(CurrentFrameCounter);
+		GEngine->SetRenderSubmitLatencyMarkerStart(CurrentFrameCounter);
 	});
 }
 
@@ -4532,7 +4622,7 @@ static inline void EndFrameRenderThread(FRHICommandListImmediate& RHICmdList, ui
 {
 	RHICmdList.EnqueueLambda([CurrentFrameCounter](FRHICommandListImmediate& InRHICmdList)
 	{
-		GEngine->SetRenderLatencyMarkerEnd(CurrentFrameCounter);
+		GEngine->SetRenderSubmitLatencyMarkerEnd(CurrentFrameCounter);
 	});
 
 	FCoreDelegates::OnEndFrameRT.Broadcast();
@@ -4560,8 +4650,8 @@ static inline void EndFrameRenderThread(FRHICommandListImmediate& RHICmdList, ui
 
 void FEngineLoop::Tick()
 {
-    // make sure to catch any FMemStack uses outside of UWorld::Tick
-    FMemMark MemStackMark(FMemStack::Get());
+	// make sure to catch any FMemStack uses outside of UWorld::Tick
+	FMemMark MemStackMark(FMemStack::Get());
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST && MALLOC_GT_HOOKS
 	FScopedSampleMallocChurn ChurnTracker;
@@ -4570,6 +4660,8 @@ void FEngineLoop::Tick()
 	LLM(FLowLevelMemTracker::Get().UpdateStatsPerFrame());
 
 	LLM_SCOPE(ELLMTag::EngineMisc);
+
+	BeginExitIfRequested();
 
 	// Send a heartbeat for the diagnostics thread
 	FThreadHeartBeat::Get().HeartBeat(true);
@@ -4661,7 +4753,7 @@ void FEngineLoop::Tick()
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_FEngineLoop_UpdateTimeAndHandleMaxTickRate);
 			GEngine->UpdateTimeAndHandleMaxTickRate();
-			GEngine->SetGameLatencyMarkerStart(CurrentFrameCounter);
+			GEngine->SetSimulationLatencyMarkerStart(CurrentFrameCounter);
 		}
 
 		for (const FWorldContext& Context : GEngine->GetWorldContexts())
@@ -4743,8 +4835,13 @@ void FEngineLoop::Tick()
 				FlushPendingDeleteRHIResources_RenderThread();
 			});
 
+		// Don't pump messages if we're running embedded as the outer application
+		// will pass us messages instead.
+		if (!GUELibraryOverrideSettings.bIsEmbedded)
 		{
-			SCOPE_CYCLE_COUNTER(STAT_PumpMessages);
+			GEngine->SetInputSampleLatencyMarker(CurrentFrameCounter);
+
+			//QUICK_SCOPE_CYCLE_COUNTER(STAT_PumpMessages);
 			FPlatformApplicationMisc::PumpMessages(true);
 		}
 
@@ -4815,17 +4912,6 @@ void FEngineLoop::Tick()
             }
 		}
 
-#if !UE_SERVER
-		// tick media framework
-		static const FName MediaModuleName(TEXT("Media"));
-		IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>(MediaModuleName);
-
-		if (MediaModule != nullptr)
-		{
-			MediaModule->TickPreEngine();
-		}
-#endif
-
 		// main game engine tick (world, game objects, etc.)
 		GEngine->Tick(FApp::GetDeltaTime(), bIdleMode);
 
@@ -4873,14 +4959,6 @@ void FEngineLoop::Tick()
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_FEngineLoop_Tick_GDistanceFieldAsyncQueue);
 			GDistanceFieldAsyncQueue->ProcessAsyncTasks();
 		}
-
-#if !UE_SERVER
-		// tick media framework
-		if (MediaModule != nullptr)
-		{
-			MediaModule->TickPreSlate();
-		}
-#endif
 
 		// Tick the platform and input portion of Slate application, we need to do this before we run things
 		// concurrent with networking.
@@ -5008,8 +5086,18 @@ void FEngineLoop::Tick()
 			RHITick( FApp::GetDeltaTime() ); // Update RHI.
 		}
 
+		// We need to set this marker before EndFrameRenderThread is enqueued. 
+		// If multithreaded rendering is off, it can cause a bad ordering of game and rendering markers.
+		GEngine->SetSimulationLatencyMarkerEnd(CurrentFrameCounter);
+
 		// Increment global frame counter. Once for each engine tick.
 		GFrameCounter++;
+
+		ENQUEUE_RENDER_COMMAND(FrameCounter)(
+			[CurrentFrameCounter = GFrameCounter](FRHICommandListImmediate& RHICmdList)
+		{
+			GFrameCounterRenderThread = CurrentFrameCounter;
+		});
 
 		// Disregard first few ticks for total tick time as it includes loading and such.
 		if (GFrameCounter > 6)
@@ -5048,6 +5136,8 @@ void FEngineLoop::Tick()
 
 #if !UE_SERVER
 		// tick media framework
+		static const FName MediaModuleName(TEXT("Media"));
+		IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>(MediaModuleName);
 		if (MediaModule != nullptr)
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_FEngineLoop_MediaTickPostRender);
@@ -5070,8 +5160,6 @@ void FEngineLoop::Tick()
 			{
 				EndFrameRenderThread(RHICmdList, CurrentFrameCounter);
 			});
-
-		GEngine->SetGameLatencyMarkerEnd(CurrentFrameCounter);
 
 		// Set CPU utilization stats.
 		const FCPUTime CPUTime = FPlatformTime::GetCPUTime();
@@ -5328,6 +5416,8 @@ bool FEngineLoop::AppInit( )
 	if (FParse::Param(FCommandLine::Get(), TEXT("BUILDMACHINE")))
 	{
 		GIsBuildMachine = true;
+		// propagate to subprocesses, especially because some - like ShaderCompileWorker - use DDC, for which this switch matters
+		FCommandLine::AddToSubprocessCommandline(TEXT(" -buildmachine"));
 	}
 
 	// If "-WaitForDebugger" was specified, halt startup and wait for a debugger to attach before continuing
@@ -5760,9 +5850,18 @@ void FEngineLoop::AppPreExit( )
 		delete GShaderCompilerStats;
 		GShaderCompilerStats = nullptr;
 	}
+
+#if WITH_ODSC
+	if (GODSCManager)
+	{
+		delete GODSCManager;
+		GODSCManager = nullptr;
+	}
 #endif
 
-#if !(IS_PROGRAM || WITH_EDITOR)
+#endif
+
+#if USE_IO_DISPATCHER
 	FIoDispatcher::Shutdown();
 #endif
 }

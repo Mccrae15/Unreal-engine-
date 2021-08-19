@@ -32,7 +32,11 @@ FNiagaraOverviewGraphViewModel::FNiagaraOverviewGraphViewModel()
 
 FNiagaraOverviewGraphViewModel::~FNiagaraOverviewGraphViewModel()
 {
-	GEditor->UnregisterForUndo(this);
+	if(bIsForDataProcessingOnly == false)
+	{
+		GEditor->UnregisterForUndo(this);
+	}
+
 	TSharedPtr<FNiagaraSystemViewModel> SystemViewModelPinned = SystemViewModel.Pin();
 	if (SystemViewModelPinned.IsValid())
 	{
@@ -55,9 +59,13 @@ void FNiagaraOverviewGraphViewModel::Initialize(TSharedRef<FNiagaraSystemViewMod
 {
 	SystemViewModel = InSystemViewModel;
 	OverviewGraph = InSystemViewModel->GetEditorData().GetSystemOverviewGraph();
+	bIsForDataProcessingOnly = InSystemViewModel->GetIsForDataProcessingOnly();
 
-	SetupCommands();
-	GEditor->RegisterForUndo(this);
+	if(bIsForDataProcessingOnly == false)
+	{
+		SetupCommands();
+		GEditor->RegisterForUndo(this);
+	}
 
 	NodeSelection->OnSelectedObjectsChanged().AddSP(this, &FNiagaraOverviewGraphViewModel::GraphSelectionChanged);
 	InSystemViewModel->GetSelectionViewModel()->OnEntrySelectionChanged().AddSP(this, &FNiagaraOverviewGraphViewModel::SystemSelectionChanged);
@@ -99,6 +107,11 @@ const FNiagaraGraphViewSettings& FNiagaraOverviewGraphViewModel::GetViewSettings
 void FNiagaraOverviewGraphViewModel::SetViewSettings(const FNiagaraGraphViewSettings& InOverviewGraphViewSettings)
 {
 	GetSystemViewModel()->GetEditorData().SetSystemOverviewGraphViewSettings(InOverviewGraphViewSettings);
+}
+
+FNiagaraOverviewGraphViewModel::FOnNodesPasted& FNiagaraOverviewGraphViewModel::OnNodesPasted()
+{
+	return OnNodesPastedDelegate;
 }
 
 TSharedRef<FNiagaraSystemViewModel> FNiagaraOverviewGraphViewModel::GetSystemViewModel()
@@ -319,22 +332,29 @@ void FNiagaraOverviewGraphViewModel::PasteNodes()
 		TArray<FNiagaraSystemViewModel::FEmitterHandleToDuplicate> EmitterHandlesToDuplicate;
  		for (UEdGraphNode* PastedNode : PastedNodes)
  		{
+			PastedNode->CreateNewGuid();
 			UNiagaraOverviewNode* OverviewNode = Cast<UNiagaraOverviewNode>(PastedNode);
 			
 			if(OverviewNode != nullptr)
 			{
-				if (OverviewNode->GetOwningSystem() != nullptr && OverviewNode->GetEmitterHandleGuid().IsValid())
+				if (OverviewNode->GetOwningSystem() == nullptr)
+				{
+					// Nodes pasted from emitters have no owning system, and will be invalid, so they are destroyed here instead.
+					FNiagaraEditorUtilities::InfoWithToastAndLog(LOCTEXT("PasteFromEmitterAsset", "Cannot paste emitters from emitter assets. Please use Add Emitter from the right click menu instead."));
+					OverviewNode->DestroyNode();
+				}					
+				else if	(OverviewNode->GetEmitterHandleGuid().IsValid())
 				{
 					FNiagaraSystemViewModel::FEmitterHandleToDuplicate EmitterHandleToDuplicate;
 					EmitterHandleToDuplicate.SystemPath = OverviewNode->GetOwningSystem()->GetPathName();
 					EmitterHandleToDuplicate.EmitterHandleId = OverviewNode->GetEmitterHandleGuid();
+					EmitterHandleToDuplicate.OverviewNode = OverviewNode;
 					EmitterHandlesToDuplicate.Add(EmitterHandleToDuplicate);
 				}
-				// Once we've collected the data from the pasted overview node delete it, since a proper node will be created as part
-				// of the duplication process.
-				OverviewNode->DestroyNode();
 			}
  		}
+		// Make the overview graph aware of the pasted nodes, so it can position them correctly.
+		OnNodesPastedDelegate.Broadcast(PastedNodes);
 
 		GetSystemViewModel()->DuplicateEmitters(EmitterHandlesToDuplicate);
 	}
@@ -565,7 +585,11 @@ void FNiagaraOverviewGraphViewModel::SystemSelectionChanged()
 void FNiagaraOverviewGraphViewModel::PostUndo(bool bSuccess)
 {
 	// This is neccessary to have the graph editor respond correctly to data changes due to undo.
-	OverviewGraph->NotifyGraphChanged();
+	// Validate the OverviewGraph exists before notifying as we may be entering PostUndo from a transaction that predates the OverviewGraph.
+	if (OverviewGraph)
+	{
+		OverviewGraph->NotifyGraphChanged();
+	}
 }
 
 #undef LOCTEXT_NAMESPACE // NiagaraScriptGraphViewModel

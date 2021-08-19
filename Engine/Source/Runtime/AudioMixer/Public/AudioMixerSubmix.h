@@ -3,20 +3,53 @@
 #pragma once
 
 #include "AudioMixer.h"
+#include "CoreMinimal.h"
 #include "SampleBuffer.h"
 #include "IAudioEndpoint.h"
 #include "ISoundfieldEndpoint.h"
 #include "Sound/SoundSubmix.h"
+#include "Sound/SoundModulationDestination.h"
 #include "DSP/EnvelopeFollower.h"
+#include "DSP/MultithreadedPatching.h"
 #include "DSP/SpectrumAnalyzer.h"
 #include "Templates/SharedPointer.h"
 #include "AudioDynamicParameter.h"
+#include "Stats/Stats.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+// The time it takes to process the submix graph. Process submix effects, mix into the submix buffer, etc.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph"), STAT_AudioMixerSubmixes, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the endpoint submixes.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph Endpoint"), STAT_AudioMixerEndpointSubmixes, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix graph. Process submix effects, mix into the submix buffer, etc.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph Child Processing"), STAT_AudioMixerSubmixChildren, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix graph. Process submix effects, mix into the submix buffer, etc.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph Source Mixing"), STAT_AudioMixerSubmixSource, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix graph. Process submix effects, mix into the submix buffer, etc.
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph Effect Processing"), STAT_AudioMixerSubmixEffectProcessing, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix buffer listeners. 
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Buffer Listeners"), STAT_AudioMixerSubmixBufferListeners, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix soundfield child submixes. 
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Soundfield Children"), STAT_AudioMixerSubmixSoundfieldChildren, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix soundfield sources. 
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Soundfield Sources"), STAT_AudioMixerSubmixSoundfieldSources, STATGROUP_AudioMixer, AUDIOMIXER_API);
+
+// The time it takes to process the submix soundfield processors.. 
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Soundfield Processors"), STAT_AudioMixerSubmixSoundfieldProcessors, STATGROUP_AudioMixer, AUDIOMIXER_API);
 
 // Forward Declarations
 class FOnSubmixEnvelopeBP;
 class USoundEffectSubmix;
 class USoundSubmix;
-
+class USoundSubmixBase;
+class USoundModulatorBase;
 
 namespace Audio
 {
@@ -106,6 +139,12 @@ namespace Audio
 		// Sets the wet level of the submix
 		void SetWetLevel(float InWetLevel);
 
+		// Update modulation settings of the submix
+		void UpdateModulationSettings(USoundModulatorBase* InOutputModulator, USoundModulatorBase* InWetLevelModulator, USoundModulatorBase* InDryLevelModulator);
+
+		// Update modulation settings of the submix
+		void SetModulationBaseLevels(float InVolumeModBase, float InWetModeBase, float InDryModBase);
+
 		// Gets the submix channels channels
 		int32 GetSubmixChannels() const;
 
@@ -123,6 +162,8 @@ namespace Audio
 
 		// Add (if not already added) or sets the amount of the source voice's send amount
 		void AddOrSetSourceVoice(FMixerSourceVoice* InSourceVoice, const float SendLevel, EMixerSourceSubmixSendStage InSubmixSendStage);
+
+		FPatchOutputStrongPtr AddPatch(float InGain);
 
 		/** Removes the given source voice from the submix. */
 		void RemoveSourceVoice(FMixerSourceVoice* InSourceVoice);
@@ -150,6 +191,11 @@ namespace Audio
 
 		/** Whether or not this submix instance is muted. */
 		void SetBackgroundMuted(bool bInMuted);
+
+		/** Checks to see if submix is valid.  Submix can be considered invalid if the OwningSubmix
+		  * pointer is stale.
+		  */
+		bool IsValid() const;
 
 		// Function which processes audio.
 		void ProcessAudio(AlignedFloatBuffer& OutAudio);
@@ -246,6 +292,9 @@ namespace Audio
 		// returns true if this submix sends its audio to an ISoundfieldEndpoint.
 		bool IsSoundfieldEndpointSubmix() const;
 
+		//Returns true if this is an endpoint type that should no-op for this platform
+		bool IsDummyEndpointSubmix() const;
+
 		// Get a unique key for this submix's format and settings.
 		// If another submix has an identical format and settings it will have an equivalent key.
 		FSoundfieldEncodingKey GetKeyForSubmixEncoding();
@@ -259,7 +308,7 @@ namespace Audio
 		FSoundfieldSpeakerPositionalData GetDefaultPositionalDataForAudioDevice();
 
 	protected:
-		// Initialize the submix internal 
+		// Initialize the submix internal
 		void InitInternal();
 
 		// Down mix the given buffer to the desired down mix channel count
@@ -281,7 +330,7 @@ namespace Audio
 
 		void UpdateListenerRotation(const FQuat& InRotation);
 
-		// Calls ProcessAudio on the child submix, performs all neccessary conversions and mixes in it's resulting audio.
+		// Calls ProcessAudio on the child submix, performs all necessary conversions and mixes in it's resulting audio.
 		void MixInChildSubmix(FChildSubmixInfo& Child, ISoundfieldAudioPacket& PacketToSumTo);
 
 		FName GetSoundfieldFormat() const;
@@ -466,6 +515,14 @@ namespace Audio
 		float CurrentDryLevel;
 		float TargetDryLevel;
 
+		FModulationDestination VolumeMod;
+		FModulationDestination DryLevelMod;
+		FModulationDestination WetLevelMod;
+
+		float VolumeModBase;
+		float DryModBase;
+		float WetModBase;
+
 		// Envelope following data
 		float EnvelopeValues[AUDIO_MIXER_MAX_OUTPUT_CHANNELS];
 		TArray<Audio::FEnvelopeFollower> EnvelopeFollowers;
@@ -475,7 +532,7 @@ namespace Audio
 		// Spectrum analyzer. Created and destroyed on the audio thread.
 		FCriticalSection SpectrumAnalyzerCriticalSection;
 		FSoundSpectrumAnalyzerSettings SpectrumAnalyzerSettings;
-		TUniquePtr<FSpectrumAnalyzer> SpectrumAnalyzer;
+		TSharedPtr<FAsyncSpectrumAnalyzer, ESPMode::ThreadSafe> SpectrumAnalyzer;
 		
 		// This buffer is used to downmix the submix output to mono before submitting it to the SpectrumAnalyzer.
 		AlignedFloatBuffer MonoMixBuffer;
@@ -556,7 +613,9 @@ namespace Audio
 		FCriticalSection EffectChainMutationCriticalSection;
 
 		// Handle back to the owning USoundSubmix. Used when the device is shutdown to prematurely end a recording.
-		const USoundSubmixBase* OwningSubmixObject;
+		TWeakObjectPtr<const USoundSubmixBase> OwningSubmixObject;
+
+		Audio::FPatchSplitter PatchSplitter;
 
 		friend class FMixerDevice;
 	};

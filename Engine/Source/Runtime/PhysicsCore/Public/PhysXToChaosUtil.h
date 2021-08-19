@@ -20,7 +20,7 @@
 #include "Chaos/ImplicitObjectScaled.h"
 
 //convert physx shape to chaos geometry - must be inline because of unique ptr crossing dlls
-inline TUniquePtr<Chaos::TImplicitObjectTransformed<float, 3>> PxShapeToChaosGeom(PxShape* Shape)
+inline TUniquePtr<Chaos::TImplicitObjectTransformed<FReal, 3>> PxShapeToChaosGeom(PxShape* Shape)
 {
 	using namespace Chaos;
 
@@ -31,22 +31,22 @@ inline TUniquePtr<Chaos::TImplicitObjectTransformed<float, 3>> PxShapeToChaosGeo
 	{
 	case PxGeometryType::eSPHERE:
 	{
-		InnerObj = MakeUnique<TSphere<float, 3>>(TVector<float, 3>(0), Geom.sphere().radius);
+		InnerObj = MakeUnique<TSphere<FReal, 3>>(FVec3(0), Geom.sphere().radius);
 		break;
 	}
 	case PxGeometryType::eBOX:
 	{
-		const TVector<float, 3> HalfExtents = P2UVector(Geom.box().halfExtents);
-		InnerObj = MakeUnique<TBox<float, 3>>(-HalfExtents, HalfExtents);
+		const FVec3 HalfExtents = P2UVector(Geom.box().halfExtents);
+		InnerObj = MakeUnique<TBox<FReal, 3>>(-HalfExtents, HalfExtents);
 		break;
 	}
 	case PxGeometryType::eCAPSULE:
 	{
-		const float HalfHeight = Geom.capsule().halfHeight;
-		const float Radius = Geom.capsule().radius;
-		const TVector<float, 3> Top(HalfHeight, 0, 0);	//PhysX capsules are aligned along the x-axis
-		const TVector<float, 3> Bottom = -Top;
-		InnerObj = MakeUnique<TCapsule<float>>(Top, Bottom, Radius);
+		const FReal HalfHeight = Geom.capsule().halfHeight;
+		const FReal Radius = Geom.capsule().radius;
+		const FVec3 Top(HalfHeight, 0, 0);	//PhysX capsules are aligned along the x-axis
+		const FVec3 Bottom = -Top;
+		InnerObj = MakeUnique<FCapsule>(Top, Bottom, Radius);
 		break;
 	}
 	case PxGeometryType::eCONVEXMESH:
@@ -57,7 +57,7 @@ inline TUniquePtr<Chaos::TImplicitObjectTransformed<float, 3>> PxShapeToChaosGeo
 		const PxVec3* Vertices = ConvexMesh->getVertices();
 		const uint32 NumVerts = ConvexMesh->getNbVertices();
 
-		TParticles<float, 3> Particles;
+		FParticles Particles;
 		Particles.AddParticles(NumVerts);
 		for (uint32 Idx = 0; Idx < NumVerts; ++Idx)
 		{
@@ -126,7 +126,7 @@ inline TUniquePtr<Chaos::TImplicitObjectTransformed<float, 3>> PxShapeToChaosGeo
 
 		ShapeTM = U2PTransform(FTransform(LandscapeComponentMatrix));
 
-		InnerObj = MakeUnique<FHeightField>(MoveTemp(Height), MoveTemp(MaterialIndices), NumRows, NumCols, TVector<float, 3>(HeightFieldGeom.columnScale, HeightFieldGeom.rowScale, HeightFieldGeom.heightScale));
+		InnerObj = MakeUnique<FHeightField>(MoveTemp(Height), MoveTemp(MaterialIndices), NumRows, NumCols, FVec3(HeightFieldGeom.columnScale, HeightFieldGeom.rowScale, HeightFieldGeom.heightScale));
 		break;
 	}
 	case PxGeometryType::eTRIANGLEMESH:
@@ -137,7 +137,7 @@ inline TUniquePtr<Chaos::TImplicitObjectTransformed<float, 3>> PxShapeToChaosGeo
 		const PxVec3* Vertices = TriangleMesh->getVertices();
 		const uint32 NumVerts = TriangleMesh->getNbVertices();
 
-		TParticles<float, 3> Particles;
+		FParticles Particles;
 		Particles.AddParticles(NumVerts);
 		for (uint32 Idx = 0; Idx < NumVerts; ++Idx)
 		{
@@ -147,7 +147,7 @@ inline TUniquePtr<Chaos::TImplicitObjectTransformed<float, 3>> PxShapeToChaosGeo
 		const void* IndexBuffer = TriangleMesh->getTriangles();
 		const uint32 NumTriangles = TriangleMesh->getNbTriangles();
 		PxTriangleMeshFlags Flags = TriangleMesh->getTriangleMeshFlags();
-		TArray<TVector<int32, 3>> Triangles;
+		TArray<TVec3<int32>> Triangles;
 		TArray<uint16> MaterialIndices;
 		Triangles.AddUninitialized(NumTriangles);
 		MaterialIndices.Reserve(NumTriangles);
@@ -158,7 +158,7 @@ inline TUniquePtr<Chaos::TImplicitObjectTransformed<float, 3>> PxShapeToChaosGeo
 		{
 			if (Flags & PxTriangleMeshFlag::e16_BIT_INDICES)
 			{
-				TVector<int32, 3> Triangle = {
+				TVec3<int32> Triangle = {
 					static_cast<const uint16*>(IndexBuffer)[TriIdx * 3],
 					static_cast<const uint16*>(IndexBuffer)[TriIdx * 3+1],
 					static_cast<const uint16*>(IndexBuffer)[TriIdx * 3+2] };
@@ -166,7 +166,7 @@ inline TUniquePtr<Chaos::TImplicitObjectTransformed<float, 3>> PxShapeToChaosGeo
 			}
 			else
 			{
-				TVector<int32, 3> Triangle = {
+				TVec3<int32> Triangle = {
 					static_cast<const int32*>(IndexBuffer)[TriIdx * 3],
 					static_cast<const int32*>(IndexBuffer)[TriIdx * 3+1],
 					static_cast<const int32*>(IndexBuffer)[TriIdx * 3+2] };
@@ -194,7 +194,7 @@ inline TUniquePtr<Chaos::TImplicitObjectTransformed<float, 3>> PxShapeToChaosGeo
 	default: ensure(false); return nullptr;	//missing support for this geometry type
 	}
 
-	return MakeUnique<TImplicitObjectTransformed<float, 3>>(MoveTemp(InnerObj), P2UTransform(ShapeTM));
+	return MakeUnique<TImplicitObjectTransformed<FReal, 3>>(MoveTemp(InnerObj), P2UTransform(ShapeTM));
 }
 
 #endif

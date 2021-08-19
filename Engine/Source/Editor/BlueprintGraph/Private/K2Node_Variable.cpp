@@ -432,6 +432,29 @@ FProperty* UK2Node_Variable::GetPropertyForVariable() const
 	return GetPropertyForVariable_Internal(GetBlueprintClassFromNode());
 }
 
+FString UK2Node_Variable::GetPinMetaData(FName InPinName, FName InKey)
+{
+	FString MetaData;
+
+	if (GetVarName() == InPinName)
+	{
+		if (FProperty* VariableProperty = GetPropertyForVariable())
+		{
+			if (const FString* FoundMetaData = VariableProperty->FindMetaData(FBlueprintMetadata::MD_AllowAbstractClasses))
+			{
+				MetaData = *FoundMetaData;
+			}
+		}
+	}
+
+	if (MetaData.IsEmpty())
+	{
+		MetaData = Super::GetPinMetaData(InPinName, InKey);
+	}
+
+	return MetaData;
+}
+
 bool UK2Node_Variable::DoesRenamedVariableMatch(FName OldVariableName, FName NewVariableName, UStruct* StructType)
 {
 	if (NewVariableName == OldVariableName)
@@ -808,11 +831,30 @@ bool UK2Node_Variable::HasExternalDependencies(TArray<class UStruct*>* OptionalO
 {
 	UClass* SourceClass = GetVariableSourceClass();
 	UBlueprint* SourceBlueprint = GetBlueprint();
-	const bool bResult = (SourceClass && (SourceClass->ClassGeneratedBy != SourceBlueprint));
+	bool bResult = (SourceClass && (SourceClass->ClassGeneratedBy != SourceBlueprint));
 	if (bResult && OptionalOutput)
 	{
 		OptionalOutput->AddUnique(SourceClass);
 	}
+
+	// Also include underlying non-native variable types as external dependencies. Otherwise, contextual
+	// type references serialized to bytecode can potentially be invalidated when the type is regenerated.
+	if (const UEdGraphPin* VarPin = FindPin(GetVarName()))
+	{
+		if (UStruct* PinTypeStruct = Cast<UStruct>(VarPin->PinType.PinSubCategoryObject.Get()))
+		{
+			UClass* PinTypeClass = Cast<UClass>(PinTypeStruct);
+			if (!PinTypeStruct->IsNative() && (!PinTypeClass || PinTypeClass->ClassGeneratedBy != SourceBlueprint))
+			{
+				bResult = true;
+				if (OptionalOutput)
+				{
+					OptionalOutput->AddUnique(PinTypeStruct);
+				}
+			}
+		}
+	}
+	
 	const bool bSuperResult = Super::HasExternalDependencies(OptionalOutput);
 	return bSuperResult || bResult;
 }

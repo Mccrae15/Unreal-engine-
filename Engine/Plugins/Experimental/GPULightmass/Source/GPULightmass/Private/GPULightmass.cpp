@@ -32,14 +32,25 @@ FGPULightmass::FGPULightmass(UWorld* InWorld, FGPULightmassModule* InGPULightmas
 	// Start the lightmass 'progress' notification
 	FNotificationInfo Info(LOCTEXT("LightBuildMessage", "Building lighting"));
 	Info.bFireAndForget = false;
-	Info.ButtonDetails.Add(FNotificationButtonInfo(
-		LOCTEXT("Save", "Save"),
-		LOCTEXT("LightBuildSaveToolTip", "Save intermediate results from the lighting build in progress."),
-		FSimpleDelegate::CreateLambda([InWorld, this]() { this->Scene.ApplyFinishedLightmapsToWorld(); })));
+
+	if (InSettings->Mode == EGPULightmassMode::BakeWhatYouSee)
+	{
+		Info.ButtonDetails.Add(FNotificationButtonInfo(
+		LOCTEXT("Save", "Save and Stop"),
+		FText::GetEmpty(),
+		FSimpleDelegate::CreateLambda([InWorld, this]() { 
+			this->Scene.ApplyFinishedLightmapsToWorld(); 
+			InWorld->GetSubsystem<UGPULightmassSubsystem>()->Stop(); 
+		})));
+	}
+	
 	Info.ButtonDetails.Add(FNotificationButtonInfo(
 		LOCTEXT("LightBuildCancel", "Cancel"),
 		LOCTEXT("LightBuildCancelToolTip", "Cancels the lighting build in progress."),
-		FSimpleDelegate::CreateLambda([InWorld]() { InWorld->GetSubsystem<UGPULightmassSubsystem>()->Stop(); })));
+		FSimpleDelegate::CreateLambda([InWorld]() { 
+			InWorld->GetSubsystem<UGPULightmassSubsystem>()->Stop(); 
+			InWorld->GetSubsystem<UGPULightmassSubsystem>()->OnLightBuildEnded().Broadcast();
+			})));
 
 	LightBuildNotification = FSlateNotificationManager::Get().AddNotification(Info);
 	if (LightBuildNotification.IsValid())
@@ -146,6 +157,7 @@ void FGPULightmass::OnLightComponentRegistered(ULightComponentBase* InComponent)
 {
 	if (InComponent->GetWorld() != World) return;
 
+	if (!InComponent->IsRegistered()) return;
 	if (!InComponent->IsVisible()) return;
 
 	if (UDirectionalLightComponent* DirectionalLight = Cast<UDirectionalLightComponent>(InComponent))
@@ -291,6 +303,7 @@ void FGPULightmass::OnMaterialInvalidated(FMaterialRenderProxy* Material)
 void FGPULightmass::StartRecordingVisibleTiles() 
 {
 	ENQUEUE_RENDER_COMMAND(BackgroundTickRenderThread)([&RenderState = Scene.RenderState](FRHICommandListImmediate&) mutable {
+		RenderState.LightmapRenderer->RecordedTileRequests.Empty();
 		RenderState.LightmapRenderer->bIsRecordingTileRequests = true;
 	});
 }

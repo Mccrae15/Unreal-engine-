@@ -170,6 +170,20 @@ namespace EAndroidGraphicsDebugger
 	};
 }
 
+UENUM()
+namespace EClangSanitizer
+{
+	enum Type
+	{
+		None = 0 UMETA(DisplayName = "None"),
+		Address = 1 UMETA(DisplayName = "Address Sanitizer"),
+		HwAddress = 2 UMETA(DisplayName = "Hardware Address Sanitizer. For flashed Pixel devices only!"),
+		UndefinedBehavior = 3 UMETA(DisplayName = "Undefined Behavior Sanitizer"),
+		UndefinedBehaviorMinimal = 4 UMETA(DisplayName = "Minimal Undefined Behavior Sanitizer"),
+		//Thread = 5 UMETA(DisplayName = "Thread Sanitizer"),
+	};
+}
+
 
 /**
  * Implements the settings for the Android runtime platform.
@@ -402,6 +416,10 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support Vulkan Desktop [Experimental]"))
 	bool bSupportsVulkanSM5;
 
+	// Select a Clang's sanitizer to build the project with
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build)
+	TEnumAsByte<EClangSanitizer::Type> ClangSanitizer;
+
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support Backbuffer Sampling on OpenGL",
 	ToolTip = "Whether to render to an offscreen surface instead of render to backbuffer directly on android opengl platform. Enable it if you'd like to support UMG background blur on android opengl."))
 	bool bAndroidOpenGLSupportsBackbufferSampling;
@@ -585,6 +603,11 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = GraphicsDebugger)
 	FDirectoryPath MaliGraphicsDebuggerPath;
 
+	// If checked, this will disable the security.perf_harden flag on the Android device when launching or installing your app via the generated batch file.
+	// Disabling security.perf_harden is necessary for HWCPipe to be able to report performance counters on Mali devices.
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = GraphicsDebugger)
+	bool bEnableMaliPerfCounters;
+
 	/** Include ETC2 textures when packaging with the Android (Multi) variant. */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = MultiTextureFormats, meta = (DisplayName = "Include ETC2 textures"))
 	bool bMultiTargetFormat_ETC2;
@@ -620,6 +643,10 @@ public:
 	/** Whether to enable LOD streaming for landscape visual meshes. Only supported on feature level ES3.1 or above. */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Misc", Meta = (DisplayName = "Stream landscape visual mesh LODs"))
 	bool bStreamLandscapeMeshLODs;
+
+	// Enables WebViews to use DOM storage API
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Misc", Meta = (DisplayName = "Enable DOM storage for WebViews"))
+	bool bEnableDomStorage;
 
 	virtual void PostReloadConfig(class FProperty* PropertyThatWasLoaded) override;
 

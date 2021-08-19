@@ -109,6 +109,13 @@ public:
 		return ShotOverridePresetOrigin.Get();
 	}
 
+	/** Returns whether this should should be rendered */
+	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
+	bool ShouldRender() const
+	{
+		return bEnabled;
+	}
+
 protected:
 	// UMoviePipipelineExecutorShot Interface
 	virtual void SetStatusMessage_Implementation(const FString& InMessage) { StatusMessage = InMessage; }
@@ -119,17 +126,9 @@ protected:
 
 public:
 
-	/** Should this shot be rendered? */
+	/** Does the user want to render this shot? */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
 	bool bEnabled;
-
-	/** Soft object path to uniquley identify this shot. Both Inner and Outer path are compared. */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
-	FSoftObjectPath InnerPathKey;
-
-	/** Soft object path to uniquley identify this shot. Both Inner and Outer path are compared. */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
-	FSoftObjectPath OuterPathKey;
 
 	/** The name of the shot section that contains this shot. Can be empty. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
@@ -141,6 +140,7 @@ public:
 public:
 	/** Transient information used by the active Movie Pipeline working on this shot. */
 	FMoviePipelineCameraCutInfo ShotInfo;
+
 
 protected:
 	UPROPERTY(Transient)

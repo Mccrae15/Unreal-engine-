@@ -19,6 +19,7 @@
 #include "PropertyHandleImpl.h"
 #include "EditorSupportDelegates.h"
 #include "UObject/ConstructorHelpers.h"
+#include "InstancedReferenceSubobjectHelper.h"
 
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -986,6 +987,10 @@ bool FPropertyNode::GetReadAddress(bool InRequiresSingleSelection,
 								   bool bArrayPropertiesCanDifferInSize) const
 
 {
+	if (!ParentNodeWeakPtr.IsValid())
+	{
+		return false;
+	}
 
 	// @todo PropertyEditor Nodes which require validation cannot be cached
 	if( CachedReadAddresses.Num() && !CachedReadAddresses.bRequiresCache && !HasNodeFlags(EPropertyNodeFlags::RequiresValidation) )
@@ -996,14 +1001,10 @@ bool FPropertyNode::GetReadAddress(bool InRequiresSingleSelection,
 
 	CachedReadAddresses.Reset();
 
-	bool bAllValuesTheSame = false;
-	if (ParentNodeWeakPtr.IsValid())
-	{
-		bAllValuesTheSame = GetReadAddressUncached( *this, InRequiresSingleSelection, &CachedReadAddresses, bComparePropertyContents, bObjectForceCompare, bArrayPropertiesCanDifferInSize );
-		OutAddresses.ReadAddressListData = &CachedReadAddresses;
-		CachedReadAddresses.bAllValuesTheSame = bAllValuesTheSame;
-		CachedReadAddresses.bRequiresCache = false;
-	}
+	bool bAllValuesTheSame = GetReadAddressUncached( *this, InRequiresSingleSelection, &CachedReadAddresses, bComparePropertyContents, bObjectForceCompare, bArrayPropertiesCanDifferInSize );
+	OutAddresses.ReadAddressListData = &CachedReadAddresses;
+	CachedReadAddresses.bAllValuesTheSame = bAllValuesTheSame;
+	CachedReadAddresses.bRequiresCache = false;
 
 	return bAllValuesTheSame;
 }
@@ -1015,6 +1016,11 @@ bool FPropertyNode::GetReadAddress(bool InRequiresSingleSelection,
  */
 bool FPropertyNode::GetReadAddress( FReadAddressList& OutAddresses ) const
 {
+	if (!ParentNodeWeakPtr.IsValid())
+	{
+		return false;
+	}
+
 	// @todo PropertyEditor Nodes which require validation cannot be cached
 	if( CachedReadAddresses.Num() && !HasNodeFlags(EPropertyNodeFlags::RequiresValidation) )
 	{
@@ -1024,16 +1030,13 @@ bool FPropertyNode::GetReadAddress( FReadAddressList& OutAddresses ) const
 
 	CachedReadAddresses.Reset();
 
-	bool bSuccess = false;
-	if (ParentNodeWeakPtr.IsValid())
+	bool bSuccess = GetReadAddressUncached( *this, CachedReadAddresses );
+	if( bSuccess )
 	{
-		bSuccess = GetReadAddressUncached( *this, CachedReadAddresses );
-		if( bSuccess )
-		{
-			OutAddresses.ReadAddressListData = &CachedReadAddresses;
-		}
-		CachedReadAddresses.bRequiresCache = false;
+		OutAddresses.ReadAddressListData = &CachedReadAddresses;
 	}
+
+	CachedReadAddresses.bRequiresCache = false;
 
 	return bSuccess;
 }
@@ -2295,6 +2298,17 @@ void FPropertyNode::NotifyPostChange( FPropertyChangedEvent& InPropertyChangedEv
 	// remember the property that was the chain's original active property; this will correspond to the outermost property of struct/array that was modified
 	FProperty* const OriginalActiveProperty = PropertyChain->GetActiveMemberNode()->GetValue();
 
+	// invalidate the entire chain of objects in the hierarchy 
+	FObjectPropertyNode* CurrentObjectNode = FindObjectItemParent();
+	while (CurrentObjectNode != nullptr)
+	{
+		CurrentObjectNode->InvalidateCachedState();
+
+		// FindObjectItemParent returns itself if the node is an object, so step up the hierarchy to get to its actual parent object
+		FPropertyNode* CurrentParent = CurrentObjectNode->GetParentNode();
+		CurrentObjectNode = CurrentParent != nullptr ? CurrentParent->FindObjectItemParent() : nullptr;
+	}
+
 	FObjectPropertyNode* ObjectNode = FindObjectItemParent();
 	if( ObjectNode )
 	{
@@ -2473,19 +2487,19 @@ void FPropertyNode::BroadcastPropertyResetToDefault()
 	PropertyResetToDefaultEvent.Broadcast();
 }
 
-void FPropertyNode::GetExpandedChildPropertyPaths(TSet<FString>& OutExpandedChildPropertyPaths)
+void FPropertyNode::GetExpandedChildPropertyPaths(TSet<FString>& OutExpandedChildPropertyPaths) const
 {
-	TArray<FPropertyNode*> RecursiveStack;
+	TArray<const FPropertyNode*> RecursiveStack;
 	RecursiveStack.Add(this);
 
 	do
 	{
-		FPropertyNode* SearchNode = RecursiveStack.Pop();
+		const FPropertyNode* SearchNode = RecursiveStack.Pop();
 		if (SearchNode->HasNodeFlags(EPropertyNodeFlags::Expanded) != 0)
 		{
 			OutExpandedChildPropertyPaths.Add(SearchNode->PropertyPath);
 
-			for (auto Index = 0; Index < SearchNode->GetNumChildNodes(); ++Index)
+			for (int32 Index = 0; Index < SearchNode->GetNumChildNodes(); ++Index)
 			{
 				TSharedPtr<FPropertyNode> ChildNode = SearchNode->GetChildNode(Index);
 				if (ChildNode.IsValid())
@@ -2510,7 +2524,7 @@ void FPropertyNode::SetExpandedChildPropertyNodes(const TSet<FString>& InNodesTo
 			SearchNode->SetNodeFlags(EPropertyNodeFlags::Expanded, true);
 
 			// Lets recurse over this nodes children to see if they need to be expanded
-			for (auto Index = 0; Index < SearchNode->GetNumChildNodes(); ++Index)
+			for (int32 Index = 0; Index < SearchNode->GetNumChildNodes(); ++Index)
 			{
 				TSharedPtr<FPropertyNode> ChildNode = SearchNode->GetChildNode(Index);
 				if (ChildNode.IsValid())
@@ -2815,6 +2829,46 @@ void FPropertyNode::GatherInstancesAffectedByContainerPropertyChange(UObject* Mo
 	}
 }
 
+void FPropertyNode::DuplicateArrayEntry(FProperty* NodeProperty, FScriptArrayHelper& ArrayHelper, int32 Index)
+{
+	ArrayHelper.InsertValues(Index);
+
+	void* SrcAddress = ArrayHelper.GetRawPtr(Index + 1);
+	void* DestAddress = ArrayHelper.GetRawPtr(Index);
+
+	check(SrcAddress && DestAddress);
+
+	// Copy the selected item's value to the new item.
+	NodeProperty->CopyCompleteValue(DestAddress, SrcAddress);
+
+	if (FObjectProperty* ObjProp = CastField<FObjectProperty>(NodeProperty))
+	{
+		if (ObjProp->HasAnyPropertyFlags(CPF_InstancedReference))
+		{
+			UObject* CurrentObject = ObjProp->GetObjectPropertyValue(DestAddress);
+
+			// Make a deep copy
+			UObject* DuplicatedObject = DuplicateObject(CurrentObject, CurrentObject->GetOuter());
+			ObjProp->SetObjectPropertyValue(SrcAddress, DuplicatedObject);
+		}
+	}
+	else if (NodeProperty->HasAnyPropertyFlags(CPF_ContainsInstancedReference))
+	{
+		// If this is a container with instanced references within it the new entry will reference the old subobjects
+		// Go through and duplicate the subobjects so that each container has unique instances
+		FInstancedPropertyPath NodePropertyPath(NodeProperty);
+		FFindInstancedReferenceSubobjectHelper::ForEachInstancedSubObject<void*>(
+			NodePropertyPath,
+			SrcAddress,
+			[](const FInstancedSubObjRef& Ref, void* PropertyValueAddress)
+			{
+				UObject* Obj = Ref;
+				((FObjectProperty*)Ref.PropertyPath.Head())->SetObjectPropertyValue(PropertyValueAddress, DuplicateObject(Obj, Obj->GetOuter()));
+			}
+		);
+	}
+}
+
 void FPropertyNode::PropagateContainerPropertyChange( UObject* ModifiedObject, const void* OriginalContainerAddr, const TArray<UObject*>& AffectedInstances, EPropertyArrayChangeType::Type ChangeType, int32 Index, int32 SwapIndex /*= INDEX_NONE*/)
 {
 	check(OriginalContainerAddr);
@@ -2893,10 +2947,7 @@ void FPropertyNode::PropagateContainerPropertyChange( UObject* ModifiedObject, c
 				ArrayHelper.RemoveValues(ArrayIndex, 1);
 				break;
 			case EPropertyArrayChangeType::Duplicate:
-				ArrayHelper.InsertValues(ArrayIndex, 1);
-				// Copy the selected item's value to the new item.
-				NodeProperty->CopyCompleteValue(ArrayHelper.GetRawPtr(ArrayIndex), ArrayHelper.GetRawPtr(ArrayIndex + 1));
-				Object->InstanceSubobjectTemplates();
+				DuplicateArrayEntry(NodeProperty, ArrayHelper, ArrayIndex);
 				break;
 			case EPropertyArrayChangeType::Swap:
 				if (SwapIndex != INDEX_NONE)
@@ -3075,7 +3126,7 @@ void FPropertyNode::PropagatePropertyChange( UObject* ModifiedObject, const TCHA
 				// Only import if the value matches the previous value of the property that changed
 				if (bShouldImport)
 				{
-					Prop->ImportText(NewValue, DestSimplePropAddr, PPF_None, ActualObjToChange);
+					Prop->ImportText(NewValue, DestSimplePropAddr, PPF_InstanceSubobjects, ActualObjToChange);
 				}
 			}
 		}

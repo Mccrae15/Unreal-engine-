@@ -9,13 +9,17 @@
 #include "UObject/ConstructorHelpers.h"
 #include "WaterBodyActor.h"
 #include "WaterRuntimeSettings.h"
+#include "WaterVersion.h"
 #include "EngineUtils.h"
 
 // ----------------------------------------------------------------------------------
 
 #if WITH_EDITOR
 #include "Components/BillboardComponent.h"
+#include "Modules/ModuleManager.h"
 #include "WaterIconHelper.h"
+#include "WaterSubsystem.h"
+#include "WaterModule.h"
 #endif // WITH_EDITOR
 
 // ----------------------------------------------------------------------------------
@@ -23,7 +27,6 @@
 AWaterBodyIsland::AWaterBodyIsland(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-
 	SplineComp = CreateDefaultSubobject<UWaterSplineComponent>(TEXT("WaterSpline"));
 	SplineComp->SetMobility(EComponentMobility::Static);
 	SplineComp->SetClosedLoop(true);
@@ -34,7 +37,7 @@ AWaterBodyIsland::AWaterBodyIsland(const FObjectInitializer& ObjectInitializer)
 		SplineComp->OnSplineDataChanged().AddUObject(this, &AWaterBodyIsland::OnSplineDataChanged);
 	}
 
-	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterBodyIslandSprite"), NSLOCTEXT("Water", "WaterBodyIslandSpriteName", "Water Body Island"));
+	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterBodyIslandSprite"));
 #endif
 
 	RootComponent = SplineComp;
@@ -87,6 +90,70 @@ void AWaterBodyIsland::Destroyed()
 	{
 		WaterBody->RemoveIsland(this);
 	}
+}
+
+void AWaterBodyIsland::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	Ar.UsingCustomVersion(FWaterCustomVersion::GUID);
+}
+
+void AWaterBodyIsland::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
+	if (GetLinkerCustomVersion(FWaterCustomVersion::GUID) < FWaterCustomVersion::MoveTerrainCarvingSettingsToWater)
+	{
+		// Try to retrieve wave data from BP properties when it was defined in BP : 
+		if (UClass* WaterBodyClass = GetClass())
+		{
+			if (WaterBodyClass->ClassGeneratedBy != nullptr)
+			{
+				for (FProperty* BPProperty = WaterBodyClass->PropertyLink; BPProperty != nullptr; BPProperty = BPProperty->PropertyLinkNext)
+				{
+					const FString CurveSettingsName(TEXT("Curve Settings"));
+					if (BPProperty->GetName() == CurveSettingsName)
+					{
+						if (FStructProperty* OldCurveSettingsStructProperty = CastField<FStructProperty>(BPProperty))
+						{
+							FWaterCurveSettings* OldCurveSettings = static_cast<FWaterCurveSettings*>(OldCurveSettingsStructProperty->ContainerPtrToValuePtr<void>(this));
+							WaterCurveSettings = *OldCurveSettings;
+						}
+					}
+
+					const FString LayerWeightmapSettingsName(TEXT("Layer Weightmap Settings"));
+					if (BPProperty->GetName() == LayerWeightmapSettingsName)
+					{
+						if (FMapProperty* OldLayerWeightmapSettingsMapProperty = CastField<FMapProperty>(BPProperty))
+						{
+							FScriptMapHelper MapHelper(OldLayerWeightmapSettingsMapProperty, OldLayerWeightmapSettingsMapProperty->ContainerPtrToValuePtr<void>(this));
+							for (int32 I = 0; I < MapHelper.Num(); ++I)
+							{
+								uint8* PairPtr = MapHelper.GetPairPtr(I);
+								const FName* Key = MapHelper.GetKeyProperty()->ContainerPtrToValuePtr<FName>(PairPtr);
+								const FWaterBodyWeightmapSettings* Value = MapHelper.GetValueProperty()->ContainerPtrToValuePtr<FWaterBodyWeightmapSettings>(PairPtr);
+								WaterWeightmapSettings.FindOrAdd(*Key) = *Value;
+							}
+						}
+					}
+
+					const FString TerrainEffectsName(TEXT("Terrain Effects"));
+					if (BPProperty->GetName() == TerrainEffectsName)
+					{
+						if (FStructProperty* OldTerrainEffectsStructProperty = CastField<FStructProperty>(BPProperty))
+						{
+							FLandmassBrushEffectsList* OldTerrainEffectsSettings = static_cast<FLandmassBrushEffectsList*>(OldTerrainEffectsStructProperty->ContainerPtrToValuePtr<void>(this));
+							check(sizeof(*OldTerrainEffectsSettings) == sizeof(FWaterBrushEffects));
+							WaterHeightmapSettings.Effects = *reinterpret_cast<FWaterBrushEffects*>(OldTerrainEffectsSettings);
+						}
+					}
+				}
+			}
+		}
+	}
+#endif // WITH_EDITORONLY_DATA
 }
 
 #if WITH_EDITOR
@@ -172,9 +239,15 @@ void AWaterBodyIsland::UpdateAll()
 
 void AWaterBodyIsland::UpdateActorIcon()
 {
-	if (ActorIcon && SplineComp)
+	if (ActorIcon && SplineComp && !bIsEditorPreviewActor)
 	{
-		FWaterIconHelper::UpdateSpriteComponent(this, ActorIcon->Sprite);
+		UTexture2D* IconTexture = ActorIcon->Sprite;
+		IWaterModuleInterface& WaterModule = FModuleManager::GetModuleChecked<IWaterModuleInterface>("Water");
+		if (const IWaterEditorServices* WaterEditorServices = WaterModule.GetWaterEditorServices())
+		{
+			IconTexture = WaterEditorServices->GetWaterActorSprite(GetClass());
+		}
+		FWaterIconHelper::UpdateSpriteComponent(this, IconTexture);
 
 		// Move the actor icon to the center of the island
 		FVector ZOffset(0.0f, 0.0f, GetDefault<UWaterRuntimeSettings>()->WaterBodyIconWorldZOffset);

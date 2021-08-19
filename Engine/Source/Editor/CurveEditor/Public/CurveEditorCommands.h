@@ -30,6 +30,9 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleInputSnapping;
 	TSharedPtr<FUICommandInfo> ToggleOutputSnapping;
 
+	TSharedPtr<FUICommandInfo> ToggleExpandCollapseNodes;
+	TSharedPtr<FUICommandInfo> ToggleExpandCollapseNodesAndDescendants;
+
 	TSharedPtr<FUICommandInfo> InterpolationConstant;
 	TSharedPtr<FUICommandInfo> InterpolationLinear;
 	TSharedPtr<FUICommandInfo> InterpolationCubicAuto;
@@ -64,6 +67,7 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleShowCurveEditorCurveToolTips;
 
 	TSharedPtr<FUICommandInfo> AddKeyHovered;
+	TSharedPtr<FUICommandInfo> PasteKeysHovered;
 
 	TSharedPtr<FUICommandInfo> AddKeyToAllCurves;
 
@@ -92,6 +96,11 @@ public:
 	TSharedPtr<FUICommandInfo> StepBackward;
 	TSharedPtr<FUICommandInfo> JumpToStart;
 	TSharedPtr<FUICommandInfo> JumpToEnd;
+
+	// Selection Range
+	TSharedPtr< FUICommandInfo > SetSelectionRangeStart;
+	TSharedPtr< FUICommandInfo > SetSelectionRangeEnd;
+	TSharedPtr< FUICommandInfo > ClearSelectionRange;
 
 public:
 	virtual void RegisterCommands() override;

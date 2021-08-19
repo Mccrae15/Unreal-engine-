@@ -27,6 +27,7 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "Misc/Compression.h"
 #include "Misc/Fork.h"
+#include "Misc/Guid.h"
 
 #include "HAL/PlatformMisc.h"
 
@@ -83,6 +84,14 @@ TAutoConsoleVariable<int32> CVarCsvContinuousWrites(
 	ECVF_Default
 );
 
+TAutoConsoleVariable<int32> CVarCsvForceExit(
+	TEXT("csv.ForceExit"),
+	0,
+	TEXT("If 1, do a forced exit when if exitOnCompletion is enabled"),
+	ECVF_Default
+);
+
+
 #if UE_BUILD_SHIPPING
 TAutoConsoleVariable<int32> CVarCsvShippingContinuousWrites(
 	TEXT("csv.Shipping.ContinuousWrites"),
@@ -128,6 +137,14 @@ static bool GGameThreadIsCsvProcessingThread = true;
 
 static uint32 GCsvProfilerFrameNumber = 0;
 
+
+static bool GCsvTrackWaitsOnAllThreads = false;
+static bool GCsvTrackWaitsOnGameThread = true;
+static bool GCsvTrackWaitsOnRenderThread = true;
+
+static FAutoConsoleVariableRef CVarTrackWaitsAllThreads(TEXT("csv.trackWaitsAllThreads"), GCsvTrackWaitsOnAllThreads, TEXT("Determines whether to track waits on all threads. Note that this incurs a lot of overhead"), ECVF_Default);
+static FAutoConsoleVariableRef CVarTrackWaitsGT(TEXT("csv.trackWaitsGT"), GCsvTrackWaitsOnGameThread, TEXT("Determines whether to track game thread waits. Note that this incurs overhead"), ECVF_Default);
+static FAutoConsoleVariableRef CVarTrackWaitsRT(TEXT("csv.trackWaitsRT"), GCsvTrackWaitsOnRenderThread, TEXT("Determines whether to track render thread waits. Note that this incurs overhead"), ECVF_Default);
 //
 // Categories
 //
@@ -140,6 +157,8 @@ static bool GCsvProfilerIsCapturingRT = false; // Renderthread version of the ab
 static bool GCsvProfilerIsWritingFile = false;
 static FString GCsvFileName = FString();
 static bool GCsvExitOnCompletion = false;
+
+static thread_local bool GCsvThreadLocalWaitsEnabled = false;
 
 bool IsContinuousWriteEnabled(bool bGameThread)
 {
@@ -1656,11 +1675,11 @@ public:
 		}
 	}
 
-	static FORCENOINLINE FCsvProfilerThreadData* CreateTLSData()
+	static FORCENOINLINE FCsvProfilerThreadData* CreateTLSData(const FString* InThreadName = nullptr)
 	{
 		FScopeLock Lock(&TlsCS);
 
-		FSharedPtr ProfilerThreadPtr = MakeShareable(new FCsvProfilerThreadData());
+		FSharedPtr ProfilerThreadPtr = MakeShareable(new FCsvProfilerThreadData(InThreadName));
 		FPlatformTLS::SetTlsValue(TlsSlot, ProfilerThreadPtr.Get());
 
 		// Keep a weak reference to this thread data in the global array.
@@ -1673,12 +1692,12 @@ public:
 		return ProfilerThreadPtr.Get();
 	}
 
-	static CSV_PROFILER_INLINE FCsvProfilerThreadData& Get()
+	static CSV_PROFILER_INLINE FCsvProfilerThreadData& Get(const FString* InThreadName = nullptr)
 	{
 		FCsvProfilerThreadData* ProfilerThread = (FCsvProfilerThreadData*)FPlatformTLS::GetTlsValue(TlsSlot);
 		if (UNLIKELY(!ProfilerThread))
 		{
-			ProfilerThread = CreateTLSData();
+			ProfilerThread = CreateTLSData(InThreadName);
 		}
 		return *ProfilerThread;
 	}
@@ -1699,9 +1718,9 @@ public:
 		}
 	}
 
-	FCsvProfilerThreadData()
+	FCsvProfilerThreadData(const FString* InThreadName = nullptr)
 		: ThreadId(FPlatformTLS::GetCurrentThreadId())
-		, ThreadName(FThreadManager::GetThreadName(ThreadId))
+		, ThreadName((InThreadName==nullptr) ? FThreadManager::GetThreadName(ThreadId) : *InThreadName)
 		, DataProcessor(nullptr)
 	{
 	}
@@ -2531,6 +2550,9 @@ void FCsvProfiler::BeginFrame()
 
 	check(IsInGameThread());
 
+	// Set the thread-local waits enabled flag
+	GCsvThreadLocalWaitsEnabled = GCsvTrackWaitsOnGameThread;
+
 	if (bInsertEndFrameAtFrameStart)
 	{
 		bInsertEndFrameAtFrameStart = false;
@@ -2612,8 +2634,13 @@ void FCsvProfiler::BeginFrame()
 						}
 					}
 
+					// Set the CSV ID and mirror it to the log
+					FString CsvId = FGuid::NewGuid().ToString();
+					SetMetadata(TEXT("CsvID"), *CsvId);
+					UE_LOG(LogCsvProfiler, Display, TEXT("Capture started. CSV ID: %s"), *CsvId);
+
 					// Figure out the target framerate
-					int TargetFPS = 60;
+					int TargetFPS = FPlatformMisc::GetMaxRefreshRate();
 					static IConsoleVariable* MaxFPSCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
 					static IConsoleVariable* SyncIntervalCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("rhi.SyncInterval"));
 					if (MaxFPSCVar && MaxFPSCVar->GetInt() > 0)
@@ -2631,11 +2658,7 @@ void FCsvProfiler::BeginFrame()
 					SetMetadata(TEXT("ExtraDevelopmentMemoryMB"), *FString::FromInt(ExtraDevelopmentMemoryMB)); 
 #endif
 
-#if PLATFORM_COMPILER_OPTIMIZATION_PG
-					SetMetadata(TEXT("PGOEnabled"), TEXT("1"));
-#else
-					SetMetadata(TEXT("PGOEnabled"), TEXT("0"));
-#endif
+					SetMetadata(TEXT("PGOEnabled"), FPlatformMisc::IsPGOEnabled() ? TEXT("1") : TEXT("0"));
 
 					GCsvStatCounts = !!CVarCsvStatCounts.GetValueOnGameThread();
 
@@ -2806,7 +2829,8 @@ void FCsvProfiler::EndFrame()
 
 			if (bCaptureEnded && (GCsvExitOnCompletion || FParse::Param(FCommandLine::Get(), TEXT("ExitAfterCsvProfiling"))))
 			{
-				FPlatformMisc::RequestExit(false);
+				bool bForceExit = !!CVarCsvForceExit.GetValueOnGameThread();
+				FPlatformMisc::RequestExit(bForceExit);
 			}
 		}
 	}
@@ -2845,6 +2869,7 @@ void FCsvProfiler::OnEndFramePostFork()
 void FCsvProfiler::BeginFrameRT()
 {
 	LLM_SCOPE(ELLMTag::CsvProfiler);
+	RenderThreadId = FPlatformTLS::GetCurrentThreadId();
 
 	check(IsInRenderingThread());
 	if (GCsvProfilerIsCapturing)
@@ -2860,6 +2885,9 @@ void FCsvProfiler::BeginFrameRT()
 		CSVTest();
 	}
 #endif // CSV_PROFILER_ALLOW_DEBUG_FEATURES
+
+	// Set the thread-local waits enabled flag
+	GCsvThreadLocalWaitsEnabled = GCsvTrackWaitsOnRenderThread;
 }
 
 void FCsvProfiler::EndFrameRT()
@@ -2925,7 +2953,6 @@ void FCsvProfiler::FinalizeCsvFile()
 	// Get the queued metadata for the next csv finalize
 	TMap<FString, FString> CurrentMetadata;
 	MetadataQueue.Dequeue(CurrentMetadata);
-
 
 	CsvWriter->Finalize(CurrentMetadata);
 
@@ -3085,7 +3112,7 @@ void FCsvProfiler::RecordEvent(int32 CategoryIndex, const FString& EventText)
 	if (GCsvProfilerIsCapturing && GCsvCategoriesEnabled[CategoryIndex])
 	{
 		LLM_SCOPE(ELLMTag::CsvProfiler);
-		UE_LOG(LogCsvProfiler, Display, TEXT("CSVEvent [Frame %d] : \"%s\""), FCsvProfiler::Get()->GetCaptureFrameNumber(), *EventText);
+		UE_LOG(LogCsvProfiler, Display, TEXT("CSVEvent \"%s\" [Frame %d]"), *EventText, FCsvProfiler::Get()->GetCaptureFrameNumber());
 		FCsvProfilerThreadData::Get().AddEvent(EventText, CategoryIndex);
 	}
 }
@@ -3103,6 +3130,11 @@ void FCsvProfiler::SetMetadata(const TCHAR* Key, const TCHAR* Value)
 
 	FScopeLock Lock(&CsvProfiler->MetadataCS);
 	CsvProfiler->MetadataMap.FindOrAdd(KeyLower) = Value;
+}
+
+void FCsvProfiler::SetThreadName(const FString& InThreadName)
+{
+	FCsvProfilerThreadData::Get(&InThreadName);
 }
 
 void FCsvProfiler::RecordEventAtTimestamp(int32 CategoryIndex, const FString& EventText, uint64 Cycles64)
@@ -3231,7 +3263,6 @@ void FCsvProfiler::Init()
 			}
 		}
 	}
-
 	if (FParse::Param(FCommandLine::Get(), TEXT("csvNoProcessingThread")))
 	{
 		GCsvUseProcessingThread = false;
@@ -3287,6 +3318,11 @@ bool FCsvProfiler::IsWritingFile()
 {
 	check(IsInGameThread());
 	return GCsvProfilerIsWritingFile;
+}
+
+bool FCsvProfiler::IsWaitTrackingEnabledOnCurrentThread()
+{
+	return GCsvTrackWaitsOnAllThreads || GCsvThreadLocalWaitsEnabled;
 }
 
 /*Get the current frame capture count*/

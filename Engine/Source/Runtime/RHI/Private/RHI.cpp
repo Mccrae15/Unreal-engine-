@@ -142,6 +142,7 @@ FString GetRHIAccessName(ERHIAccess Access)
 			case ERHIAccess::CopyDest:            return TEXT("CopyDest");
 			case ERHIAccess::ResolveDst:          return TEXT("ResolveDst");
 			case ERHIAccess::DSVWrite:            return TEXT("DSVWrite");
+			case ERHIAccess::ShadingRateSource:	  return TEXT("ShadingRateSource");
 			}
 		});
 	}
@@ -226,7 +227,7 @@ FRHIResource* FRHIResource::CurrentlyDeleting = nullptr;
 TArray<FRHIResource::ResourcesToDelete> FRHIResource::DeferredDeletionQueue;
 uint32 FRHIResource::CurrentFrame = 0;
 RHI_API FDrawCallCategoryName* FDrawCallCategoryName::Array[FDrawCallCategoryName::MAX_DRAWCALL_CATEGORY];
-RHI_API int32 FDrawCallCategoryName::DisplayCounts[FDrawCallCategoryName::MAX_DRAWCALL_CATEGORY];
+RHI_API int32 FDrawCallCategoryName::DisplayCounts[FDrawCallCategoryName::MAX_DRAWCALL_CATEGORY][MAX_NUM_GPUS];
 RHI_API int32 FDrawCallCategoryName::NumCategory = 0;
 
 FString FVertexElement::ToString() const
@@ -716,6 +717,53 @@ static TAutoConsoleVariable<int32> CVarGPUCrashDebugging(
 	ECVF_ReadOnly
 	);
 
+static TAutoConsoleVariable<int32> CVarGPUCrashDump(
+	TEXT("r.GPUCrashDump"),
+	0,
+	TEXT("Enable vendor specific GPU crash dumps"),
+	ECVF_ReadOnly
+);
+
+static TAutoConsoleVariable<int32> CVarGPUCrashDebuggingAftermathMarkers(
+	TEXT("r.GPUCrashDebugging.Aftermath.Markers"),
+	0,
+	TEXT("Enable draw event markers in Aftermath dumps"),
+	ECVF_ReadOnly
+);
+
+static TAutoConsoleVariable<int32> CVarGPUCrashDebuggingAftermathCallstack(
+	TEXT("r.GPUCrashDebugging.Aftermath.Callstack"),
+	0,
+	TEXT("Enable callstack capture in Aftermath dumps"),
+	ECVF_ReadOnly
+);
+
+static TAutoConsoleVariable<int32> CVarGPUCrashDebuggingAftermathResourceTracking(
+	TEXT("r.GPUCrashDebugging.Aftermath.ResourceTracking"),
+	0,
+	TEXT("Enable resource tracking for Aftermath dumps"),
+	ECVF_ReadOnly
+);
+
+static TAutoConsoleVariable<int32> CVarGPUCrashDebuggingAftermathTrackAll(
+	TEXT("r.GPUCrashDebugging.Aftermath.TrackAll"),
+	1,
+	TEXT("Enable maximum tracking for Aftermath dumps"),
+	ECVF_ReadOnly
+);
+
+static FAutoConsoleVariableRef CVarEnableVariableRateShading(
+	TEXT("r.VRS.Enable"),
+	GRHIVariableRateShadingEnabled,
+	TEXT("Toggle to enable Variable Rate Shading."),
+	ECVF_RenderThreadSafe);
+
+static FAutoConsoleVariableRef CVarEnableAttachmentVariableRateShading(
+	TEXT("r.VRS.EnableImage"),
+	GRHIAttachmentVariableRateShadingEnabled,
+	TEXT("Toggle to enable image-based Variable Rate Shading."),
+	ECVF_RenderThreadSafe);
+
 namespace RHIConfig
 {
 	bool ShouldSaveScreenshotAfterProfilingGPU()
@@ -774,7 +822,6 @@ int32 GRHIMaximumReccommendedOustandingOcclusionQueries = MAX_int32;
 bool GRHISupportsExactOcclusionQueries = true;
 bool GSupportsVolumeTextureRendering = true;
 bool GSupportsSeparateRenderTargetBlendState = false;
-bool GSupportsDepthRenderTargetWithoutColorRenderTarget = true;
 bool GRHINeedsUnatlasedCSMDepthsWorkaround = false;
 bool GSupportsTexture3D = true;
 bool GSupportsMobileMultiView = false;
@@ -782,7 +829,6 @@ bool GSupportsImageExternal = false;
 bool GSupportsResourceView = true;
 bool GRHISupportsDrawIndirect = true;
 bool GRHISupportsMultithreading = false;
-TRHIGlobal<bool> GSupportsMultipleRenderTargets(true);
 bool GSupportsWideMRT = true;
 float GMinClipZ = 0.0f;
 float GProjectionSignY = 1.0f;
@@ -800,6 +846,8 @@ TRHIGlobal<int32> GMaxVolumeTextureDimensions(2048);
 TRHIGlobal<int32> GMaxCubeTextureDimensions(2048);
 TRHIGlobal<int32> GMaxWorkGroupInvocations(1024);
 bool GRHISupportsRWTextureBuffers = true;
+bool GRHISupportsVRS = false;
+bool GRHISupportsLateVRSUpdate = false;
 int32 GMaxTextureArrayLayers = 256;
 int32 GMaxTextureSamplers = 16;
 bool GUsingNullRHI = false;
@@ -816,6 +864,7 @@ bool GRHISupportsDynamicResolution = false;
 bool GRHISupportsRayTracing = false;
 bool GRHISupportsRayTracingPSOAdditions = false;
 bool GRHISupportsRayTracingAsyncBuildAccelerationStructure = false;
+bool GRHISupportsRayTracingAMDHitToken = false;
 bool GRHISupportsWaveOperations = false;
 int32 GRHIMinimumWaveSize = 4; // Minimum supported value in SM 6.0
 int32 GRHIMaximumWaveSize = 128; // Maximum supported value in SM 6.0
@@ -836,9 +885,19 @@ bool GRHISupportsBackBufferWithCustomDepthStencil = true;
 bool GRHIIsHDREnabled = false;
 bool GRHISupportsHDROutput = false;
 
-bool GRHISupportsVariableRateShading = false;
-int32 GVariableRateShadingImageTileSize = 0;
-int32 GVariableRateShadingTier = 0;
+bool GRHIVariableRateShadingEnabled = true;
+bool GRHIAttachmentVariableRateShadingEnabled = true;
+bool GRHISupportsPipelineVariableRateShading = false;
+bool GRHISupportsAttachmentVariableRateShading = false;
+bool GRHISupportsComplexVariableRateShadingCombinerOps = false;
+bool GRHISupportsVariableRateShadingAttachmentArrayTextures = false;
+int32 GRHIVariableRateShadingImageTileMaxWidth = 0;
+int32 GRHIVariableRateShadingImageTileMaxHeight = 0;
+int32 GRHIVariableRateShadingImageTileMinWidth = 0;
+int32 GRHIVariableRateShadingImageTileMinHeight = 0;
+EVRSImageDataType GRHIVariableRateShadingImageDataType = VRSImage_NotSupported;
+EPixelFormat GRHIVariableRateShadingImageFormat = PF_Unknown;
+bool GRHISupportsLateVariableRateShadingUpdate = false;
 
 EPixelFormat GRHIHDRDisplayOutputFormat = PF_FloatRGBA;
 
@@ -846,8 +905,12 @@ uint64 GRHIPresentCounter = 1;
 
 bool GRHISupportsArrayIndexFromAnyShader = false;
 
+bool GRHISupportsPipelineFileCache = false;
+
 /** Whether we are profiling GPU hitches. */
 bool GTriggerGPUHitchProfile = false;
+
+bool GRHISupportsPixelShaderUAVs = true;
 
 FVertexElementTypeSupportInfo GVertexElementTypeSupport;
 
@@ -861,11 +924,11 @@ RHI_API EShaderPlatform GShaderPlatformForFeatureLevel[ERHIFeatureLevel::Num] = 
 // simple stats about draw calls. GNum is the previous frame and 
 // GCurrent is the current frame.
 // GCurrentNumDrawCallsRHIPtr points to the drawcall counter to increment
-RHI_API int32 GCurrentNumDrawCallsRHI = 0;
-RHI_API int32 GNumDrawCallsRHI = 0;
-RHI_API int32* GCurrentNumDrawCallsRHIPtr = &GCurrentNumDrawCallsRHI;
-RHI_API int32 GCurrentNumPrimitivesDrawnRHI = 0;
-RHI_API int32 GNumPrimitivesDrawnRHI = 0;
+RHI_API int32 GCurrentNumDrawCallsRHI[MAX_NUM_GPUS] = {};
+RHI_API int32 GNumDrawCallsRHI[MAX_NUM_GPUS] = {};
+RHI_API int32(*GCurrentNumDrawCallsRHIPtr)[MAX_NUM_GPUS] = &GCurrentNumDrawCallsRHI;
+RHI_API int32 GCurrentNumPrimitivesDrawnRHI[MAX_NUM_GPUS] = {};
+RHI_API int32 GNumPrimitivesDrawnRHI[MAX_NUM_GPUS] = {};
 
 RHI_API uint64 GRHITransitionPrivateData_SizeInBytes = 0;
 RHI_API uint64 GRHITransitionPrivateData_AlignInBytes = 0;
@@ -875,7 +938,10 @@ ERHIAccess GRHITextureReadAccessMask = ERHIAccess::ReadOnlyMask;
 /** Called once per frame only from within an RHI. */
 void RHIPrivateBeginFrame()
 {
-	GNumDrawCallsRHI = GCurrentNumDrawCallsRHI;
+	for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
+	{
+		GNumDrawCallsRHI[GPUIndex] = GCurrentNumDrawCallsRHI[GPUIndex];
+	}
 	
 #if CSV_PROFILER
 	// Only copy the display counters every so many frames to keep things more stable.
@@ -892,20 +958,34 @@ void RHIPrivateBeginFrame()
 	for (int32 Index=0; Index<FDrawCallCategoryName::NumCategory; ++Index)
 	{
 		FDrawCallCategoryName* CategoryName = FDrawCallCategoryName::Array[Index];
-		if (bCopyDisplayFrames)
+		for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
 		{
-			FDrawCallCategoryName::DisplayCounts[Index] = CategoryName->Counter;
+			if (bCopyDisplayFrames)
+			{
+				FDrawCallCategoryName::DisplayCounts[Index][GPUIndex] = CategoryName->Counters[GPUIndex];
+			}
+			GNumDrawCallsRHI[GPUIndex] += CategoryName->Counters[GPUIndex];
 		}
-		GNumDrawCallsRHI += CategoryName->Counter;
-		FCsvProfiler::RecordCustomStat(CategoryName->Name, CSV_CATEGORY_INDEX(DrawCall), CategoryName->Counter, ECsvCustomStatOp::Set);
-		CategoryName->Counter = 0;
+		// Multi-GPU support : CSV stats do not support MGPU yet
+		FCsvProfiler::RecordCustomStat(CategoryName->Name, CSV_CATEGORY_INDEX(DrawCall), CategoryName->Counters[0], ECsvCustomStatOp::Set);
+		for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
+		{
+			CategoryName->Counters[GPUIndex] = 0;
+		}
 	}
 #endif
 
-	GNumPrimitivesDrawnRHI = GCurrentNumPrimitivesDrawnRHI;
-	CSV_CUSTOM_STAT(RHI, DrawCalls, GNumDrawCallsRHI, ECsvCustomStatOp::Set);
-	CSV_CUSTOM_STAT(RHI, PrimitivesDrawn, GNumPrimitivesDrawnRHI, ECsvCustomStatOp::Set);
-	GCurrentNumDrawCallsRHI = GCurrentNumPrimitivesDrawnRHI = 0;
+	for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
+	{
+		GNumPrimitivesDrawnRHI[GPUIndex] = GCurrentNumPrimitivesDrawnRHI[GPUIndex];
+	}
+	// Multi-GPU support : CSV stats do not support MGPU yet
+	CSV_CUSTOM_STAT(RHI, DrawCalls, GNumDrawCallsRHI[0], ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(RHI, PrimitivesDrawn, GNumPrimitivesDrawnRHI[0], ECsvCustomStatOp::Set);
+	for (int32 GPUIndex = 0; GPUIndex < MAX_NUM_GPUS; GPUIndex++)
+	{
+		GCurrentNumDrawCallsRHI[GPUIndex] = GCurrentNumPrimitivesDrawnRHI[GPUIndex] = 0;
+	}
 }
 
 /** Whether to initialize 3D textures using a bulk data (or through a mip update if false). */
@@ -1026,12 +1106,10 @@ RHI_API void GetShadingPathName(ERHIShadingPath::Type InShadingPath, FName& OutN
 }
 
 static FName NAME_PLATFORM_WINDOWS(TEXT("Windows"));
-static FName NAME_PLATFORM_PS4(TEXT("PS4"));
 static FName NAME_PLATFORM_XBOXONE(TEXT("XboxOne"));
 static FName NAME_PLATFORM_ANDROID(TEXT("Android"));
 static FName NAME_PLATFORM_IOS(TEXT("IOS"));
 static FName NAME_PLATFORM_MAC(TEXT("Mac"));
-static FName NAME_PLATFORM_SWITCH(TEXT("Switch"));
 static FName NAME_PLATFORM_TVOS(TEXT("TVOS"));
 static FName NAME_PLATFORM_LUMIN(TEXT("Lumin"));
 
@@ -1048,10 +1126,6 @@ FName ShaderPlatformToPlatformName(EShaderPlatform Platform)
 	case SP_VULKAN_PCES3_1:
 	case SP_VULKAN_SM5:
 		return NAME_PLATFORM_WINDOWS;
-	case SP_PS4:
-		return NAME_PLATFORM_PS4;
-	case SP_XBOXONE_D3D12:
-		return NAME_PLATFORM_XBOXONE;
 	case SP_VULKAN_ES3_1_ANDROID:
 	case SP_VULKAN_SM5_ANDROID:
 	case SP_OPENGL_ES3_1_ANDROID:
@@ -1064,9 +1138,6 @@ FName ShaderPlatformToPlatformName(EShaderPlatform Platform)
 	case SP_METAL_MACES3_1:
 	case SP_METAL_MRT_MAC:
 		return NAME_PLATFORM_MAC;
-	case SP_SWITCH:
-	case SP_SWITCH_FORWARD:
-		return NAME_PLATFORM_SWITCH;
 	case SP_VULKAN_SM5_LUMIN:
 	case SP_VULKAN_ES3_1_LUMIN:
 		return NAME_PLATFORM_LUMIN;
@@ -1181,6 +1252,13 @@ RHI_API uint32 RHIGetShaderLanguageVersion(const FStaticShaderPlatform Platform)
 				{
 					MaxShaderVersion = 0;
 				}
+                
+                // If we are using Mobile desktop rendering, we need a minimum of Metal 2.1
+                if(IsMetalSM5Platform(Platform))
+                {
+                    MinShaderVersion = 4;
+                }
+                
 				MaxShaderVersion = FMath::Max(MinShaderVersion, MaxShaderVersion);
 			}
 			Version = (uint32)MaxShaderVersion;
@@ -1191,25 +1269,21 @@ RHI_API uint32 RHIGetShaderLanguageVersion(const FStaticShaderPlatform Platform)
 
 RHI_API bool RHISupportsTessellation(const FStaticShaderPlatform Platform)
 {
-	if (IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5))
-	{
-		return (Platform == SP_PCD3D_SM5) || (Platform == SP_XBOXONE_D3D12) || (Platform == SP_METAL_SM5) || (IsVulkanSM5Platform(Platform));
-	}
-	return false;
-}
-
-RHI_API bool RHISupportsPixelShaderUAVs(const FStaticShaderPlatform Platform)
-{
-	if (IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5))
+	if (FDataDrivenShaderPlatformInfo::GetSupportsTessellation(Platform))
 	{
 		return true;
+	}
+
+	if (IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5))
+	{
+		return (Platform == SP_PCD3D_SM5) || (Platform == SP_METAL_SM5) || (IsVulkanSM5Platform(Platform));
 	}
 	return false;
 }
 
 RHI_API bool RHISupportsIndexBufferUAVs(const FStaticShaderPlatform Platform)
 {
-	return Platform == SP_PCD3D_SM5 || IsVulkanPlatform(Platform) || IsMetalSM5Platform(Platform) || Platform == SP_XBOXONE_D3D12 || Platform == SP_PS4 
+	return Platform == SP_PCD3D_SM5 || IsVulkanPlatform(Platform) || IsMetalSM5Platform(Platform)
 		|| FDataDrivenShaderPlatformInfo::GetSupportsIndexBufferUAVs(Platform);
 }
 
@@ -1307,7 +1381,8 @@ void FRHIRenderPassInfo::ConvertToRenderTargetsInfo(FRHISetRenderTargetsInfo& Ou
 	OutRTInfo.bClearDepth = (DepthLoadAction == ERenderTargetLoadAction::EClear);
 	OutRTInfo.bClearStencil = (StencilLoadAction == ERenderTargetLoadAction::EClear);
 
-	OutRTInfo.FoveationTexture = FoveationTexture;
+	OutRTInfo.ShadingRateTexture = ShadingRateTexture;
+	OutRTInfo.ShadingRateTextureCombiner = ShadingRateTextureCombiner;
 	OutRTInfo.MultiViewCount = MultiViewCount;
 }
 
@@ -1428,7 +1503,7 @@ FRHIPanicEvent& RHIGetPanicDelegate()
 
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
 
-FString LexToString(EShaderPlatform Platform)
+FString LexToString(EShaderPlatform Platform, bool bError)
 {
 	switch (Platform)
 	{
@@ -1436,10 +1511,6 @@ FString LexToString(EShaderPlatform Platform)
 	case SP_PCD3D_ES3_1: return TEXT("PCD3D_ES3_1");
 	case SP_OPENGL_PCES3_1: return TEXT("OPENGL_PCES3_1");
 	case SP_OPENGL_ES3_1_ANDROID: return TEXT("OPENGL_ES3_1_ANDROID");
-	case SP_PS4: return TEXT("PS4");
-	case SP_XBOXONE_D3D12: return TEXT("XBOXONE_D3D12");
-	case SP_SWITCH: return TEXT("SWITCH");
-	case SP_SWITCH_FORWARD: return TEXT("SWITCH_FORWARD");
 	case SP_METAL: return TEXT("METAL");
 	case SP_METAL_MRT: return TEXT("METAL_MRT");
 	case SP_METAL_TVOS: return TEXT("METAL_TVOS");
@@ -1455,19 +1526,6 @@ FString LexToString(EShaderPlatform Platform)
 	case SP_VULKAN_SM5_LUMIN: return TEXT("VULKAN_SM5_LUMIN");
 	case SP_VULKAN_SM5_ANDROID: return TEXT("VULKAN_SM5_ANDROID");
 
-	case SP_OPENGL_ES2_ANDROID_REMOVED:
-	case SP_OPENGL_ES2_WEBGL_REMOVED:
-	case SP_OPENGL_ES2_IOS_REMOVED:
-	case SP_VULKAN_SM4_REMOVED:
-	case SP_PCD3D_SM4_REMOVED:
-	case SP_OPENGL_SM4_REMOVED:
-	case SP_PCD3D_ES2_REMOVED:
-	case SP_OPENGL_PCES2_REMOVED:
-	case SP_METAL_MACES2_REMOVED:
-	case SP_OPENGL_SM5_REMOVED:
-	case SP_OPENGL_ES31_EXT_REMOVED:
-		return TEXT("");
-
 	default:
 		if (FStaticShaderPlatformNames::IsStaticPlatform(Platform))
 		{
@@ -1475,10 +1533,16 @@ FString LexToString(EShaderPlatform Platform)
 		}
 		else
 		{
-			checkf(0, TEXT("Unknown EShaderPlatform %d!"), (int32)Platform);
+			checkf(!bError, TEXT("Unknown or removed EShaderPlatform %d!"), (int32)Platform);
 			return TEXT("");
 		}
 	}
+}
+
+FString LexToString(EShaderPlatform Platform)
+{
+	bool bError = true;
+	return LexToString(Platform, bError);
 }
 
 void LexFromString(EShaderPlatform& Value, const TCHAR* String)
@@ -1487,7 +1551,7 @@ void LexFromString(EShaderPlatform& Value, const TCHAR* String)
 
 	for (uint8 i = 0; i < (uint8)EShaderPlatform::SP_NumPlatforms; ++i)
 	{
-		if (LexToString((EShaderPlatform)i).Equals(String))
+		if (LexToString((EShaderPlatform)i, false).Equals(String))
 		{
 			Value = (EShaderPlatform)i;
 			return;
@@ -1495,6 +1559,23 @@ void LexFromString(EShaderPlatform& Value, const TCHAR* String)
 	}
 }
 
+FString LexToString(ERHIFeatureLevel::Type Level)
+{
+	switch (Level)
+	{
+		case ERHIFeatureLevel::ES2_REMOVED:
+			return TEXT("ES2_REMOVED");
+		case ERHIFeatureLevel::ES3_1:
+			return TEXT("ES3_1");
+		case ERHIFeatureLevel::SM4_REMOVED:
+			return TEXT("SM4_REMOVED");
+		case ERHIFeatureLevel::SM5:
+			return TEXT("SM5");
+		default:
+			break;
+	}
+	return TEXT("UnknownFeatureLevel");
+}
 
 const FName LANGUAGE_D3D("D3D");
 const FName LANGUAGE_Metal("Metal");
@@ -1506,15 +1587,49 @@ const FName LANGUAGE_Nintendo("Nintendo");
 RHI_API FGenericDataDrivenShaderPlatformInfo FGenericDataDrivenShaderPlatformInfo::Infos[SP_NumPlatforms];
 
 // Gets a string from a section, or empty string if it didn't exist
-FString GetSectionString(const FConfigSection& Section, FName Key)
+static inline FString GetSectionString(const FConfigSection& Section, FName Key)
 {
 	return Section.FindRef(Key).GetValue();
 }
 
-// Gets a bool from a section, or false if it didn't exist
-bool GetSectionBool(const FConfigSection& Section, FName Key)
+// Gets a bool from a section.  It returns the original value if the setting does not exist
+static inline bool GetSectionBool(const FConfigSection& Section, FName Key, bool OriginalValue)
 {
-	return FCString::ToBool(*GetSectionString(Section, Key));
+	const FConfigValue* ConfigValue = Section.Find(Key);
+	if (ConfigValue != nullptr)
+	{
+		return FCString::ToBool(*ConfigValue->GetValue());
+	}
+	else
+	{
+		return OriginalValue;
+	}
+}
+
+// Gets an integer from a section.  It returns the original value if the setting does not exist
+static inline uint32 GetSectionUint(const FConfigSection& Section, FName Key, uint32 OriginalValue)
+{
+	const FConfigValue* ConfigValue = Section.Find(Key);
+	if (ConfigValue != nullptr)
+	{
+		return (uint32)FCString::Atoi(*ConfigValue->GetValue());
+	}
+	else
+	{
+		return OriginalValue;
+	}
+}
+
+void FGenericDataDrivenShaderPlatformInfo::SetDefaultValues()
+{
+	MaxFeatureLevel = ERHIFeatureLevel::Num;
+	bSupportsMSAA = true;
+
+	bNeedsToSwitchVerticalAxisOnMobileOpenGL = true;
+	bSupportsDOFHybridScattering = true;
+	bSupportsHZBOcclusion = true;
+	bSupportsWaterIndirectDraw = true;
+	bSupportsAsyncPipelineCompilation = true;
 }
 
 void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConfigSection& Section, FGenericDataDrivenShaderPlatformInfo& Info)
@@ -1522,38 +1637,74 @@ void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConf
 	Info.Language = *GetSectionString(Section, "Language");
 	GetFeatureLevelFromName(*GetSectionString(Section, "MaxFeatureLevel"), Info.MaxFeatureLevel);
 
-	Info.bIsMobile = GetSectionBool(Section, "bIsMobile");
-	Info.bIsMetalMRT = GetSectionBool(Section, "bIsMetalMRT");
-	Info.bIsPC = GetSectionBool(Section, "bIsPC");
-	Info.bIsConsole = GetSectionBool(Section, "bIsConsole");
-	Info.bIsAndroidOpenGLES = GetSectionBool(Section, "bIsAndroidOpenGLES");
-	Info.bSupportsMobileMultiView = GetSectionBool(Section, "bSupportsMobileMultiView");
-	Info.bSupportsVolumeTextureCompression = GetSectionBool(Section, "bSupportsVolumeTextureCompression");
-	Info.bSupportsDistanceFields = GetSectionBool(Section, "bSupportsDistanceFields");
-	Info.bSupportsDiaphragmDOF = GetSectionBool(Section, "bSupportsDiaphragmDOF");
-	Info.bSupportsRGBColorBuffer = GetSectionBool(Section, "bSupportsRGBColorBuffer");
-	Info.bSupportsCapsuleShadows = GetSectionBool(Section, "bSupportsCapsuleShadows");
-	Info.bSupportsVolumetricFog = GetSectionBool(Section, "bSupportsVolumetricFog");
-	Info.bSupportsIndexBufferUAVs = GetSectionBool(Section, "bSupportsIndexBufferUAVs");
-	Info.bSupportsInstancedStereo = GetSectionBool(Section, "bSupportsInstancedStereo");
-	Info.bSupportsMultiView = GetSectionBool(Section, "bSupportsMultiView");
-	Info.bSupportsMSAA = GetSectionBool(Section, "bSupportsMSAA");
-	Info.bSupports4ComponentUAVReadWrite = GetSectionBool(Section, "bSupports4ComponentUAVReadWrite");
-	Info.bSupportsRenderTargetWriteMask = GetSectionBool(Section, "bSupportsRenderTargetWriteMask");
-	Info.bSupportsRayTracing = GetSectionBool(Section, "bSupportsRayTracing");
-	Info.bSupportsRayTracingIndirectInstanceData = GetSectionBool(Section, "bSupportsRayTracingIndirectInstanceData");
-	Info.bSupportsGPUSkinCache = GetSectionBool(Section, "bSupportsGPUSkinCache");
-	Info.bSupportsByteBufferComputeShaders = GetSectionBool(Section, "bSupportsByteBufferComputeShaders");
-	Info.bSupportsGPUScene = GetSectionBool(Section, "bSupportsGPUScene");
-	Info.bSupportsPrimitiveShaders = GetSectionBool(Section, "bSupportsPrimitiveShaders");
-	Info.bSupportsUInt64ImageAtomics = GetSectionBool(Section, "bSupportsUInt64ImageAtomics");
-	Info.bSupportsTemporalHistoryUpscale = GetSectionBool(Section, "bSupportsTemporalHistoryUpscale");
-	Info.bSupportsRTIndexFromVS = GetSectionBool(Section, "bSupportsRTIndexFromVS");
-	Info.bSupportsWaveOperations = GetSectionBool(Section, "bSupportsWaveOperations");
-	Info.bRequiresExplicit128bitRT = GetSectionBool(Section, "bRequiresExplicit128bitRT");
-	Info.bSupportsGen5TemporalAA = GetSectionBool(Section, "bSupportsGen5TemporalAA");
-	Info.bTargetsTiledGPU = GetSectionBool(Section, "bTargetsTiledGPU");
-	Info.bNeedsOfflineCompiler = GetSectionBool(Section, "bNeedsOfflineCompiler");
+#define GET_SECTION_BOOL_HELPER(SettingName)	\
+	Info.SettingName = GetSectionBool(Section, #SettingName, Info.SettingName)
+#define GET_SECTION_INT_HELPER(SettingName)	\
+	Info.SettingName = GetSectionUint(Section, #SettingName, Info.SettingName)
+
+	GET_SECTION_BOOL_HELPER(bIsMobile);
+	GET_SECTION_BOOL_HELPER(bIsMetalMRT);
+	GET_SECTION_BOOL_HELPER(bIsPC);
+	GET_SECTION_BOOL_HELPER(bIsConsole);
+	GET_SECTION_BOOL_HELPER(bIsAndroidOpenGLES);
+	GET_SECTION_BOOL_HELPER(bSupportsMobileMultiView);
+	GET_SECTION_BOOL_HELPER(bSupportsVolumeTextureCompression);
+	GET_SECTION_BOOL_HELPER(bSupportsDistanceFields);
+	GET_SECTION_BOOL_HELPER(bSupportsDiaphragmDOF);
+	GET_SECTION_BOOL_HELPER(bSupportsRGBColorBuffer);
+	GET_SECTION_BOOL_HELPER(bSupportsCapsuleShadows);
+	GET_SECTION_BOOL_HELPER(bSupportsVolumetricFog);
+	GET_SECTION_BOOL_HELPER(bSupportsIndexBufferUAVs);
+	GET_SECTION_BOOL_HELPER(bSupportsInstancedStereo);
+	GET_SECTION_BOOL_HELPER(bSupportsMultiView);
+	GET_SECTION_BOOL_HELPER(bSupportsMSAA);
+	GET_SECTION_BOOL_HELPER(bSupports4ComponentUAVReadWrite);
+	GET_SECTION_BOOL_HELPER(bSupportsRenderTargetWriteMask);
+	GET_SECTION_BOOL_HELPER(bSupportsRayTracing);
+	GET_SECTION_BOOL_HELPER(bSupportsRayTracingIndirectInstanceData);
+	GET_SECTION_BOOL_HELPER(bSupportsPathTracing);
+	GET_SECTION_BOOL_HELPER(bSupportsGPUSkinCache);
+	GET_SECTION_BOOL_HELPER(bSupportsByteBufferComputeShaders);
+	GET_SECTION_BOOL_HELPER(bSupportsGPUScene);
+	GET_SECTION_BOOL_HELPER(bSupportsPrimitiveShaders);
+	GET_SECTION_BOOL_HELPER(bSupportsUInt64ImageAtomics);
+	GET_SECTION_BOOL_HELPER(bSupportsTemporalHistoryUpscale);
+	GET_SECTION_BOOL_HELPER(bSupportsRTIndexFromVS);
+	GET_SECTION_BOOL_HELPER(bSupportsWaveOperations);
+	GET_SECTION_BOOL_HELPER(bRequiresExplicit128bitRT);
+	GET_SECTION_BOOL_HELPER(bSupportsGen5TemporalAA);
+	GET_SECTION_BOOL_HELPER(bTargetsTiledGPU);
+	GET_SECTION_BOOL_HELPER(bNeedsOfflineCompiler);
+	GET_SECTION_BOOL_HELPER(bSupportsAnisotropicMaterials);
+	GET_SECTION_BOOL_HELPER(bSupportsDualSourceBlending);
+	GET_SECTION_BOOL_HELPER(bRequiresGeneratePrevTransformBuffer);
+	GET_SECTION_BOOL_HELPER(bRequiresRenderTargetDuringRaster);
+	GET_SECTION_BOOL_HELPER(bRequiresDisableForwardLocalLights);
+	GET_SECTION_BOOL_HELPER(bCompileSignalProcessingPipeline);
+	GET_SECTION_BOOL_HELPER(bSupportsTessellation);
+	GET_SECTION_BOOL_HELPER(bSupportsPerPixelDBufferMask);
+	GET_SECTION_BOOL_HELPER(bIsHlslcc);
+	GET_SECTION_BOOL_HELPER(bSupportsVariableRateShading);
+	GET_SECTION_INT_HELPER(NumberOfComputeThreads);
+
+	GET_SECTION_BOOL_HELPER(bWaterUsesSimpleForwardShading);
+	GET_SECTION_BOOL_HELPER(bNeedsToSwitchVerticalAxisOnMobileOpenGL);
+	GET_SECTION_BOOL_HELPER(bSupportsHairStrandGeometry);
+	GET_SECTION_BOOL_HELPER(bSupportsDOFHybridScattering);
+	GET_SECTION_BOOL_HELPER(bNeedsExtraMobileFrames);
+	GET_SECTION_BOOL_HELPER(bSupportsHZBOcclusion);
+	GET_SECTION_BOOL_HELPER(bSupportsWaterIndirectDraw);
+	GET_SECTION_BOOL_HELPER(bSupportsAsyncPipelineCompilation);
+	GET_SECTION_BOOL_HELPER(bSupportsManualVertexFetch);
+	GET_SECTION_BOOL_HELPER(bRequiresReverseCullingOnMobile);
+	GET_SECTION_BOOL_HELPER(bOverrideFMaterial_NeedsGBufferEnabled);
+	GET_SECTION_BOOL_HELPER(bSupportsMobileDistanceField);
+#undef GET_SECTION_BOOL_HELPER
+#undef GET_SECTION_INT_HELPER
+
+#if WITH_EDITOR
+	FTextStringHelper::ReadFromBuffer(*GetSectionString(Section, FName("FriendlyName")), Info.FriendlyName);
+#endif
 }
 
 void FGenericDataDrivenShaderPlatformInfo::Initialize()

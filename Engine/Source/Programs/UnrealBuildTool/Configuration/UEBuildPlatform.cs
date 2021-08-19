@@ -516,6 +516,14 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// If this platform can be compiled with FASTBuild
+		/// </summary>
+		public virtual bool CanUseFASTBuild()
+		{
+			return false;
+		}
+
+		/// <summary>
 		/// If this platform can be compiled with SN-DBS
 		/// </summary>
 		public virtual bool CanUseSNDBS()
@@ -799,6 +807,20 @@ namespace UnrealBuildTool
 		public virtual void GetExternalBuildMetadata(FileReference ProjectFile, StringBuilder Metadata)
 		{
 		}
+
+
+		/// <summary>
+		/// Allows the platform to modify the binary link environment before the binary is built
+		/// </summary>
+		/// <param name="BinaryLinkEnvironment">The binary link environment being created</param>
+		/// <param name="BinaryCompileEnvironment">The binary compile environment being used</param>
+		/// <param name="Target">The target rules in use</param>
+		/// <param name="ToolChain">The toolchain being used</param>
+		/// <param name="Graph">Action graph that is used to build the binary</param>
+		public virtual void ModifyBinaryLinkEnvironment( LinkEnvironment BinaryLinkEnvironment, CppCompileEnvironment BinaryCompileEnvironment, ReadOnlyTargetRules Target, UEToolChain ToolChain, IActionGraphBuilder Graph)
+		{
+		}
+
 
 		/// <summary>
 		/// Checks if platform is part of a given platform group

@@ -36,7 +36,19 @@ void FPlatformTypeLayoutParameters::InitializeForArchive(FArchive& Ar)
 	check(Ar.IsSaving());
 	if (Ar.IsCooking())
 	{
-		InitializeForPlatform(Ar.CookingTarget()->IniPlatformName(), Ar.CookingTarget()->HasEditorOnlyData());
+		InitializeForPlatform(Ar.CookingTarget());
+	}
+	else
+	{
+		InitializeForCurrent();
+	}
+}
+
+void FPlatformTypeLayoutParameters::InitializeForPlatform(const ITargetPlatform* TargetPlatform)
+{
+	if (TargetPlatform)
+	{
+		InitializeForPlatform(TargetPlatform->IniPlatformName(), TargetPlatform->HasEditorOnlyData());
 	}
 	else
 	{
@@ -99,10 +111,7 @@ FArchive& FPlatformTypeLayoutParameters::Serialize(FArchive& Ar)
 
 void FPlatformTypeLayoutParameters::AppendKeyString(FString& KeyString) const
 {
-	if (Is32Bit() && HasForce64BitMemoryImagePointers())
-	{
-		KeyString += TEXT("FIX_");
-	}
+	KeyString += FString::Printf(TEXT("FL_%08x_MFA_%08x_"), Flags, MaxFieldAlignment);
 }
 
 // evaluated during static-initialization, so logging from regular check() macros won't work correctly
@@ -268,13 +277,13 @@ const FTypeLayoutDesc* FTypeLayoutDesc::Find(uint64 NameHash)
 	return nullptr;
 }
 
-void InternalDeleteObjectFromLayout(void* Object, const FTypeLayoutDesc& TypeDesc, bool bIsFrozen)
+void InternalDeleteObjectFromLayout(void* Object, const FTypeLayoutDesc& TypeDesc, const FPointerTableBase* PtrTable, bool bIsFrozen)
 {
 	check(Object);
 	// DestroyFunc may be nullptr for types with trivial destructors
 	if (TypeDesc.DestroyFunc)
 	{
-		TypeDesc.DestroyFunc(Object, TypeDesc);
+		TypeDesc.DestroyFunc(Object, TypeDesc, PtrTable);
 	}
 	if (!bIsFrozen)
 	{
@@ -313,6 +322,12 @@ uint32 FTypeLayoutDesc::GetOffsetToBase(const FTypeLayoutDesc& BaseTypeDesc) con
 	const bool bFound = TryGetOffsetToBase(*this, BaseTypeDesc, Offset);
 	check(bFound);
 	return Offset;
+}
+
+bool FTypeLayoutDesc::IsDerivedFrom(const FTypeLayoutDesc& BaseTypeDesc) const
+{
+	uint32 Offset = 0u;
+	return TryGetOffsetToBase(*this, BaseTypeDesc, Offset);
 }
 
 void Freeze::ExtractBitFieldValue(const void* Value, uint32 SrcBitOffset, uint32 DestBitOffset, uint32 NumBits, uint64& InOutValue)

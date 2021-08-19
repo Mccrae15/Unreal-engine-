@@ -101,6 +101,9 @@ public:
 	virtual void RHIEndRenderPass() final override;
 	virtual void RHINextSubpass() final override;
 
+	virtual void RHIBeginLateLatching(int FrameNumber) final override;
+	virtual void RHIEndLateLatching() final override;
+
 	inline FVulkanCommandBufferManager* GetCommandBufferManager()
 	{
 		return CommandBufferManager;
@@ -194,6 +197,8 @@ protected:
 
 	static VULKANRHI_API FVulkanLayoutManager LayoutManager;
 
+	bool LateBindingPatchAborted = false;
+
 	FVulkanOcclusionQueryPool* CurrentOcclusionQueryPool = nullptr;
 
 	FVulkanPendingGfxState* PendingGfxState;
@@ -204,6 +209,7 @@ protected:
 
 	void InternalClearMRT(FVulkanCmdBuffer* CmdBuffer, bool bClearColor, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil);
 
+	static void ClearUAVFillBuffer(FVulkanUnorderedAccessView* UAV, uint32_t ClearValue);
 	static void ClearUAV(TRHICommandList_RecursiveHazardous<FVulkanCommandListContext>& RHICmdList, FVulkanUnorderedAccessView* UnorderedAccessView, const void* ClearValue, bool bFloat);
 
 public:

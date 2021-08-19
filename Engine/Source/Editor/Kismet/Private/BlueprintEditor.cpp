@@ -614,6 +614,11 @@ bool FBlueprintEditor::IsInAScriptingMode() const
 
 bool FBlueprintEditor::OnRequestClose()
 {
+	return FWorkflowCentricApplication::OnRequestClose();
+}
+
+void FBlueprintEditor::OnClose()
+{
 	// Also close the Find Results tab if we're not in full edit mode and the option to host Global Find Results is enabled.
 	TSharedPtr<SDockTab> FindResultsTab = TabManager->FindExistingLiveTab(FBlueprintEditorTabs::FindResultsID);
 	if (FindResultsTab.IsValid() && !IsInAScriptingMode() && GetDefault<UBlueprintEditorSettings>()->bHostFindInBlueprintsInGlobalTab)
@@ -629,7 +634,8 @@ bool FBlueprintEditor::OnRequestClose()
 	}
 
 	bEditorMarkedAsClosed = true;
-	return FWorkflowCentricApplication::OnRequestClose();
+
+	FWorkflowCentricApplication::OnClose();
 }
 
 bool FBlueprintEditor::InEditingMode() const
@@ -1553,6 +1559,7 @@ void FBlueprintEditor::OnChangeBreadCrumbGraph(UEdGraph* InGraph)
 
 FBlueprintEditor::FBlueprintEditor()
 	: bSaveIntermediateBuildProducts(false)
+	, bIsReparentingBlueprint(false)
 	, bPendingDeferredClose(false)
 	, bRequestedSavingOpenDocumentState(false)
 	, bBlueprintModifiedOnOpen (false)
@@ -2171,13 +2178,13 @@ void FBlueprintEditor::PostRegenerateMenusAndToolbars()
 			[
 				SNew(SButton)
 				.VAlign(VAlign_Center)
-				.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
-				.OnClicked( this, &FBlueprintEditor::OnFindParentClassInContentBrowserClicked )
-				.IsEnabled( this, &FBlueprintEditor::IsParentClassABlueprint )
-				.Visibility( this, &FBlueprintEditor::ParentClassButtonsVisibility )
-				.ToolTipText( LOCTEXT("FindParentInCBToolTip", "Find parent in Content Browser") )
+				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.OnClicked(this, &FBlueprintEditor::OnFindParentClassInContentBrowserClicked)
+				.IsEnabled(this, &FBlueprintEditor::IsParentClassABlueprint)
+				.Visibility(this, &FBlueprintEditor::GetFindParentClassVisibility)
+				.ToolTipText(LOCTEXT("FindParentInCBToolTip", "Find parent in Content Browser"))
 				.ContentPadding(4.0f)
-				.ForegroundColor( FSlateColor::UseForeground() )
+				.ForegroundColor(FSlateColor::UseForeground())
 				[
 					SNew(SImage)
 					.Image(FEditorStyle::GetBrush("PropertyWindow.Button_Browse"))
@@ -2188,13 +2195,13 @@ void FBlueprintEditor::PostRegenerateMenusAndToolbars()
 			[
 				SNew(SButton)
 				.VAlign(VAlign_Center)
-				.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
-				.OnClicked( this, &FBlueprintEditor::OnEditParentClassClicked )
-				.IsEnabled( this, &FBlueprintEditor::IsParentClassABlueprint )
-				.Visibility( this, &FBlueprintEditor::ParentClassButtonsVisibility )
-				.ToolTipText( LOCTEXT("EditParentClassToolTip", "Open parent in editor") )
+				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.OnClicked(this, &FBlueprintEditor::OnEditParentClassClicked)
+				.IsEnabled(this, &FBlueprintEditor::IsParentClassAnEditableBlueprint)
+				.Visibility(this, &FBlueprintEditor::GetEditParentClassVisibility)
+				.ToolTipText(LOCTEXT("EditParentClassToolTip", "Open parent in editor"))
 				.ContentPadding(4.0f)
-				.ForegroundColor( FSlateColor::UseForeground() )
+				.ForegroundColor(FSlateColor::UseForeground())
 				[
 					SNew(SImage)
 					.Image(FEditorStyle::GetBrush("PropertyWindow.Button_Edit"))
@@ -2230,33 +2237,29 @@ FText FBlueprintEditor::GetParentClassNameText() const
 	return (ParentClass != NULL) ? ParentClass->GetDisplayNameText() : LOCTEXT("BlueprintEditor_NoParentClass", "None");
 }
 
-bool FBlueprintEditor::IsParentClassOfObjectABlueprint( const UBlueprint* Blueprint ) const
+bool FBlueprintEditor::IsParentClassOfObjectABlueprint(const UBlueprint* Blueprint) const
 {
-	if ( Blueprint != NULL )
-	{
-		UObject* ParentClass = Blueprint->ParentClass;
-		if ( ParentClass != NULL )
-		{
-			if ( ParentClass->IsA( UBlueprintGeneratedClass::StaticClass() ) )
-			{
-				return true;
-			}
-		}
-	}
-
-	return false;
+	return FBlueprintEditorUtils::IsParentClassABlueprint(Blueprint);
 }
 
 bool FBlueprintEditor::IsParentClassABlueprint() const
 {
-	const UBlueprint* Blueprint = GetBlueprintObj();
-
-	return IsParentClassOfObjectABlueprint( Blueprint );
+	return FBlueprintEditorUtils::IsParentClassABlueprint(GetBlueprintObj());
 }
 
-EVisibility FBlueprintEditor::ParentClassButtonsVisibility() const
+bool FBlueprintEditor::IsParentClassAnEditableBlueprint() const
+{
+	return FBlueprintEditorUtils::IsParentClassAnEditableBlueprint(GetBlueprintObj());
+}
+
+EVisibility FBlueprintEditor::GetFindParentClassVisibility() const
 {
 	return IsParentClassABlueprint() ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+EVisibility FBlueprintEditor::GetEditParentClassVisibility() const
+{
+	return IsParentClassAnEditableBlueprint() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 bool FBlueprintEditor::IsParentClassNative() const
@@ -2311,20 +2314,24 @@ FText FBlueprintEditor::GetTextForNativeParentClassHeaderLink() const
 FReply FBlueprintEditor::OnFindParentClassInContentBrowserClicked()
 {
 	UBlueprint* Blueprint = GetBlueprintObj();
-	if ( Blueprint != NULL )
+	if (Blueprint)
 	{
 		UObject* ParentClass = Blueprint->ParentClass;
-		if ( ParentClass != NULL )
+		if (ParentClass)
 		{
 			UBlueprintGeneratedClass* ParentBlueprintGeneratedClass = Cast<UBlueprintGeneratedClass>( ParentClass );
-			if ( ParentBlueprintGeneratedClass != NULL )
+			if (ParentBlueprintGeneratedClass)
 			{
-				if ( ParentBlueprintGeneratedClass->ClassGeneratedBy != NULL )
+				TArray<UObject*> ParentObjectList;
+				if (ParentBlueprintGeneratedClass->ClassGeneratedBy)
 				{
-					TArray< UObject* > ParentObjectList;
-					ParentObjectList.Add( ParentBlueprintGeneratedClass->ClassGeneratedBy );
-					GEditor->SyncBrowserToObjects( ParentObjectList );
+					ParentObjectList.Add(ParentBlueprintGeneratedClass->ClassGeneratedBy);
 				}
+				else
+				{
+					ParentObjectList.Add(ParentBlueprintGeneratedClass);
+				}
+				GEditor->SyncBrowserToObjects(ParentObjectList);
 			}
 		}
 	}
@@ -2335,15 +2342,15 @@ FReply FBlueprintEditor::OnFindParentClassInContentBrowserClicked()
 FReply FBlueprintEditor::OnEditParentClassClicked()
 {
 	UBlueprint* Blueprint = GetBlueprintObj();
-	if ( Blueprint != NULL )
+	if (Blueprint)
 	{
 		UObject* ParentClass = Blueprint->ParentClass;
-		if ( ParentClass != NULL )
+		if (ParentClass)
 		{
 			UBlueprintGeneratedClass* ParentBlueprintGeneratedClass = Cast<UBlueprintGeneratedClass>( ParentClass );
-			if ( ParentBlueprintGeneratedClass != NULL )
+			if (ParentBlueprintGeneratedClass)
 			{
-				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset( ParentBlueprintGeneratedClass->ClassGeneratedBy );
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ParentBlueprintGeneratedClass->ClassGeneratedBy);
 			}
 		}
 	}
@@ -3067,6 +3074,9 @@ void FBlueprintEditor::ReparentBlueprint_NewParentChosen(UClass* ChosenClass)
 
 		if ( bReparent )
 		{
+			// Notify that we are currently reparenting this blueprint so that we get the proper compilation flags
+			TGuardValue<bool> GuardValue(bIsReparentingBlueprint, true);
+
 			const FScopedTransaction Transaction( LOCTEXT("ReparentBlueprint", "Reparent Blueprint") );
 			UE_LOG(LogBlueprint, Warning, TEXT("Reparenting blueprint %s from %s to %s..."), *BlueprintObj->GetFullName(), BlueprintObj->ParentClass ? *BlueprintObj->ParentClass->GetName() : TEXT("[None]"), *ChosenClass->GetName());
 			
@@ -3622,6 +3632,12 @@ void FBlueprintEditor::Compile()
 		{
 			CompileOptions |= EBlueprintCompileOptions::SaveIntermediateProducts;
 		}
+
+		if (bIsReparentingBlueprint)
+		{
+			CompileOptions |= EBlueprintCompileOptions::UseDeltaSerializationDuringReinstancing;
+		}
+
 		FKismetEditorUtilities::CompileBlueprint(BlueprintObj, CompileOptions, &LogResults);
 
 		LogResults.EndEvent();
@@ -3672,41 +3688,15 @@ void FBlueprintEditor::RefreshAllNodes_OnClicked()
 
 void FBlueprintEditor::DeleteUnusedVariables_OnClicked()
 {
-	UBlueprint* BlueprintObj = GetBlueprintObj();
-	
-	bool bHasAtLeastOneVariableToCheck = false;
-	TArray<FProperty*> VariableProperties;
-	for (TFieldIterator<FProperty> PropertyIt(BlueprintObj->SkeletonGeneratedClass, EFieldIteratorFlags::ExcludeSuper); PropertyIt; ++PropertyIt)
-	{
-		FProperty* Property = *PropertyIt;
-		// Don't show delegate properties, there is special handling for these
-		const bool bDelegateProp = Property->IsA(FDelegateProperty::StaticClass()) || Property->IsA(FMulticastDelegateProperty::StaticClass());
-		const bool bShouldShowProp = (!Property->HasAnyPropertyFlags(CPF_Parm) && Property->HasAllPropertyFlags(CPF_BlueprintVisible) && !bDelegateProp);
-
-		if (bShouldShowProp)
-		{
-			bHasAtLeastOneVariableToCheck = true;
-			FName VarName = Property->GetFName();
-			
-			const int32 VarInfoIndex = FBlueprintEditorUtils::FindNewVariableIndex(BlueprintObj, VarName);
-			const bool bHasVarInfo = (VarInfoIndex != INDEX_NONE);
-			
-			const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(Property);
-			bool bIsTimeline = ObjectProperty &&
-				ObjectProperty->PropertyClass &&
-				ObjectProperty->PropertyClass->IsChildOf(UTimelineComponent::StaticClass());
-			if (!FBlueprintEditorUtils::IsVariableUsed(BlueprintObj, VarName) && !bIsTimeline && bHasVarInfo)
-			{
-				VariableProperties.Add(Property);
-			}
-		}
-	}
-
-	if (VariableProperties.Num() > 0)
+	UBlueprint* Blueprint = GetBlueprintObj();
+	TArray<FProperty*> UsedVariables;
+	TArray<FProperty*> UnusedVariables;
+	FBlueprintEditorUtils::GetUsedAndUnusedVariables(Blueprint, UsedVariables, UnusedVariables);
+	if (UnusedVariables.Num() > 0)
 	{
 		TSharedRef<SCheckBoxList> CheckBoxList = SNew(SCheckBoxList)
 			.ItemHeaderLabel(LOCTEXT("DeleteUnusedVariablesDialog_VariableLabel", "Variable"));
-		for (FProperty* Variable : VariableProperties)
+		for (FProperty* Variable : UnusedVariables)
 		{
 			CheckBoxList->AddItem(FText::FromString(UEditorEngine::GetFriendlyName(Variable)), true);
 		}
@@ -3716,7 +3706,7 @@ void FBlueprintEditor::DeleteUnusedVariables_OnClicked()
 			.AutoHeight()
 			[
 				SNew(STextBlock)
-				.Text(LOCTEXT("VariableDialog_Message", "These variables are not used in the graph.\nThey may be used in other places.\nYou may use 'Find in Blueprint' or the 'Asset Search' to find out if they are referenced elsewhere."))
+				.Text(LOCTEXT("VariableDialog_Message", "These variables are not used in the graph or in other blueprints' graphs.\nThey may be used in other places.\nYou may use 'Find in Blueprint' or the 'Asset Search' to find out if they are referenced elsewhere."))
 				.AutoWrapText(true)
 			]
 			+ SVerticalBox::Slot().FillHeight(0.8)
@@ -3739,26 +3729,27 @@ void FBlueprintEditor::DeleteUnusedVariables_OnClicked()
 		{
 			TArray<FName> VariableNames;
 			FString PropertyList;
-			VariableNames.Reserve(VariableProperties.Num());
-			for (int32 Index = 0; Index < VariableProperties.Num(); ++Index)
+			VariableNames.Reserve(UnusedVariables.Num());
+			for (int32 Index = 0; Index < UnusedVariables.Num(); ++Index)
 			{
 				if (CheckBoxList->IsItemChecked(Index))
 				{
-					VariableNames.Add(VariableProperties[Index]->GetFName());
+					VariableNames.Add(UnusedVariables[Index]->GetFName());
 					if (PropertyList.IsEmpty())
 					{
-						PropertyList = UEditorEngine::GetFriendlyName(VariableProperties[Index]);
+						PropertyList = UEditorEngine::GetFriendlyName(UnusedVariables[Index]);
 					}
 					else
 					{
-						PropertyList += FString::Printf(TEXT(", %s"), *UEditorEngine::GetFriendlyName(VariableProperties[Index]));
+						PropertyList += FString::Printf(TEXT(", %s"), *UEditorEngine::GetFriendlyName(UnusedVariables[Index]));
 					}
 				}
 			}
 
 			if (VariableNames.Num() > 0)
 			{
-				FBlueprintEditorUtils::BulkRemoveMemberVariables(GetBlueprintObj(), VariableNames);
+				UnusedVariables.Empty(); // Emptying this array because these properties will be deleted and we don't want to keep raw pointers to deleted objects
+				FBlueprintEditorUtils::BulkRemoveMemberVariables(Blueprint, VariableNames);
 				LogSimpleMessage(FText::Format(LOCTEXT("UnusedVariablesDeletedMessage", "The following variable(s) were deleted successfully: {0}."), FText::FromString(PropertyList)));
 			}
 			else
@@ -3767,7 +3758,7 @@ void FBlueprintEditor::DeleteUnusedVariables_OnClicked()
 			}
 		}
 	}
-	else if (bHasAtLeastOneVariableToCheck)
+	else if (UsedVariables.Num() > 0)
 	{
 		LogSimpleMessage(LOCTEXT("AllVariablesInUseMessage", "All variables are currently in use."));
 	}
@@ -5148,11 +5139,7 @@ namespace CollapseGraphUtils
 		for (UEdGraphNode* Node : SourceGraph->Nodes)
 		{
 			// Ignore tunnel nodes and break the links because new ones will be created during the collapse of this node
-			if (UK2Node_Tunnel* TunnelNode = Cast<UK2Node_Tunnel>(Node))
-			{
-				TunnelNode->BreakAllNodeLinks();
-			}
-			else
+			if (!Node->IsA<UK2Node_Tunnel>())
 			{
 				OutNodes.Add(Node);
 			}
@@ -5572,7 +5559,6 @@ void FBlueprintEditor::OnPromoteSelectionToMacro()
 		{
 			TSet<UEdGraphNode*> NodesToMove;
 			UEdGraph* SourceGraph = CompositeNode->BoundGraph;
-			// Gather the entry and exit nodes of the collapsed graph so that we can create new macro inputs
 
 			// Gather the entry and exit nodes of the collapsed graph so that we can create new macro inputs
 			CollapseGraphUtils::GatherMoveableNodes(SourceGraph, /* Out */ NodesToMove);
@@ -5587,6 +5573,27 @@ void FBlueprintEditor::OnPromoteSelectionToMacro()
 				UEdGraphNode* MacroNode = nullptr;
 				CollapseSelectionToMacro(FocusedGraphEd, NodesToMove, MacroNode);
 				NodesToSelect.Add(MacroNode);
+
+				// Reconnect anything that the original composite node was connected to to this new macro instance
+				if (MacroNode)
+				{
+					// Gather what connections were already on the composite node...
+					TMap<FString, TSet<UEdGraphPin*>> OldToNewPinMap;
+					FEdGraphUtilities::GetPinConnectionMap(CompositeNode, OldToNewPinMap);
+
+					for (UEdGraphPin* const NewPin : MacroNode->Pins)
+					{
+						// Reconnect any new pins here that we can! 
+						const FString& NewPinName = NewPin->GetName();
+						if (OldToNewPinMap.Contains(NewPinName))
+						{							
+							for (UEdGraphPin* OldPin : OldToNewPinMap[NewPinName])
+							{
+								NewPin->MakeLinkTo(OldPin);
+							}
+						}
+					}
+				}
 
 				FBlueprintEditorUtils::RemoveGraph(BP, SourceGraph, EGraphRemoveFlags::Recompile);
 			}
@@ -8095,7 +8102,12 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 					{
 						// Fix up the remote pin
 						RemotePin->LinkedTo.Remove(LocalPin);
-						RemotePin->MakeLinkTo(RemotePortPin);
+						// When given a composite node, we could possibly be given a pin with a different outer
+						// which is bad! Then there would be a pin connecting to itself and cause an ensure
+						if (RemotePin->GetOwningNode()->GetOuter() == RemotePortPin->GetOwningNode()->GetOuter())
+						{
+							RemotePin->MakeLinkTo(RemotePortPin);
+						}
 
 						// The Entry Node only supports a single link, so if we made links above
 						// we need to break them now, to make room for the new link.

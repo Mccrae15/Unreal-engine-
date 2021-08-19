@@ -405,6 +405,15 @@ protected:
 };
 
 /**
+ * Lightweight struct used to list the MIP levels of rendered assets.
+ */
+struct FRenderedTextureStats
+{
+	int32 MaxMipLevelShown;
+	FString TextureGroup;
+};
+
+/**
  * Interface to add functions specifically related to texture/mesh streaming
  */
 struct IRenderAssetStreamingManager : public IStreamingManager
@@ -443,6 +452,9 @@ struct IRenderAssetStreamingManager : public IStreamingManager
 	/** Pool size for streaming. */
 	virtual int64 GetPoolSize() const = 0;
 
+	/** Estimated memory in bytes the streamer would use if there was no limit */
+	virtual int64 GetRequiredPoolSize() const = 0;
+
 	/** Max required textures/meshes ever seen in bytes. */
 	virtual int64 GetMaxEverRequired() const = 0;
 
@@ -471,6 +483,8 @@ struct IRenderAssetStreamingManager : public IStreamingManager
 
 	/** Notify the streamer that the mounted state of a file needs to be re-evaluated. */
 	virtual void MarkMountedStateDirty(FIoFilenameHash FilenameHash) = 0;
+
+	ENGINE_API virtual void AddRenderedTextureStats(TMap<FString, FRenderedTextureStats>& InOutRenderedTextureAssets) = 0;
 };
 
 enum class EAudioChunkLoadResult : uint8

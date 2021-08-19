@@ -1052,6 +1052,8 @@ public:
 	{
 		check(!NewlySpawnedTickFunctions.Num()); // There shouldn't be any in here at this point in the frame
 
+		TArray<FTickFunction*> ExecuteTickFunctions;
+
 		float CumulativeCooldown = 0.f;
 		FTickFunction* PrevTickFunction = nullptr;
 		FTickFunction* TickFunction = AllCoolingDownTickFunctions.Head;
@@ -1060,13 +1062,12 @@ public:
 			CumulativeCooldown += TickFunction->InternalData->RelativeTickCooldown;
 			if (TickFunction->bTickEvenWhenPaused)
 			{
+				bool bExecuteTick = false;
 				TickFunction->InternalData->TaskPointer = nullptr; // this is stale, clear it out now
 				if (CumulativeCooldown < InContext.DeltaSeconds)
 				{
-					TickFunction->InternalData->TickVisitedGFrameCounter = GFrameCounter;
-					TickFunction->InternalData->TickQueuedGFrameCounter = GFrameCounter;
-					TickFunction->ExecuteTick(TickFunction->CalculateDeltaTime(InContext), InContext.TickType, ENamedThreads::GameThread, FGraphEventRef());
-
+					// Queue up the tick function for later and do the reschedule before as it is in the normal ticking logic
+					ExecuteTickFunctions.Add(TickFunction);
 					RescheduleForInterval(TickFunction, TickFunction->TickInterval - (InContext.DeltaSeconds - CumulativeCooldown)); // Give credit for any overrun
 				}
 				else
@@ -1101,9 +1102,8 @@ public:
 			TickFunction->InternalData->TaskPointer = nullptr; // this is stale, clear it out now
 			if (TickFunction->bTickEvenWhenPaused && TickFunction->TickState == FTickFunction::ETickState::Enabled)
 			{
-				TickFunction->InternalData->TickVisitedGFrameCounter = GFrameCounter;
-				TickFunction->InternalData->TickQueuedGFrameCounter = GFrameCounter;
-				TickFunction->ExecuteTick(TickFunction->CalculateDeltaTime(InContext), InContext.TickType, ENamedThreads::GameThread, FGraphEventRef());
+				// Queue up the tick function for later and do the reschedule before as it is in the normal ticking logic
+				ExecuteTickFunctions.Add(TickFunction);
 
 				if (TickFunction->TickInterval > 0.f)
 				{
@@ -1114,6 +1114,13 @@ public:
 		}
 
 		check(!NewlySpawnedTickFunctions.Num()); // We don't support new spawns during pause ticks
+
+		for (FTickFunction* TickFunctionToExecute : ExecuteTickFunctions)
+		{
+			TickFunctionToExecute->InternalData->TickVisitedGFrameCounter = GFrameCounter;
+			TickFunctionToExecute->InternalData->TickQueuedGFrameCounter = GFrameCounter;
+			TickFunctionToExecute->ExecuteTick(TickFunctionToExecute->CalculateDeltaTime(InContext), InContext.TickType, ENamedThreads::GameThread, FGraphEventRef());
+		}
 	}
 
 	/** End a tick frame **/
@@ -1669,7 +1676,7 @@ private:
 		for( int32 LevelIndex = 0; LevelIndex < Levels.Num(); LevelIndex++ )
 		{
 			ULevel* Level = Levels[LevelIndex];
-			if (Level->bIsVisible)
+			if (Level && Level->bIsVisible)
 			{
 				check(Level->TickTaskLevel);
 				LevelList.Add(Level->TickTaskLevel);
@@ -2143,7 +2150,7 @@ void FTickFunction::QueueTickFunctionParallel(const struct FTickContext& TickCon
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_FTickFunction_QueueTickFunctionParallel_Spin);
 			while (*TickQueuedGFrameCounterPtr != GFrameCounter)
 			{
-				FPlatformProcess::SleepNoStats(0);
+				FPlatformProcess::YieldThread();
 			}
 		}
 	}

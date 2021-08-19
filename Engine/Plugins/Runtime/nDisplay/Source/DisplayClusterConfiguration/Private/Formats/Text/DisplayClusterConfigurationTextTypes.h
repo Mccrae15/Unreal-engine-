@@ -87,7 +87,7 @@ struct FDisplayClusterConfigurationTextViewport : public FDisplayClusterConfigur
 	FIntPoint Size = FIntPoint::ZeroValue;
 	float     BufferRatio = 1.f;
 	int       GPUIndex = -1;                 // Force custom mgpu index for this viewport {view->bOverrideGPUMask=true; view->GPUMask=GPUIndex; }
-	bool      AllowCrossGPUTransfer = true;  // Control UE4 viewport mgpu transfer View->bAllowCrossGPUTransfer
+	bool      AllowCrossGPUTransfer = true;  // Control UE viewport mgpu transfer View->bAllowCrossGPUTransfer
 	bool      IsShared = false;              // Share this viewport for all (scene context textures, backbuffer)
 
 	virtual FString ToString() const override;
@@ -116,8 +116,6 @@ struct FDisplayClusterConfigurationTextSceneNode : public FDisplayClusterConfigu
 	FString  ParentId;
 	FVector  Loc = FVector::ZeroVector;
 	FRotator Rot = FRotator::ZeroRotator;
-	FString  TrackerId;
-	int32    TrackerCh = -1;
 
 	virtual FString ToString() const override;
 	virtual bool    DeserializeFromString(const FString& Line) override;
@@ -148,40 +146,11 @@ struct FDisplayClusterConfigurationTextCamera : public FDisplayClusterConfigurat
 };
 
 //////////////////////////////////////////////////////////////////////////////////////////////
-// Input device configuration (VRPN and other possible devices)
-//////////////////////////////////////////////////////////////////////////////////////////////
-struct FDisplayClusterConfigurationTextInput : public FDisplayClusterConfigurationTextBase
-{
-	FString Id;
-	FString Type;
-	FString Params;
-	TMap<int32, int32> ChMap;
-
-	virtual FString ToString() const override;
-	virtual bool    DeserializeFromString(const FString& Line) override;
-};
-
-struct FDisplayClusterConfigurationTextInputSetup : public FDisplayClusterConfigurationTextBase
-{
-	// VRPN device unique name
-	FString Id;
-	// VRPN device channel to bind
-	int32 Channel = -1;
-	// Keyboard key name (for keyboard devices only)
-	FString Key;
-	// Target name to bind
-	FString BindName;
-	
-	virtual FString ToString() const override;
-	virtual bool    DeserializeFromString(const FString& Line) override;
-};
-
-//////////////////////////////////////////////////////////////////////////////////////////////
 // General DisplayCluster configuration
 //////////////////////////////////////////////////////////////////////////////////////////////
 struct FDisplayClusterConfigurationTextGeneral : public FDisplayClusterConfigurationTextBase
 {
-	int32 SwapSyncPolicy = 0;
+	int32 SwapSyncPolicy = 1;
 	int32 NativeInputSyncPolicy = 1;
 
 	virtual FString ToString() const override;

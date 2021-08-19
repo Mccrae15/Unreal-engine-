@@ -984,6 +984,15 @@ RENDERCORE_API bool IsMobileDeferredShadingEnabled(const FStaticShaderPlatform P
 	return MobileShadingPathCvar->GetValueOnAnyThread() == 1;
 }
 
+RENDERCORE_API bool MobileRequiresSceneDepthAux(const FStaticShaderPlatform Platform)
+{
+	if (IsMetalMobilePlatform(Platform) && IsMobileDeferredShadingEnabled(Platform))
+	{
+		return true;
+	}
+	return false;
+}
+
 RENDERCORE_API bool SupportsTextureCubeArray(ERHIFeatureLevel::Type FeatureLevel)
 {
 	return FeatureLevel == ERHIFeatureLevel::SM5 
@@ -1032,6 +1041,80 @@ RENDERCORE_API bool AllowPixelDepthOffset(const FStaticShaderPlatform Platform)
 	return true;
 }
 
+RENDERCORE_API bool IsMobileDistanceFieldEnabled(const FStaticShaderPlatform Platform)
+{
+	return IsMobilePlatform(Platform) && IsUsingDistanceFields(Platform)
+		&& FDataDrivenShaderPlatformInfo::GetSupportsMobileDistanceField(Platform);
+}
+
+RENDERCORE_API bool IsMobileDistanceFieldShadowingEnabled(const FStaticShaderPlatform Platform)
+{
+	static auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DistanceFieldShadowing"));
+	bool bDistanceFieldShadowingEnabled = CVar && (CVar->GetInt() != 0);
+
+	return GRHISupportsPixelShaderUAVs && bDistanceFieldShadowingEnabled && IsMobileDistanceFieldEnabled(Platform);
+}
+
+RENDERCORE_API uint64 GMobileAmbientOcclusionPlatformMask = 0;
+static_assert(SP_NumPlatforms <= sizeof(GMobileAmbientOcclusionPlatformMask) * 8, "GMobileAmbientOcclusionPlatformMask must be large enough to support all shader platforms");
+
+RENDERCORE_API bool UseMobileAmbientOcclusion(const FStaticShaderPlatform Platform)
+{
+	return (IsMobilePlatform(Platform) && !!(GMobileAmbientOcclusionPlatformMask & (1ull << Platform)));
+}
+
+RENDERCORE_API bool SupportsGen4TAA(const FStaticShaderPlatform Platform)
+{
+	if (IsMobilePlatform(Platform))
+	{
+		static FShaderPlatformCachedIniValue<bool> MobileSupportsGen4TAAIniValue(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.SupportsGen4TAA"));
+		return (MobileSupportsGen4TAAIniValue.Get(Platform) != 0);
+	}
+
+	return true;
+}
+
+template<typename Type>
+Type FShaderPlatformCachedIniValue<Type>::Get(EShaderPlatform ShaderPlatform)
+{
+	Type Value = {};
+
+#if WITH_EDITOR
+	Type* ExistingEntry = CachedValues.Find(ShaderPlatform);
+	if (ExistingEntry != nullptr)
+	{
+		return *ExistingEntry;
+	}
+
+	if (!bTestedIni)
+	{
+		bTestedIni = true;
+		FConfigFile PlatformEngineIni;
+		FConfigCacheIni::LoadLocalIniFile(PlatformEngineIni, TEXT("Engine"), true, *ShaderPlatformToPlatformName(ShaderPlatform).ToString());
+		if (PlatformEngineIni.GetValue(Section, Key, Value))
+		{
+			CachedValues.Add(ShaderPlatform, Value);
+			return Value;
+		}
+	}
+#endif
+	// If it's not in the ini file, don't cache, always return the CVar's current value
+	if (CVar==nullptr)
+	{
+		CVar = IConsoleManager::Get().FindConsoleVariable(Key);
+	}
+
+	if (CVar!=nullptr)
+	{
+		CVar->GetValue(Value);
+	}
+	return Value;
+}
+template struct FShaderPlatformCachedIniValue<FString>;
+template struct FShaderPlatformCachedIniValue<int32>;
+template struct FShaderPlatformCachedIniValue<float>;
+template struct FShaderPlatformCachedIniValue<bool>;
+
 RENDERCORE_API int32 GUseForwardShading = 0;
 static FAutoConsoleVariableRef CVarForwardShading(
 	TEXT("r.ForwardShading"),
@@ -1060,6 +1143,9 @@ static_assert(SP_NumPlatforms <= sizeof(GDBufferPlatformMask) * 8, "GDBufferPlat
 
 RENDERCORE_API uint64 GBasePassVelocityPlatformMask = 0;
 static_assert(SP_NumPlatforms <= sizeof(GBasePassVelocityPlatformMask) * 8, "GBasePassVelocityPlatformMask must be large enough to support all shader platforms");
+
+RENDERCORE_API uint64 GVelocityEncodeDepthPlatformMask = 0;
+static_assert(SP_NumPlatforms <= sizeof(GVelocityEncodeDepthPlatformMask) * 8, "GVelocityEncodeDepthPlatformMask must be large enough to support all shader platforms");
 
 RENDERCORE_API uint64 GSelectiveBasePassOutputsPlatformMask = 0;
 static_assert(SP_NumPlatforms <= sizeof(GSelectiveBasePassOutputsPlatformMask) * 8, "GSelectiveBasePassOutputsPlatformMask must be large enough to support all shader platforms");
@@ -1121,6 +1207,12 @@ RENDERCORE_API void RenderUtilsInit()
 		GRayTracingPlaformMask = ~0ull;
 	}
 
+	static IConsoleVariable* MobileAmbientOcclusionCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.AmbientOcclusion"));
+	if (MobileAmbientOcclusionCVar && MobileAmbientOcclusionCVar->GetInt())
+	{
+		GMobileAmbientOcclusionPlatformMask = ~0ull;
+	}
+
 #if WITH_EDITOR
 	ITargetPlatformManagerModule* TargetPlatformManager = GetTargetPlatformManager();
 	if (TargetPlatformManager)
@@ -1143,7 +1235,7 @@ RENDERCORE_API void RenderUtilsInit()
 					GForwardShadingPlatformMask &= ~Mask;
 				}
 
-				if (TargetPlatform->UsesDBuffer())
+				if (TargetPlatform->UsesDBuffer() && !IsMobilePlatform(ShaderPlatform))
 				{
 					GDBufferPlatformMask |= Mask;
 				}
@@ -1152,7 +1244,7 @@ RENDERCORE_API void RenderUtilsInit()
 					GDBufferPlatformMask &= ~Mask;
 				}
 
-				if (TargetPlatform->UsesBasePassVelocity())
+				if (TargetPlatform->UsesBasePassVelocity() && !IsMobilePlatform(ShaderPlatform))
 				{
 					GBasePassVelocityPlatformMask |= Mask;
 				}
@@ -1196,8 +1288,32 @@ RENDERCORE_API void RenderUtilsInit()
 				{
 					GSimpleSkyDiffusePlatformMask &= ~Mask;
 				}
+
+				if (TargetPlatform->VelocityEncodeDepth())
+				{
+					GVelocityEncodeDepthPlatformMask |= Mask;
+				}
+				else
+				{
+					GVelocityEncodeDepthPlatformMask &= ~Mask;
+				}
+
+				if (TargetPlatform->UsesMobileAmbientOcclusion())
+				{
+					GMobileAmbientOcclusionPlatformMask |= Mask;
+				}
+				else
+				{
+					GMobileAmbientOcclusionPlatformMask &= ~Mask;
+				}
 			}
 		}
+	}
+#else
+	if (IsMobilePlatform(GMaxRHIShaderPlatform))
+	{
+		GDBufferPlatformMask = 0;
+		GBasePassVelocityPlatformMask = 0;
 	}
 #endif // WITH_EDITOR
 
@@ -1403,4 +1519,29 @@ RENDERCORE_API bool UseVirtualTexturing(const FStaticFeatureLevel InFeatureLevel
 
 		return true;
 	}
+}
+
+RENDERCORE_API bool UseVirtualTextureLightmap(const FStaticFeatureLevel InFeatureLevel, const ITargetPlatform* TargetPlatform)
+{
+	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
+	const bool bUseVirtualTextureLightmap = (CVar->GetValueOnAnyThread() != 0) && UseVirtualTexturing(InFeatureLevel, TargetPlatform);
+	return bUseVirtualTextureLightmap;
+}
+
+RENDERCORE_API bool PlatformSupportsVelocityRendering(const FStaticShaderPlatform Platform)
+{
+	if (IsMobilePlatform(Platform))
+	{
+		// Enable velocity rendering if desktop Gen4 TAA is supported on mobile.
+		return SupportsGen4TAA(Platform);
+	}
+	
+	return true;
+}
+
+/** Returns whether DBuffer decals are enabled for a given shader platform */
+RENDERCORE_API bool IsUsingDBuffers(const FStaticShaderPlatform Platform)
+{
+	extern RENDERCORE_API uint64 GDBufferPlatformMask;
+	return !!(GDBufferPlatformMask & (1ull << Platform));
 }

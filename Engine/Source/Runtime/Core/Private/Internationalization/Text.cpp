@@ -611,7 +611,7 @@ FText FText::AsCurrencyTemplate(T1 Val, const FString& CurrencyCode, const FNumb
 	return Result;
 }
 
-FText FText::AsCurrencyBase(int64 BaseVal, const FString& CurrencyCode, const FCulturePtr& TargetCulture)
+FText FText::AsCurrencyBase(int64 BaseVal, const FString& CurrencyCode, const FCulturePtr& TargetCulture, int32 ForceDecimalPlaces)
 {
 	FInternationalization& I18N = FInternationalization::Get();
 	checkf(I18N.IsInitialized() == true, TEXT("FInternationalization is not initialized. An FText formatting method was likely used in static object initialization - this is not supported."));
@@ -619,7 +619,8 @@ FText FText::AsCurrencyBase(int64 BaseVal, const FString& CurrencyCode, const FC
 
 	const FDecimalNumberFormattingRules& FormattingRules = Culture.GetCurrencyFormattingRules(CurrencyCode);
 	const FNumberFormattingOptions& FormattingOptions = FormattingRules.CultureDefaultFormattingOptions;
-	double Val = static_cast<double>(BaseVal) / static_cast<double>(FastDecimalFormat::Pow10(FormattingOptions.MaximumFractionalDigits));
+	int32 DecimalPlaces = ForceDecimalPlaces >= 0 ? ForceDecimalPlaces : FormattingOptions.MaximumFractionalDigits;
+	double Val = static_cast<double>(BaseVal) / static_cast<double>(FastDecimalFormat::Pow10(DecimalPlaces));
 	FString NativeString = FastDecimalFormat::NumberToString(Val, FormattingRules, FormattingOptions);
 
 	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_AsCurrency>, ESPMode::ThreadSafe>(MoveTemp(NativeString), FTextHistory_AsCurrency(Val, CurrencyCode, nullptr, TargetCulture)));
@@ -1348,14 +1349,14 @@ void FFormatArgumentValue::ToFormattedString(const bool bInRebuildText, const bo
 	}
 }
 
-FString FFormatArgumentValue::ToExportedString() const
+FString FFormatArgumentValue::ToExportedString(const bool bStripPackageNamespace) const
 {
 	FString Result;
-	ToExportedString(Result);
+	ToExportedString(Result, bStripPackageNamespace);
 	return Result;
 }
 
-void FFormatArgumentValue::ToExportedString(FString& OutResult) const
+void FFormatArgumentValue::ToExportedString(FString& OutResult, const bool bStripPackageNamespace) const
 {
 	switch (Type)
 	{
@@ -1374,7 +1375,7 @@ void FFormatArgumentValue::ToExportedString(FString& OutResult) const
 		OutResult += LexToString(DoubleValue);
 		break;
 	case EFormatArgumentType::Text:
-		FTextStringHelper::WriteToBuffer(OutResult, GetTextValue(), true);
+		FTextStringHelper::WriteToBuffer(OutResult, GetTextValue(), /*bRequiresQuotes*/true, bStripPackageNamespace);
 		break;
 	case EFormatArgumentType::Gender:
 		TextStringificationUtil::WriteScopedEnumToBuffer(OutResult, TEXT("ETextGender::"), GetGenderValue());
@@ -1781,7 +1782,7 @@ bool FTextStringHelper::ReadFromString(const TCHAR* Buffer, FText& OutValue, con
 	return false;
 }
 
-void FTextStringHelper::WriteToBuffer(FString& Buffer, const FText& Value, const bool bRequiresQuotes)
+void FTextStringHelper::WriteToBuffer(FString& Buffer, const FText& Value, const bool bRequiresQuotes, const bool bStripPackageNamespace)
 {
 	const FTextHistory& TextHistory = Value.TextData->GetTextHistory();
 	const FString& StringValue = FTextInspector::GetDisplayString(Value);
@@ -1797,7 +1798,7 @@ void FTextStringHelper::WriteToBuffer(FString& Buffer, const FText& Value, const
 #undef LOC_DEFINE_REGION
 	}
 	// Is this text that should be written via its text history?
-	else if (TextHistory.WriteToBuffer(Buffer, Value.TextData->GetLocalizedString()))
+	else if (TextHistory.WriteToBuffer(Buffer, Value.TextData->GetLocalizedString(), bStripPackageNamespace))
 	{
 	}
 	// This isn't special text, so write as a raw string (potentially quoted)

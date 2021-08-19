@@ -62,8 +62,8 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	virtual void BuildTrackContextMenu( FMenuBuilder& MenuBuilder, UMovieSceneTrack* Track ) override;
 	virtual const FSlateBrush* GetIconBrush() const override;
-	virtual bool OnAllowDrop(const FDragDropEvent& DragDropEvent, UMovieSceneTrack* Track, int32 RowIndex, const FGuid& TargetObjectGuid) override;
-	virtual FReply OnDrop(const FDragDropEvent& DragDropEvent, UMovieSceneTrack* Track, int32 RowIndex, const FGuid& TargetObjectGuid) override;
+	virtual bool OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequencerDragDropParams& DragDropParams) override;
+	virtual FReply OnDrop(const FDragDropEvent& DragDropEvent, const FSequencerDragDropParams& DragDropParams) override;
 
 	/*
 	 * Insert shot. 
@@ -83,11 +83,11 @@ public:
 	void DuplicateShot(UMovieSceneCinematicShotSection* Section);
 
 	/*
-	 * Render shot. 
+	 * Render shots. 
 	 *
-	 * @param Section The section to render
+	 * @param Sections The sections to render
 	 */
-	void RenderShot(UMovieSceneCinematicShotSection* Section);
+	void RenderShots(const TArray<UMovieSceneCinematicShotSection*>& Sections);
 
 	/*
 	 * Rename shot. 

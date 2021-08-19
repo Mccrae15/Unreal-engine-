@@ -578,6 +578,7 @@ public:
 	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format) override final
 	{
 		RHI->RHIUpdateShaderResourceView(SRV, VertexBuffer, Stride, Format);
+		SRV->ViewIdentity = VertexBuffer->GetWholeResourceIdentity();
 	}
 
 	/**
@@ -733,22 +734,14 @@ public:
 		RHI->RHICopySharedMips(DestTexture2D, SrcTexture2D);
 	}
 
-	/**
-	* Synchronizes the content of a texture resource between two GPUs using a copy operation.
-	* @param Texture - the texture to synchronize.
-	* @param Rect - the rectangle area to update.
-	* @param SrcGPUIndex - the index of the gpu which content will be red from
-	* @param DestGPUIndex - the index of the gpu which content will be updated.
-	* @param PullData - whether the source writes the data to the dest, or the dest reads the data from the source.
-	*/
-	// FlushType: Flush RHI Thread
-	virtual void RHITransferTexture(FRHITexture2D* Texture, FIntRect Rect, uint32 SrcGPUIndex, uint32 DestGPUIndex, bool bPullData) override final
+	void RHITransferIndexBufferUnderlyingResource(FRHIIndexBuffer* DestIndexBuffer, FRHIIndexBuffer* SrcIndexBuffer) override final
 	{
-		RHI->RHITransferTexture(Texture, Rect, SrcGPUIndex, DestGPUIndex, bPullData);
+		RHI->RHITransferIndexBufferUnderlyingResource(DestIndexBuffer, SrcIndexBuffer);
 	}
-	virtual void RHITransferTextures(const TArrayView<const FTransferTextureParams> Params) override final
+
+	void RHITransferVertexBufferUnderlyingResource(FRHIVertexBuffer* DestVertexBuffer, FRHIVertexBuffer* SrcVertexBuffer) override final
 	{
-		RHI->RHITransferTextures(Params);
+		RHI->RHITransferVertexBufferUnderlyingResource(DestVertexBuffer, SrcVertexBuffer);
 	}
 
 	/**
@@ -803,7 +796,12 @@ public:
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHITexture* TextureRHI, const FRHITextureSRVCreateInfo& CreateInfo) override final
 	{
 		FShaderResourceViewRHIRef SRV = RHI->RHICreateShaderResourceView(TextureRHI, CreateInfo);
-		SRV->ViewIdentity = TextureRHI->GetViewIdentity(CreateInfo.MipLevel, CreateInfo.NumMipLevels, CreateInfo.FirstArraySlice, CreateInfo.NumArraySlices, uint32(RHIValidation::EResourcePlane::Common), 1);
+
+		uint32 Plane = CreateInfo.Format == PF_X24_G8
+			? (uint32)RHIValidation::EResourcePlane::Stencil
+			: (uint32)RHIValidation::EResourcePlane::Common;
+
+		SRV->ViewIdentity = TextureRHI->GetViewIdentity(CreateInfo.MipLevel, CreateInfo.NumMipLevels, CreateInfo.FirstArraySlice, CreateInfo.NumArraySlices, Plane, 1);
 		return SRV;
 	}
 
@@ -1315,11 +1313,6 @@ public:
 		return RHI->RHIEnqueueDecompress(SrcBuffer, DestBuffer, CompressedSize, ErrorCodeBuffer);
 	}
 
-	virtual bool RHIEnqueueCompress(uint8_t* SrcBuffer, uint8_t* DestBuffer, int UnCompressedSize, void* ErrorCodeBuffer) override final
-	{
-		return RHI->RHIEnqueueCompress(SrcBuffer, DestBuffer, UnCompressedSize, ErrorCodeBuffer);
-	}
-
 	/**
 	*	Retrieve available screen resolutions.
 	*
@@ -1391,6 +1384,34 @@ public:
 	{
 		return RHI->RHIGetNativeDevice();
 	}
+
+	/**
+	* Provides access to the native physical device. Generally this should be avoided but is useful for third party plugins.
+	*/
+	// FlushType: Flush RHI Thread
+	virtual void* RHIGetNativePhysicalDevice() override final
+	{
+		return RHI->RHIGetNativePhysicalDevice();
+	}
+
+	/**
+	* Provides access to the native graphics command queue. Generally this should be avoided but is useful for third party plugins.
+	*/
+	// FlushType: Flush RHI Thread
+	virtual void* RHIGetNativeGraphicsQueue() override final
+	{
+		return RHI->RHIGetNativeGraphicsQueue();
+	}
+
+	/**
+	* Provides access to the native compute command queue. Generally this should be avoided but is useful for third party plugins.
+	*/
+	// FlushType: Flush RHI Thread
+	virtual void* RHIGetNativeComputeQueue() override final
+	{
+		return RHI->RHIGetNativeComputeQueue();
+	}
+
 	/**
 	* Provides access to the native instance. Generally this should be avoided but is useful for third party plugins.
 	*/
@@ -1400,6 +1421,14 @@ public:
 		return RHI->RHIGetNativeInstance();
 	}
 
+	/**
+	* Provides access to the native device's command buffer. Generally this should be avoided but is useful for third party plugins.
+	*/
+	// FlushType: Not Thread Safe!!
+	virtual void* RHIGetNativeCommandBuffer() override final
+	{
+		return RHI->RHIGetNativeCommandBuffer();
+	}
 
 	// FlushType: Thread safe
 	virtual IRHICommandContext* RHIGetDefaultContext() override final;
@@ -1467,20 +1496,31 @@ public:
 	{
 		FShaderResourceViewRHIRef SRV = RHI->CreateShaderResourceView_RenderThread(RHICmdList, Initializer);
 
+		SRV->ViewIdentity = RHIValidation::FResourceIdentity{};
+
 		switch (Initializer.GetType())
 		{
 		default: checkNoEntry(); // fallthrough
 
 		case FShaderResourceViewInitializer::EType::IndexBufferSRV:
+			if (Initializer.AsIndexBufferSRV().IndexBuffer)
+			{
 			SRV->ViewIdentity = Initializer.AsIndexBufferSRV().IndexBuffer->GetWholeResourceIdentity();
+			}
 			break;
 
 		case FShaderResourceViewInitializer::EType::StructuredBufferSRV:
+			if (Initializer.AsStructuredBufferSRV().StructuredBuffer)
+			{
 			SRV->ViewIdentity = Initializer.AsStructuredBufferSRV().StructuredBuffer->GetWholeResourceIdentity();
+			}
 			break;
 
 		case FShaderResourceViewInitializer::EType::VertexBufferSRV:
+			if (Initializer.AsVertexBufferSRV().VertexBuffer)
+			{
 			SRV->ViewIdentity = Initializer.AsVertexBufferSRV().VertexBuffer->GetWholeResourceIdentity();
+		}
 		}
 
 		return SRV;
@@ -1684,7 +1724,12 @@ public:
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo) override final
 	{
 		FShaderResourceViewRHIRef SRV = RHI->RHICreateShaderResourceView_RenderThread(RHICmdList, Texture, CreateInfo);
-		SRV->ViewIdentity = Texture->GetViewIdentity(CreateInfo.MipLevel, CreateInfo.NumMipLevels, CreateInfo.FirstArraySlice, CreateInfo.NumArraySlices, uint32(RHIValidation::EResourcePlane::Common), 1);
+
+		uint32 Plane = CreateInfo.Format == PF_X24_G8
+			? (uint32)RHIValidation::EResourcePlane::Stencil
+			: (uint32)RHIValidation::EResourcePlane::Common;
+
+		SRV->ViewIdentity = Texture->GetViewIdentity(CreateInfo.MipLevel, CreateInfo.NumMipLevels, CreateInfo.FirstArraySlice, CreateInfo.NumArraySlices, Plane, 1);
 		return SRV;
 	}
 

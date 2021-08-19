@@ -21,6 +21,9 @@
 
 #define LOCTEXT_NAMESPACE "PhysicsAsset"
 
+bool bUseRBANForDefaultPhysicsAssetSolverType = false;
+FAutoConsoleVariableRef CVarUseRBANForDefaultPhysicsAssetSolverType(TEXT("p.Chaos.UseRBANForDefaultPhysicsAssetSolverType"), bUseRBANForDefaultPhysicsAssetSolverType, TEXT("Boolean to use RBAN for default physics asset solver type (false by default)"));
+
 FSolverIterations::FSolverIterations()
 	: FixedTimeStep(0)
 	, SolverIterations(3)
@@ -39,6 +42,14 @@ FSolverIterations::FSolverIterations()
 UPhysicsAsset::UPhysicsAsset(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	if(bUseRBANForDefaultPhysicsAssetSolverType)
+	{
+		SolverType = EPhysicsAssetSolverType::RBAN;
+	}
+	else
+	{
+		SolverType = EPhysicsAssetSolverType::World;
+	}
 }
 
 void UPhysicsAsset::UpdateBoundsBodiesArray()
@@ -432,13 +443,13 @@ int32	UPhysicsAsset::FindControllingBodyIndex(class USkeletalMesh* skelMesh, int
 	int32 BoneIndex = StartBoneIndex;
 	while(BoneIndex!=INDEX_NONE)
 	{
-		FName BoneName = skelMesh->RefSkeleton.GetBoneName(BoneIndex);
+		FName BoneName = skelMesh->GetRefSkeleton().GetBoneName(BoneIndex);
 		int32 BodyIndex = FindBodyIndex(BoneName);
 
 		if(BodyIndex != INDEX_NONE)
 			return BodyIndex;
 
-		int32 ParentBoneIndex = skelMesh->RefSkeleton.GetParentIndex(BoneIndex);
+		int32 ParentBoneIndex = skelMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
 
 		if(ParentBoneIndex == BoneIndex)
 			return INDEX_NONE;
@@ -452,9 +463,9 @@ int32	UPhysicsAsset::FindControllingBodyIndex(class USkeletalMesh* skelMesh, int
 int32 UPhysicsAsset::FindParentBodyIndex(class USkeletalMesh * skelMesh, int32 StartBoneIndex) const
 {
 	int32 BoneIndex = StartBoneIndex;
-	while ((BoneIndex = skelMesh->RefSkeleton.GetParentIndex(BoneIndex)) != INDEX_NONE)
+	while ((BoneIndex = skelMesh->GetRefSkeleton().GetParentIndex(BoneIndex)) != INDEX_NONE)
 	{
-		FName BoneName = skelMesh->RefSkeleton.GetBoneName(BoneIndex);
+		FName BoneName = skelMesh->GetRefSkeleton().GetBoneName(BoneIndex);
 		int32 BodyIndex = FindBodyIndex(BoneName);
 
 		if (StartBoneIndex == BoneIndex)
@@ -509,7 +520,7 @@ int32 UPhysicsAsset::FindMirroredBone(class USkeletalMesh* skelMesh, int32 BoneI
 		return INDEX_NONE;
 	}
 	//we try to find the mirroed bone using several approaches. The first is to look for the same name but with _R instead of _L or vise versa
-	FName BoneName = skelMesh->RefSkeleton.GetBoneName(BoneIndex);
+	FName BoneName = skelMesh->GetRefSkeleton().GetBoneName(BoneIndex);
 	FString BoneNameString = BoneName.ToString();
 
 	bool bIsLeft = BoneNameString.Find("_L", ESearchCase::IgnoreCase, ESearchDir::FromEnd) == (BoneNameString.Len() - 2);	//has _L at the end
@@ -523,7 +534,7 @@ int32 UPhysicsAsset::FindMirroredBone(class USkeletalMesh* skelMesh, int32 BoneI
 		FString BoneNameMirrored = BoneNameString.LeftChop(2);
 		BoneNameMirrored.Append(bIsLeft ? "_R" : "_L");
 
-		BoneIndexMirrored = skelMesh->RefSkeleton.FindBoneIndex(FName(*BoneNameMirrored));
+		BoneIndexMirrored = skelMesh->GetRefSkeleton().FindBoneIndex(FName(*BoneNameMirrored));
 	}
 
 	return BoneIndexMirrored;
@@ -531,7 +542,7 @@ int32 UPhysicsAsset::FindMirroredBone(class USkeletalMesh* skelMesh, int32 BoneI
 
 void UPhysicsAsset::GetBodyIndicesBelow(TArray<int32>& OutBodyIndices, FName InBoneName, USkeletalMesh* SkelMesh, bool bIncludeParent /*= true*/)
 {
-	int32 BaseIndex = SkelMesh->RefSkeleton.FindBoneIndex(InBoneName);
+	int32 BaseIndex = SkelMesh->GetRefSkeleton().FindBoneIndex(InBoneName);
 
 	// Iterate over all other bodies, looking for 'children' of this one
 	for(int32 i=0; i<SkeletalBodySetups.Num(); i++)
@@ -542,9 +553,9 @@ void UPhysicsAsset::GetBodyIndicesBelow(TArray<int32>& OutBodyIndices, FName InB
 			continue;
 		}
 		FName TestName = BS->BoneName;
-		int32 TestIndex = SkelMesh->RefSkeleton.FindBoneIndex(TestName);
+		int32 TestIndex = SkelMesh->GetRefSkeleton().FindBoneIndex(TestName);
 
-		if( (bIncludeParent && TestIndex == BaseIndex) || SkelMesh->RefSkeleton.BoneIsChildOf(TestIndex, BaseIndex))
+		if( (bIncludeParent && TestIndex == BaseIndex) || SkelMesh->GetRefSkeleton().BoneIsChildOf(TestIndex, BaseIndex))
 		{
 			OutBodyIndices.Add(i);
 		}
@@ -801,7 +812,7 @@ UPhysicsAsset::FRefreshPhysicsAssetChangeDelegate UPhysicsAsset::OnRefreshPhysic
 
 void UPhysicsAsset::RefreshPhysicsAssetChange() const
 {
-	for (FObjectIterator Iter(USkeletalMeshComponent::StaticClass()); Iter; ++Iter)
+	for (FThreadSafeObjectIterator Iter(USkeletalMeshComponent::StaticClass()); Iter; ++Iter)
 	{
 		USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(*Iter);
 		if (SkeletalMeshComponent->GetPhysicsAsset() == this)
@@ -853,7 +864,7 @@ void UPhysicsAsset::SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty
 		for (int32 i = 0; i < SkeletalBodySetups.Num(); ++i)
 		{
 			FName BodyName = SkeletalBodySetups[i]->BoneName;
-			int32 BoneIndex = PreviewMesh->RefSkeleton.FindBoneIndex(BodyName);
+			int32 BoneIndex = PreviewMesh->GetRefSkeleton().FindBoneIndex(BodyName);
 			if (BoneIndex == INDEX_NONE)
 			{
 				FMessageDialog::Open(EAppMsgType::Ok,

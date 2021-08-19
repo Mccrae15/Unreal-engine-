@@ -22,6 +22,7 @@ public:
 	virtual void SetPlaybackSequenceID(uint32 PlaybackSequenceID) override;
 	virtual uint32 GetPlaybackSequenceID() const override;
 
+	virtual void SetExecutionDelay(const FTimeValue& ExecutionDelay) override;
 
 	virtual EStreamType GetType() const override;
 
@@ -35,8 +36,6 @@ public:
 	virtual int32 GetBitrate() const override;
 
 	virtual void GetDownloadStats(Metrics::FSegmentDownloadStats& OutStats) const override;
-
-	void CopyFrom(const FStreamSegmentRequestHLSfmp4& rhs);
 
 	FString																		URL;
 	IElectraHttpManager::FParams::FRange										Range;
@@ -67,6 +66,8 @@ public:
 	bool																		bInsertFillerData;
 
 	bool																		bHasEncryptedSegments;
+
+	TSharedPtrTS<FBufferSourceInfo>												SourceBufferInfo;
 
 	TSharedPtrTS<IInitSegmentCacheHLS> 											InitSegmentCache;
 	TSharedPtrTS<const FManifestHLSInternal::FMediaStream::FInitSegmentInfo>	InitSegmentInfo;
@@ -104,10 +105,9 @@ public:
 	//! Adds a request to read from a stream
 	virtual EAddResult AddRequest(uint32 CurrentPlaybackSequenceID, TSharedPtrTS<IStreamSegment> Request) override;
 
-	//! Pauses all pending requests.
-	virtual void PauseDownload() override;
-	//! Resumes all pending requests.
-	virtual void ResumeDownload() override;
+	//! Cancels any ongoing requests of the given stream type. Silent cancellation will not notify OnFragmentClose() or OnFragmentReachedEOS(). 
+	virtual void CancelRequest(EStreamType StreamType, bool bSilent) override;
+
 	//! Cancels all pending requests.
 	virtual void CancelRequests() override;
 
@@ -198,6 +198,7 @@ private:
 		FMediaSemaphore											WorkSignal;
 		volatile bool											bTerminate;
 		volatile bool											bRequestCanceled;
+		volatile bool											bSilentCancellation;
 		volatile bool											bHasErrored;
 		bool													bAbortedByABR;
 		bool													bAllowEarlyEmitting;
@@ -205,12 +206,13 @@ private:
 
 		IPlayerSessionServices*									PlayerSessionService;
 		FReadBuffer												ReadBuffer;
-		TSharedPtr<IStreamDecrypterAES128, ESPMode::ThreadSafe>	Decrypter;
+		TSharedPtr<ElectraCDM::IStreamDecrypterAES128, ESPMode::ThreadSafe>	Decrypter;
 		FMediaEvent												DownloadCompleteSignal;
 		TSharedPtrTS<IParserISO14496_12>						MP4Parser;
 		int32													NumMOOFBoxesFound;
 
 		TMediaQueueDynamicNoLock<FAccessUnit *>					AccessUnitFIFO;
+		FTimeValue 												DurationSuccessfullyRead;
 		FTimeValue 												DurationSuccessfullyDelivered;
 
 		FMediaCriticalSection									MetricUpdateLock;
@@ -220,12 +222,10 @@ private:
 
 		FStreamHandler();
 		virtual ~FStreamHandler();
-		void Cancel();
+		void Cancel(bool bSilent);
 		void SignalWork();
 		void WorkerThread();
 		void HandleRequest();
-		FString DemoteMediaURLToHTTP(const FString& InURL, bool bIsEncrypted);
-		FString DemoteInitURLToHTTP(const FString& InURL, bool bIsEncrypted);
 		EInitSegmentResult GetInitSegment(FErrorDetail& OutErrorDetail, TSharedPtrTS<const IParserISO14496_12>& OutMP4InitSegment, const TSharedPtrTS<FStreamSegmentRequestHLSfmp4>& InRequest);
 		ELicenseKeyResult GetLicenseKey(FErrorDetail& OutErrorDetail, TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>& OutLicenseKeyData, const TSharedPtrTS<FStreamSegmentRequestHLSfmp4>& InRequest, const TSharedPtr<const FManifestHLSInternal::FMediaStream::FDRMKeyInfo, ESPMode::ThreadSafe>& LicenseKeyInfo);
 
@@ -245,6 +245,7 @@ private:
 		virtual int64 GetCurrentOffset() const override;
 		// Methods from IParserISO14496_12::IBoxCallback
 		virtual IParserISO14496_12::IBoxCallback::EParseContinuation OnFoundBox(IParserISO14496_12::FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset) override;
+		virtual IParserISO14496_12::IBoxCallback::EParseContinuation OnEndOfBox(IParserISO14496_12::FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset) override;
 	};
 
 	// Currently set to use 2 handlers, one for video and one for audio. This could become a pool of n if we need to stream
@@ -253,9 +254,6 @@ private:
 	IPlayerSessionServices*				PlayerSessionService;
 	bool								bIsStarted;
 	FErrorDetail						ErrorDetail;
-
-	static const FString		OptionKeyDontUseInsecureForEncryptedMediaSegments;		//!< (bool) if false and media segment is using EXT-X-KEY encryption fetch it via http even if it should be https, otherwise keep the original scheme.
-	static const FString		OptionKeyDontUseInsecureForInitSegments;				//!< (bool) if false the init segment is fetched via http even if it should be https, otherwise keep the original scheme.
 };
 
 

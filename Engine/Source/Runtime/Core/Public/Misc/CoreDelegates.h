@@ -94,11 +94,12 @@ public:
 	// Callback for handling an error
 	DECLARE_MULTICAST_DELEGATE(FOnHandleSystemError);
 
+	typedef TSharedPtr<class IMovieStreamer, ESPMode::ThreadSafe> FMovieStreamerPtr;
     // Delegate used to register a movie streamer with any movie player modules that bind to this delegate
-    DECLARE_MULTICAST_DELEGATE_OneParam(FRegisterMovieStreamerDelegate, TSharedPtr<class IMovieStreamer>);
+    DECLARE_MULTICAST_DELEGATE_OneParam(FRegisterMovieStreamerDelegate, FMovieStreamerPtr);
 
     // Delegate used to un-register a movie streamer with any movie player modules that bind to this delegate
-    DECLARE_MULTICAST_DELEGATE_OneParam(FUnRegisterMovieStreamerDelegate, TSharedPtr<class IMovieStreamer>);
+    DECLARE_MULTICAST_DELEGATE_OneParam(FUnRegisterMovieStreamerDelegate, FMovieStreamerPtr);
 
 	// Callback for handling user login/logout.  first int is UserID, second int is UserIndex
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnUserLoginChangedEvent, bool, int32, int32);
@@ -592,6 +593,34 @@ public:
 	/** Called when the application's network initializes or shutdowns on platforms where the network stack is not always available */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FApplicationNetworkInitializationChanged, bool /*bIsNetworkInitialized*/);
 	static FApplicationNetworkInitializationChanged ApplicationNetworkInitializationChanged;
+
+	// Callback to let code read or write specialized binary data that is generated at Stage time, for optimizing data right before 
+	// final game data is being written to disk
+	// The TMap is a map of an identifier for owner of the data, and a boolean where true means the data is being generated (ie editor), and false 
+	// means the data is for use (ie runtime game)
+	struct FExtraBinaryConfigData
+	{
+		// the data that will be saved/loaded quickly
+		TMap<FString, TArray<uint8>> Data;
+
+		// Ini config data (not necessarily GConfig)
+		class FConfigCacheIni& Config;
+
+		// if true, the callback should fill out Data/Config
+		bool bIsGenerating;
+
+		FExtraBinaryConfigData(class FConfigCacheIni& InConfig, bool InIsGenerating)
+			: Config(InConfig)
+			, bIsGenerating(InIsGenerating)
+		{
+		}
+	};
+	DECLARE_MULTICAST_DELEGATE_OneParam(FAccesExtraBinaryConfigData, FExtraBinaryConfigData&);
+	static FAccesExtraBinaryConfigData AccessExtraBinaryConfigData;
+
+	/** Called when the verbosity of a log category is changed */
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnLogVerbosityChanged, const FLogCategoryName& /* CategoryName */, ELogVerbosity::Type /* OldVerbosity */, ELogVerbosity::Type /* NewVerbosity */);
+	static FOnLogVerbosityChanged OnLogVerbosityChanged;
 
 private:
 

@@ -6,10 +6,6 @@
 
 #include "D3D12RHIPrivate.h"
 
-#ifndef NEEDS_D3D12_GETCOPYABLEFOOTPRINTS_WORKAROUND
-#define NEEDS_D3D12_GETCOPYABLEFOOTPRINTS_WORKAROUND 0
-#endif
-
 int64 FD3D12GlobalStats::GDedicatedVideoMemory = 0;
 int64 FD3D12GlobalStats::GDedicatedSystemMemory = 0;
 int64 FD3D12GlobalStats::GSharedSystemMemory = 0;
@@ -866,6 +862,14 @@ TD3D12Texture2D<BaseResourceType>* FD3D12DynamicRHI::CreateD3D12Texture2D(FRHICo
 	{
 		ClearValue = CD3DX12_CLEAR_VALUE(PlatformRenderTargetFormat, CreateInfo.ClearValueBinding.Value.Color);
 		ClearValuePtr = &ClearValue;
+	}
+
+	if (Format == PF_NV12)
+	{
+		// Check here to ensure callers aren't trying to do the wrong thing in the specific case of this format.
+		check(!bCreateRTV && !bCreateShaderResource);
+		bCreateRTV = false;
+		bCreateShaderResource = false;
 	}
 
 	// The state this resource will be in when it leaves this function
@@ -1874,20 +1878,6 @@ void FD3D12TextureBase::InitializeTextureData(FRHICommandListImmediate* RHICmdLi
 	const D3D12_RESOURCE_DESC& Desc = GetResource()->GetDesc();
 	Device->GetDevice()->GetCopyableFootprints(&Desc, 0, NumSubresources, 0, Footprints, Rows, RowSizeInBytes, &Size);
 
-#if NEEDS_D3D12_GETCOPYABLEFOOTPRINTS_WORKAROUND
-	{
-		uint64 WorkaroundSize = 0;
-		for (uint32 Subresource = 0; Subresource < NumSubresources; Subresource++)
-		{
-			const uint32 NumRows = Rows[Subresource] * Footprints[Subresource].Footprint.Depth;
-			const uint32 SrcRowPitch = RowSizeInBytes[Subresource];
-			const uint32 DstRowPitch = Footprints[Subresource].Footprint.RowPitch;
-			WorkaroundSize += FMath::Max(SrcRowPitch, DstRowPitch) * NumRows;
-		}
-		Size = FMath::Max(Size, WorkaroundSize);
-	}
-#endif
-
 	FD3D12ResourceLocation SrcResourceLoc(Device);
 	uint8* DstDataBase = (uint8*) Device->GetDefaultFastAllocator().Allocate(Size, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, &SrcResourceLoc);
 
@@ -2106,6 +2096,12 @@ void TD3D12Texture2D<RHIResourceType>::GetReadBackHeapDesc(D3D12_PLACED_SUBRESOU
 {
 	check((RHIResourceType::GetFlags() & TexCreate_CPUReadback) != 0);
 
+	if (InSubresource == 0 && FirstSubresourceFootprint)
+	{
+		OutFootprint = *FirstSubresourceFootprint;
+		return;
+	}
+
 	FIntVector TextureSize = RHIResourceType::GetSizeXYZ();
 
 	D3D12_RESOURCE_DESC Desc = {};
@@ -2118,6 +2114,12 @@ void TD3D12Texture2D<RHIResourceType>::GetReadBackHeapDesc(D3D12_PLACED_SUBRESOU
 	Desc.SampleDesc.Count = RHIResourceType::GetNumSamples();
 
 	GetReadBackHeapDescImpl(OutFootprint, GetParentDevice()->GetDevice(), Desc, InSubresource);
+
+	if (InSubresource == 0)
+	{
+		FirstSubresourceFootprint = MakeUnique<D3D12_PLACED_SUBRESOURCE_FOOTPRINT>();
+		*FirstSubresourceFootprint = OutFootprint;
+	}
 }
 
 void* FD3D12DynamicRHI::LockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* TextureRHI, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush)
@@ -2740,6 +2742,16 @@ TD3D12Texture2D<BaseResourceType>* FD3D12DynamicRHI::CreateTextureFromResource(b
 	// Set up the texture bind flags.
 	bool bCreateRTV = (TextureDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
 	bool bCreateDSV = (TextureDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
+	bool bCreateShaderResource = (TextureDesc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0;
+
+	// DXGI_FORMAT_NV12 allows us to create RTV and SRV but only with other formats, so we should block creation here.
+	if (Format == PF_NV12)
+	{
+		// Check here to ensure callers aren't trying to do the wrong thing in the specific case of this format.
+		checkSlow(!bCreateRTV && !bCreateShaderResource);
+		bCreateRTV = false;
+		bCreateShaderResource = false;
+	}
 
 	// The state this resource will be in when it leaves this function
 	const FD3D12Resource::FD3D12ResourceTypeHelper Type(TextureDesc, D3D12_HEAP_TYPE_DEFAULT);
@@ -2894,7 +2906,10 @@ TD3D12Texture2D<BaseResourceType>* FD3D12DynamicRHI::CreateTextureFromResource(b
 	}
 
 	// Create a wrapper for the SRV and set it on the texture
-	Texture2D->SetShaderResourceView(new FD3D12ShaderResourceView(Device, SRVDesc, Location));
+	if (bCreateShaderResource)
+	{
+		Texture2D->SetShaderResourceView(new FD3D12ShaderResourceView(Device, SRVDesc, Location));
+	}
 
 	FD3D12TextureStats::D3D12TextureAllocated(*Texture2D);
 

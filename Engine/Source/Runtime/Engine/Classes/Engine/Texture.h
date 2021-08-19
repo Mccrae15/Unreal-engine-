@@ -17,6 +17,7 @@
 #include "TextureResource.h"
 #include "Engine/StreamableRenderAsset.h"
 #include "PerPlatformProperties.h"
+#include "Misc/FieldAccessor.h"
 #include "Texture.generated.h"
 
 class ITargetPlatform;
@@ -40,7 +41,7 @@ enum TextureCompressionSettings
 	TC_HDR_Compressed			UMETA(DisplayName="HDRCompressed (RGB, BC6H, DX11)"),
 	TC_BC7						UMETA(DisplayName="BC7 (DX11, optional A)"),
 	TC_HalfFloat				UMETA(DisplayName="Half Float (R16F)"),
-	TC_ReflectionCapture		UMETA(DisplayName="Default (DXT5)"),
+	TC_EncodedReflectionCapture		UMETA(Hidden),
 	TC_MAX,
 };
 
@@ -134,18 +135,6 @@ enum ETextureCompressionQuality
 	TCQ_High= 4			UMETA(DisplayName="High"),
 	TCQ_Highest = 5		UMETA(DisplayName="Highest"),
 	TCQ_MAX,
-};
-
-UENUM()
-enum ETextureLossyCompressionAmount
-{
-	TLCA_Default		UMETA(DisplayName = "Default"),
-	TLCA_None			UMETA(DisplayName = "No lossy compression"),
-	TLCA_Lowest			UMETA(DisplayName = "Lowest (Best image quality, largest filesize)"),
-	TLCA_Low			UMETA(DisplayName = "Low"),
-	TLCA_Medium			UMETA(DisplayName = "Medium"),
-	TLCA_High			UMETA(DisplayName = "High"),
-	TLCA_Highest		UMETA(DisplayName = "Highest (Worst image quality, smallest filesize)"),
 };
 
 USTRUCT()
@@ -566,6 +555,7 @@ public:
 	}
 
 #if WITH_EDITOR
+	bool IsAsyncWorkComplete() const;
 	void Cache(
 		class UTexture& InTexture,
 		const struct FTextureBuildSettings* InSettingsPerLayer,
@@ -697,7 +687,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Compression, AdvancedDisplay)
 	TEnumAsByte<ETextureLossyCompressionAmount> LossyCompressionAmount;
 
-	/** The maximum resolution for generated textures. A value of 0 means the maximum size for the format on each platform, except HDR long/lat cubemaps, which default to a resolution of 512. */ 
+	/** The maximum resolution for generated textures. A value of 0 means the maximum size for the format on each platform. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Compression, meta=(DisplayName="Maximum Texture Size", ClampMin = "0.0"), AdvancedDisplay)
 	int32 MaxTextureSize;
 
@@ -852,9 +842,26 @@ protected:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Texture)
 	TArray<UAssetUserData*> AssetUserData;
 
-public:
+private:
 	/** The texture's resource, can be NULL */
-	class FTextureResource*	Resource;
+	class FTextureResource* PrivateResource;
+	/** Value updated and returned by the render-thread to allow
+	  * fenceless update from the game-thread without causing
+	  * potential crash in the render thread.
+	  */
+	class FTextureResource* PrivateResourceRenderThread;
+
+public:
+	TFieldPtrAccessor<FTextureResource> Resource;
+
+	/** Set texture's resource, can be NULL */
+	ENGINE_API void SetResource(FTextureResource* Resource);
+
+	/** Get the texture's resource, can be NULL */
+	ENGINE_API FTextureResource* GetResource();
+
+	/** Get the const texture's resource, can be NULL */
+	ENGINE_API const FTextureResource* GetResource() const;
 
 	/** Stable RHI texture reference that refers to the current RHI texture. Note this is manually refcounted! */
 	FTextureReference TextureReference;

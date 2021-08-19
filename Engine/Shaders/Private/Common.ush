@@ -73,11 +73,22 @@
 
 #define METAL_TESSELLATION_PROFILE ((METAL_PROFILE || METAL_SM5_PROFILE) && USING_TESSELLATION)
 
+#ifndef VELOCITY_ENCODE_DEPTH
+#define VELOCITY_ENCODE_DEPTH 1
+#endif
+
 // Using SV_ClipDistance has overhead (15% slower base pass in triangle bound test scene on PS4) so projects have to opt-in
 #define USE_GLOBAL_CLIP_PLANE (PLATFORM_SUPPORTS_GLOBAL_CLIP_PLANE && PROJECT_ALLOW_GLOBAL_CLIP_PLANE && !MATERIAL_DOMAIN_POSTPROCESS && !MATERIAL_DOMAIN_UI)
 
 #define POSITIVE_INFINITY (asfloat(0x7F800000))
 #define NEGATIVE_INFINITY (asfloat(0xFF800000))
+
+#define METER_TO_CENTIMETER		100.0f
+#define CENTIMETER_TO_METER		(1.0f / METER_TO_CENTIMETER)
+#define KILOMETER_TO_METER  	1000.0f
+#define METER_TO_KILOMETER  	(1.0f / KILOMETER_TO_METER)
+#define KILOMETER_TO_CENTIMETER	(KILOMETER_TO_METER * METER_TO_CENTIMETER)
+#define CENTIMETER_TO_KILOMETER	(1.0f / KILOMETER_TO_CENTIMETER)
 
 #define NearDepthValue (HAS_INVERTED_Z_BUFFER ? 1.0f : 0.0f)
 #define FarDepthValue  (HAS_INVERTED_Z_BUFFER ? 0.0f : 1.0f)
@@ -405,8 +416,8 @@ float4 PseudoVolumeTexture(Texture2D Tex, SamplerState TexSampler, float3 inPos,
 
 #else
 
-	#define TANGENTTOWORLD0					TEXCOORD10_centroid
-	#define TANGENTTOWORLD2					TEXCOORD11_centroid
+	#define TANGENTTOWORLD0					TEXCOORD10
+	#define TANGENTTOWORLD2					TEXCOORD11
 
 	// TangentToWorld0 is float4 only to match D3D11
 #if METAL_PROFILE || COMPILER_GLSL_ES3_1 || VULKAN_PROFILE
@@ -1520,7 +1531,6 @@ struct FScreenVertexOutput
 	float4 Position : SV_POSITION;
 };
 
-
 // for velocity rendering, motionblur and temporal AA
 // velocity needs to support -2..2 screen space range for x and y
 // texture is 16bit 0..1 range per channel
@@ -1531,12 +1541,16 @@ float4 EncodeVelocityToTexture(float3 V)
 	float4 EncodedV;
 	EncodedV.xy = V.xy * (0.499f * 0.5f) + 32767.0f / 65535.0f;
 
+#if VELOCITY_ENCODE_DEPTH
 	uint Vz = asuint(V.z);
 
 	EncodedV.z = saturate(float((Vz >> 16) & 0xFFFF) * rcp(65535.0f) + (0.1 / 65535.0f));
 	EncodedV.w = saturate(float((Vz >>  0) & 0xFFFF) * rcp(65535.0f) + (0.1 / 65535.0f));
 
 	return EncodedV;
+#else
+	return float4(EncodedV.x, EncodedV.y, 0, 0);
+#endif
 }
 // see EncodeVelocityToTexture()
 float3 DecodeVelocityFromTexture(float4 EncodedV)
@@ -1545,9 +1559,14 @@ float3 DecodeVelocityFromTexture(float4 EncodedV)
 
 	float3 V;
 	V.xy = EncodedV.xy * InvDiv - 32767.0f / 65535.0f * InvDiv;
+
+#if VELOCITY_ENCODE_DEPTH
 	V.z = asfloat((uint(round(EncodedV.z * 65535.0f)) << 16) | uint(round(EncodedV.w * 65535.0f)));
 
 	return V;
+#else
+	return float3 (V.x, V.y, 0);
+#endif
 }
 
 // Used for the Global Illumination in the GIReplace material expression
@@ -1782,8 +1801,6 @@ struct FPixelShaderOut
 #define GlobalTrilinearClampedSampler GetGlobalSampler(Trilinear, Clamped)
 #define GlobalTrilinearWrappedSampler GetGlobalSampler(Trilinear, Wrapped)
 
-#endif // SUPPORTS_INDEPENDENT_SAMPLERS
-
 #if FEATURE_LEVEL >= FEATURE_LEVEL_SM5
 
 float4 GatherDepth(Texture2D Texture, float2 UV)
@@ -1799,3 +1816,5 @@ float4 GatherDepth(Texture2D Texture, float2 UV)
 }
 
 #endif
+
+#endif // SUPPORTS_INDEPENDENT_SAMPLERS

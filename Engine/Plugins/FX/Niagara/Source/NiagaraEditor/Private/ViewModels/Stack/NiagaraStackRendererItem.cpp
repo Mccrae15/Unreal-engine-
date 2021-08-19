@@ -25,6 +25,7 @@
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraScriptMergeManager.h"
 #include "NiagaraClipboard.h"
+#include "NiagaraEmitterEditorData.h"
 
 #include "Styling/SlateIconFinder.h"
 
@@ -88,7 +89,7 @@ bool UNiagaraStackRendererItem::AddMissingVariable(UNiagaraEmitter* Emitter, con
 	{
 		return false;
 	}
-	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Script->GetSource());
+	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Script->GetLatestSource());
 	if (!Source)
 	{
 		return false;
@@ -137,14 +138,18 @@ UNiagaraRendererProperties* UNiagaraStackRendererItem::GetRendererProperties()
 
 FText UNiagaraStackRendererItem::GetDisplayName() const
 {
-	if (RendererProperties != nullptr)
+	if(DisplayNameCache.IsSet() == false)
 	{
-		return RendererProperties->GetWidgetDisplayName();
+		if (RendererProperties != nullptr)
+		{
+			DisplayNameCache = RendererProperties->GetWidgetDisplayName();
+		}
+		else
+		{
+			DisplayNameCache = FText::FromName(NAME_None);
+		}
 	}
-	else
-	{
-		return FText::FromName(NAME_None);
-	}
+	return DisplayNameCache.GetValue();
 }
 
 bool UNiagaraStackRendererItem::TestCanCutWithMessage(FText& OutMessage) const
@@ -240,10 +245,19 @@ FText UNiagaraStackRendererItem::GetDeleteTransactionText() const
 void UNiagaraStackRendererItem::Delete()
 {
 	UNiagaraEmitter* Emitter = GetEmitterViewModel()->GetEmitter();
-	Emitter->Modify();
-	Emitter->RemoveRenderer(RendererProperties.Get());
 
-	OnDataObjectModified().Broadcast(RendererProperties.Get());
+	UNiagaraRendererProperties* Renderer = RendererProperties.Get();
+	Emitter->Modify();
+	Emitter->RemoveRenderer(Renderer);
+	if (UNiagaraEmitterEditorData* Data = Cast<UNiagaraEmitterEditorData>(Emitter->GetEditorData()))
+	{
+		Data->GetStackEditorData().Modify();
+		Data->GetStackEditorData().SetStackEntryDisplayName(GetStackEditorDataKey(), FText());
+	}
+
+	TArray<UObject*> ChangedObjects;
+	ChangedObjects.Add(Renderer);
+	OnDataObjectModified().Broadcast(ChangedObjects, ENiagaraDataObjectChange::Removed);
 }
 
 bool UNiagaraStackRendererItem::HasBaseRenderer() const
@@ -317,7 +331,9 @@ void UNiagaraStackRendererItem::SetIsEnabledInternal(bool bInIsEnabled)
 	FScopedTransaction ScopedTransaction(LOCTEXT("SetRendererEnabledState", "Set renderer enabled/disabled state."));
 	RendererProperties->Modify();
 	RendererProperties->SetIsEnabled(bInIsEnabled);
-	OnDataObjectModified().Broadcast(RendererProperties.Get());
+	TArray<UObject*> ChangedObjects;
+	ChangedObjects.Add(RendererProperties.Get());
+	OnDataObjectModified().Broadcast(ChangedObjects, ENiagaraDataObjectChange::Changed);
 	RefreshChildren();
 }
 
@@ -345,6 +361,7 @@ void UNiagaraStackRendererItem::RefreshChildrenInternal(const TArray<UNiagaraSta
 	MissingAttributes = GetMissingVariables(RendererProperties.Get(), GetEmitterViewModel()->GetEmitter());
 	bHasBaseRendererCache.Reset();
 	bCanResetToBaseCache.Reset();
+	DisplayNameCache.Reset();
 	Super::RefreshChildrenInternal(CurrentChildren, NewChildren, NewIssues);
 	
 	RefreshIssues(NewIssues);

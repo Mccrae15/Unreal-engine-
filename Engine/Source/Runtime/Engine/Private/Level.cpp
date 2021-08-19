@@ -784,13 +784,7 @@ void ULevel::PostLoad()
 		LevelSimplification[Index].PostLoadDeprecated();
 	}
 
-	if (LevelScriptActor)
-	{
-		if (ULevelScriptBlueprint* LevelBlueprint = Cast<ULevelScriptBlueprint>(LevelScriptActor->GetClass()->ClassGeneratedBy))
-		{
-			FBlueprintEditorUtils::FixLevelScriptActorBindings(LevelScriptActor, LevelBlueprint);
-		}
-	}
+	RepairLevelScript();
 #endif
 }
 
@@ -812,6 +806,8 @@ void ULevel::CreateCluster()
 	// we keep a separate array for referencing unclustered actors (ActorsForGC).
 	if (FPlatformProperties::RequiresCookedData() && GCreateGCClusters && GActorClusteringEnabled && !bActorClusterCreated)
 	{
+		ActorsForGC.Reset();
+
 		TArray<AActor*> ClusterActors;
 
 		for (int32 ActorIndex = Actors.Num() - 1; ActorIndex >= 0; --ActorIndex)
@@ -981,6 +977,8 @@ static void SortActorsHierarchy(TArray<AActor*>& Actors, UObject* Level)
 	TMap<AActor*, int32> DepthMap;
 	TArray<AActor*, TInlineAllocator<10>> VisitedActors;
 
+	DepthMap.Reserve(Actors.Num());
+
 	TFunction<int32(AActor*)> CalcAttachDepth = [&DepthMap, &VisitedActors, &CalcAttachDepth](AActor* Actor)
 	{
 		int32 Depth = 0;
@@ -1007,7 +1005,18 @@ static void SortActorsHierarchy(TArray<AActor*>& Actors, UObject* Level)
 				else
 				{
 					VisitedActors.Add(Actor);
-					Depth = CalcAttachDepth(ParentActor) + 1;
+
+					// Actors attached to a ChildActor have to be registered first or else
+					// they will become detached due to the AttachChildren not yet being populated
+					// and thus not recorded in the ComponentInstanceDataCache
+					if (ParentActor->IsChildActor())
+					{
+						Depth = CalcAttachDepth(ParentActor) - 1;
+					}
+					else
+					{
+						Depth = CalcAttachDepth(ParentActor) + 1;
+					}
 				}
 			}
 			DepthMap.Add(Actor, Depth);
@@ -2345,47 +2354,10 @@ void ULevel::CleanupLevelScriptBlueprint()
 
 void ULevel::OnLevelScriptBlueprintChanged(ULevelScriptBlueprint* InBlueprint)
 {
-	if( !InBlueprint->bIsRegeneratingOnLoad && 
-		// Make sure this is OUR level scripting blueprint
-		ensureMsgf(InBlueprint == LevelScriptBlueprint, TEXT("Level ('%s') received OnLevelScriptBlueprintChanged notification for the wrong Blueprint ('%s')."), LevelScriptBlueprint ? *LevelScriptBlueprint->GetPathName() : TEXT("NULL"), *InBlueprint->GetPathName()) )
-	{
-		bool bResetDebugObject = false;
-
-		UClass* SpawnClass = (LevelScriptBlueprint->GeneratedClass) ? LevelScriptBlueprint->GeneratedClass : LevelScriptBlueprint->SkeletonGeneratedClass;
-
-		// Get rid of the old LevelScriptActor
-		if( LevelScriptActor )
-		{
-			// Clear the current debug object and indicate that it needs to be reset (below).
-			if (InBlueprint->GetObjectBeingDebugged() == LevelScriptActor)
-			{
-				bResetDebugObject = true;
-				InBlueprint->SetObjectBeingDebugged(nullptr);
-			}
-
-			LevelScriptActor->MarkPendingKill();
-			LevelScriptActor = nullptr;
-		}
-
-		check( OwningWorld );
-		// Create the new one
-		FActorSpawnParameters SpawnInfo;
-		SpawnInfo.OverrideLevel = this;
-		LevelScriptActor = OwningWorld->SpawnActor<ALevelScriptActor>( SpawnClass, SpawnInfo );
-
-		if( LevelScriptActor )
-		{
-			// Reset the current debug object to the new instance if it was previously set to the old instance.
-			if (bResetDebugObject)
-			{
-				InBlueprint->SetObjectBeingDebugged(LevelScriptActor);
-			}
-
-			LevelScriptActor->ClearFlags(RF_Transactional);
-			check(LevelScriptActor->GetLevel() == this);
-			// Finally, fixup all the bound events to point to their new LSA
-			FBlueprintEditorUtils::FixLevelScriptActorBindings(LevelScriptActor, InBlueprint);
-		}		
+	if (!InBlueprint->bIsRegeneratingOnLoad &&
+		ensureMsgf(InBlueprint == LevelScriptBlueprint, TEXT("Level ('%s') received OnLevelScriptBlueprintChanged   for the wrong Blueprint ('%s')."), LevelScriptBlueprint ? *LevelScriptBlueprint->GetPathName() : TEXT("NULL"), *InBlueprint->GetPathName()))
+	{	    
+		RegenerateLevelScriptActor();
 	}
 }	
 
@@ -2703,3 +2675,74 @@ void ULevel::SetPartitionSubLevel(ULevel* SubLevel)
 }
 
 #endif // #if WITH_EDITORONLY_DATA
+
+#if WITH_EDITOR
+void ULevel::RepairLevelScript()
+{
+	// Ensure bound events point to the level script actor
+	if (LevelScriptActor)
+	{
+		if (ULevelScriptBlueprint* LevelBlueprint = Cast<ULevelScriptBlueprint>(LevelScriptActor->GetClass()->ClassGeneratedBy))
+		{
+			FBlueprintEditorUtils::FixLevelScriptActorBindings(LevelScriptActor, LevelBlueprint);
+		}
+	}
+
+	// Catch the edge case where we have a level blueprint but have never created the LevelScriptActor based on it.
+	//    This could happen if a new level is saved before the level blueprint is compiled.
+	if (!LevelScriptActor && LevelScriptBlueprint && !LevelScriptBlueprint->bIsRegeneratingOnLoad)
+	{
+		RegenerateLevelScriptActor();
+	}	
+}
+
+void ULevel::RegenerateLevelScriptActor()
+{
+	check(LevelScriptBlueprint);
+
+	bool bResetDebugObject = false;
+
+	UClass* SpawnClass = (LevelScriptBlueprint->GeneratedClass) ? LevelScriptBlueprint->GeneratedClass : LevelScriptBlueprint->SkeletonGeneratedClass;
+
+	if (SpawnClass)
+	{
+		// Get rid of the old LevelScriptActor
+		if (LevelScriptActor)
+		{
+			// Clear the current debug object and indicate that it needs to be reset (below).
+			if (LevelScriptBlueprint->GetObjectBeingDebugged() == LevelScriptActor)
+			{
+				bResetDebugObject = true;
+				LevelScriptBlueprint->SetObjectBeingDebugged(nullptr);
+			}
+
+			LevelScriptActor->MarkPendingKill();
+			LevelScriptActor = nullptr;
+		}
+
+		check(OwningWorld);
+		// Create the new one
+		FActorSpawnParameters SpawnInfo;
+		SpawnInfo.OverrideLevel = this;
+		LevelScriptActor = OwningWorld->SpawnActor<ALevelScriptActor>(SpawnClass, SpawnInfo);
+
+		if (LevelScriptActor)
+		{
+			// Reset the current debug object to the new instance if it was previously set to the old instance.
+			if (bResetDebugObject)
+			{
+				LevelScriptBlueprint->SetObjectBeingDebugged(LevelScriptActor);
+			}
+
+			LevelScriptActor->ClearFlags(RF_Transactional);
+			check(LevelScriptActor->GetLevel() == this);
+			// Finally, fixup all the bound events to point to their new LSA
+			FBlueprintEditorUtils::FixLevelScriptActorBindings(LevelScriptActor, LevelScriptBlueprint);
+		}
+	}
+	else
+	{
+		UE_LOG(LogLevel, Error, TEXT("Skipped regeneration of LevelScriptActor due to blueprint '%s' having no spawnable class. A probable cause is that the blueprint is deriving from an invalid class, and may not function."), *LevelScriptBlueprint->GetName());
+	}
+}
+#endif // WITH_EDITOR

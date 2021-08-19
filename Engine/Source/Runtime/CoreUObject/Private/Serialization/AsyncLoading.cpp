@@ -98,9 +98,6 @@ static FName StaticGetNativeClassName(UClass* InClass)
 /** Returns true if we're inside a FGCScopeLock */
 bool IsGarbageCollectionLocked();
 
-/** Global request ID counter */
-static FThreadSafeCounter GPackageRequestID;
-
 
 
 /**
@@ -111,18 +108,28 @@ struct FAsyncPackageScope
 {
 	/** Outer scope package */
 	void* PreviousPackage;
+#if WITH_IOSTORE_IN_EDITOR
+	IAsyncPackageLoader* PreviousAsyncPackageLoader;
+#endif
 	/** Cached ThreadContext so we don't have to access it again */
 	FUObjectThreadContext& ThreadContext;
 
-	FAsyncPackageScope(void* InPackage)
+	FAsyncPackageScope(FAsyncPackage* InPackage)
 		: ThreadContext(FUObjectThreadContext::Get())
 	{
 		PreviousPackage = ThreadContext.AsyncPackage;
 		ThreadContext.AsyncPackage = InPackage;
+#if WITH_IOSTORE_IN_EDITOR
+		PreviousAsyncPackageLoader = ThreadContext.AsyncPackageLoader;
+		ThreadContext.AsyncPackageLoader = &InPackage->AsyncLoadingThread;
+#endif
 	}
 	~FAsyncPackageScope()
 	{
 		ThreadContext.AsyncPackage = PreviousPackage;
+#if WITH_IOSTORE_IN_EDITOR
+		ThreadContext.AsyncPackageLoader = PreviousAsyncPackageLoader;
+#endif
 	}
 };
 
@@ -1282,7 +1289,10 @@ FScopedAsyncPackageEvent::FScopedAsyncPackageEvent(FAsyncPackage* InPackage)
 	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
 	PreviousPackage = static_cast<FAsyncPackage*>(ThreadContext.AsyncPackage);
 	ThreadContext.AsyncPackage = Package;
-
+#if WITH_IOSTORE_IN_EDITOR
+	PreviousAsyncPackageLoader = ThreadContext.AsyncPackageLoader;
+	ThreadContext.AsyncPackageLoader = &InPackage->AsyncLoadingThread;
+#endif
 	Package->BeginAsyncLoad();
 	FExclusiveLoadPackageTimeTracker::PushLoadPackage(Package->Desc.NameToLoad);
 }
@@ -1297,6 +1307,9 @@ FScopedAsyncPackageEvent::~FScopedAsyncPackageEvent()
 	// Restore the package from the outer scope
 	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
 	ThreadContext.AsyncPackage = PreviousPackage;
+#if WITH_IOSTORE_IN_EDITOR
+	ThreadContext.AsyncPackageLoader = PreviousAsyncPackageLoader;
+#endif
 }
 
 FORCENOINLINE static bool CheckForFileOpenLogCommandLine()
@@ -4012,6 +4025,7 @@ EAsyncPackageState::Type FAsyncLoadingThread::ProcessAsyncLoading(int32& OutPack
 			{
 				// Update heartbeat after 32 events
 				FThreadHeartBeat::Get().HeartBeat();
+				FCoreDelegates::OnAsyncLoadingFlushUpdate.Broadcast();
 			}
 
 			bool bDidSomething = false;
@@ -4246,7 +4260,7 @@ bool FAsyncPackage::AreAllDependenciesFullyLoadedInternal(FAsyncPackage* Package
 {
 	for (UPackage* ImportPackage : Package->ImportedPackages)
 	{
-		if (VisitedPackages.Contains(ImportPackage))
+		if (!ImportPackage || VisitedPackages.Contains(ImportPackage))
 		{
 			continue;
 		}
@@ -4340,6 +4354,8 @@ EAsyncPackageState::Type FAsyncLoadingThread::ProcessLoadedPackages(bool bUseTim
 	bDidSomething = LoadedPackagesToProcess.Num() > 0;
 	for (int32 PackageIndex = 0; PackageIndex < LoadedPackagesToProcess.Num() && !IsAsyncLoadingSuspendedInternal(); ++PackageIndex)
 	{
+		FPlatformMisc::PumpEssentialAppMessages();
+
 		FAsyncPackage* Package = LoadedPackagesToProcess[PackageIndex];
 		if (Package->GetDependencyRefCount() == 0)
 		{
@@ -5090,6 +5106,14 @@ float FAsyncLoadingThread::GetAsyncLoadPercentage(const FName& PackageName)
  */
 void FAsyncLoadingThread::NotifyConstructedDuringAsyncLoading(UObject* Object, bool bSubObject)
 {
+	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
+	if (!ThreadContext.AsyncPackage)
+	{
+		// Something is creating objects on the async loading thread outside of the actual async loading code
+		// e.g. ShaderCodeLibrary::OnExternalReadCallback doing FTaskGraphInterface::Get().WaitUntilTaskCompletes(Event);
+		return;
+	}
+
 	// Mark objects created during async loading process (e.g. from within PostLoad or CreateExport) as async loaded so they 
 	// cannot be found. This requires also keeping track of them so we can remove the async loading flag later one when we 
 	// finished routing PostLoad to all objects.
@@ -5097,8 +5121,7 @@ void FAsyncLoadingThread::NotifyConstructedDuringAsyncLoading(UObject* Object, b
 	{
 		Object->SetInternalFlags(EInternalObjectFlags::AsyncLoading);
 	}
-	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
-	check(ThreadContext.AsyncPackage); // Otherwise something is wrong and we're creating objects outside of async loading code
+
 	FAsyncPackage* AsyncPackage = static_cast<FAsyncPackage*>(ThreadContext.AsyncPackage);
 	AsyncPackage->AddObjectReference(Object);
 	if (GEventDrivenLoaderEnabled)
@@ -5232,9 +5255,12 @@ FAsyncPackage::~FAsyncPackage()
 
 void FAsyncPackage::AddReferencedObjects(FReferenceCollector& Collector)
 {
+	Collector.AllowEliminatingReferences(false);
 	Collector.AddReferencedObjects(ReferencedObjects);
 	Collector.AddReferencedObjects(DeferredFinalizeObjects);
 	Collector.AddReferencedObjects(PackageObjLoaded);
+	Collector.AddReferencedObjects(ImportedPackages);
+	Collector.AllowEliminatingReferences(true);
 }
 
 void FAsyncPackage::AddObjectReference(UObject* InObject)
@@ -5541,7 +5567,7 @@ EAsyncPackageState::Type FAsyncPackage::TickAsyncPackage(bool InbUseTimeLimit, b
 				// We can only continue to PostLoad if all imported packages finished serializing their exports
 				for (UPackage* ImportedPackage : ImportedPackages)
 				{
-					if (ImportedPackage->LinkerLoad && ImportedPackage->LinkerLoad->AsyncRoot && !static_cast<FAsyncPackage*>(ImportedPackage->LinkerLoad->AsyncRoot)->bAllExportsSerialized)
+					if (ImportedPackage && ImportedPackage->LinkerLoad && ImportedPackage->LinkerLoad->AsyncRoot && !static_cast<FAsyncPackage*>(ImportedPackage->LinkerLoad->AsyncRoot)->bAllExportsSerialized)
 					{
 						LoadingState = EAsyncPackageState::PendingImports;
 						break;
@@ -5712,7 +5738,11 @@ EAsyncPackageState::Type FAsyncPackage::CreateLinker()
 			bool DoesPackageExist = false;
 			{
 				SCOPED_LOADTIMER(CreateLinker_DoesExist);
-				DoesPackageExist = FPackageName::DoesPackageExist(NameToLoad, Guid, &PackageFileName);
+				DoesPackageExist = FPackageName::DoesPackageExist(NameToLoad, Guid, &PackageFileName, /* AllowTextFormat */ true);
+#if WITH_IOSTORE_IN_EDITOR
+				// Only look for non cooked packages on disk
+				DoesPackageExist &= !DoesPackageExistInIoStore(FName(*NameToLoad));
+#endif
 			}
 
 			{
@@ -6934,7 +6964,7 @@ int32 FAsyncLoadingThread::LoadPackage(const FString& InName, const FGuid* InGui
 
 		// Generate new request ID and add it immediately to the global request list (it needs to be there before we exit
 		// this function, otherwise it would be added when the packages are being processed on the async thread).
-		RequestID = GPackageRequestID.Increment();
+		RequestID = IAsyncPackageLoader::GetNextRequestId();
 		TRACE_LOADTIME_BEGIN_REQUEST(RequestID);
 		AddPendingRequest(RequestID);
 
@@ -6963,7 +6993,7 @@ int32 FAsyncLoadingThread::LoadPackage(const FString& InName, const FGuid* InGui
 
 void FAsyncLoadingThread::FlushLoading(int32 PackageID)
 {
- 	if (IsAsyncLoading())
+ 	if (IsAsyncLoadingPackages())
 	{
 		// Flushing async loading while loading is suspend will result in infinite stall
 		UE_CLOG(IsAsyncLoadingSuspendedInternal(), LogStreaming, Fatal, TEXT("Cannot Flush Async Loading while async loading is suspended (%d)"), GetAsyncLoadingSuspendedCount());
@@ -6987,7 +7017,7 @@ void FAsyncLoadingThread::FlushLoading(int32 PackageID)
 				FlushTree = MakeUnique<FFlushTree>(PackageID);
 			}
 			SCOPE_CYCLE_COUNTER(STAT_FAsyncPackage_TickAsyncLoadingGameThread);
-			while (IsAsyncLoading())
+			while (IsAsyncLoadingPackages())
 			{
 				EAsyncPackageState::Type Result = TickAsyncLoading(false, false, 0, FlushTree.Get());
 				if (PackageID != INDEX_NONE && !ContainsRequestID(PackageID))
@@ -7020,7 +7050,7 @@ void FAsyncLoadingThread::FlushLoading(int32 PackageID)
 
 EAsyncPackageState::Type FAsyncLoadingThread::ProcessLoadingUntilComplete(TFunctionRef<bool()> CompletionPredicate, float TimeLimit)
 {
-	if (!IsAsyncLoading())
+	if (!IsAsyncLoadingPackages())
 	{
 		return EAsyncPackageState::Complete;
 	}
@@ -7036,7 +7066,7 @@ EAsyncPackageState::Type FAsyncLoadingThread::ProcessLoadingUntilComplete(TFunct
 		TimeLimit = 60 * 60;
 	}
 
-	while (IsAsyncLoading() && TimeLimit > 0 && !CompletionPredicate())
+	while (IsAsyncLoadingPackages() && TimeLimit > 0 && !CompletionPredicate())
 	{
 		double TickStartTime = FPlatformTime::Seconds();
 		if (ProcessLoading(true, true, TimeLimit) == EAsyncPackageState::Complete)
@@ -7071,7 +7101,7 @@ EAsyncPackageState::Type FAsyncLoadingThread::ProcessLoading(bool bUseTimeLimit,
 		TickAsyncLoading(bUseTimeLimit, bUseFullTimeLimit, TimeLimit);
 	}
 
-	return IsAsyncLoading() ? EAsyncPackageState::TimeOut : EAsyncPackageState::Complete;
+	return IsAsyncLoadingPackages() ? EAsyncPackageState::TimeOut : EAsyncPackageState::Complete;
 }
 
 #define USE_DETAILED_FASYNCARCHIVE_MEMORY_TRACKING 0
@@ -7316,6 +7346,11 @@ void FAsyncArchive::FlushCache()
 		EditorPrecacheRequestPtr->WaitCompletion();
 		delete EditorPrecacheRequestPtr;
 		EditorPrecacheRequestPtr = nullptr;
+	}
+
+	if (Handle)
+	{
+		Handle->ShrinkHandleBuffers();
 	}
 
 	if ((UE_LOG_ACTIVE(LogAsyncArchive, Verbose) 

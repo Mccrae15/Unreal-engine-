@@ -13,16 +13,29 @@
 #include "Editor.h"
 #endif
 
-class FDisplayClusterActorRef
+#include "DisplayClusterObjectRef.generated.h"
+
+class DISPLAYCLUSTER_API FDisplayClusterActorRef
 {
 public:
+	FDisplayClusterActorRef()
+	{}
+
+	FDisplayClusterActorRef(const FDisplayClusterActorRef& InActorRef)
+		: WorldPtr(InActorRef.WorldPtr)
+		, ActorClassName(InActorRef.ActorClassName)
+		, ActorClassPtr(InActorRef.ActorClassPtr)
+		, ActorName(InActorRef.ActorName)
+		, ActorPtr(InActorRef.ActorPtr)
+	{}
+
 	virtual ~FDisplayClusterActorRef()
 	{ }
 
 public:
 	bool IsDefinedSceneActor() const
 	{
-		return !ActorPtr.IsExplicitlyNull() && !WorldPtr.IsExplicitlyNull() && !ActorClassName.IsEmpty() && !ActorName.IsNone();
+		return !ActorClassName.IsEmpty() && !ActorName.IsNone();
 	}
 
 	// Return actor object ptr.
@@ -130,17 +143,14 @@ private:
 	// Find actor new object ptr by name and save to ActorPtr
 	bool UpdateActorClassPtr() const
 	{
-		if (!ActorClassPtr.IsValid())
+		UClass* ActorClass = ActorClassName.IsEmpty() ? nullptr : StaticLoadClass(UObject::StaticClass(), nullptr, *ActorClassName, NULL, LOAD_None, NULL);
+		if (!ActorClass)
 		{
-			UClass* ActorClass = ActorClassName.IsEmpty() ? nullptr : StaticLoadClass(UObject::StaticClass(), nullptr, *ActorClassName, NULL, LOAD_None, NULL);
-			if (!ActorClass)
-			{
-				ActorClassPtr.Reset();
-				return false;
-			}
-
-			ActorClassPtr = TWeakObjectPtr<UClass>(ActorClass);
+			ActorClassPtr.Reset();
+			return false;
 		}
+
+		ActorClassPtr = TWeakObjectPtr<UClass>(ActorClass);
 
 		return true;
 	}
@@ -162,12 +172,19 @@ protected:
 	mutable FCriticalSection DataGuard;
 };
 
-class FDisplayClusterSceneComponentRef
+class DISPLAYCLUSTER_API FDisplayClusterSceneComponentRef
 	: public FDisplayClusterActorRef
 {
 public:
 	FDisplayClusterSceneComponentRef()
+		: FDisplayClusterActorRef()
 	{ }
+
+	FDisplayClusterSceneComponentRef(const FDisplayClusterSceneComponentRef& InComponentRef)
+		: FDisplayClusterActorRef(InComponentRef)
+		, ComponentName(InComponentRef.ComponentName)
+		, ComponentPtr(InComponentRef.ComponentPtr)
+	{}
 
 	FDisplayClusterSceneComponentRef(USceneComponent* InComponent)
 	{
@@ -177,45 +194,12 @@ public:
 public:
 	bool IsDefinedSceneComponent() const
 	{
-		return !ComponentPtr.IsExplicitlyNull() && !ComponentName.IsNone() && IsDefinedSceneActor();
+		return !ComponentName.IsNone() && IsDefinedSceneActor();
 	}
 
 	// Return component object ptr.
 	// For killed object ptr, reset and find component new object ptr by name and save to [mutable] ComponentPtr
-	USceneComponent* GetOrFindSceneComponent() const
-	{
-		FScopeLock lock(&DataGuard);
-
-		if (!IsDefinedSceneComponent())
-		{
-			return nullptr;
-		}
-
-		if (!ComponentPtr.IsValid())
-		{
-			ComponentPtr.Reset();
-
-			AActor* Actor = GetOrFindSceneActor();
-			if (Actor)
-			{
-				for (UActorComponent* ItActorComponent : Actor->GetComponents())
-				{
-					if (ItActorComponent->GetFName() == ComponentName)
-					{
-						USceneComponent* SceneComponent = Cast<USceneComponent>(ItActorComponent);
-						if (SceneComponent)
-						{
-							ComponentPtr = TWeakObjectPtr<USceneComponent>(SceneComponent);
-							return SceneComponent;
-						}
-					}
-				}
-				// Component not found. Actor structure changed??
-			}
-		}
-		
-		return ComponentPtr.Get();
-	}
+	USceneComponent* GetOrFindSceneComponent() const;
 
 	bool SetSceneComponent(USceneComponent* InComponent)
 	{
@@ -247,4 +231,25 @@ private:
 	// Find component new object ptr by name and save to ComponentPtr
 	FName   ComponentName;
 	mutable TWeakObjectPtr<USceneComponent> ComponentPtr;
+};
+
+USTRUCT()
+struct DISPLAYCLUSTER_API FDisplayClusterComponentRef
+{
+	GENERATED_BODY()
+	
+	FDisplayClusterComponentRef() {}
+	
+	FDisplayClusterComponentRef(const FString& InName)
+	{
+		Name = InName;
+	}
+	
+	UPROPERTY(VisibleAnywhere, Category = Component)
+	FString Name;
+	
+	FORCEINLINE bool operator==(const FDisplayClusterComponentRef& OtherRef) const
+	{
+		return Name == OtherRef.Name;
+	}
 };

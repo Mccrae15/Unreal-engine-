@@ -27,6 +27,7 @@
 #include "Net/Common/Packets/PacketTraits.h"
 #include "Net/Core/Misc/ResizableCircularQueue.h"
 #include "Net/NetAnalyticsTypes.h"
+#include "Net/TrafficControl.h"
 
 #include "NetConnection.generated.h"
 
@@ -46,6 +47,7 @@ namespace NetConnectionHelper
 	constexpr int32 NumBitsForJitterClockTimeInHeader = 10;
 }
 
+extern ENGINE_API TAutoConsoleVariable<int32> CVarNetEnableCongestionControl;
 
 /*-----------------------------------------------------------------------------
 	Types.
@@ -875,7 +877,7 @@ public:
 	ENGINE_API virtual void Tick(float DeltaSeconds);
 
 	/** Return whether this channel is ready for sending. */
-	ENGINE_API virtual int32 IsNetReady( bool Saturate );
+	ENGINE_API virtual int32 IsNetReady(bool Saturate);
 
 	/** 
 	 * Handle the player controller client
@@ -1198,6 +1200,22 @@ public:
 	 */
 	void SetIgnoreActorBunches(bool bInIgnoreActorBunches, TSet<FNetworkGUID>&& InIgnoredBunchGuids);
 
+	/**
+	 * Sets whether or not we should track released channel indices, see also SetIgnoreReservedChannels
+	 * Should only be used with InternalAck.
+	 */
+	void SetReserveDestroyedChannels(bool bInReserveChannels);
+
+	bool IsReservingDestroyedChannels() const { return bReserveDestroyedChannels; }
+
+	void AddReservedChannel(int32 ChIndex) { ReservedChannels.Add(ChIndex); }
+
+	/**
+	 * Sets whether or not GetFreeChannelIndex should ignore reserved channels
+	 * Should only be used with InternalAck.
+	 */
+	void SetIgnoreReservedChannels(bool bInIgnoreReservedChannels);
+
 	/** Returns the OutgoingBunches array, only to be used by UChannel::SendBunch */
 	TArray<FOutBunch *>& GetOutgoingBunches() { return OutgoingBunches; }
 
@@ -1422,6 +1440,12 @@ private:
 
 	bool bIgnoreActorBunches;
 
+	/** Set of channel index values to reserve so GetFreeChannelIndex won't use them */
+	TSet<int32> ReservedChannels;
+
+	bool bReserveDestroyedChannels;
+	bool bIgnoreReservedChannels;
+
 	/** This is only used in UChannel::SendBunch. It's a member so that we can preserve the allocation between calls, as an optimization, and in a thread-safe way to be compatible with demo.ClientRecordAsyncEndOfFrame */
 	TArray<FOutBunch*> OutgoingBunches;
 
@@ -1502,6 +1526,9 @@ public:
 
 	bool GetAutoFlush() const { return bAutoFlush; }
 	void SetAutoFlush(bool bValue) { bAutoFlush = bValue; }
+
+protected:
+	TOptional<FNetworkCongestionControl> NetworkCongestionControl;
 };
 
 struct FScopedRepContext
@@ -1624,6 +1651,12 @@ public:
 	virtual void DestroyOwningActor() override { /* Don't destroy the OwningActor since we follow a real PlayerController*/ }
 
 	virtual TSharedPtr<const FInternetAddr> GetRemoteAddr() override { return nullptr; }
+
+	virtual void InitRemoteConnection(UNetDriver* InDriver, class FSocket* InSocket, const FURL& InURL, const class FInternetAddr& InRemoteAddr, EConnectionState InState, int32 InMaxPacket = 0, int32 InPacketOverhead = 0) override {}
+	virtual void InitLocalConnection(UNetDriver* InDriver, class FSocket* InSocket, const FURL& InURL, EConnectionState InState, int32 InMaxPacket = 0, int32 InPacketOverhead = 0) override {}
+
+	virtual FString LowLevelDescribe() override { return TEXT("Simulated Client"); }
+
 };
 
 #if UE_NET_TRACE_ENABLED
@@ -1633,5 +1666,3 @@ public:
 	inline FNetTraceCollector* UNetConnection::GetInTraceCollector() const { return nullptr; }
 	inline FNetTraceCollector* UNetConnection::GetOutTraceCollector() const { return nullptr; }
 #endif
-
-

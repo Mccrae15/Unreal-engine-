@@ -5,10 +5,11 @@
 #include "NiagaraDataSet.h"
 #include "NiagaraConstants.h"
 #include "NiagaraEmitter.h"
+#include "NiagaraScriptSourceBase.h"
+#include "NiagaraSettings.h"
+#include "NiagaraSystem.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Styling/SlateIconFinder.h"
-#include "NiagaraScriptSourceBase.h"
-#include "NiagaraSystem.h"
 
 void FNiagaraRendererLayout::Initialize(int32 NumVariables)
 {
@@ -18,7 +19,7 @@ void FNiagaraRendererLayout::Initialize(int32 NumVariables)
 	TotalHalfComponents_GT = 0;
 }
 
-bool FNiagaraRendererLayout::SetVariable(const FNiagaraDataSetCompiledData* CompiledData, const FNiagaraVariable& Variable, int32 VFVarOffset)
+bool FNiagaraRendererLayout::SetVariable(const FNiagaraDataSetCompiledData* CompiledData, const FNiagaraVariableBase& Variable, int32 VFVarOffset)
 {
 	// No compiled data, nothing to bind
 	if (CompiledData == nullptr)
@@ -115,28 +116,40 @@ void UNiagaraRendererProperties::RenameEmitter(const FName& InOldName, const UNi
 	UpdateSourceModeDerivates(SourceMode);
 }
 
-const TArray<FNiagaraVariable>& UNiagaraRendererProperties::GetBoundAttributes()
+TArray<FNiagaraVariable> UNiagaraRendererProperties::GetBoundAttributes() const
 {
-	CurrentBoundAttributes.Reset();
+	TArray<FNiagaraVariable> BoundAttributes;
+	BoundAttributes.Reserve(AttributeBindings.Num());
 
 	for (const FNiagaraVariableAttributeBinding* AttributeBinding : AttributeBindings)
 	{
-		if (AttributeBinding->GetParamMapBindableVariable().IsValid())
+		FNiagaraVariable BoundAttribute = GetBoundAttribute(AttributeBinding);
+		if (BoundAttribute.IsValid())
 		{
-			CurrentBoundAttributes.Add(AttributeBinding->GetParamMapBindableVariable());
+			BoundAttributes.Add(BoundAttribute);
 		}
-		/*
-		else if (AttributeBinding->DataSetVariable.IsValid())
-		{
-			CurrentBoundAttributes.Add(AttributeBinding->DataSetVariable);
-		}
-		else
-		{
-			CurrentBoundAttributes.Add(AttributeBinding->DefaultValueIfNonExistent);
-		}*/
 	}
 
-	return CurrentBoundAttributes;
+	return BoundAttributes;
+}
+
+FNiagaraVariable UNiagaraRendererProperties::GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const
+{
+	if (Binding->GetParamMapBindableVariable().IsValid())
+	{
+		return Binding->GetParamMapBindableVariable();
+	}
+	/*
+	else if (AttributeBinding->DataSetVariable.IsValid())
+	{
+		return AttributeBinding->DataSetVariable;
+	}
+	else
+	{
+		return AttributeBinding->DefaultValueIfNonExistent;
+	}*/
+
+	return FNiagaraVariable();
 }
 
 void UNiagaraRendererProperties::GetRendererFeedback(UNiagaraEmitter* InEmitter,	TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings,	TArray<FNiagaraRendererFeedback>& OutInfo) const
@@ -265,6 +278,35 @@ uint32 UNiagaraRendererProperties::ComputeMaxUsedComponents(const FNiagaraDataSe
 	return MaxNumComponents;
 }
 
+void UNiagaraRendererProperties::GetAssetTagsForContext(const UObject* InAsset, const TArray<const UNiagaraRendererProperties*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const
+{
+	UClass* Class = GetClass();
+
+	// Default count up how many instances there are of this class and report to content browser
+	if (Class)
+	{
+		uint32 NumInstances = 0;
+		for (const UNiagaraRendererProperties* Prop : InProperties)
+		{
+			if (Prop && Prop->IsA(Class))
+			{
+				NumInstances++;
+			}
+		}
+
+		// Note that in order for these tags to be registered, we always have to put them in place for the CDO of the object, but 
+		// for readability's sake, we leave them out of non-CDO assets.
+		if (NumInstances > 0 || (InAsset && InAsset->HasAnyFlags(EObjectFlags::RF_ClassDefaultObject)))
+		{
+			FString Key = Class->GetName();
+			Key.ReplaceInline(TEXT("Niagara"), TEXT(""));
+			Key.ReplaceInline(TEXT("Properties"), TEXT(""));
+			NumericKeys.Add(*Key) = NumInstances;
+		}
+	}
+}
+
+
 bool UNiagaraRendererProperties::NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const
 {
 	// only keep enabled renderers that are parented to valid emitters
@@ -298,6 +340,44 @@ void UNiagaraRendererProperties::PostInitProperties()
 	}
 #endif
 }
+
+void UNiagaraRendererProperties::PostLoad()
+{
+	Super::PostLoad();
+
+	if (bMotionBlurEnabled_DEPRECATED == false)
+	{
+		MotionVectorSetting = ENiagaraRendererMotionVectorSetting::Disable;
+	}
+}
+
+#if WITH_EDITORONLY_DATA
+
+void UNiagaraRendererProperties::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	if (UNiagaraEmitter* Emitter = GetTypedOuter<UNiagaraEmitter>())
+	{
+		// Check for properties changing that invalidate the current script compilation for the emitter
+		bool bNeedsRecompile = false;
+		if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UNiagaraRendererProperties, MotionVectorSetting))
+		{
+			if (Emitter->GraphSource)
+			{
+				Emitter->GraphSource->MarkNotSynchronized(TEXT("Renderer MotionVectorSetting changed"));
+			}
+			bNeedsRecompile = true;
+		}
+
+		if (bNeedsRecompile)
+		{
+			UNiagaraSystem::RequestCompileForEmitter(Emitter);
+		}
+	}
+}
+
+#endif
 
 void UNiagaraRendererProperties::SetIsEnabled(bool bInIsEnabled)
 {
@@ -341,4 +421,16 @@ void UNiagaraRendererProperties::UpdateSourceModeDerivates(ENiagaraRendererSourc
 		}
 #endif
 	}
+}
+
+bool UNiagaraRendererProperties::NeedsPreciseMotionVectors() const
+{
+	if (MotionVectorSetting == ENiagaraRendererMotionVectorSetting::AutoDetect)
+	{
+		// TODO - We could get even smarter here and early return with false if we know that the material can absolutely not be overridden by the user and
+		// it doesn't need to render velocity
+		return GetDefault<UNiagaraSettings>()->DefaultRendererMotionVectorSetting == ENiagaraDefaultRendererMotionVectorSetting::Precise;
+	}
+	
+	return MotionVectorSetting == ENiagaraRendererMotionVectorSetting::Precise;
 }

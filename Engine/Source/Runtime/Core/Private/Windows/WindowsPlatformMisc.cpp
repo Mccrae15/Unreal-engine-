@@ -556,9 +556,13 @@ void FWindowsPlatformMisc::PlatformPreInit()
 
 	// Load the bundled version of dbghelp.dll if necessary
 #if USE_BUNDLED_DBGHELP
-	// Try to load a bundled copy of dbghelp.dll. A bug with Windows 10 version 1709 
-	FString DbgHlpPath = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/DbgHelp/dbghelp.dll");
-	FPlatformProcess::GetDllHandle(*DbgHlpPath);
+	// Loading newer versions of DbgHelp fails on Windows 7 since it is no longer supported.
+	if (IsWindows8OrGreater())
+	{
+		// Try to load a bundled copy of dbghelp.dll. A bug with Windows 10 version 1709 
+		FString DbgHlpPath = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/DbgHelp/dbghelp.dll");
+		FPlatformProcess::GetDllHandle(*DbgHlpPath);
+	}
 #endif
 
 	// Use our own handler for pure virtuals being called.
@@ -920,31 +924,46 @@ void FWindowsPlatformMisc::RequestExit( bool Force )
 {
 	UE_LOG(LogWindows, Log,  TEXT("FPlatformMisc::RequestExit(%i)"), Force );
 
+	// Legacy behavior that now calls through to RequestExitWithStatus
+	if( Force )
+	{
+		RequestExitWithStatus(Force, GIsCriticalError ? 3 : 0);
+	}
+	else
+	{
+		RequestExitWithStatus(false, 0);
+	}
+}
+
+void FWindowsPlatformMisc::RequestExitWithStatus(bool Force, uint8 ReturnCode)
+{
+	UE_LOG(LogWindows, Log, TEXT("FPlatformMisc::RequestExitWithStatus(%i, %i)"), Force, ReturnCode);
+
 	RequestEngineExit(TEXT("Win RequestExit"));
 	FCoreDelegates::ApplicationWillTerminateDelegate.Broadcast();
 
-	if( Force )
+	if (Force)
 	{
 		// Force immediate exit. In case of an error set the exit code to 3.
 		// Dangerous because config code isn't flushed, global destructors aren't called, etc.
 		// Suppress abort message and MS reports.
 		//_set_abort_behavior( 0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT );
 		//abort();
-	
+
 		// Make sure the log is flushed.
-		if( GLog )
+		if (GLog)
 		{
 			// This may be called from other thread, so set this thread as the master.
 			GLog->SetCurrentThreadAsMasterThread();
 			GLog->TearDown();
 		}
 
-		TerminateProcess(GetCurrentProcess(), GIsCriticalError ? 3 : 0); 
+		TerminateProcess(GetCurrentProcess(), ReturnCode);
 	}
 	else
 	{
 		// Tell the platform specific code we want to exit cleanly from the main loop.
-		PostQuitMessage( 0 );
+		PostQuitMessage(ReturnCode);
 	}
 }
 
@@ -2661,14 +2680,13 @@ FString FWindowsPlatformMisc::GetOSVersion()
 
 bool FWindowsPlatformMisc::GetDiskTotalAndFreeSpace( const FString& InPath, uint64& TotalNumberOfBytes, uint64& NumberOfFreeBytes )
 {
-	bool bSuccess = false;
-	// We need to convert the path to make sure it is formatted with windows style Drive e.g. "C:\"
-	const FString ValidatedPath = FPaths::ConvertRelativePathToFull( InPath ).Replace( TEXT( "/" ), TEXT( "\\" ) );
-	if( ValidatedPath.Len() >= 3 && ValidatedPath[1] == ':' && ValidatedPath[2] == '\\' )
-	{
-		bSuccess = !!::GetDiskFreeSpaceEx( *ValidatedPath, nullptr, reinterpret_cast<ULARGE_INTEGER*>(&TotalNumberOfBytes), reinterpret_cast<ULARGE_INTEGER*>(&NumberOfFreeBytes) );
-	}
-	return bSuccess;	
+	const FString ValidatedPath = FPaths::ConvertRelativePathToFull(InPath).Replace(TEXT("/"), TEXT("\\"));
+
+	bool bSuccess = !!::GetDiskFreeSpaceEx( *ValidatedPath,
+											nullptr,
+											reinterpret_cast<ULARGE_INTEGER*>(&TotalNumberOfBytes),
+											reinterpret_cast<ULARGE_INTEGER*>(&NumberOfFreeBytes));
+	return bSuccess;
 }
 
 

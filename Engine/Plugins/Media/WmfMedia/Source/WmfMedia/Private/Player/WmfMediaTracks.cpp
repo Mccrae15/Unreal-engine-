@@ -205,7 +205,10 @@ FTimespan FWmfMediaTracks::GetDuration() const
 
 	UINT64 PresentationDuration = 0;
 	PresentationDescriptor->GetUINT64(MF_PD_DURATION, &PresentationDuration);
-	
+#if WMFMEDIA_PLAYER_VERSION >= 2
+	// The duration reported here for HAP videos can be larger than they really are be by this amount.
+	PresentationDuration -= 10000;
+#endif
 	return FTimespan(PresentationDuration);
 }
 
@@ -266,6 +269,7 @@ void FWmfMediaTracks::Initialize(IMFMediaSource* InMediaSource, const FString& U
 	SourceUrl = Url;
 
 	PresentationDescriptor = NewPresentationDescriptor;
+	CachedDuration = GetDuration();
 
 	// add streams (Media Foundation reports them in reverse order)
 	bool IsVideoDevice = Url.StartsWith(TEXT("vidcap://"));
@@ -356,8 +360,20 @@ void FWmfMediaTracks::Shutdown()
 
 	MediaSourceChanged = false;
 	SelectionChanged = false;
+#if WMFMEDIA_PLAYER_VERSION >= 2
+	SeekTimeOptional.Reset();
+#endif // WMFMEDIA_PLAYER_VERSION >= 2
 }
 
+#if WMFMEDIA_PLAYER_VERSION >= 2
+
+void FWmfMediaTracks::SeekStarted(const FTimespan& InTime)
+{
+	UE_LOG(LogWmfMedia, VeryVerbose, TEXT("FWmfMediaTracks::SeekStarted %f"), InTime.GetTotalSeconds());
+	SeekTimeOptional = InTime;
+}
+
+#endif // WMFMEDIA_PLAYER_VERSION >= 2
 
 /* IMediaSamples interface
  *****************************************************************************/
@@ -472,12 +488,156 @@ bool FWmfMediaTracks::FetchVideo(TRange<FTimespan> TimeRange, TSharedPtr<IMediaT
 
 void FWmfMediaTracks::FlushSamples()
 {
+	UE_LOG(LogWmfMedia, VeryVerbose, TEXT("FWmfMediaTracks::FlushSamples"));
 	AudioSampleQueue.RequestFlush();
 	CaptionSampleQueue.RequestFlush();
 	MetadataSampleQueue.RequestFlush();
 	VideoSampleQueue.RequestFlush();
 }
 
+#if WMFMEDIA_PLAYER_VERSION >= 2
+
+IMediaSamples::EFetchBestSampleResult FWmfMediaTracks::FetchBestVideoSampleForTimeRange(const TRange<FMediaTimeStamp> & TimeRange, TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& OutSample, bool bReverse)
+{
+	FTimespan TimeRangeLow = TimeRange.GetLowerBoundValue().Time;
+	FTimespan TimeRangeHigh = TimeRange.GetUpperBoundValue().Time;
+	// Account for loop wraparound.
+	if (TimeRangeHigh < TimeRangeLow)
+	{
+		TimeRangeHigh += CachedDuration;
+	}
+	TRange<FTimespan> TimeRangeTime(TimeRangeLow, TimeRangeHigh);
+	FTimespan LoopDiff = CachedDuration * 0.5f;
+	float CurrentOverlap = 0.0f;
+	IMediaSamples::EFetchBestSampleResult Result = IMediaSamples::EFetchBestSampleResult::NoSample;
+	UE_LOG(LogWmfMedia, VeryVerbose, TEXT("FetchBestVideoSampleForTimeRange %f:%d %f:%d seek:%f"),
+		TimeRangeLow.GetTotalSeconds(), TimeRange.GetLowerBoundValue().SequenceIndex, TimeRangeHigh.GetTotalSeconds(), TimeRange.GetUpperBoundValue().SequenceIndex,
+		SeekTimeOptional.IsSet() ? SeekTimeOptional->GetTotalSeconds() : -1.0f);
+
+	// Loop over our samples.
+	while (true)
+	{
+		// Is there a sample available?
+		TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> Sample;
+		if (VideoSampleQueue.Peek(Sample))
+		{
+			FTimespan SampleStartTime = Sample->GetTime().Time;
+			FTimespan SampleEndTime = SampleStartTime + Sample->GetDuration();
+			UE_LOG(LogWmfMedia, VeryVerbose, TEXT("FetchBestVideoSampleForTimeRange looking at sample %f:%d %f"),
+				SampleStartTime.GetTotalSeconds(), Sample->GetTime().SequenceIndex, SampleEndTime.GetTotalSeconds());
+
+#if WMFMEDIA_PLAYER_VERSION >= 2
+			// Are we waiting for the sample from a seek?
+			if (SeekTimeOptional.IsSet())
+			{
+				// Are we past the seek time?
+				if (TimeRangeTime.Contains(SeekTimeOptional.GetValue()) == false)
+				{
+					SeekTimeOptional.Reset();
+				}
+				else
+				{
+					// Is this our seek sample?
+					FTimespan SeekTime = SeekTimeOptional.GetValue();
+					double SeekTimeSeconds = SeekTime.GetTotalSeconds();
+					if ((FMath::IsNearlyEqual(SeekTimeSeconds, SampleStartTime.GetTotalSeconds(), 0.001)) ||
+						((SeekTime >= SampleStartTime) && (SeekTime < SampleEndTime)))
+					{
+						// Yes this is what we have been waiting for.
+						// Reset the seek time so its no longer used.
+						SeekTimeOptional.Reset();
+					}
+					else
+					{
+						// This is not the sample we want, its old.
+						VideoSampleQueue.Pop();
+						continue;
+					}
+				}
+			}
+#endif // WMFMEDIA_PLAYER_VERSION >= 2
+
+			// Are we already past this sample?
+			if (SampleEndTime < TimeRangeLow)
+			{
+				// If there is a large gap to this sample, then its probably because it looped,
+				// so we aren't really past it.
+				FTimespan Diff = TimeRangeLow - SampleEndTime;
+				if (Diff > LoopDiff)
+				{
+					// Adjust sample times so they are in the same "space" as the time range.
+					SampleStartTime += CachedDuration;
+					SampleEndTime += CachedDuration;
+					UE_LOG(LogWmfMedia, VeryVerbose, TEXT("FetchBestVideoSampleForTimeRange sample loop %f %f"),
+						SampleStartTime.GetTotalSeconds(), SampleEndTime.GetTotalSeconds());
+				}
+				else
+				{
+					// Try next sample.
+					VideoSampleQueue.Pop();
+					continue;
+				}
+			}
+			
+			{
+#if WMFMEDIA_PLAYER_VERSION >= 2
+				// Did we already pass this sample,
+				// and the sample is at the end of the video and we just looped around?
+				FTimespan Diff = SampleEndTime - TimeRangeLow;
+				if (Diff > LoopDiff)
+				{
+					VideoSampleQueue.Pop();
+					continue;
+				}
+
+				
+#endif // WMFMEDIA_PLAYER_VERSION >= 2
+
+				// Is this sample before the end of the requested time range?
+				if (SampleStartTime < TimeRangeHigh)
+				{
+					// Yes.
+					// Does this sample have the largest overlap so far?
+					TRange<FTimespan> SampleRange(SampleStartTime, SampleEndTime);
+					TRange<FTimespan> OverlapRange = TRange<FTimespan>::Intersection(SampleRange, TimeRangeTime);
+					FTimespan OverlapTimespan = OverlapRange.Size<FTimespan>();
+					float Overlap = OverlapTimespan.GetTotalSeconds();
+					if (CurrentOverlap <= Overlap)
+					{
+						// Yes. Use this sample.
+						if (VideoSampleQueue.Dequeue(OutSample))
+						{
+							Result = IMediaSamples::EFetchBestSampleResult::Ok;
+							CurrentOverlap = Overlap;
+							UE_LOG(LogWmfMedia, VeryVerbose, TEXT("FetchBestVideoSampleForTimeRange got sample."));
+						}
+					}
+					else
+					{
+						// No need to continue.
+						// This sample is overlapping our end point.
+						break;
+					}
+				}
+				else
+				{
+					// Sample is not before the end of the requested time range.
+					// We are done for now.
+					break;
+				}
+			}
+		}
+		else
+		{
+			// No samples available.
+			break;
+		}
+	}
+
+	return Result;
+}
+
+#endif // WMFMEDIA_PLAYER_VERSION >= 2
 
 bool FWmfMediaTracks::PeekVideoSampleTime(FMediaTimeStamp & TimeStamp)
 {

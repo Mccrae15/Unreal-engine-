@@ -668,10 +668,6 @@ public:
 	{
 		return false;
 	}
-	virtual bool RHIEnqueueCompress(uint8_t*, uint8_t*, int, void*) final override
-	{
-		return false;
-	}
 	virtual bool RHIGetAvailableResolutions(FScreenResolutionArray& Resolutions, bool bIgnoreRefreshRate) final override
 	{ 
 		return false; 
@@ -699,9 +695,6 @@ public:
 	{
 	}
 	virtual void RHISetShadingRate(EVRSShadingRate ShadingRate, EVRSRateCombiner Combiner) final override
-	{
-	}
-	virtual void RHISetShadingRateImage(FRHITexture* RateImageTexture, EVRSRateCombiner Combiner)  final override
 	{
 	}
 	virtual void* RHIGetNativeDevice() final override

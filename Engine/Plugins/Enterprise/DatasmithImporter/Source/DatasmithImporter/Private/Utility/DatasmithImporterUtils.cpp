@@ -69,6 +69,53 @@ DEFINE_LOG_CATEGORY(LogDatasmithImport);
 
 #define LOCTEXT_NAMESPACE "DatasmithImporterUtils"
 
+
+namespace DatasmithImporterUtilsImpl
+{
+
+int32 GDatasmithMaxAssetPathLength = 260-100; // a base value that should suits most cases
+static FAutoConsoleVariableRef CVarDatasmithMaxAssetPathLength(
+	TEXT("ds.MaxAssetPathLength"),
+	GDatasmithMaxAssetPathLength,
+	TEXT("Datasmith will try to limit asset path length to this value. Default: 160")
+);
+
+int32 GetUsableMaxAssetPathLength()
+{
+	const int32 MinWorkable = 60; // Datasmith generates nested path, imports won't work correctly if constraints are too hard...
+	static int32 ProjectConstraint; // Deduced from os limit and project path
+	static bool RunOnce = [&]()
+	{
+		const FString ProjectContentDir = FPaths::ProjectContentDir();
+		const FString FullPathProjectContentDir = FPaths::ConvertRelativePathToFull(ProjectContentDir);
+		ProjectConstraint = FPlatformMisc::GetMaxPathLength() - FullPathProjectContentDir.Len();
+
+		if (ProjectConstraint < MinWorkable)
+		{
+			UE_LOG(LogDatasmithImport, Error,
+				TEXT("Datasmith can encounter import issues due to a Content path too long, and an OS limitation on path length.\n")
+				TEXT("Content path: '%s'\n")
+				TEXT("System max path length: %d.\n")
+				, *FullPathProjectContentDir, FPlatformMisc::GetMaxPathLength());
+		}
+
+		if (GDatasmithMaxAssetPathLength > ProjectConstraint)
+		{
+			UE_LOG(LogDatasmithImport, Warning,
+				TEXT("The Datasmith.MaxAssetPathLength value (%d) is too high for the current setup.\n")
+				TEXT("Content path: '%s'\n")
+				TEXT("System max path length: %d.\n")
+				, GDatasmithMaxAssetPathLength, *FullPathProjectContentDir, FPlatformMisc::GetMaxPathLength());
+		}
+
+		return true;
+	}();
+
+	return FMath::Max(FMath::Min(GDatasmithMaxAssetPathLength, ProjectConstraint), MinWorkable);
+}
+
+}
+
 TSharedPtr< IDatasmithScene > FDatasmithImporterUtils::LoadDatasmithScene( UDatasmithScene* DatasmithSceneAsset )
 {
 	if ( DatasmithSceneAsset->DatasmithSceneBulkData.GetElementCount() > 0 )
@@ -293,7 +340,7 @@ void FDatasmithImporterUtils::DeleteNonImportedDatasmithElementFromSceneActor(AD
 					{
 						if ( ChildComponent->GetOwner() != Actor && !ChildComponent->GetOwner()->IsActorBeingDestroyed() )
 						{
-							// If the component has a template pointing to the parent about to be deleted, update the template 
+							// If the component has a template pointing to the parent about to be deleted, update the template
 							// to the new parent to avoid creating a template override where there was none.
 							if ( UDatasmithSceneComponentTemplate* ComponentTemplate = FDatasmithObjectTemplateUtils::GetObjectTemplate<UDatasmithSceneComponentTemplate>( ChildComponent ) )
 							{
@@ -371,7 +418,7 @@ void FDatasmithImporterUtils::DeleteActor( AActor& Actor )
 			}
 		}
 
-		// Make sure actor is deselected before deletion 
+		// Make sure actor is deselected before deletion
 		if (GEditor && Actor.IsSelected())
 		{
 			GEditor->SelectActor( &Actor, false, true );
@@ -422,13 +469,42 @@ void FDatasmithImporterUtils::AddUniqueLayersToWorld(UWorld* World, const TSet< 
 	}
 }
 
+
+int32 FDatasmithImporterUtils::GetAssetNameMaxCharCount(const UPackage* ParentPackage)
+{
+	// can be tweaked, the goal is to be more restrictive than the filesystem
+	// so that a project can be shared / moved without breaking the constraint
+	int32 MaxAssetPathLength = DatasmithImporterUtilsImpl::GetUsableMaxAssetPathLength();
+
+	// internal limit of FNames + room for prefix, separators and null char. (Asset names occur twice in paths)
+	int32 InternalNameConstraint = (NAME_SIZE - 100);
+
+	int32 PackageLength = 1 + (ParentPackage ? ParentPackage->GetPathName().Len() : 20);
+	int32 Budget = FMath::Min((InternalNameConstraint - PackageLength) / 2, MaxAssetPathLength - PackageLength);
+	Budget = FMath::Min(Budget, 255 - 10); // a filename cannot be longer than 255, and we keep a small buffer for the extension
+	return FMath::Max(0, Budget);
+}
+
+
 bool FDatasmithImporterUtils::CanCreateAsset(const FString& AssetPathName, const UClass* AssetClass, FText& OutFailReason)
 {
 	switch(CanCreateAsset(AssetPathName, AssetClass))
 	{
+		case EAssetCreationStatus::CS_NameTooShort:
+		{
+			OutFailReason = FText::Format(LOCTEXT("AssetPathTooShort", "Invalid asset path {0} (name too short). Skipping this asset..."), FText::FromString(AssetPathName));
+			return false;
+		}
+
+		case EAssetCreationStatus::CS_NameTooLong:
+		{
+			OutFailReason = FText::Format(LOCTEXT("AssetPathTooLong", "Path too long for asset {0}. Skipping this asset..."), FText::FromString(AssetPathName));
+			return false;
+		}
+
 		case EAssetCreationStatus::CS_HasRedirector:
 		{
-			OutFailReason = FText::Format(LOCTEXT("FoundRedirectionForAsset", "Found redirection for asset {0}. Skipping this asset ..."), FText::FromString(AssetPathName));
+			OutFailReason = FText::Format(LOCTEXT("FoundRedirectionForAsset", "Found redirection for asset {0}. Skipping this asset..."), FText::FromString(AssetPathName));
 			return false;
 		}
 
@@ -439,7 +515,7 @@ bool FDatasmithImporterUtils::CanCreateAsset(const FString& AssetPathName, const
 
 			const FString FoundClassName(AssetData.GetClass()->GetFName().ToString());
 			const FString ExpectedClassName(AssetClass->GetFName().ToString());
-			OutFailReason = FText::Format(LOCTEXT("AssetClassMismatch", "Found asset {0} of class {1} instead of class {2}. Skipping this asset ..."), FText::FromString(AssetPathName), FText::FromString(FoundClassName), FText::FromString(ExpectedClassName) );
+			OutFailReason = FText::Format(LOCTEXT("AssetClassMismatch", "Found asset {0} of class {1} instead of class {2}. Skipping this asset..."), FText::FromString(AssetPathName), FText::FromString(FoundClassName), FText::FromString(ExpectedClassName) );
 			return false;
 		}
 
@@ -455,6 +531,19 @@ bool FDatasmithImporterUtils::CanCreateAsset(const FString& AssetPathName, const
 
 FDatasmithImporterUtils::EAssetCreationStatus FDatasmithImporterUtils::CanCreateAsset(const FString& AssetPathName, const UClass* AssetClass)
 {
+	if (AssetPathName.Len() >= NAME_SIZE)
+	{
+		return EAssetCreationStatus::CS_NameTooLong;
+	}
+
+	int32 IndexOfLastSlash = INDEX_NONE;
+	AssetPathName.FindLastChar('/', IndexOfLastSlash);
+	if (AssetPathName.Len() - IndexOfLastSlash <= 2)
+	{
+		FString AssetName = FPackageName::GetShortName(AssetPathName);
+		return EAssetCreationStatus::CS_NameTooShort;
+	}
+
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
 
 	const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(*AssetPathName);
@@ -1007,18 +1096,19 @@ void FDatasmithImporterUtils::FillSceneElement(TSharedPtr<IDatasmithScene>& Scen
 	}
 }
 
-TArray<TSharedPtr<IDatasmithBaseMaterialElement>> FDatasmithImporterUtils::GetOrderedListOfMaterialsReferencedByMaterials(TSharedPtr< IDatasmithScene >& SceneElement)
+TArray<FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt> FDatasmithImporterUtils::GetOrderedListOfMaterialsReferencedByMaterials(TSharedPtr< IDatasmithScene >& SceneElement)
 {
 	//This map is used to keep track of which materials are referencing which
-	//it serves both as a TSet for referenced material and in the predicate to sort by dependences.
-	TMultiMap<FString, FString> ReferencedReferencingMaterialNameMap;
+	TMap<FString, TSet<FString>> MaterialToFunctionNameMap;
 	//Mapping materials to their names for easy access.
-	TMap<FString, TSharedPtr<IDatasmithBaseMaterialElement>> MaterialNameMap;
+	TMap<FString, TSharedPtr<IDatasmithUEPbrMaterialElement>> MaterialNameMap;
 
+
+	MaterialToFunctionNameMap.Reserve(SceneElement->GetMaterialsCount());
+	MaterialNameMap.Reserve(SceneElement->GetMaterialsCount());
 	for (int32 MaterialIndex = 0; MaterialIndex < SceneElement->GetMaterialsCount(); ++MaterialIndex)
 	{
 		const TSharedPtr<IDatasmithBaseMaterialElement> BaseMaterialElement = SceneElement->GetMaterial(MaterialIndex);
-		MaterialNameMap.FindOrAdd(BaseMaterialElement->GetName()) = BaseMaterialElement;
 
 		if (!BaseMaterialElement->IsA(EDatasmithElementType::UEPbrMaterial))
 		{
@@ -1026,48 +1116,110 @@ TArray<TSharedPtr<IDatasmithBaseMaterialElement>> FDatasmithImporterUtils::GetOr
 		}
 
 		const TSharedPtr<IDatasmithUEPbrMaterialElement> UEPbrMaterialElement = StaticCastSharedPtr<IDatasmithUEPbrMaterialElement>(BaseMaterialElement);
+
+		FString BaseMaterialName = BaseMaterialElement->GetName();
+		uint32 BaseMaterialHash = GetTypeHash(BaseMaterialName);
+		MaterialNameMap.FindOrAddByHash(BaseMaterialHash, MoveTemp(BaseMaterialName)) = UEPbrMaterialElement;
+
 		for (int32 MaterialExpressionIndex = 0; MaterialExpressionIndex < UEPbrMaterialElement->GetExpressionsCount(); ++MaterialExpressionIndex)
 		{
-			if (UEPbrMaterialElement->GetExpression(MaterialExpressionIndex)->IsA(EDatasmithMaterialExpressionType::FunctionCall))
+			if (UEPbrMaterialElement->GetExpression(MaterialExpressionIndex)->IsSubType(EDatasmithMaterialExpressionType::FunctionCall))
 			{
 				const FString FunctionPathName(StaticCast<IDatasmithMaterialExpressionFunctionCall*>(UEPbrMaterialElement->GetExpression(MaterialExpressionIndex))->GetFunctionPathName());
 				if (FPaths::IsRelative(FunctionPathName))
 				{
-					check(!ReferencedReferencingMaterialNameMap.FindPair(BaseMaterialElement->GetName(), FunctionPathName));//Can't have inter-dependencies
-					ReferencedReferencingMaterialNameMap.Add(FunctionPathName, BaseMaterialElement->GetName());
+					uint32 FunctionPathNameHash = GetTypeHash(FunctionPathName);
+					if (TSet<FString>* Values = MaterialToFunctionNameMap.FindByHash(FunctionPathNameHash, FunctionPathName))
+					{
+						check(!Values->ContainsByHash(BaseMaterialHash, BaseMaterialElement->GetName())); //Can't have inter-dependencies
+					}
+
+					MaterialToFunctionNameMap.FindOrAddByHash(BaseMaterialHash, BaseMaterialElement->GetName()).AddByHash(FunctionPathNameHash, FunctionPathName);
 				}
 			}
 		}
 	}
 
-	TArray<TSharedPtr<IDatasmithBaseMaterialElement>> ReferencedMaterials;
-	TArray<FString> ReferencedMaterialNames;
-	if (ReferencedReferencingMaterialNameMap.GetKeys(ReferencedMaterialNames))
-	{
-		for (FString& ReferencedMaterialName : ReferencedMaterialNames)
+
+	TArray<FFunctionAndMaterialsThatUseIt> ReferencedMaterialAndTheirReferencer;
+	ReferencedMaterialAndTheirReferencer.Reserve(MaterialToFunctionNameMap.Num());
+	TMap<TSharedPtr<IDatasmithUEPbrMaterialElement>, int32> VisitedAndInsertionIndex;
+	VisitedAndInsertionIndex.Reserve(MaterialToFunctionNameMap.Num());
+
+	// Topological sort while also noting who was the direct dependents of a node also. Base on a DFS
+	TFunction<void (const TSharedPtr<IDatasmithUEPbrMaterialElement>&, const TSet<FString>&, const TSharedPtr<IDatasmithUEPbrMaterialElement>&)> DepthFirstSearch;
+
+	DepthFirstSearch = [&MaterialToFunctionNameMap, &MaterialNameMap, &ReferencedMaterialAndTheirReferencer, &VisitedAndInsertionIndex, &DepthFirstSearch] (const TSharedPtr<IDatasmithUEPbrMaterialElement>& CurrentElement, const TSet<FString>& Dependencies, const TSharedPtr<IDatasmithUEPbrMaterialElement>& Parent)
 		{
-			if (MaterialNameMap.Contains(ReferencedMaterialName))
+			uint32 CurrentHash = GetTypeHash(CurrentElement);
+			// Check if visited
+			if (int32* Index = VisitedAndInsertionIndex.FindByHash(CurrentHash, CurrentElement))
 			{
-				ReferencedMaterials.Add(MaterialNameMap[ReferencedMaterialName]);
+				// update output to add the dependent
+				ReferencedMaterialAndTheirReferencer[*Index].Value.Add(Parent);
+				return;
+			}
+
+			// Visit children
+			for (const FString& Dependency : Dependencies)
+			{
+				uint32 DependencyHash = GetTypeHash(Dependency);
+				const TSharedPtr<IDatasmithUEPbrMaterialElement>* NextElement = MaterialNameMap.FindByHash(DependencyHash, Dependency);
+				if (NextElement)
+				{
+					if (const TSet<FString>* NextElementDependencies = MaterialToFunctionNameMap.FindByHash(DependencyHash, Dependency))
+					{
+						DepthFirstSearch(*NextElement, *NextElementDependencies, CurrentElement);
+					}
+					else
+					{
+						DepthFirstSearch(*NextElement, TSet<FString>(), CurrentElement);
+					}
+				}
+			}
+
+			// Mark Visited and add to output
+			VisitedAndInsertionIndex.AddByHash(CurrentHash, CurrentElement, ReferencedMaterialAndTheirReferencer.Num());
+			TArray<TSharedPtr<IDatasmithUEPbrMaterialElement>> Parents;
+			Parents.Add(Parent);
+
+			ReferencedMaterialAndTheirReferencer.Emplace(CurrentElement, MoveTemp(Parents));
+		};
+
+	for (const TPair<FString, TSet<FString>>& Pair : MaterialToFunctionNameMap)
+	{
+		const TSharedPtr<IDatasmithUEPbrMaterialElement>& CurrentElement = MaterialNameMap.FindChecked(Pair.Key);
+		// Only if not yet visited
+		if (!VisitedAndInsertionIndex.Contains(CurrentElement))
+		{
+			// Only DFS the dependencies because we don't want to add the top level material as they don't need to be functions
+			for (const FString& Dependency : Pair.Value)
+			{
+				uint32 DependencyHash = GetTypeHash(Dependency);
+				const TSharedPtr<IDatasmithUEPbrMaterialElement>* CurrentDependency = MaterialNameMap.FindByHash(DependencyHash, Dependency);
+				if (CurrentDependency)
+				{
+					if (const TSet<FString>* DependenciesOfDependency = MaterialToFunctionNameMap.FindByHash(DependencyHash, Dependency))
+					{
+						DepthFirstSearch(*CurrentDependency, *DependenciesOfDependency, CurrentElement);
+					}
+					else
+					{
+						DepthFirstSearch(*CurrentDependency, TSet<FString>(), CurrentElement);
+					}
+				}
 			}
 		}
 	}
 
-	//Sorting the materials by dependences
-	ReferencedMaterials.Sort([ReferencedReferencingMaterialNameMap](TSharedPtr<IDatasmithBaseMaterialElement> MatA, TSharedPtr<IDatasmithBaseMaterialElement> MatB)
-	{
-		//If MatA is referenced by MatB, then MatA comes before.
-		return ReferencedReferencingMaterialNameMap.FindPair(MatA->GetName(), MatB->GetName()) != nullptr;
-	});
-
-	return ReferencedMaterials;
+	return ReferencedMaterialAndTheirReferencer;
 }
 
 FDatasmithImporterUtils::FDatasmithMaterialImportIterator::FDatasmithMaterialImportIterator(const FDatasmithImportContext& InImportContext)
 	: ImportContext(InImportContext),
 	CurrentIndex(0)
 {
-	if (!ImportContext.bIsAReimport)
+	if (!ImportContext.bIsAReimport || !ImportContext.SceneAsset)
 	{
 		return;
 	}

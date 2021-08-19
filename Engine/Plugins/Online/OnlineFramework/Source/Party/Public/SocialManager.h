@@ -11,6 +11,7 @@
 #include "Interfaces/OnlinePartyInterface.h"
 #include "Interactions/SocialInteractionHandle.h"
 
+#include "PartyPackage.h"
 #include "SocialManager.generated.h"
 
 class ULocalPlayer;
@@ -25,6 +26,8 @@ class USocialDebugTools;
 
 enum ETravelType;
 
+#define ABORT_DURING_SHUTDOWN()  if (bShutdownPending) { UE_LOG(LogParty, Log, TEXT("%s - Received callback after bShutdownPending."), ANSI_TO_TCHAR(__FUNCTION__)); return; }
+
 /** Singleton manager at the top of the social framework */
 UCLASS(Within = GameInstance, Config = Game)
 class PARTY_API USocialManager : public UObject, public FExec
@@ -37,6 +40,7 @@ public:
 
 	static bool IsSocialSubsystemEnabled(ESocialSubsystem SubsystemType);
 	static FName GetSocialOssName(ESocialSubsystem SubsystemType);
+	static FText GetSocialOssPlatformName(ESocialSubsystem SubsystemType);
 	static IOnlineSubsystem* GetSocialOss(UWorld* World, ESocialSubsystem SubsystemType);
 	static FUserPlatform GetLocalUserPlatform();
 	static const TArray<ESocialSubsystem>& GetDefaultSubsystems() { return DefaultSubsystems; }
@@ -104,9 +108,10 @@ public:
 
 	virtual void NotifyPartyInitialized(USocialParty& Party);
 
-PARTY_SCOPE:
 	/** Validates that the target user has valid join info for us to use and that we can join any party of the given type */
-	FJoinPartyResult ValidateJoinTarget(const USocialUser& UserToJoin, const FOnlinePartyTypeId& PartyTypeId) const;
+	virtual FJoinPartyResult ValidateJoinTarget(const USocialUser& UserToJoin, const FOnlinePartyTypeId& PartyTypeId) const;
+
+PACKAGE_SCOPE:
 	
 	DECLARE_DELEGATE_OneParam(FOnJoinPartyAttemptComplete, const FJoinPartyResult&);
 	void JoinParty(const USocialUser& UserToJoin, const FOnlinePartyTypeId& PartyTypeId, const FOnJoinPartyAttemptComplete& OnJoinPartyComplete);
@@ -120,7 +125,7 @@ protected:
 		FRejoinableParty(const USocialParty& SourceParty);
 
 		TSharedRef<const FOnlinePartyId> PartyId;
-		TArray<TSharedRef<const FUniqueNetId>> MemberIds;
+		TArray<FUniqueNetIdRef> MemberIds;
 	};
 
 	struct PARTY_API FJoinPartyAttempt
@@ -153,7 +158,7 @@ protected:
 
 	/** Validate that we are clear to try joining a party of the given type. If not, gives the reason why. */
 	virtual FJoinPartyResult ValidateJoinAttempt(const FOnlinePartyTypeId& PartyTypeId) const;
-
+	
 	/**
 	 * Gives child classes a chance to append any additional data to a join request that's about to be sent to another party.
 	 * This is where you'll add game-specific information that can affect whether you are eligible for the target party.
@@ -188,7 +193,7 @@ protected:
 	const FJoinPartyAttempt* GetJoinAttemptInProgress(const FOnlinePartyTypeId& PartyTypeId) const;
 
 	//@todo DanH: TEMP - for now relying on FN to bind to its game-level UFortOnlineSessionClient instance #required
-	void HandlePlatformSessionInviteAccepted(const TSharedRef<const FUniqueNetId>& LocalUserId, const FOnlineSessionSearchResult& InviteResult);
+	void HandlePlatformSessionInviteAccepted(const FUniqueNetIdRef& LocalUserId, const FOnlineSessionSearchResult& InviteResult);
 
 	virtual TSubclassOf<USocialDebugTools> GetSocialDebugToolsClass() const;
 
@@ -197,6 +202,9 @@ protected:
 
 	/** The desired type of SocialToolkit to create for each local player */
 	TSubclassOf<USocialToolkit> ToolkitClass;
+
+	// Set during shutdown, used to early-out of lingering OnlineSubsystem callbacks that are pending
+	bool bShutdownPending = false;
 
 private:
 	UGameInstance& GetGameInstance() const;
@@ -222,7 +230,6 @@ private:	// Handlers
 	void HandleToolkitReset(int32 LocalUserNum);
 	
 	void OnRestorePartiesComplete(const FUniqueNetId& LocalUserId, const FOnlineError& Result, const FOnRestorePartyStateFromPartySystemComplete OnRestoreComplete);
-	void HandleQueryJoinabilityComplete(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, EJoinPartyCompletionResult Result, int32 NotApprovedReasonCode, FOnlinePartyTypeId PartyTypeId);
 	void HandleCreatePartyComplete(const FUniqueNetId& LocalUserId, const TSharedPtr<const FOnlinePartyId>& PartyId, ECreatePartyCompletionResult Result, FOnlinePartyTypeId PartyTypeId, FOnCreatePartyAttemptComplete CompletionDelegate);
 	void HandleJoinPartyComplete(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, EJoinPartyCompletionResult Result, int32 NotApprovedReasonCode, FOnlinePartyTypeId PartyTypeId);
 	
@@ -235,6 +242,9 @@ private:	// Handlers
 
 	void HandleFillPartyJoinRequestData(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, FOnlinePartyData& PartyData);
 	void HandleFindSessionForJoinComplete(bool bWasSuccessful, const FOnlineSessionSearchResult& FoundSession, FOnlinePartyTypeId PartyTypeId);
+
+protected: // overridable handlers
+	virtual void HandleQueryJoinabilityComplete(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FQueryPartyJoinabilityResult& Result, FOnlinePartyTypeId PartyTypeId);
 
 private:
 	static TArray<ESocialSubsystem> DefaultSubsystems;

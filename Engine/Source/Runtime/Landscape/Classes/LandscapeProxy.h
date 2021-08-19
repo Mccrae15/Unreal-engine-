@@ -33,6 +33,7 @@ class UMaterialInterface;
 class UPhysicalMaterial;
 class USplineComponent;
 class UTexture2D;
+class FLandscapeEditLayerReadback;
 struct FAsyncGrassBuilder;
 struct FLandscapeInfoLayerSettings;
 struct FMeshDescription;
@@ -324,7 +325,7 @@ struct FLandscapeProxyMaterialOverride
 	FPerPlatformInt LODIndex;
 
 	UPROPERTY(EditAnywhere, Category = Landscape)
-	UMaterialInterface* Material;
+	UMaterialInterface* Material = nullptr;
 
 #if WITH_EDITORONLY_DATA
 	bool operator==(const FLandscapeProxyMaterialOverride& InOther) const
@@ -350,54 +351,6 @@ struct FLandscapeProxyMaterialOverride
 		return true;
 	}
 #endif
-};
-
-class FLandscapeLayersTexture2DCPUReadBackResource : public FTextureResource
-{
-public:
-	FLandscapeLayersTexture2DCPUReadBackResource(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, uint32 InNumMips)
-		: SizeX(InSizeX)
-		, SizeY(InSizeY)
-		, Format(InFormat)
-		, NumMips(InNumMips)
-		, Hash(0)
-	{}
-
-	virtual uint32 GetSizeX() const override
-	{
-		return SizeX;
-	}
-
-	virtual uint32 GetSizeY() const override
-	{
-		return SizeY;
-	}
-
-	/** Called when the resource is initialized. This is only called by the rendering thread. */
-	virtual void InitRHI() override
-	{
-		FTextureResource::InitRHI();
-
-		FRHIResourceCreateInfo CreateInfo;
-		TextureRHI = RHICreateTexture2D(SizeX, SizeY, Format, NumMips, 1, TexCreate_CPUReadback, CreateInfo);
-	}
-
-	bool UpdateHashFromTextureSource(const uint8* MipData)
-	{
-		uint32 LocalHash = FCrc::MemCrc32(MipData, SizeX * SizeY * sizeof(FColor));
-		bool bChanged = (LocalHash != Hash);
-		Hash = LocalHash;
-		return bChanged;
-	}
-	   
-	uint32 GetHash() const { return Hash; }
-
-private:
-	uint32 SizeX;
-	uint32 SizeY;
-	EPixelFormat Format;
-	uint32 NumMips;
-	uint32 Hash;
 };
 
 UCLASS(Abstract, MinimalAPI, NotBlueprintable, NotPlaceable, hidecategories=(Display, Attachment, Physics, Debug, Lighting, LOD), showcategories=(Lighting, Rendering, "Utilities|Transformation"), hidecategories=(Mobility))
@@ -725,8 +678,9 @@ public:
 	UPROPERTY()
 	TArray<FLandscapeEditorLayerSettings> EditorLayerSettings;
 
-	TMap<UTexture2D*, FLandscapeLayersTexture2DCPUReadBackResource*> HeightmapsCPUReadBack;
-	TMap<UTexture2D*, FLandscapeLayersTexture2DCPUReadBackResource*> WeightmapsCPUReadBack;
+	TMap<UTexture2D*, FLandscapeEditLayerReadback*> HeightmapsCPUReadback;
+	TMap<UTexture2D*, FLandscapeEditLayerReadback*> WeightmapsCPUReadback;
+
 	FRenderCommandFence ReleaseResourceFence;
 #endif
 
@@ -826,7 +780,7 @@ public:
 	 * @param EditLayerName - Name of the landscape edition layer to affect (in Edit Layers mode)
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Landscape|Editor")
-	void EditorApplySpline(USplineComponent* InSplineComponent, float StartWidth = 200, float EndWidth = 200, float StartSideFalloff = 200, float EndSideFalloff = 200, float StartRoll = 0, float EndRoll = 0, int32 NumSubdivisions = 20, bool bRaiseHeights = true, bool bLowerHeights = true, ULandscapeLayerInfoObject* PaintLayer = nullptr, FName EditLayerName = TEXT(""));
+	LANDSCAPE_API void EditorApplySpline(USplineComponent* InSplineComponent, float StartWidth = 200, float EndWidth = 200, float StartSideFalloff = 200, float EndSideFalloff = 200, float StartRoll = 0, float EndRoll = 0, int32 NumSubdivisions = 20, bool bRaiseHeights = true, bool bLowerHeights = true, ULandscapeLayerInfoObject* PaintLayer = nullptr, FName EditLayerName = TEXT(""));
 
 	/** Set an MID texture parameter value for all landscape components. */
 	UFUNCTION(BlueprintCallable, Category = "Landscape|Runtime|Material")

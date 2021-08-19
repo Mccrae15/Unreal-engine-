@@ -17,18 +17,25 @@ namespace UnrealBuildTool.Rules
 				{
 					"Core",
 					"CoreUObject",
-					"Engine"
+					"Engine",
+					"DeveloperSettings"
 				}
 				);
 
-            if (Target.Type == TargetType.Editor)
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"Projects"
+				}
+			);
+
+			if (Target.Type == TargetType.Editor)
             {
                 PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
                     "SlateCore",
-                    "Slate",
-					"DeveloperSettings"
+                    "Slate"
 				}
                 );
             }

@@ -48,6 +48,7 @@ struct CADTOOLS_API FFileDescription
 {
 	explicit FFileDescription(const TCHAR* InFilePath = nullptr, const TCHAR* InConfiguration = nullptr, const TCHAR* InRootFilePath = nullptr)
 		: Path(InFilePath)
+		, OriginalPath(InFilePath)
 		, Configuration(InConfiguration)
 		, MainCadFilePath(InRootFilePath)
 	{
@@ -70,13 +71,16 @@ struct CADTOOLS_API FFileDescription
 
 	bool operator==(const FFileDescription& Other) const
 	{
-		return (FPaths::IsSamePath(Path, Other.Path) && (Configuration == Other.Configuration));
+		return (Name.Equals(Other.Name, ESearchCase::IgnoreCase) && (Configuration == Other.Configuration));
 	}
 
 	friend CADTOOLS_API FArchive& operator<<(FArchive& Ar, FFileDescription& File);
 
+	uint32 GetFileHash();
+
 	FString Path;
-	FString Name;  
+	FString OriginalPath;
+	FString Name;
 	FString Extension;
 	FString Configuration;
 	FString MainCadFilePath;

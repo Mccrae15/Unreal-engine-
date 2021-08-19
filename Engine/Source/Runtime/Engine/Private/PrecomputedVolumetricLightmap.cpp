@@ -664,19 +664,15 @@ SIZE_T FPrecomputedVolumetricLightmapData::GetAllocatedBytes() const
 		IndirectionTextureOriginalValues.Num() * IndirectionTextureOriginalValues.GetTypeSize();
 }
 
-TMap<FPrecomputedVolumetricLightmap*, TWeakObjectPtr<UMapBuildDataRegistry>> SourceRegistries;
 
 FPrecomputedVolumetricLightmap::FPrecomputedVolumetricLightmap() :
 	Data(NULL),
 	bAddedToScene(false),
 	WorldOriginOffset(ForceInitToZero)
-{
-	SourceRegistries.Add(this, TWeakObjectPtr<UMapBuildDataRegistry>());
-}
+{}
 
 FPrecomputedVolumetricLightmap::~FPrecomputedVolumetricLightmap()
 {
-	SourceRegistries.Remove(this);
 }
 
 void FPrecomputedVolumetricLightmap::AddToScene(FSceneInterface* Scene, UMapBuildDataRegistry* Registry, FGuid LevelBuildDataId, bool bIsPersistentLevel)
@@ -691,7 +687,7 @@ void FPrecomputedVolumetricLightmap::AddToScene(FSceneInterface* Scene, UMapBuil
 	// FIXME: temp fix for ordering issue between WorldContext.World()->InitWorld(); and GShaderCompilingManager->ProcessAsyncResults(false, true); in UnrealEngine.cpp
 	if (GShaderCompilingManager)
 	{
-		GShaderCompilingManager->ProcessAsyncResults(false, true);
+		GShaderCompilingManager->ProcessAsyncResults(true, true);
 	}
 
 	check(!bAddedToScene);
@@ -706,7 +702,7 @@ void FPrecomputedVolumetricLightmap::AddToScene(FSceneInterface* Scene, UMapBuil
 	if (NewData && Scene)
 	{
 		bAddedToScene = true;
-		SourceRegistries[this] = Registry;
+		SourceRegistry = Registry;
 
 		FPrecomputedVolumetricLightmap* Volume = this;
 
@@ -734,14 +730,14 @@ void FPrecomputedVolumetricLightmap::RemoveFromScene(FSceneInterface* Scene)
 
 		// Certain paths in the editor (namely, ReloadPackages and ForceDelete) will GC the registry before the UWorld destruction (which destructs FScene)
 		ensureMsgf(
-			SourceRegistries[this].IsValid() // either SourceRegistry is valid
+			SourceRegistry.IsValid() // either SourceRegistry is valid
 			|| (!Scene->GetWorld() || Scene->GetWorld()->IsPendingKillOrUnreachable()) // or the world we're in is going away (usually during shutdown)
 			, TEXT("UMapBuildDataRegistry is garbage collected before an FPrecomputedVolumetricLightmap is removed from the scene. Is there a missing ReleaseRenderingResources() call?"));
 
 		// While that can be explained as missing ReleaseRenderingResources() calls, this fail-safe guard is added here
-		if (SourceRegistries[this].IsValid())
+		if (SourceRegistry.IsValid())
 		{
-			SourceRegistries[this] = nullptr;
+			SourceRegistry = nullptr;
 
 			if (Scene)
 			{
@@ -1028,21 +1024,6 @@ void FVolumetricLightmapBrickAtlas::Insert(int32 Index, FPrecomputedVolumetricLi
 	}
 
 	{
-		{
-			// Transition all the UAVs to writable
-			FRHITransitionInfo Transitions[UE_ARRAY_COUNT(NewTextureSet.SHCoefficients) + 3] =
-			{
-				FRHITransitionInfo(NewTextureSet.AmbientVector.UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier),
-				FRHITransitionInfo(NewTextureSet.SkyBentNormal.UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier),
-				FRHITransitionInfo(NewTextureSet.DirectionalLightShadowing.UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier)
-			};
-			for (int32 i = 0; i < UE_ARRAY_COUNT(NewTextureSet.SHCoefficients); i++)
-			{
-				Transitions[i + 3] = FRHITransitionInfo(NewTextureSet.SHCoefficients[i].UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier);
-			}
-			RHICmdList.Transition(MakeArrayView(Transitions, UE_ARRAY_COUNT(Transitions)));
-		}
-
 		int32 BrickStartAllocation = 0;
 
 		// Copy old allocations
@@ -1077,21 +1058,6 @@ void FVolumetricLightmapBrickAtlas::Insert(int32 Index, FPrecomputedVolumetricLi
 				Allocations[AllocationIndex].Data->HandleDataMovementInAtlas(Allocations[AllocationIndex].StartOffset, BrickStartAllocation);
 			}
 			BrickStartAllocation += Allocations[AllocationIndex].Size;
-		}
-
-		{
-			// Transition all UAVs in the new set to readable
-			FRHITransitionInfo Transitions[UE_ARRAY_COUNT(NewTextureSet.SHCoefficients) + 3] =
-			{
-				FRHITransitionInfo(NewTextureSet.AmbientVector.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask),
-				FRHITransitionInfo(NewTextureSet.SkyBentNormal.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask),
-				FRHITransitionInfo(NewTextureSet.DirectionalLightShadowing.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask)
-			};
-			for (int32 i = 0; i < UE_ARRAY_COUNT(NewTextureSet.SHCoefficients); i++)
-			{
-				Transitions[i + 3] = FRHITransitionInfo(NewTextureSet.SHCoefficients[i].UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask);
-			}
-			RHICmdList.Transition(MakeArrayView(Transitions, UE_ARRAY_COUNT(Transitions)));
 		}
 	}
 
@@ -1142,21 +1108,6 @@ void FVolumetricLightmapBrickAtlas::Remove(FPrecomputedVolumetricLightmapData* D
 		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
 		{
-			{
-				// Transition all the UAVs to writable
-				FRHITransitionInfo Transitions[UE_ARRAY_COUNT(NewTextureSet.SHCoefficients) + 3] =
-				{
-					FRHITransitionInfo(NewTextureSet.AmbientVector.UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier),
-					FRHITransitionInfo(NewTextureSet.SkyBentNormal.UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier),
-					FRHITransitionInfo(NewTextureSet.DirectionalLightShadowing.UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier)
-				};
-				for (int32 i = 0; i < UE_ARRAY_COUNT(NewTextureSet.SHCoefficients); i++)
-				{
-					Transitions[i + 3] = FRHITransitionInfo(NewTextureSet.SHCoefficients[i].UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier);
-				}
-				RHICmdList.Transition(MakeArrayView(Transitions, UE_ARRAY_COUNT(Transitions)));
-			}
-
 			int32 BrickStartAllocation = 0;
 
 			// Copy old allocations
@@ -1178,21 +1129,6 @@ void FVolumetricLightmapBrickAtlas::Remove(FPrecomputedVolumetricLightmapData* D
 				NewAllocations.Add(Allocation{ Allocations[AllocationIndex].Data, Allocations[AllocationIndex].Size, BrickStartAllocation });
 				Allocations[AllocationIndex].Data->HandleDataMovementInAtlas(Allocations[AllocationIndex].StartOffset, BrickStartAllocation);
 				BrickStartAllocation += Allocations[AllocationIndex].Size;
-			}
-
-			{
-				// Transition all UAVs in the new set to readable
-				FRHITransitionInfo Transitions[UE_ARRAY_COUNT(NewTextureSet.SHCoefficients) + 3] =
-				{
-					FRHITransitionInfo(NewTextureSet.AmbientVector.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask),
-					FRHITransitionInfo(NewTextureSet.SkyBentNormal.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask),
-					FRHITransitionInfo(NewTextureSet.DirectionalLightShadowing.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask)
-				};
-				for (int32 i = 0; i < UE_ARRAY_COUNT(NewTextureSet.SHCoefficients); i++)
-				{
-					Transitions[i + 3] = FRHITransitionInfo(NewTextureSet.SHCoefficients[i].UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask);
-				}
-				RHICmdList.Transition(MakeArrayView(Transitions, UE_ARRAY_COUNT(Transitions)));
 			}
 		}
 	}

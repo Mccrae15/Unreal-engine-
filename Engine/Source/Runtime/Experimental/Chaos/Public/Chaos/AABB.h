@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/Real.h"
 #include "Chaos/Vector.h"
 #include "Chaos/Matrix.h"
 #include "Chaos/Plane.h"
@@ -21,7 +22,6 @@ namespace Chaos
 			return TArray<TVector<T, d>>();
 		}
 	};
-
 
 	template<class T, int d>
 	class TAABB
@@ -90,6 +90,8 @@ namespace Chaos
 		CHAOS_API TAABB<T, d> TransformedAABB(const FMatrix&) const;
 		CHAOS_API TAABB<T, d> TransformedAABB(const Chaos::PMatrix<FReal, 4, 4>&) const;
 
+		CHAOS_API TAABB<T, d> InverseTransformedAABB(const Chaos::TRigidTransform<T, 3>&) const;
+
 		FORCEINLINE bool Intersects(const TAABB<T, d>& Other) const
 		{
 			for (int32 i = 0; i < d; ++i)
@@ -102,7 +104,7 @@ namespace Chaos
 
 		FORCEINLINE TAABB<T, d> GetIntersection(const TAABB<T, d>& Other) const
 		{
-			TVector<float, 3> Tmp;
+			TVector<T, 3> Tmp;
 			return TAABB<T, d>(MMin.ComponentwiseMax(Other.MMin), MMax.ComponentwiseMin(Other.MMax));
 		}
 
@@ -141,11 +143,11 @@ namespace Chaos
 		}
 
 
-		FORCEINLINE T PhiWithNormal(const TVector<T, d>& x, TVector<T, d>& Normal) const 
+		FORCEINLINE T PhiWithNormal(const TVector<T, d>& X, TVector<T, d>& Normal) const 
 		{
-			const TVector<T, d> MaxDists = x - MMax;
-			const TVector<T, d> MinDists = MMin - x;
-			if (x <= MMax && x >= MMin)
+			const TVector<T, d> MaxDists = X - MMax;
+			const TVector<T, d> MinDists = MMin - X;
+			if (X <= MMax && X >= MMin)
 			{
 				const Pair<T, int32> MaxAndAxis = TVector<T, d>::MaxAndAxis(MinDists, MaxDists);
 				Normal = MaxDists[MaxAndAxis.Second] > MinDists[MaxAndAxis.Second] ? TVector<T, d>::AxisVector(MaxAndAxis.Second) : -TVector<T, d>::AxisVector(MaxAndAxis.Second);
@@ -257,7 +259,7 @@ namespace Chaos
 			bool bIsExterior = false;
 			for (int i = 0; i < 3; i++)
 			{
-				float v = StartPoint[i];
+				T v = StartPoint[i];
 				if (v < MMin[i])
 				{
 					v = MMin[i];
@@ -332,7 +334,7 @@ namespace Chaos
 				// Select axis of face to compare to, based on normal.
 				if (OriginalNormal[Axis] > KINDA_SMALL_NUMBER)
 				{
-					const float TraceDotFaceNormal = DenormDir[Axis]; // TraceDirDenormLocal.dot(BoxFaceNormal)
+					const T TraceDotFaceNormal = DenormDir[Axis]; // TraceDirDenormLocal.dot(BoxFaceNormal)
 					if (TraceDotFaceNormal < BestOpposingDot)
 					{
 						BestOpposingDot = TraceDotFaceNormal;
@@ -342,7 +344,7 @@ namespace Chaos
 				}
 				else if (OriginalNormal[Axis] < -KINDA_SMALL_NUMBER)
 				{
-					const float TraceDotFaceNormal = -DenormDir[Axis]; // TraceDirDenormLocal.dot(BoxFaceNormal)
+					const T TraceDotFaceNormal = -DenormDir[Axis]; // TraceDirDenormLocal.dot(BoxFaceNormal)
 					if (TraceDotFaceNormal < BestOpposingDot)
 					{
 						BestOpposingDot = TraceDotFaceNormal;
@@ -355,7 +357,7 @@ namespace Chaos
 			return BestNormal;
 		}
 
-		FORCEINLINE TVector<T, d> Support(const TVector<T, d>& Direction, const T Thickness) const 
+		FORCEINLINE_DEBUGGABLE TVector<T, d> Support(const TVector<T, d>& Direction, const T Thickness) const
 		{
 			TVector<T, d> ChosenPt;
 			for (int Axis = 0; Axis < d; ++Axis)
@@ -381,12 +383,13 @@ namespace Chaos
 			return ChosenPt;
 		}
 
-		FORCEINLINE TVector<T, d> SupportCore(const TVector<T, d>& Direction) const
+		// Support vertex in the specified direction, assuming each face has been moved inwards by InMargin
+		FORCEINLINE_DEBUGGABLE TVector<T, d> SupportCore(const TVector<T, d>& Direction, FReal InMargin) const
 		{
 			TVector<T, d> ChosenPt;
 			for (int Axis = 0; Axis < d; ++Axis)
 			{
-				ChosenPt[Axis] = Direction[Axis] < 0 ? MMin[Axis] : MMax[Axis];
+				ChosenPt[Axis] = Direction[Axis] < 0 ? MMin[Axis] + InMargin : MMax[Axis] - InMargin;
 			}
 
 			return ChosenPt;
@@ -410,7 +413,7 @@ namespace Chaos
 			MMax = TVector<T, d>(FGenericPlatformMath::Min(MMax[0], Other.MMax[0]), FGenericPlatformMath::Min(MMax[1], Other.MMax[1]), FGenericPlatformMath::Min(MMax[2], Other.MMax[2]));
 		}
 
-		FORCEINLINE TAABB<T, d>& Thicken(const float Thickness)
+		FORCEINLINE TAABB<T, d>& Thicken(const T Thickness)
 		{
 			MMin -= TVector<T, d>(Thickness);
 			MMax += TVector<T, d>(Thickness);
@@ -480,6 +483,7 @@ namespace Chaos
 		FORCEINLINE static T GetVolume(const TVector<T, 3>& Dim) { return Dim.Product(); }
 
 		FORCEINLINE T GetMargin() const { return 0; }
+		FORCEINLINE T GetRadius() const { return 0; }
 
 		FORCEINLINE static TAABB<T, d> EmptyAABB() { return TAABB<T, d>(TVector<T, d>(TNumericLimits<T>::Max()), TVector<T, d>(-TNumericLimits<T>::Max())); }
 		FORCEINLINE static TAABB<T, d> ZeroAABB() { return TAABB<T, d>(TVector<T, d>((T)0), TVector<T, d>((T)0)); }
@@ -618,4 +622,6 @@ namespace Chaos
 			return SamplePoints;
 		}
 	};
+
+	using FAABB3 = TAABB<FReal, 3>;
 }

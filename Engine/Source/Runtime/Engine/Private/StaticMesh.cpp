@@ -6,6 +6,7 @@
 
 #include "Engine/StaticMesh.h"
 #include "Serialization/MemoryWriter.h"
+#include "Serialization/LargeMemoryWriter.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ScopedSlowTask.h"
 #include "UObject/FrameworkObjectVersion.h"
@@ -110,6 +111,11 @@ static TAutoConsoleVariable<int32> CVarStripMinLodDataDuringCooking(
 	TEXT("r.StaticMesh.StripMinLodDataDuringCooking"),
 	0,
 	TEXT("If non-zero, data for Static Mesh LOD levels below MinLOD will be discarded at cook time"));
+
+static TAutoConsoleVariable<int32> CVarStaticMeshKeepMobileMinLODSettingOnDesktop(
+	TEXT("r.StaticMesh.KeepMobileMinLODSettingOnDesktop"),
+	0,
+	TEXT("If non-zero, mobile setting for MinLOD will be stored in the cooked data for desktop platforms"));
 
 int32 GForceStripMeshAdjacencyDataDuringCooking = 0;
 static FAutoConsoleVariableRef CVarForceStripMeshAdjacencyDataDuringCooking(
@@ -268,7 +274,7 @@ int32 FStaticMeshLODResources::GetPlatformMinLODIdx(const ITargetPlatform* Targe
 {
 #if WITH_EDITOR
 	check(TargetPlatform && StaticMesh);
-	return StaticMesh->MinLOD.GetValueForPlatformIdentifiers(
+	return StaticMesh->GetMinLOD().GetValueForPlatformIdentifiers(
 		TargetPlatform->GetPlatformInfo().PlatformGroupName,
 		TargetPlatform->GetPlatformInfo().VanillaPlatformName);
 #else
@@ -291,7 +297,8 @@ uint8 FStaticMeshLODResources::GenerateClassStripFlags(FArchive& Ar, UStaticMesh
 		&& (CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0)
 		&& OwnerStaticMesh
 		&& GetPlatformMinLODIdx(Ar.CookingTarget(), OwnerStaticMesh) > Index;
-	const bool bWantToStripRayTracingResources = Ar.IsCooking() && !Ar.CookingTarget()->UsesRayTracing();
+	const bool bSupportRayTracing = OwnerStaticMesh ? OwnerStaticMesh->bSupportRayTracing : false;
+	const bool bWantToStripRayTracingResources = Ar.IsCooking() && (!Ar.CookingTarget()->UsesRayTracing() || !bSupportRayTracing);
 
 	return
 		(bWantToStripTessellation ? AdjacencyDataStripFlag : 0) |
@@ -670,7 +677,12 @@ void FStaticMeshLODResources::Serialize(FArchive& Ar, UObject* Owner, int32 Inde
 	}
 #endif // #if WITH_EDITORONLY_DATA
 
-	const bool bIsBelowMinLOD = StripFlags.IsClassDataStripped(CDSF_MinLodData);
+#if WITH_EDITOR
+	const bool bIsBelowMinLOD = StripFlags.IsClassDataStripped(CDSF_MinLodData)
+		|| (Ar.IsCooking() && OwnerStaticMesh && Index < GetPlatformMinLODIdx(Ar.CookingTarget(), OwnerStaticMesh));
+#else
+	const bool bIsBelowMinLOD = false;
+#endif
 	bool bIsLODCookedOut = IsLODCookedOut(Ar.CookingTarget(), OwnerStaticMesh, bIsBelowMinLOD);
 	Ar << bIsLODCookedOut;
 
@@ -828,7 +840,7 @@ void FStaticMeshVertexFactories::InitVertexFactory(
 	bool bInOverrideColorVertexBuffer
 	)
 {
-	check( InParentMesh != NULL );
+	check( InParentMesh != nullptr);
 
 	struct InitStaticMeshVertexFactoryParams
 	{
@@ -839,7 +851,7 @@ void FStaticMeshVertexFactories::InitVertexFactory(
 		uint32 LODIndex;
 	} Params;
 
-	uint32 LightMapCoordinateIndex = (uint32)InParentMesh->LightMapCoordinateIndex;
+	uint32 LightMapCoordinateIndex = (uint32)InParentMesh->GetLightMapCoordinateIndex();
 	LightMapCoordinateIndex = LightMapCoordinateIndex < LodResources.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords() ? LightMapCoordinateIndex : LodResources.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords() - 1;
 
 	Params.VertexFactory = &InOutVertexFactory;
@@ -1252,7 +1264,7 @@ void FStaticMeshLODResources::InitResources(UStaticMesh* Parent)
 	}
 
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+	if (IsRayTracingEnabled() && Parent->bSupportRayTracing)
 	{
 		ENQUEUE_RENDER_COMMAND(InitStaticMeshRayTracingGeometry)(
 			[this, DebugName = Parent->GetFName()](FRHICommandListImmediate& RHICmdList)
@@ -1388,6 +1400,7 @@ FStaticMeshRenderData::FStaticMeshRenderData()
 	, bReadyForStreaming(false)
 	, NumInlinedLODs(0)
 	, CurrentFirstLODIdx(0)
+	, LODBiasModifier(0)
 {
 	for (int32 LODIndex = 0; LODIndex < MAX_STATIC_MESH_LODS; ++LODIndex)
 	{
@@ -1478,6 +1491,41 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 
 #endif // #if WITH_EDITORONLY_DATA
 
+#if PLATFORM_DESKTOP
+	if (bCooked)
+	{
+		int32 MinMobileLODIdx = 0;
+		bool bShouldSerialize = CVarStaticMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0;
+#if WITH_EDITOR
+		if (Ar.IsSaving())
+		{
+			if (Ar.CookingTarget()->GetPlatformInfo().PlatformGroupName == TEXT("Desktop")
+				&& CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0
+				&& CVarStaticMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0)
+			{
+				MinMobileLODIdx = Owner->GetMinLOD().GetValueForPlatformIdentifiers(TEXT("Mobile")) - Owner->GetMinLOD().GetValueForPlatformIdentifiers(TEXT("Desktop"));
+				MinMobileLODIdx = FMath::Clamp(MinMobileLODIdx, 0, 255); // Will be cast to uint8 when applying LOD bias. Also, make sure it's not < 0,
+																		 // which can happen if the desktop min LOD is higher than the mobile setting
+			}
+			else
+			{
+				bShouldSerialize = false;
+			}
+		}
+#endif
+
+		if (bShouldSerialize)
+		{
+			Ar << MinMobileLODIdx;
+
+			if (Ar.IsLoading() && GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1)
+			{
+				LODBiasModifier = MinMobileLODIdx;
+			}
+		}
+	}
+#endif // PLATFORM_DESKTOP
+
 	LODResources.Serialize(Ar, Owner);
 
 #if WITH_EDITOR
@@ -1508,7 +1556,7 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 		uint8 ClassDataStripFlags = 0;
 
 #if WITH_EDITOR
-		const bool bWantToStripDistanceFieldData = Ar.IsCooking() && (!Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::DeferredRendering) || !Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::DistanceFieldAO));
+		const bool bWantToStripDistanceFieldData = Ar.IsCooking() && !Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::DistanceFieldAO);
 
 		ClassDataStripFlags |= (bWantToStripDistanceFieldData ? DistanceFieldDataStripFlag : 0);
 #endif
@@ -1690,22 +1738,30 @@ void FStaticMeshRenderData::AllocateLODResources(int32 NumLODs)
 int32 FStaticMeshRenderData::GetFirstValidLODIdx(int32 MinIdx) const
 {
 	const int32 LODCount = LODResources.Num();
-	int32 LODIndex = FMath::Clamp<int32>(MinIdx, 0, LODCount - 1);
-
-	if (FPlatformProperties::RequiresCookedData())
+	int32 LODIndex = INDEX_NONE;
+	if (LODCount > 0)
 	{
-		// When cooked, BuffersSize can be used reliably to know if there is valid data, even though num vertices could be non zero.
-		// This happens because UStaticMesh::MinLOD is platform specific, where as num vertices is the same for all platforms.
-		while (LODIndex < LODCount && !LODResources[LODIndex].GetNumVertices() && LODResources[LODIndex].BuffersSize)
+		LODIndex = FMath::Clamp<int32>(MinIdx, 0, LODCount - 1);
+		if (FPlatformProperties::RequiresCookedData())
 		{
-			++LODIndex;
+			// When cooked, BuffersSize can be used reliably to know if there is valid data, even though num vertices could be non zero.
+			// This happens because UStaticMesh::MinLOD is platform specific, where as num vertices is the same for all platforms.
+			while (LODIndex < LODCount && !LODResources[LODIndex].GetNumVertices() && LODResources[LODIndex].BuffersSize)
+			{
+				++LODIndex;
+			}
 		}
-	}
-	else
-	{
-		while (LODIndex < LODCount && !LODResources[LODIndex].GetNumVertices())
+		else
 		{
-			++LODIndex;
+			while (LODIndex < LODCount && !LODResources[LODIndex].GetNumVertices())
+			{
+				++LODIndex;
+			}
+		}
+
+		if (LODIndex >= LODCount)
+		{
+			LODIndex = INDEX_NONE;
 		}
 	}
 
@@ -1730,8 +1786,8 @@ TUniquePtr<FStaticMeshOccluderData> FStaticMeshOccluderData::Build(UStaticMesh* 
 	if (Owner->LODForOccluderMesh >= 0)
 	{
 		// TODO: Custom geometry for occluder mesh?
-		int32 LODIndex = FMath::Min(Owner->LODForOccluderMesh, Owner->RenderData->LODResources.Num()-1);
-		const FStaticMeshLODResources& LODModel = Owner->RenderData->LODResources[LODIndex];
+		int32 LODIndex = FMath::Min(Owner->LODForOccluderMesh, Owner->GetRenderData()->LODResources.Num()-1);
+		const FStaticMeshLODResources& LODModel = Owner->GetRenderData()->LODResources[LODIndex];
 			
 		const FRawStaticIndexBuffer& IndexBuffer = LODModel.DepthOnlyIndexBuffer.GetNumIndices() > 0 ? LODModel.DepthOnlyIndexBuffer : LODModel.IndexBuffer;
 		int32 NumVtx = LODModel.VertexBuffers.PositionVertexBuffer.GetNumVertices();
@@ -1761,7 +1817,7 @@ void FStaticMeshOccluderData::SerializeCooked(FArchive& Ar, UStaticMesh* Owner)
 	if (Ar.IsSaving())
 	{
 		bool bHasOccluderData = false;
-		if (Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::SoftwareOcclusion) && Owner->OccluderData.IsValid())
+		if (Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::SoftwareOcclusion) && Owner->GetOccluderData())
 		{
 			bHasOccluderData = true;
 		}
@@ -1770,8 +1826,8 @@ void FStaticMeshOccluderData::SerializeCooked(FArchive& Ar, UStaticMesh* Owner)
 		
 		if (bHasOccluderData)
 		{
-			Owner->OccluderData->VerticesSP->BulkSerialize(Ar);
-			Owner->OccluderData->IndicesSP->BulkSerialize(Ar);
+			Owner->GetOccluderData()->VerticesSP->BulkSerialize(Ar);
+			Owner->GetOccluderData()->IndicesSP->BulkSerialize(Ar);
 		}
 	}
 	else
@@ -1781,9 +1837,9 @@ void FStaticMeshOccluderData::SerializeCooked(FArchive& Ar, UStaticMesh* Owner)
 		Ar << bHasOccluderData;
 		if (bHasOccluderData)
 		{
-			Owner->OccluderData = MakeUnique<FStaticMeshOccluderData>();
-			Owner->OccluderData->VerticesSP->BulkSerialize(Ar);
-			Owner->OccluderData->IndicesSP->BulkSerialize(Ar);
+			Owner->SetOccluderData(MakeUnique<FStaticMeshOccluderData>());
+			Owner->GetOccluderData()->VerticesSP->BulkSerialize(Ar);
+			Owner->GetOccluderData()->IndicesSP->BulkSerialize(Ar);
 		}
 	}
 }
@@ -2244,7 +2300,7 @@ static void SerializeBuildSettingsForDDC(FArchive& Ar, FMeshBuildSettings& Build
 // differences, etc.) replace the version GUID below with a new one.
 // In case of merge conflicts with DDC versions, you MUST generate a new GUID
 // and set this new GUID as the version.
-#define STATICMESH_DERIVEDDATA_VER TEXT("14FB7BD55BAA4C14BCDC7C2AD14BCE50")
+#define STATICMESH_DERIVEDDATA_VER TEXT("9CE2B6FB46754B699726C4AA1515F12E")
 
 static const FString& GetStaticMeshDerivedDataVersion()
 {
@@ -2301,9 +2357,9 @@ static FString BuildStaticMeshDerivedDataKeySuffix(const ITargetPlatform* Target
 	TempBytes.Reserve(64);
 
 	// Add LightmapUVVersion to key going forward
-	if ( (ELightmapUVVersion)Mesh->LightmapUVVersion > ELightmapUVVersion::BitByBit )
+	if ( (ELightmapUVVersion)Mesh->GetLightmapUVVersion() > ELightmapUVVersion::BitByBit )
 	{
-		KeySuffix += LexToString(Mesh->LightmapUVVersion);
+		KeySuffix += LexToString(Mesh->GetLightmapUVVersion());
 	}
 #if WITH_EDITOR
 	if (GIsAutomationTesting && Mesh->BuildCacheAutomationTestGuid.IsValid())
@@ -2414,6 +2470,13 @@ static FString BuildStaticMeshDerivedDataKeySuffix(const ITargetPlatform* Target
 
 	IMeshBuilderModule::GetForPlatform(TargetPlatform).AppendToDDCKey(KeySuffix);
 
+	if (TargetPlatform->GetPlatformInfo().PlatformGroupName == TEXT("Desktop")
+		&& CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0
+		&& CVarStaticMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0)
+	{
+		KeySuffix += TEXT("_MinMLOD");
+	}
+
 	return KeySuffix;
 }
 
@@ -2523,7 +2586,7 @@ void FStaticMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, UStatic
 		TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshRenderData::Cache);
 
 		COOK_STAT(auto Timer = StaticMeshCookStats::UsageStats.TimeSyncWork());
-		int32 T0 = FPlatformTime::Cycles();
+		double T0 = FPlatformTime::Seconds();
 		int32 NumLODs = Owner->GetNumSourceModels();
 		const FStaticMeshLODGroup& LODGroup = LODSettings.GetLODGroup(Owner->LODGroup);
 		const FString KeySuffix = BuildStaticMeshDerivedDataKeySuffix(TargetPlatform, Owner, LODGroup);
@@ -2581,7 +2644,7 @@ void FStaticMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, UStatic
 				BuildAreaWeighedSamplingData();
 			}
 			bLODsShareStaticLighting = Owner->CanLODsShareStaticLighting();
-			FMemoryWriter Ar(DerivedData, /*bIsPersistent=*/ true);
+			FLargeMemoryWriter Ar(0, /*bIsPersistent=*/ true);
 			Serialize(Ar, Owner, /*bCooked=*/ false);
 
 			for (int32 LODIdx = 0; LODIdx < LODResources.Num(); ++LODIdx)
@@ -2608,18 +2671,21 @@ void FStaticMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, UStatic
 				bSaveDDC = false;
 			}
 #endif
-			if (bSaveDDC)
+			int64 DerivedDataNum = Ar.TotalSize();
+			bool bCanStoreInDDC = DerivedDataNum <= TNumericLimits<TArrayView<uint8>::SizeType>::Max();
+			if (bSaveDDC && bCanStoreInDDC)
 			{
-				GetDerivedDataCacheRef().Put(*DerivedDataKey, DerivedData, Owner->GetPathName());
+				TArrayView<uint8> DataView(Ar.GetData(), DerivedDataNum);
+				GetDerivedDataCacheRef().Put(*DerivedDataKey, DataView, Owner->GetPathName());
 			}
 
-			int32 T1 = FPlatformTime::Cycles();
+			double T1 = FPlatformTime::Seconds();
 			UE_LOG(LogStaticMesh,Log,TEXT("Built static mesh [%.2fs] %s"),
-				FPlatformTime::ToMilliseconds(T1-T0) / 1000.0f,
+				T1-T0,
 				*Owner->GetPathName()
 				);
 			FPlatformAtomics::InterlockedAdd(&StaticMeshDerivedDataTimings::BuildCycles, T1 - T0);
-			COOK_STAT(Timer.AddMiss(DerivedData.Num()));
+			COOK_STAT(Timer.AddMiss(DerivedDataNum));
 		}
 	}
 
@@ -2713,16 +2779,68 @@ UStaticMesh::UStaticMesh(const FObjectInitializer& ObjectInitializer)
 	LODForOccluderMesh = -1;
 	NumStreamedLODs.Default = -1;
 #endif // #if WITH_EDITORONLY_DATA
-	LightMapResolution = 4;
-	LpvBiasMultiplier = 1.0f;
-	MinLOD.Default = 0;
+	SetLightMapResolution(4);
+	SetMinLOD(0);
 
+	LpvBiasMultiplier = 1.0f;
 	bSupportUniformlyDistributedSampling = false;
-	bIsBuiltAtRuntime = false;
+
+	bSupportRayTracing = true;
+
+	SetIsBuiltAtRuntime(false);
 	bRenderingResourcesInitialized = false;
 #if WITH_EDITOR
 	BuildCacheAutomationTestGuid.Invalidate();
 #endif
+}
+
+// We don't care if the default implementation of the destructor is cleaning up 
+// deprecated fields... The UObject has been properly destroyed by the garbage
+// collect anyway.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+UStaticMesh::~UStaticMesh() = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+FStaticMeshRenderData* UStaticMesh::GetRenderData()
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return RenderData.Get();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+const FStaticMeshRenderData* UStaticMesh::GetRenderData() const
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return RenderData.Get();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+void UStaticMesh::SetRenderData(TUniquePtr<class FStaticMeshRenderData>&& InRenderData)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	RenderData = MoveTemp(InRenderData);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+FStaticMeshOccluderData* UStaticMesh::GetOccluderData()
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return OccluderData.Get();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+const FStaticMeshOccluderData* UStaticMesh::GetOccluderData() const
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return OccluderData.Get();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+void UStaticMesh::SetOccluderData(TUniquePtr<class FStaticMeshOccluderData>&& InOccluderData)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	OccluderData = MoveTemp(InOccluderData);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UStaticMesh::PostInitProperties()
@@ -2741,28 +2859,29 @@ void UStaticMesh::PostInitProperties()
  */
 void UStaticMesh::InitResources()
 {
-	LLM_SCOPE(ELLMTag::StaticMesh);
+	LLM_SCOPE_BYNAME(TEXT("StaticMesh/InitResources")); // This is an important test case for SCOPE_BYNAME without a matching LLM_DEFINE_TAG
 
 	bRenderingResourcesInitialized = true;
 
 	UpdateUVChannelData(false);
 
 	CachedSRRState.Clear();
-	if (RenderData)
+	if (GetRenderData())
 	{
 		{
 			const int32 NumLODs = GetNumLODs();
-			const int32 MinFirstLOD = MinLOD.GetValue();
+			const int32 MinFirstLOD = GetMinLOD().GetValue();
 
-			CachedSRRState.NumNonStreamingLODs = RenderData->NumInlinedLODs;
-			CachedSRRState.NumNonOptionalLODs = RenderData->GetNumNonOptionalLODs();
+			CachedSRRState.NumNonStreamingLODs = GetRenderData()->NumInlinedLODs;
+			CachedSRRState.NumNonOptionalLODs = GetRenderData()->GetNumNonOptionalLODs();
 			// Limit the number of LODs based on MinLOD value.
-			CachedSRRState.MaxNumLODs = FMath::Clamp<int32>(NumLODs - MinFirstLOD, RenderData->NumInlinedLODs, NumLODs);
+			CachedSRRState.MaxNumLODs = FMath::Clamp<int32>(NumLODs - MinFirstLOD, GetRenderData()->NumInlinedLODs, NumLODs);
 			CachedSRRState.AssetLODBias = MinFirstLOD;
+			CachedSRRState.LODBiasModifier = GetRenderData()->LODBiasModifier;
 			// The optional LOD might be culled now.
 			CachedSRRState.NumNonOptionalLODs = FMath::Min(CachedSRRState.NumNonOptionalLODs, CachedSRRState.MaxNumLODs);
 			// Set LOD count to fit the current state.
-			CachedSRRState.NumResidentLODs = NumLODs - RenderData->CurrentFirstLODIdx;
+			CachedSRRState.NumResidentLODs = NumLODs - GetRenderData()->CurrentFirstLODIdx;
 			CachedSRRState.NumRequestedLODs = CachedSRRState.NumResidentLODs;
 			// Set whether the mips can be streamed.
 			CachedSRRState.bSupportsStreaming = !NeverStream && CachedSRRState.NumNonStreamingLODs != CachedSRRState.MaxNumLODs;
@@ -2772,23 +2891,23 @@ void UStaticMesh::InitResources()
 		// TODO : This will require to refactor code in FStaticMeshLODResources::Serialize() and FStaticMeshRenderData::Cache() around bBuffersInlined (in cooked).
 
 		UWorld* World = GetWorld();
-		RenderData->InitResources(World ? World->FeatureLevel.GetValue() : ERHIFeatureLevel::Num, this);
+		GetRenderData()->InitResources(World ? World->FeatureLevel.GetValue() : ERHIFeatureLevel::Num, this);
 		CachedSRRState.bHasPendingInitHint = true;
 	}
 
-	if (OccluderData)
+	if (GetOccluderData())
 	{
-		INC_DWORD_STAT_BY( STAT_StaticMeshOccluderMemory, OccluderData->GetResourceSizeBytes() );
+		INC_DWORD_STAT_BY( STAT_StaticMeshOccluderMemory, GetOccluderData()->GetResourceSizeBytes() );
 	}
 
 #if (WITH_EDITOR && DO_CHECK)
-	if (RenderData && CachedSRRState.bSupportsStreaming && !GetOutermost()->bIsCookedForEditor)
+	if (GetRenderData() && CachedSRRState.bSupportsStreaming && !GetOutermost()->bIsCookedForEditor)
 	{
 		const int32 NumLODs = GetNumLODs();
 
 		for (int32 LODIdx = 0; LODIdx < NumLODs; ++LODIdx)
 		{
-			const FStaticMeshLODResources& LODResource = RenderData->LODResources[LODIdx];
+			const FStaticMeshLODResources& LODResource = GetRenderData()->LODResources[LODIdx];
 			check(LODResource.bBuffersInlined || !LODResource.DerivedDataKey.IsEmpty());
 		}
 	}
@@ -2812,14 +2931,14 @@ void UStaticMesh::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 {
 	Super::GetResourceSizeEx(CumulativeResourceSize);
 
-	if (RenderData)
+	if (GetRenderData())
 	{
-		RenderData->GetResourceSizeEx(CumulativeResourceSize);
+		GetRenderData()->GetResourceSizeEx(CumulativeResourceSize);
 	}
 
-	if (OccluderData)
+	if (GetOccluderData())
 	{
-		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(OccluderData->GetResourceSizeBytes());
+		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(GetOccluderData()->GetResourceSizeBytes());
 	}
 }
 
@@ -2854,9 +2973,9 @@ void FStaticMeshRenderData::GetResourceSizeEx(FResourceSizeEx& CumulativeResourc
 int32 UStaticMesh::GetNumVertices(int32 LODIndex) const
 {
 	int32 NumVertices = 0;
-	if (RenderData && RenderData->LODResources.IsValidIndex(LODIndex))
+	if (GetRenderData() && GetRenderData()->LODResources.IsValidIndex(LODIndex))
 	{
-		NumVertices = RenderData->LODResources[LODIndex].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices();
+		NumVertices = GetRenderData()->LODResources[LODIndex].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices();
 	}
 	return NumVertices;
 }
@@ -2864,9 +2983,9 @@ int32 UStaticMesh::GetNumVertices(int32 LODIndex) const
 int32 UStaticMesh::GetNumLODs() const
 {
 	int32 NumLODs = 0;
-	if (RenderData)
+	if (GetRenderData())
 	{
-		NumLODs = RenderData->LODResources.Num();
+		NumLODs = GetRenderData()->LODResources.Num();
 	}
 	return NumLODs;
 }
@@ -2877,15 +2996,15 @@ int32 UStaticMesh::GetNumLODs() const
 //
 bool UStaticMesh::HasValidRenderData(bool bCheckLODForVerts, int32 LODIndex) const
 {
-	if (RenderData && RenderData->LODResources.Num() && RenderData->LODResources.GetData())
+	if (GetRenderData() && GetRenderData()->LODResources.Num() && GetRenderData()->LODResources.GetData())
 	{
 		if (bCheckLODForVerts)
 		{
 		    if (LODIndex == INDEX_NONE)
 		    {
-			    LODIndex = FMath::Clamp<int32>(MinLOD.GetValue(), 0, RenderData->LODResources.Num() - 1);
+			    LODIndex = FMath::Clamp<int32>(GetMinLOD().GetValue(), 0, GetRenderData()->LODResources.Num() - 1);
 		    }
-			return (RenderData->LODResources[LODIndex].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0);
+			return (GetRenderData()->LODResources[LODIndex].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0);
 		}
 		else
 		{
@@ -2897,20 +3016,20 @@ bool UStaticMesh::HasValidRenderData(bool bCheckLODForVerts, int32 LODIndex) con
 
 FBoxSphereBounds UStaticMesh::GetBounds() const
 {
-	return ExtendedBounds;
+	return GetExtendedBounds();
 }
 
 FBox UStaticMesh::GetBoundingBox() const
 {
-	return ExtendedBounds.GetBox();
+	return GetExtendedBounds().GetBox();
 }
 
 int32 UStaticMesh::GetNumSections(int32 InLOD) const
 {
 	int32 NumSections = 0;
-	if (RenderData != NULL && RenderData->LODResources.IsValidIndex(InLOD))
+	if (GetRenderData() && GetRenderData()->LODResources.IsValidIndex(InLOD))
 	{
-		const FStaticMeshLODResources& LOD = RenderData->LODResources[InLOD];
+		const FStaticMeshLODResources& LOD = GetRenderData()->LODResources[InLOD];
 		NumSections = LOD.Sections.Num();
 	}
 	return NumSections;
@@ -2948,16 +3067,16 @@ void UStaticMesh::UpdateUVChannelData(bool bRebuildAll)
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::UpdateUVChannelData);
 
 	// Once cooked, the data required to compute the scales will not be CPU accessible.
-	if (FPlatformProperties::HasEditorOnlyData() && RenderData)
+	if (FPlatformProperties::HasEditorOnlyData() && GetRenderData())
 	{
 		bool bDensityChanged = false;
 
-		for (int32 MaterialIndex = 0; MaterialIndex < StaticMaterials.Num(); ++MaterialIndex)
+		for (int32 MaterialIndex = 0; MaterialIndex < GetStaticMaterials().Num(); ++MaterialIndex)
 		{
-			FMeshUVChannelInfo& UVChannelData = StaticMaterials[MaterialIndex].UVChannelData;
+			FMeshUVChannelInfo& UVChannelData = GetStaticMaterials()[MaterialIndex].UVChannelData;
 
 			// Skip it if we want to keep it.
-			if (UVChannelData.bInitialized && (!bRebuildAll || UVChannelData.bOverrideDensities))
+			if (UVChannelData.IsInitialized() && (!bRebuildAll || UVChannelData.bOverrideDensities))
 			{
 				continue;
 			}
@@ -2966,7 +3085,7 @@ void UStaticMesh::UpdateUVChannelData(bool bRebuildAll)
 			float Weights[TEXSTREAM_MAX_NUM_UVCHANNELS] = {0, 0, 0, 0};
 
 			// Parse all LOD-SECTION using this material index.
-			for (const FStaticMeshLODResources& LODModel : RenderData->LODResources)
+			for (const FStaticMeshLODResources& LODModel : GetRenderData()->LODResources)
 			{
 				const int32 NumTexCoords = FMath::Min<int32>(LODModel.GetNumTexCoords(), TEXSTREAM_MAX_NUM_UVCHANNELS);
 				for (const FStaticMeshSection& SectionInfo : LODModel.Sections)
@@ -2995,7 +3114,7 @@ void UStaticMesh::UpdateUVChannelData(bool bRebuildAll)
 
 		if (bDensityChanged || bRebuildAll)
 		{
-			LightmapUVDensity = GetUVDensity(RenderData->LODResources, LightMapCoordinateIndex);
+			SetLightmapUVDensity(GetUVDensity(GetRenderData()->LODResources, GetLightMapCoordinateIndex()));
 
 			if (GEngine)
 			{
@@ -3004,7 +3123,7 @@ void UStaticMesh::UpdateUVChannelData(bool bRebuildAll)
 		}
 
 		// Update the data for the renderthread debug viewmodes
-		RenderData->SyncUVChannelData(StaticMaterials);
+		GetRenderData()->SyncUVChannelData(GetStaticMaterials());
 	}
 #endif
 }
@@ -3037,10 +3156,10 @@ FBox UStaticMesh::GetMaterialBox(int32 MaterialIndex, const FTransform& Transfor
 {
 #if WITH_EDITORONLY_DATA
 	// Once cooked, the data requires to compute the scales will not be CPU accessible.
-	if (FPlatformProperties::HasEditorOnlyData() && RenderData)
+	if (FPlatformProperties::HasEditorOnlyData() && GetRenderData())
 	{
 		FBox MaterialBounds(ForceInit);
-		for (const FStaticMeshLODResources& LODModel : RenderData->LODResources)
+		for (const FStaticMeshLODResources& LODModel : GetRenderData()->LODResources)
 		{
 			for (const FStaticMeshSection& SectionInfo : LODModel.Sections)
 			{
@@ -3059,10 +3178,10 @@ FBox UStaticMesh::GetMaterialBox(int32 MaterialIndex, const FTransform& Transfor
 
 const FMeshUVChannelInfo* UStaticMesh::GetUVChannelData(int32 MaterialIndex) const
 {
-	if (StaticMaterials.IsValidIndex(MaterialIndex))
+	if (GetStaticMaterials().IsValidIndex(MaterialIndex))
 	{
-		ensure(StaticMaterials[MaterialIndex].UVChannelData.bInitialized);
-		return &StaticMaterials[MaterialIndex].UVChannelData;
+		ensure(GetStaticMaterials()[MaterialIndex].UVChannelData.bInitialized);
+		return &GetStaticMaterials()[MaterialIndex].UVChannelData;
 	}
 
 	return nullptr;
@@ -3080,14 +3199,14 @@ void UStaticMesh::ReleaseResources()
 	DEC_DWORD_STAT_BY( STAT_StaticMeshTotalMemory2, StaticMeshResourceSize );
 #endif
 
-	if (RenderData)
+	if (GetRenderData())
 	{
-		RenderData->ReleaseResources();
+		GetRenderData()->ReleaseResources();
 	}
 
-	if (OccluderData)
+	if (GetOccluderData())
 	{
-		DEC_DWORD_STAT_BY( STAT_StaticMeshOccluderMemory, OccluderData->GetResourceSizeBytes() );
+		DEC_DWORD_STAT_BY( STAT_StaticMeshOccluderMemory, GetOccluderData()->GetResourceSizeBytes() );
 	}
 	
 	// insert a fence to signal when these commands completed
@@ -3142,41 +3261,41 @@ void UStaticMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 #if WITH_EDITORONLY_DATA
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UStaticMesh, ComplexCollisionMesh) && ComplexCollisionMesh != this)
 	{
-		if (BodySetup)
+		if (GetBodySetup())
 		{
-			BodySetup->InvalidatePhysicsData();
-			BodySetup->CreatePhysicsMeshes();
+			GetBodySetup()->InvalidatePhysicsData();
+			GetBodySetup()->CreatePhysicsMeshes();
 		}
 	}
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UStaticMesh, bSupportPhysicalMaterialMasks))
 	{
-		if (BodySetup)
+		if (GetBodySetup())
 		{
-			BodySetup->bSupportUVsAndFaceRemap = bSupportPhysicalMaterialMasks;
-			BodySetup->InvalidatePhysicsData();
-			BodySetup->CreatePhysicsMeshes();
+			GetBodySetup()->bSupportUVsAndFaceRemap = bSupportPhysicalMaterialMasks;
+			GetBodySetup()->InvalidatePhysicsData();
+			GetBodySetup()->CreatePhysicsMeshes();
 		}
 	}
 #endif
 
-	LightMapResolution = FMath::Max(LightMapResolution, 0);
+	SetLightMapResolution(FMath::Max(GetLightMapResolution(), 0));
 
 	if (PropertyChangedEvent.MemberProperty 
-		&& ((PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UStaticMesh, PositiveBoundsExtension)) 
-			|| (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UStaticMesh, NegativeBoundsExtension))))
+		&& (PropertyChangedEvent.MemberProperty->GetFName() == UStaticMesh::GetPositiveBoundsExtensionName() || 
+			PropertyChangedEvent.MemberProperty->GetFName() == UStaticMesh::GetNegativeBoundsExtensionName()))
 	{
 		// Update the extended bounds
 		CalculateExtendedBounds();
 	}
 
 	if (!bAutoComputeLODScreenSize
-		&& RenderData
+		&& GetRenderData()
 		&& PropertyName == GET_MEMBER_NAME_CHECKED(UStaticMesh, bAutoComputeLODScreenSize))
 	{
 		for (int32 LODIndex = 1; LODIndex < GetNumSourceModels(); ++LODIndex)
 		{
-			GetSourceModel(LODIndex).ScreenSize = RenderData->ScreenSize[LODIndex];
+			GetSourceModel(LODIndex).ScreenSize = GetRenderData()->ScreenSize[LODIndex];
 		}
 	}
 
@@ -3192,7 +3311,7 @@ void UStaticMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	Build(/*bSilent=*/ true);
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UStaticMesh, bHasNavigationData)
-		|| PropertyName == GET_MEMBER_NAME_CHECKED(UStaticMesh, BodySetup))
+		|| PropertyName == UStaticMesh::GetBodySetupName())
 	{
 		// Build called above will result in creation, update or destruction 
 		// of NavCollision. We need to let related StaticMeshComponents know
@@ -3202,8 +3321,8 @@ void UStaticMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
 		// Only unbuild lighting for properties which affect static lighting
-		if (PropertyName == GET_MEMBER_NAME_CHECKED(UStaticMesh, LightMapResolution)
-			|| PropertyName == GET_MEMBER_NAME_CHECKED(UStaticMesh, LightMapCoordinateIndex))
+		if (PropertyName == UStaticMesh::GetLightMapResolutionName()
+			|| PropertyName == UStaticMesh::GetLightMapCoordinateIndexName())
 		{
 			FStaticMeshComponentRecreateRenderStateContext Context(this, true);
 			SetLightingGuid();
@@ -3240,7 +3359,7 @@ void UStaticMesh::PostEditUndo()
 void UStaticMesh::SetLODGroup(FName NewGroup, bool bRebuildImmediately)
 {
 #if WITH_EDITORONLY_DATA
-	const bool bBeforeDerivedDataCached = (RenderData == nullptr);
+	const bool bBeforeDerivedDataCached = (GetRenderData() == nullptr);
 	if (!bBeforeDerivedDataCached)
 	{
 		Modify();
@@ -3267,24 +3386,24 @@ void UStaticMesh::SetLODGroup(FName NewGroup, bool bRebuildImmediately)
 			
 			if (LODIndex != 0)
 			{
-			//Reset the section info map
-			if (bResetSectionInfoMap)
-			{
-				for (int32 SectionIndex = 0; SectionIndex < GetSectionInfoMap().GetSectionNumber(LODIndex); ++SectionIndex)
+				//Reset the section info map
+				if (bResetSectionInfoMap)
 				{
+					for (int32 SectionIndex = 0; SectionIndex < GetSectionInfoMap().GetSectionNumber(LODIndex); ++SectionIndex)
+					{
 						GetSectionInfoMap().Remove(LODIndex, SectionIndex);
+					}
+				}
+				//Clear the raw data if we change the LOD Group and we do not reduce ourself, this will force the user to do a import LOD which will manage the section info map properly
+				if (!SourceModel.IsRawMeshEmpty() && SourceModel.ReductionSettings.BaseLODModel != LODIndex)
+				{
+					FRawMesh EmptyRawMesh;
+					SourceModel.SaveRawMesh(EmptyRawMesh);
+					SourceModel.SourceImportFilename = FString();
 				}
 			}
-			//Clear the raw data if we change the LOD Group and we do not reduce ourself, this will force the user to do a import LOD which will manage the section info map properly
-			if (!SourceModel.IsRawMeshEmpty() && SourceModel.ReductionSettings.BaseLODModel != LODIndex)
-			{
-				FRawMesh EmptyRawMesh;
-				SourceModel.SaveRawMesh(EmptyRawMesh);
-				SourceModel.SourceImportFilename = FString();
-			}
 		}
-		}
-		LightMapResolution = GroupSettings.GetDefaultLightMapResolution();
+		SetLightMapResolution(GroupSettings.GetDefaultLightMapResolution());
 
 		if (!bBeforeDerivedDataCached)
 		{
@@ -3302,7 +3421,7 @@ void UStaticMesh::BroadcastNavCollisionChange()
 {
 	if (FNavigationSystem::WantsComponentChangeNotifies())
 	{
-		for (FObjectIterator Iter(UStaticMeshComponent::StaticClass()); Iter; ++Iter)
+		for (FThreadSafeObjectIterator Iter(UStaticMeshComponent::StaticClass()); Iter; ++Iter)
 		{
 			UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(*Iter);
 			UWorld* MyWorld = StaticMeshComponent->GetWorld();
@@ -3444,15 +3563,15 @@ bool UStaticMesh::FixLODRequiresAdjacencyInformation(const int32 LODIndex, const
 		{
 			const FName MaterialImportedName = PolygonGroupImportedMaterialSlotNames[PolygonGroupID];
 			int32 MaterialIndex = 0;
-			for (FStaticMaterial& Material : StaticMaterials)
+			for (FStaticMaterial& Material : GetStaticMaterials())
 			{
 				if (Material.ImportedMaterialSlotName != NAME_None && Material.ImportedMaterialSlotName == MaterialImportedName)
 				{
 					FStaticMaterial *RemapMaterial = &Material;
 					FMeshSectionInfo SectionInfo = GetSectionInfoMap().Get(LODIndex, SectionIndex);
-					if (StaticMaterials.IsValidIndex(SectionInfo.MaterialIndex))
+					if (GetStaticMaterials().IsValidIndex(SectionInfo.MaterialIndex))
 					{
-						RemapMaterial = &StaticMaterials[SectionInfo.MaterialIndex];
+						RemapMaterial = &GetStaticMaterials()[SectionInfo.MaterialIndex];
 					}
 					const bool bRequiresAdjacencyInformation = RequiresAdjacencyInformation(RemapMaterial->MaterialInterface, nullptr, GWorld->FeatureLevel);
 					if (bRequiresAdjacencyInformation)
@@ -3506,7 +3625,14 @@ void UStaticMesh::BeginDestroy()
 
 bool UStaticMesh::IsReadyForFinishDestroy()
 {
+	// Tick base class to make progress on the streaming before calling HasPendingInitOrStreaming().
 	if (!Super::IsReadyForFinishDestroy())
+	{
+		return false;
+	}
+
+	// Match BeginDestroy() by checking for HasPendingInitOrStreaming().
+	if (HasPendingInitOrStreaming())
 	{
 		return false;
 	}
@@ -3522,11 +3648,11 @@ int32 UStaticMesh::GetNumSectionsWithCollision() const
 #if WITH_EDITORONLY_DATA
 	int32 NumSectionsWithCollision = 0;
 
-	if (RenderData && RenderData->LODResources.Num() > 0)
+	if (GetRenderData() && GetRenderData()->LODResources.Num() > 0)
 	{
 		// Find how many sections have collision enabled
-		const int32 UseLODIndex = FMath::Clamp(LODForCollision, 0, RenderData->LODResources.Num() - 1);
-		const FStaticMeshLODResources& CollisionLOD = RenderData->LODResources[UseLODIndex];
+		const int32 UseLODIndex = FMath::Clamp(LODForCollision, 0, GetRenderData()->LODResources.Num() - 1);
+		const FStaticMeshLODResources& CollisionLOD = GetRenderData()->LODResources[UseLODIndex];
 		for (int32 SectionIndex = 0; SectionIndex < CollisionLOD.Sections.Num(); ++SectionIndex)
 		{
 			if (GetSectionInfoMap().Get(UseLODIndex, SectionIndex).bEnableCollision)
@@ -3549,54 +3675,54 @@ void UStaticMesh::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 	int32 NumUVChannels = 0;
 	int32 NumLODs = 0;
 
-	if (RenderData && RenderData->LODResources.Num() > 0)
+	if (GetRenderData() && GetRenderData()->LODResources.Num() > 0)
 	{
-		const FStaticMeshLODResources& LOD = RenderData->LODResources[0];
+		const FStaticMeshLODResources& LOD = GetRenderData()->LODResources[0];
 		NumTriangles = LOD.IndexBuffer.GetNumIndices() / 3;
 		NumVertices = LOD.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices();
 		NumUVChannels = LOD.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords();
-		NumLODs = RenderData->LODResources.Num();
+		NumLODs = GetRenderData()->LODResources.Num();
 	}
 
 	int32 NumSectionsWithCollision = GetNumSectionsWithCollision();
 
 	int32 NumCollisionPrims = 0;
-	if ( BodySetup != NULL )
+	if (GetBodySetup() != nullptr)
 	{
-		NumCollisionPrims = BodySetup->AggGeom.GetElementCount();
+		NumCollisionPrims = GetBodySetup()->AggGeom.GetElementCount();
 	}
 
 	FBoxSphereBounds Bounds(ForceInit);
-	if (RenderData)
+	if (GetRenderData())
 	{
-		Bounds = RenderData->Bounds;
+		Bounds = GetRenderData()->Bounds;
 	}
 	const FString ApproxSizeStr = FString::Printf(TEXT("%dx%dx%d"), FMath::RoundToInt(Bounds.BoxExtent.X * 2.0f), FMath::RoundToInt(Bounds.BoxExtent.Y * 2.0f), FMath::RoundToInt(Bounds.BoxExtent.Z * 2.0f));
 
 	// Get name of default collision profile
 	FName DefaultCollisionName = NAME_None;
-	if(BodySetup != nullptr)
+	if(GetBodySetup() != nullptr)
 	{
-		DefaultCollisionName = BodySetup->DefaultInstance.GetCollisionProfileName();
+		DefaultCollisionName = GetBodySetup()->DefaultInstance.GetCollisionProfileName();
 	}
 
 	FString ComplexityString;
-	if (BodySetup != nullptr)
+	if (GetBodySetup() != nullptr)
 	{
-		ComplexityString = LexToString((ECollisionTraceFlag)BodySetup->GetCollisionTraceFlag());
+		ComplexityString = LexToString((ECollisionTraceFlag)GetBodySetup()->GetCollisionTraceFlag());
 	}
 
-	OutTags.Add( FAssetRegistryTag("Triangles", FString::FromInt(NumTriangles), FAssetRegistryTag::TT_Numerical) );
-	OutTags.Add( FAssetRegistryTag("Vertices", FString::FromInt(NumVertices), FAssetRegistryTag::TT_Numerical) );
-	OutTags.Add( FAssetRegistryTag("UVChannels", FString::FromInt(NumUVChannels), FAssetRegistryTag::TT_Numerical) );
-	OutTags.Add( FAssetRegistryTag("Materials", FString::FromInt(StaticMaterials.Num()), FAssetRegistryTag::TT_Numerical) );
-	OutTags.Add( FAssetRegistryTag("ApproxSize", ApproxSizeStr, FAssetRegistryTag::TT_Dimensional) );
-	OutTags.Add( FAssetRegistryTag("CollisionPrims", FString::FromInt(NumCollisionPrims), FAssetRegistryTag::TT_Numerical));
-	OutTags.Add( FAssetRegistryTag("LODs", FString::FromInt(NumLODs), FAssetRegistryTag::TT_Numerical));
-	OutTags.Add( FAssetRegistryTag("MinLOD", MinLOD.ToString(), FAssetRegistryTag::TT_Alphabetical));
-	OutTags.Add( FAssetRegistryTag("SectionsWithCollision", FString::FromInt(NumSectionsWithCollision), FAssetRegistryTag::TT_Numerical));
-	OutTags.Add( FAssetRegistryTag("DefaultCollision", DefaultCollisionName.ToString(), FAssetRegistryTag::TT_Alphabetical));
-	OutTags.Add( FAssetRegistryTag("CollisionComplexity", ComplexityString, FAssetRegistryTag::TT_Alphabetical));
+	OutTags.Add(FAssetRegistryTag("Triangles", FString::FromInt(NumTriangles), FAssetRegistryTag::TT_Numerical) );
+	OutTags.Add(FAssetRegistryTag("Vertices", FString::FromInt(NumVertices), FAssetRegistryTag::TT_Numerical) );
+	OutTags.Add(FAssetRegistryTag("UVChannels", FString::FromInt(NumUVChannels), FAssetRegistryTag::TT_Numerical) );
+	OutTags.Add(FAssetRegistryTag("Materials", FString::FromInt(GetStaticMaterials().Num()), FAssetRegistryTag::TT_Numerical) );
+	OutTags.Add(FAssetRegistryTag("ApproxSize", ApproxSizeStr, FAssetRegistryTag::TT_Dimensional) );
+	OutTags.Add(FAssetRegistryTag("CollisionPrims", FString::FromInt(NumCollisionPrims), FAssetRegistryTag::TT_Numerical));
+	OutTags.Add(FAssetRegistryTag("LODs", FString::FromInt(NumLODs), FAssetRegistryTag::TT_Numerical));
+	OutTags.Add(FAssetRegistryTag("MinLOD", GetMinLOD().ToString(), FAssetRegistryTag::TT_Alphabetical));
+	OutTags.Add(FAssetRegistryTag("SectionsWithCollision", FString::FromInt(NumSectionsWithCollision), FAssetRegistryTag::TT_Numerical));
+	OutTags.Add(FAssetRegistryTag("DefaultCollision", DefaultCollisionName.ToString(), FAssetRegistryTag::TT_Alphabetical));
+	OutTags.Add(FAssetRegistryTag("CollisionComplexity", ComplexityString, FAssetRegistryTag::TT_Alphabetical));
 
 #if WITH_EDITORONLY_DATA
 	if (AssetImportData)
@@ -3672,9 +3798,10 @@ void FStaticMeshSourceModel::LoadRawMesh(FRawMesh& OutRawMesh) const
 		{
 			TMap<FName, int32> MaterialMap;
 			check(StaticMeshOwner != nullptr);
-			for (int32 MaterialIndex = 0; MaterialIndex < StaticMeshOwner->StaticMaterials.Num(); ++MaterialIndex)
+			const UStaticMesh* ConstStaticMeshOwner = StaticMeshOwner;
+			for (int32 MaterialIndex = 0; MaterialIndex < ConstStaticMeshOwner->GetStaticMaterials().Num(); ++MaterialIndex)
 			{
-				MaterialMap.Add(StaticMeshOwner->StaticMaterials[MaterialIndex].ImportedMaterialSlotName, MaterialIndex);
+				MaterialMap.Add(ConstStaticMeshOwner->GetStaticMaterials()[MaterialIndex].ImportedMaterialSlotName, MaterialIndex);
 			}
 			FStaticMeshOperations::ConvertToRawMesh(*MeshDescription, OutRawMesh, MaterialMap);
 		}
@@ -3701,7 +3828,8 @@ void FStaticMeshSourceModel::SaveRawMesh(FRawMesh& InRawMesh, bool /* unused */)
 
 	TMap<int32, FName> MaterialMap;
 	check(StaticMeshOwner != nullptr);
-	FillMaterialName(StaticMeshOwner->StaticMaterials, MaterialMap);
+	const UStaticMesh* ConstStaticMeshOwner = StaticMeshOwner;
+	FillMaterialName(ConstStaticMeshOwner->GetStaticMaterials(), MaterialMap);
 	FStaticMeshOperations::ConvertFromRawMesh(InRawMesh, *MeshDescription, MaterialMap);
 	
 	// Package up mesh description into bulk data
@@ -3757,7 +3885,7 @@ void FStaticMeshSourceModel::SerializeBulkData(FArchive& Ar, UObject* Owner)
 		if (Ar.IsSaving() && !MeshDescriptionBulkData.IsValid() && !RawMeshBulkData->IsEmpty())
 		{
 			// If saving a legacy asset which hasn't yet been committed as MeshDescription, perform the conversion now
-			// so it can be loaded sucessfully as MeshDescription next time.
+			// so it can be loaded successfully as MeshDescription next time.
 			// Note: even if there's a more recent cached MeshDescription, if it hasn't been committed, it will not be saved.
 			FRawMesh RawMesh;
 			LoadRawMesh(RawMesh);
@@ -3938,11 +4066,11 @@ void UStaticMesh::RegisterMeshAttributes(FMeshDescription& MeshDescription)
 #if WITH_EDITOR
 static FStaticMeshRenderData& GetPlatformStaticMeshRenderData(UStaticMesh* Mesh, const ITargetPlatform* Platform)
 {
-	check(Mesh && Mesh->RenderData);
+	check(Mesh && Mesh->GetRenderData());
 	const FStaticMeshLODSettings& PlatformLODSettings = Platform->GetStaticMeshLODSettings();
 	FString PlatformDerivedDataKey = BuildStaticMeshDerivedDataKey(
 		BuildStaticMeshDerivedDataKeySuffix(Platform, Mesh, PlatformLODSettings.GetLODGroup(Mesh->LODGroup)));
-	FStaticMeshRenderData* PlatformRenderData = Mesh->RenderData.Get();
+	FStaticMeshRenderData* PlatformRenderData = Mesh->GetRenderData();
 
 	if (Mesh->GetOutermost()->bIsCookedForEditor)
 	{
@@ -3961,8 +4089,8 @@ static FStaticMeshRenderData& GetPlatformStaticMeshRenderData(UStaticMesh* Mesh,
 		PlatformRenderData = new FStaticMeshRenderData();
 		PlatformRenderData->Cache(Platform, Mesh, PlatformLODSettings);
 		check(PlatformRenderData->DerivedDataKey == PlatformDerivedDataKey);
-		Swap(PlatformRenderData->NextCachedRenderData, Mesh->RenderData->NextCachedRenderData);
-		Mesh->RenderData->NextCachedRenderData = TUniquePtr<FStaticMeshRenderData>(PlatformRenderData);
+		Swap(PlatformRenderData->NextCachedRenderData, Mesh->GetRenderData()->NextCachedRenderData);
+		Mesh->GetRenderData()->NextCachedRenderData = TUniquePtr<FStaticMeshRenderData>(PlatformRenderData);
 	}
 	check(PlatformRenderData);
 	return *PlatformRenderData;
@@ -4026,7 +4154,7 @@ bool UStaticMesh::LoadMeshDescription(int32 LodIndex, FMeshDescription& OutMeshD
 		FRawMesh LodRawMesh;
 		SourceModel.LoadRawMesh(LodRawMesh);
 		TMap<int32, FName> MaterialMap;
-		FillMaterialName(StaticMaterials, MaterialMap);
+		FillMaterialName(GetStaticMaterials(), MaterialMap);
 
 		// Register static mesh attributes on the mesh description
 		FStaticMeshAttributes StaticMeshAttributes(OutMeshDescription);
@@ -4274,7 +4402,7 @@ void UStaticMesh::CacheMeshData()
 
 						// Convert the RawMesh to MeshDescription
 						TMap<int32, FName> MaterialMap;
-						FillMaterialName(StaticMaterials, MaterialMap);
+						FillMaterialName(GetStaticMaterials(), MaterialMap);
 						FStaticMeshOperations::ConvertFromRawMesh(TempRawMesh, *MeshDescription, MaterialMap);
 
 						// Pack MeshDescription into temporary bulk data, ready to write out to DDC.
@@ -4335,9 +4463,9 @@ bool UStaticMesh::InsertUVChannel(int32 LODIndex, int32 UVChannelIndex)
 				++LODBuildSettings.DstLightmapIndex;
 			}
 
-			if (UVChannelIndex <= LightMapCoordinateIndex)
+			if (UVChannelIndex <= GetLightMapCoordinateIndex())
 			{
-				++LightMapCoordinateIndex;
+				SetLightMapCoordinateIndex(GetLightMapCoordinateIndex() + 1);
 			}
 
 			CommitMeshDescription(LODIndex);
@@ -4386,9 +4514,9 @@ bool UStaticMesh::RemoveUVChannel(int32 LODIndex, int32 UVChannelIndex)
 				--LODBuildSettings.DstLightmapIndex;
 			}
 
-			if (UVChannelIndex < LightMapCoordinateIndex)
+			if (UVChannelIndex < GetLightMapCoordinateIndex())
 			{
-				--LightMapCoordinateIndex;
+				SetLightMapCoordinateIndex(GetLightMapCoordinateIndex() - 1);
 			}
 
 			CommitMeshDescription(LODIndex);
@@ -4465,20 +4593,23 @@ void UStaticMesh::CacheDerivedData()
 	check(RunningPlatform);
 	const FStaticMeshLODSettings& LODSettings = RunningPlatform->GetStaticMeshLODSettings();
 
-	if (RenderData)
+	if (GetRenderData())
 	{
-		// This is the responsability of the caller to ensure this has been called
+		// This is the responsibility of the caller to ensure this has been called
 		// on the main thread when calling CacheDerivedData() from another thread.
 		if (IsInGameThread())
 		{
 			// Finish any previous async builds before modifying RenderData
 			// This can happen during import as the mesh is rebuilt redundantly
-			GDistanceFieldAsyncQueue->BlockUntilBuildComplete(this, true);
+			if (GDistanceFieldAsyncQueue)
+			{
+				GDistanceFieldAsyncQueue->BlockUntilBuildComplete(this, true);
+			}
 		}
 
-		for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); ++LODIndex)
+		for (int32 LODIndex = 0; LODIndex < GetRenderData()->LODResources.Num(); ++LODIndex)
 		{
-			FDistanceFieldVolumeData* DistanceFieldData = RenderData->LODResources[LODIndex].DistanceFieldData;
+			FDistanceFieldVolumeData* DistanceFieldData = GetRenderData()->LODResources[LODIndex].DistanceFieldData;
 
 			if (DistanceFieldData)
 			{
@@ -4488,11 +4619,11 @@ void UStaticMesh::CacheDerivedData()
 		}
 	}
 
-	RenderData = MakeUnique<FStaticMeshRenderData>();
-	RenderData->Cache(RunningPlatform, this, LODSettings);
+	SetRenderData(MakeUnique<FStaticMeshRenderData>());
+	GetRenderData()->Cache(RunningPlatform, this, LODSettings);
 
 	// Conditionally create occluder data
-	OccluderData = FStaticMeshOccluderData::Build(this);
+	SetOccluderData(FStaticMeshOccluderData::Build(this));
 
 	// Additionally cache derived data for any other platforms we care about.
 	const TArray<ITargetPlatform*>& TargetPlatforms = TargetPlatformManager.GetActiveTargetPlatforms();
@@ -4511,33 +4642,28 @@ void UStaticMesh::CacheDerivedData()
 void UStaticMesh::CalculateExtendedBounds()
 {
 	FBoxSphereBounds Bounds(ForceInit);
-	if (RenderData)
+	if (GetRenderData())
 	{
-		Bounds = RenderData->Bounds;
+		Bounds = GetRenderData()->Bounds;
 	}
 
 	// Only apply bound extension if necessary, as it will result in a larger bounding sphere radius than retrieved from the render data
-	if (!NegativeBoundsExtension.IsZero() || !PositiveBoundsExtension.IsZero())
+	if (!GetNegativeBoundsExtension().IsZero() || !GetPositiveBoundsExtension().IsZero())
 	{
 		// Convert to Min and Max
 		FVector Min = Bounds.Origin - Bounds.BoxExtent;
 		FVector Max = Bounds.Origin + Bounds.BoxExtent;
 		// Apply bound extensions
-		Min -= NegativeBoundsExtension;
-		Max += PositiveBoundsExtension;
+		Min -= GetNegativeBoundsExtension();
+		Max += GetPositiveBoundsExtension();
 		// Convert back to Origin, Extent and update SphereRadius
 		Bounds.Origin = (Min + Max) / 2;
 		Bounds.BoxExtent = (Max - Min) / 2;
 		Bounds.SphereRadius = Bounds.BoxExtent.Size();
 	}
 
-	ExtendedBounds = Bounds;
-
-#if WITH_EDITOR
-	OnExtendedBoundsChanged.Broadcast(Bounds);
-#endif
+	SetExtendedBounds(Bounds);
 }
-
 
 #if WITH_EDITORONLY_DATA
 FUObjectAnnotationSparseBool GStaticMeshesThatNeedMaterialFixup;
@@ -4548,12 +4674,14 @@ COREUOBJECT_API extern bool GOutputCookingWarnings;
 #endif
 
 
+LLM_DEFINE_TAG(StaticMesh_Serialize); // This is an important test case for LLM_DEFINE_TAG
+
 /**
  *	UStaticMesh::Serialize
  */
 void UStaticMesh::Serialize(FArchive& Ar)
 {
-	LLM_SCOPE(ELLMTag::StaticMesh);
+	LLM_SCOPE_BYNAME(TEXT("StaticMesh/Serialize")); // This is an important test case for SCOPE_BYNAME with a matching LLM_DEFINE_TAG
 
 	DECLARE_SCOPE_CYCLE_COUNTER( TEXT("UStaticMesh::Serialize"), STAT_StaticMesh_Serialize, STATGROUP_LoadTime );
 
@@ -4583,15 +4711,20 @@ void UStaticMesh::Serialize(FArchive& Ar)
 	}
 #endif // #if WITH_EDITORONLY_DATA
 
-	Ar << BodySetup;
+	UBodySetup* LocalBodySetup = GetBodySetup();
+	Ar << LocalBodySetup;
+	SetBodySetup(LocalBodySetup);
 
 	if (Ar.UE4Ver() >= VER_UE4_STATIC_MESH_STORE_NAV_COLLISION)
 	{
-		Ar << NavCollision;
+		UNavCollisionBase* LocalNavCollision = GetNavCollision();
+		Ar << LocalNavCollision;
+		SetNavCollision(LocalNavCollision);
+
 #if WITH_EDITOR
-		if ((BodySetup != nullptr) && 
+		if ((GetBodySetup() != nullptr) &&
 			bHasNavigationData && 
-			(NavCollision == nullptr))
+			(GetNavCollision() == nullptr))
 		{
 			if (Ar.IsPersistent() && Ar.IsLoading() && (Ar.GetDebugSerializationFlags() & DSF_EnableCookerWarnings))
 			{
@@ -4601,7 +4734,7 @@ void UStaticMesh::Serialize(FArchive& Ar)
 #endif
 	}
 #if WITH_EDITOR
-	else if (bHasNavigationData && BodySetup && (Ar.GetDebugSerializationFlags() & DSF_EnableCookerWarnings))
+	else if (bHasNavigationData && GetBodySetup() && (Ar.GetDebugSerializationFlags() & DSF_EnableCookerWarnings))
 	{
 		UE_LOG(LogStaticMesh, Warning, TEXT("This StaticMeshes (%s) NavCollision will be created dynamicaly at cook time.  Please resave %s."), *GetName(), *GetOutermost()->GetPathName())
 	}
@@ -4609,9 +4742,9 @@ void UStaticMesh::Serialize(FArchive& Ar)
 
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
 
-	if(Ar.IsLoading() && Ar.CustomVer(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::UseBodySetupCollisionProfile && BodySetup)
+	if(Ar.IsLoading() && Ar.CustomVer(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::UseBodySetupCollisionProfile && GetBodySetup())
 	{
-		BodySetup->DefaultInstance.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+		GetBodySetup()->DefaultInstance.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -4640,21 +4773,23 @@ void UStaticMesh::Serialize(FArchive& Ar)
 	if( Ar.IsCountingMemory() )
 	{
 		// Include collision as part of memory used
-		if ( BodySetup )
+		if (GetBodySetup())
 		{
-			BodySetup->Serialize( Ar );
+			GetBodySetup()->Serialize( Ar );
 		}
 
-		if ( NavCollision )
+		if ( GetNavCollision() )
 		{
-			NavCollision->Serialize( Ar );
+			GetNavCollision()->Serialize( Ar );
 		}
 
 		//TODO: Count these members when calculating memory used
 		//Ar << ReleaseResourcesFence;
 	}
 
-	Ar << LightingGuid;
+	FGuid LocalLightingGuid = GetLightingGuid();
+	Ar << LocalLightingGuid;
+	SetLightingGuid(LocalLightingGuid);
 	Ar << Sockets;
 
 #if WITH_EDITOR
@@ -4685,8 +4820,8 @@ void UStaticMesh::Serialize(FArchive& Ar)
 		if (Ar.IsLoading())
 		{
 			SCOPE_MS_ACCUMULATOR(STAT_StaticMesh_RenderData);
-			RenderData = MakeUnique<FStaticMeshRenderData>();
-			RenderData->Serialize(Ar, this, bCooked);
+			SetRenderData(MakeUnique<FStaticMeshRenderData>());
+			GetRenderData()->Serialize(Ar, this, bCooked);
 
 			FStaticMeshOccluderData::SerializeCooked(Ar, this);
 		}
@@ -4744,7 +4879,7 @@ void UStaticMesh::Serialize(FArchive& Ar)
 	if (Ar.CustomVer(FEditorObjectVersion::GUID) >= FEditorObjectVersion::RefactorMeshEditorMaterials)
 #endif // WITH_EDITORONLY_DATA
 	{
-		Ar << StaticMaterials;
+		Ar << GetStaticMaterials();
 	}
 #if WITH_EDITORONLY_DATA
 	else if (Ar.IsLoading())
@@ -4765,11 +4900,11 @@ void UStaticMesh::Serialize(FArchive& Ar)
 				}
 			}
 			MaterialSlotNames.Add(MaterialSlotName);
-			StaticMaterials.Add(FStaticMaterial(MaterialInterface, MaterialSlotName));
+			GetStaticMaterials().Add(FStaticMaterial(MaterialInterface, MaterialSlotName));
 			int32 UniqueIndex = Unique_Materials_DEPRECATED.AddUnique(MaterialInterface);
 #if WITH_EDITOR
 			//We must cleanup the material list since we have a new way to build static mesh
-			bCleanUpRedundantMaterialPostLoad = StaticMaterials.Num() > 1;
+			bCleanUpRedundantMaterialPostLoad = GetStaticMaterials().Num() > 1;
 #endif
 		}
 		Materials_DEPRECATED.Empty();
@@ -4802,7 +4937,7 @@ void UStaticMesh::Serialize(FArchive& Ar)
 			{
 				FMeshSectionInfo Info;
 				// Assuming billboard material is added last
-				Info.MaterialIndex = StaticMaterials.Num() - 1;
+				Info.MaterialIndex = GetStaticMaterials().Num() - 1;
 				GetSectionInfoMap().Set(LODIndex, 0, Info);
 				GetOriginalSectionInfoMap().Set(LODIndex, 0, Info);
 			}
@@ -4830,12 +4965,12 @@ void UStaticMesh::PostLoad()
 	if (GetNumSourceModels() > 0)
 	{
 		UStaticMesh* DistanceFieldReplacementMesh = GetSourceModel(0).BuildSettings.DistanceFieldReplacementMesh;
- 
+
 		if (DistanceFieldReplacementMesh)
 		{
 			DistanceFieldReplacementMesh->ConditionalPostLoad();
 		}
-		
+
 		//TODO remove this code when FRawMesh will be removed
 		//Fill the static mesh owner
 		int32 NumLODs = GetNumSourceModels();
@@ -4908,7 +5043,7 @@ void UStaticMesh::PostLoad()
 		IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
 		MeshUtilities.FixupMaterialSlotNames(this);
 
-		if (bIsBuiltAtRuntime)
+		if (GetIsBuiltAtRuntime())
 		{
 #if WITH_EDITOR
 			// If built at runtime, but an editor build, we cache the mesh descriptions so that they can be rebuilt within the editor if necessary.
@@ -4933,36 +5068,36 @@ void UStaticMesh::PostLoad()
 
 		//Fix up the material to remove redundant material, this is needed since the material refactor where we do not have anymore copy of the materials
 		//in the materials list
-		if (RenderData && bCleanUpRedundantMaterialPostLoad)
+		if (GetRenderData() && bCleanUpRedundantMaterialPostLoad)
 		{
 			bool bMaterialChange = false;
 			TArray<FStaticMaterial> CompactedMaterial;
-			for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); ++LODIndex)
+			for (int32 LODIndex = 0; LODIndex < GetRenderData()->LODResources.Num(); ++LODIndex)
 			{
-				if (RenderData->LODResources.IsValidIndex(LODIndex))
+				if (GetRenderData()->LODResources.IsValidIndex(LODIndex))
 				{
-					FStaticMeshLODResources& LOD = RenderData->LODResources[LODIndex];
+					FStaticMeshLODResources& LOD = GetRenderData()->LODResources[LODIndex];
 					const int32 NumSections = LOD.Sections.Num();
 					for (int32 SectionIndex = 0; SectionIndex < NumSections; ++SectionIndex)
 					{
 						const int32 MaterialIndex = LOD.Sections[SectionIndex].MaterialIndex;
-						if (StaticMaterials.IsValidIndex(MaterialIndex))
+						if (GetStaticMaterials().IsValidIndex(MaterialIndex))
 						{
 							if (LODIndex == 0)
 							{
 								//We do not compact LOD 0 material
-								CompactedMaterial.Add(StaticMaterials[MaterialIndex]);
+								CompactedMaterial.Add(GetStaticMaterials()[MaterialIndex]);
 							}
 							else
 							{
 								FMeshSectionInfo MeshSectionInfo = GetSectionInfoMap().Get(LODIndex, SectionIndex);
 								int32 CompactedIndex = INDEX_NONE;
-								if (StaticMaterials.IsValidIndex(MeshSectionInfo.MaterialIndex))
+								if (GetStaticMaterials().IsValidIndex(MeshSectionInfo.MaterialIndex))
 								{
 									for (int32 CompactedMaterialIndex = 0; CompactedMaterialIndex < CompactedMaterial.Num(); ++CompactedMaterialIndex)
 									{
 										const FStaticMaterial& StaticMaterial = CompactedMaterial[CompactedMaterialIndex];
-										if (StaticMaterials[MeshSectionInfo.MaterialIndex].MaterialInterface == StaticMaterial.MaterialInterface)
+										if (GetStaticMaterials()[MeshSectionInfo.MaterialIndex].MaterialInterface == StaticMaterial.MaterialInterface)
 										{
 											CompactedIndex = CompactedMaterialIndex;
 											break;
@@ -4972,7 +5107,7 @@ void UStaticMesh::PostLoad()
 
 								if (CompactedIndex == INDEX_NONE)
 								{
-									CompactedIndex = CompactedMaterial.Add(StaticMaterials[MaterialIndex]);
+									CompactedIndex = CompactedMaterial.Add(GetStaticMaterials()[MaterialIndex]);
 								}
 								if (MeshSectionInfo.MaterialIndex != CompactedIndex)
 								{
@@ -4986,49 +5121,51 @@ void UStaticMesh::PostLoad()
 				}
 			}
 			//If we change some section material index or there is unused material, we must use the new compacted material list.
-			if (bMaterialChange || CompactedMaterial.Num() < StaticMaterials.Num())
+			if (bMaterialChange || CompactedMaterial.Num() < GetStaticMaterials().Num())
 			{
-				StaticMaterials.Empty(CompactedMaterial.Num());
-				for (const FStaticMaterial &Material : CompactedMaterial)
+				GetStaticMaterials().Empty(CompactedMaterial.Num());
+				for (const FStaticMaterial& Material : CompactedMaterial)
 				{
-					StaticMaterials.Add(Material);
+					GetStaticMaterials().Add(Material);
 				}
 				//Make sure the physic data is recompute
-				if (BodySetup)
+				if (GetBodySetup())
 				{
-					BodySetup->InvalidatePhysicsData();
+					GetBodySetup()->InvalidatePhysicsData();
 					UE_LOG(LogStaticMesh, Warning, TEXT("Mesh %s is recomputing physics on load. It must be resaved before it will cook deterministically. Please resave %s."), *GetName(), *GetPathName());
 				}
 			}
 			bCleanUpRedundantMaterialPostLoad = false;
 		}
 
-		if (RenderData && GStaticMeshesThatNeedMaterialFixup.Get(this))
+		if (GetRenderData() && GStaticMeshesThatNeedMaterialFixup.Get(this))
 		{
 			FixupZeroTriangleSections();
 		}
 	}
 
-	if (RenderData)
+	if (GetRenderData())
 	{
 		// check the MinLOD values are all within range
 		bool bFixedMinLOD = false;
-		int32 MinAvailableLOD = FMath::Max<int32>(RenderData->LODResources.Num() - 1, 0);
-		if (!RenderData->LODResources.IsValidIndex(MinLOD.Default))
+		int32 MinAvailableLOD = FMath::Max<int32>(GetRenderData()->LODResources.Num() - 1, 0);
+		FPerPlatformInt LocalMinLOD = GetMinLOD();
+		if (!GetRenderData()->LODResources.IsValidIndex(LocalMinLOD.Default))
 		{
 			FFormatNamedArguments Arguments;
-			Arguments.Add(TEXT("MinLOD"), FText::AsNumber(MinLOD.Default));
+			Arguments.Add(TEXT("MinLOD"), FText::AsNumber(LocalMinLOD.Default));
 			Arguments.Add(TEXT("MinAvailLOD"), FText::AsNumber(MinAvailableLOD));
 			FMessageLog("LoadErrors").Warning()
 				->AddToken(FUObjectToken::Create(this))
 				->AddToken(FTextToken::Create(FText::Format(LOCTEXT("LoadError_BadMinLOD", "Min LOD value of {MinLOD} is out of range 0..{MinAvailLOD} and has been adjusted to {MinAvailLOD}. Please verify and resave the asset."), Arguments)));
 
-			MinLOD.Default = MinAvailableLOD;
+			LocalMinLOD.Default = MinAvailableLOD;
 			bFixedMinLOD = true;
 		}
-		for (TMap<FName, int32>::TIterator It(MinLOD.PerPlatform); It; ++It)
+		
+		for (TMap<FName, int32>::TIterator It(LocalMinLOD.PerPlatform); It; ++It)
 		{
-			if (!RenderData->LODResources.IsValidIndex(It.Value()))
+			if (!GetRenderData()->LODResources.IsValidIndex(It.Value()))
 			{
 				FFormatNamedArguments Arguments;
 				Arguments.Add(TEXT("MinLOD"), FText::AsNumber(It.Value()));
@@ -5042,12 +5179,13 @@ void UStaticMesh::PostLoad()
 				bFixedMinLOD = true;
 			}
 		}
+
 		if (bFixedMinLOD)
 		{
+			SetMinLOD(MoveTemp(LocalMinLOD));
 			FMessageLog("LoadErrors").Open();
 		}
 	}
-
 
 #endif // #if WITH_EDITOR
 
@@ -5069,9 +5207,9 @@ void UStaticMesh::PostLoad()
 		// Update any missing data when cooking.
 		UpdateUVChannelData(false);
 #if WITH_EDITOR
-		if (RenderData)
+		if (GetRenderData())
 		{
-			RenderData->ResolveSectionInfo(this);
+			GetRenderData()->ResolveSectionInfo(this);
 		}
 #endif
 	}
@@ -5083,7 +5221,7 @@ void UStaticMesh::PostLoad()
 	{
 		CalculateExtendedBounds();
 	}
-	//Conversion of LOD distance need valid bounds it must be call after the extended Bounds fixup
+	// Conversion of LOD distance need valid bounds it must be call after the extended Bounds fixup
 	// Only required in an editor build as other builds process this in a different place
 	if (bRequiresLODDistanceConversion)
 	{
@@ -5101,15 +5239,15 @@ void UStaticMesh::PostLoad()
 	//This will reuse everything valid from the just serialize SectionInfoMap.
 	FMeshSectionInfoMap TempOldSectionInfoMap = GetSectionInfoMap();
 	GetSectionInfoMap().Clear();
-	for (int32 LODResourceIndex = 0; LODResourceIndex < RenderData->LODResources.Num(); ++LODResourceIndex)
+	for (int32 LODResourceIndex = 0; LODResourceIndex < GetRenderData()->LODResources.Num(); ++LODResourceIndex)
 	{
-		FStaticMeshLODResources& LOD = RenderData->LODResources[LODResourceIndex];
+		FStaticMeshLODResources& LOD = GetRenderData()->LODResources[LODResourceIndex];
 		for (int32 SectionIndex = 0; SectionIndex < LOD.Sections.Num(); ++SectionIndex)
 		{
 			if (TempOldSectionInfoMap.IsValidSection(LODResourceIndex, SectionIndex))
 			{
 				FMeshSectionInfo Info = TempOldSectionInfoMap.Get(LODResourceIndex, SectionIndex);
-				if (StaticMaterials.IsValidIndex(Info.MaterialIndex))
+				if (GetStaticMaterials().IsValidIndex(Info.MaterialIndex))
 				{
 					//Reuse the valid data that come from the serialize
 					GetSectionInfoMap().Set(LODResourceIndex, SectionIndex, Info);
@@ -5118,7 +5256,7 @@ void UStaticMesh::PostLoad()
 				{
 					//Use the render data material index, but keep the flags (collision, shadow...)
 					const int32 MaterialIndex = LOD.Sections[SectionIndex].MaterialIndex;
-					if (StaticMaterials.IsValidIndex(MaterialIndex))
+					if (GetStaticMaterials().IsValidIndex(MaterialIndex))
 					{
 						Info.MaterialIndex = MaterialIndex;
 						GetSectionInfoMap().Set(LODResourceIndex, SectionIndex, Info);
@@ -5129,7 +5267,7 @@ void UStaticMesh::PostLoad()
 			{
 				//Create a new SectionInfoMap from the render data
 				const int32 MaterialIndex = LOD.Sections[SectionIndex].MaterialIndex;
-				if (StaticMaterials.IsValidIndex(MaterialIndex))
+				if (GetStaticMaterials().IsValidIndex(MaterialIndex))
 				{
 					GetSectionInfoMap().Set(LODResourceIndex, SectionIndex, FMeshSectionInfo(MaterialIndex));
 				}
@@ -5144,7 +5282,7 @@ void UStaticMesh::PostLoad()
 #endif // #if WITH_EDITOR
 
 	// We want to always have a BodySetup, its used for per-poly collision as well
-	if(BodySetup == NULL)
+	if (GetBodySetup() == nullptr)
 	{
 		CreateBodySetup();
 	}
@@ -5164,7 +5302,6 @@ void UStaticMesh::PostLoad()
 
 	CreateNavCollision();
 }
-
 
 void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescription, FStaticMeshLODResources& LODResources)
 {
@@ -5286,7 +5423,7 @@ void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescripti
 		Section.MinVertexIndex = MinVertexIndex;
 		Section.MaxVertexIndex = MaxVertexIndex;
 
-		const int32 MaterialIndex = StaticMaterials.IndexOfByPredicate(
+		const int32 MaterialIndex = GetStaticMaterials().IndexOfByPredicate(
 			[&MaterialSlotName = MaterialSlotNames[PolygonGroupID]](const FStaticMaterial& StaticMaterial) { return StaticMaterial.MaterialSlotName == MaterialSlotName; }
 		);
 
@@ -5376,13 +5513,13 @@ bool UStaticMesh::BuildFromMeshDescriptions(const TArray<const FMeshDescription*
 {
 	// Set up
 
-	bIsBuiltAtRuntime = true;
+	SetIsBuiltAtRuntime(true);
 	NeverStream = true;
 
 	TOptional<FStaticMeshComponentRecreateRenderStateContext> RecreateRenderStateContext;
 	
 	bool bNewMesh = true;
-	if (RenderData.IsValid())
+	if (GetRenderData())
 	{
 		bNewMesh = false;
 		const bool bInvalidateLighting = true;
@@ -5392,12 +5529,18 @@ bool UStaticMesh::BuildFromMeshDescriptions(const TArray<const FMeshDescription*
 		ReleaseResourcesFence.Wait();
 	}
 
-#if WITH_EDITOR
-	SetNumSourceModels(MeshDescriptions.Num());
-#endif
+	#if WITH_EDITOR
+		SetNumSourceModels(MeshDescriptions.Num());
+	#endif
 
-	RenderData = MakeUnique<FStaticMeshRenderData>();
-	RenderData->AllocateLODResources(MeshDescriptions.Num());
+	SetRenderData(MakeUnique<FStaticMeshRenderData>());
+	GetRenderData()->AllocateLODResources(MeshDescriptions.Num());
+
+	FStaticMeshLODResourcesArray& LODResourcesArray = GetRenderData()->LODResources;
+	for (int32 LODIndex = 0; LODIndex < LODResourcesArray.Num(); ++LODIndex)
+	{
+		LODResourcesArray[LODIndex].IndexBuffer.TrySetAllowCPUAccess(bAllowCPUAccess || Params.bAllowCpuAccess);
+	}
 
 	// Build render data from each mesh description
 
@@ -5416,7 +5559,7 @@ bool UStaticMesh::BuildFromMeshDescriptions(const TArray<const FMeshDescription*
 		}
 #endif
 		check(MeshDescriptionPtr != nullptr);
-		FStaticMeshLODResources& LODResources = RenderData->LODResources[LODIndex];
+		FStaticMeshLODResources& LODResources = GetRenderData()->LODResources[LODIndex];
 
 		BuildFromMeshDescription(*MeshDescriptionPtr, LODResources);
 
@@ -5437,7 +5580,7 @@ bool UStaticMesh::BuildFromMeshDescriptions(const TArray<const FMeshDescription*
 	InitResources();
 
 	// Set up RenderData bounds and LOD data
-	RenderData->Bounds = MeshDescriptions[0]->GetBounds();
+	GetRenderData()->Bounds = MeshDescriptions[0]->GetBounds();
 	CalculateExtendedBounds();
 
 	for (int32 LOD = 0; LOD < MeshDescriptions.Num(); ++LOD)
@@ -5446,7 +5589,7 @@ bool UStaticMesh::BuildFromMeshDescriptions(const TArray<const FMeshDescription*
 		if (true)
 		{
 			const float LODPowerBase = 0.75f;
-			RenderData->ScreenSize[LOD].Default = FMath::Pow(LODPowerBase, LOD);
+			GetRenderData()->ScreenSize[LOD].Default = FMath::Pow(LODPowerBase, LOD);
 		}
 		else
 		{
@@ -5461,29 +5604,29 @@ bool UStaticMesh::BuildFromMeshDescriptions(const TArray<const FMeshDescription*
 			const float ScreenHeight = 1080.0f;
 			const FPerspectiveMatrix ProjMatrix(HalfFOV, ScreenWidth, ScreenHeight, 1.0f);
 
-			RenderData->ScreenSize[LOD].Default = ComputeBoundsScreenSize(FVector::ZeroVector, RenderData->Bounds.SphereRadius, FVector(0.0f, 0.0f, ViewDistance + RenderData->Bounds.SphereRadius), ProjMatrix);
+			GetRenderData()->ScreenSize[LOD].Default = ComputeBoundsScreenSize(FVector::ZeroVector, GetRenderData()->Bounds.SphereRadius, FVector(0.0f, 0.0f, ViewDistance + GetRenderData()->Bounds.SphereRadius), ProjMatrix);
 		}
 	}
 
 	// Set up physics-related data
 	CreateBodySetup();
-	check(BodySetup);
-	BodySetup->InvalidatePhysicsData();
+	check(GetBodySetup());
+	GetBodySetup()->InvalidatePhysicsData();
 
 	if (Params.bBuildSimpleCollision)
 	{
 		FKBoxElem BoxElem;
-		BoxElem.Center = RenderData->Bounds.Origin;
-		BoxElem.X = RenderData->Bounds.BoxExtent.X * 2.0f;
-		BoxElem.Y = RenderData->Bounds.BoxExtent.Y * 2.0f;
-		BoxElem.Z = RenderData->Bounds.BoxExtent.Z * 2.0f;
-		BodySetup->AggGeom.BoxElems.Add(BoxElem);
-		BodySetup->CreatePhysicsMeshes();
+		BoxElem.Center = GetRenderData()->Bounds.Origin;
+		BoxElem.X = GetRenderData()->Bounds.BoxExtent.X * 2.0f;
+		BoxElem.Y = GetRenderData()->Bounds.BoxExtent.Y * 2.0f;
+		BoxElem.Z = GetRenderData()->Bounds.BoxExtent.Z * 2.0f;
+		GetBodySetup()->AggGeom.BoxElems.Add(BoxElem);
+		GetBodySetup()->CreatePhysicsMeshes();
 	}
 
 	if (!bNewMesh)
 	{
-		for (FObjectIterator Iter(UStaticMeshComponent::StaticClass()); Iter; ++Iter)
+		for (FThreadSafeObjectIterator Iter(UStaticMeshComponent::StaticClass()); Iter; ++Iter)
 		{
 			UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(*Iter);
 			if (StaticMeshComponent->GetStaticMesh() == this)
@@ -5512,7 +5655,7 @@ int32 UStaticMesh::CalcCumulativeLODSize(int32 NumLODs) const
 	const int32 LastLODIdx = LODCount - NumLODs;
 	for (int32 Idx = LODCount - 1; Idx >= LastLODIdx; --Idx)
 	{
-		Accum += RenderData->LODResources[Idx].BuffersSize;
+		Accum += GetRenderData()->LODResources[Idx].BuffersSize;
 	}
 	return Accum;
 }
@@ -5532,7 +5675,7 @@ bool UStaticMesh::GetMipDataFilename(const int32 MipIndex, FString& OutBulkDataF
 	LocalizedName = FPackageName::GetLocalizedPackagePath(LocalizedName);
 	bool bSucceed = FPackageName::DoesPackageExist(LocalizedName, nullptr, &OutBulkDataFilename);
 	check(bSucceed);
-	OutBulkDataFilename = FPaths::ChangeExtension(OutBulkDataFilename, MipIndex < MinLOD.Default ? TEXT(".uptnl") : TEXT(".ubulk"));
+	OutBulkDataFilename = FPaths::ChangeExtension(OutBulkDataFilename, MipIndex < GetMinLOD().Default ? TEXT(".uptnl") : TEXT(".ubulk"));
 	return true;
 }
 #endif // USE_BULKDATA_STREAMING_TOKEN
@@ -5546,9 +5689,9 @@ FIoFilenameHash UStaticMesh::GetMipIoFilenameHash(const int32 MipIndex) const
 		return MakeIoFilenameHash(MipFilename);
 	}
 #else
-	if (RenderData && RenderData->LODResources.IsValidIndex(MipIndex))
+	if (GetRenderData() && GetRenderData()->LODResources.IsValidIndex(MipIndex))
 	{
-		return RenderData->LODResources[MipIndex].StreamingBulkData.GetIoFilenameHash();
+		return GetRenderData()->LODResources[MipIndex].StreamingBulkData.GetIoFilenameHash();
 	}
 #endif
 	else
@@ -5563,13 +5706,16 @@ bool UStaticMesh::DoesMipDataExist(const int32 MipIndex) const
 	FString MipDataFilename;
 	return GetMipDataFilename(MipIndex, MipDataFilename) && IFileManager::Get().FileExists(*MipDataFilename);
 #else
-	return RenderData && RenderData->LODResources.IsValidIndex(MipIndex) && RenderData->LODResources[MipIndex].StreamingBulkData.DoesExist();
+	return GetRenderData() && GetRenderData()->LODResources.IsValidIndex(MipIndex) && GetRenderData()->LODResources[MipIndex].StreamingBulkData.DoesExist();
 #endif
 }
 
 bool UStaticMesh::HasPendingRenderResourceInitialization() const
 {
-	return RenderData.IsValid() && !RenderData->bReadyForStreaming;
+	// Only check !bReadyForStreaming if the render data is initialized from FStaticMeshRenderData::InitResources(), 
+	// otherwise no render commands are pending and the state will never resolve.
+	// Note that bReadyForStreaming is set on the renderthread.
+	return GetRenderData() && GetRenderData()->IsInitialized() && !GetRenderData()->bReadyForStreaming;
 }
 
 bool UStaticMesh::StreamOut(int32 NewMipCount)
@@ -5643,11 +5789,11 @@ FString UStaticMesh::GetDesc()
 {
 	int32 NumTris = 0;
 	int32 NumVerts = 0;
-	int32 NumLODs = RenderData ? RenderData->LODResources.Num() : 0;
+	int32 NumLODs = GetRenderData() ? GetRenderData()->LODResources.Num() : 0;
 	if (NumLODs > 0)
 	{
-		NumTris = RenderData->LODResources[0].GetNumTriangles();
-		NumVerts = RenderData->LODResources[0].GetNumVertices();
+		NumTris = GetRenderData()->LODResources[0].GetNumTriangles();
+		NumVerts = GetRenderData()->LODResources[0].GetNumVertices();
 	}
 	return FString::Printf(
 		TEXT("%d LODs, %d Tris, %d Verts"),
@@ -5713,9 +5859,9 @@ bool UStaticMesh::GetPhysicsTriMeshDataCheckComplex(struct FTriMeshCollisionData
 
 	// Get the LOD level to use for collision
 	// Always use 0 if asking for 'all tri data'
-	const int32 UseLODIndex = bInUseAllTriData ? 0 : FMath::Clamp(LODForCollision, 0, RenderData->LODResources.Num()-1);
+	const int32 UseLODIndex = bInUseAllTriData ? 0 : FMath::Clamp(LODForCollision, 0, GetRenderData()->LODResources.Num()-1);
 
-	FStaticMeshLODResources& LOD = RenderData->LODResources[UseLODIndex];
+	FStaticMeshLODResources& LOD = GetRenderData()->LODResources[UseLODIndex];
 
 	FIndexArrayView Indices = LOD.IndexBuffer.GetArrayView();
 
@@ -5772,6 +5918,7 @@ bool UStaticMesh::ContainsPhysicsTriMeshDataCheckComplex(bool bInUseAllTriData, 
 #if WITH_EDITORONLY_DATA
 	if (ComplexCollisionMesh && ComplexCollisionMesh != this && bInCheckComplexCollisionMesh)
 	{
+		ComplexCollisionMesh->ConditionalPostLoad();
 		return ComplexCollisionMesh->ContainsPhysicsTriMeshDataCheckComplex(bInUseAllTriData, false); // One level of recursion
 	}
 #else // #if WITH_EDITORONLY_DATA
@@ -5779,19 +5926,19 @@ bool UStaticMesh::ContainsPhysicsTriMeshDataCheckComplex(bool bInUseAllTriData, 
 	bInUseAllTriData = true;
 #endif // #if !WITH_EDITORONLY_DATA
 	
-	if(RenderData == nullptr || RenderData->LODResources.Num() == 0)
+	if(GetRenderData() == nullptr || GetRenderData()->LODResources.Num() == 0)
 	{
 		return false;
 	}
 
 	// Get the LOD level to use for collision
 	// Always use 0 if asking for 'all tri data'
-	const int32 UseLODIndex = bInUseAllTriData ? 0 : FMath::Clamp(LODForCollision, 0, RenderData->LODResources.Num() - 1);
+	const int32 UseLODIndex = bInUseAllTriData ? 0 : FMath::Clamp(LODForCollision, 0, GetRenderData()->LODResources.Num() - 1);
 
-	if (RenderData->LODResources[UseLODIndex].VertexBuffers.PositionVertexBuffer.GetNumVertices() > 0)
+	if (GetRenderData()->LODResources[UseLODIndex].VertexBuffers.PositionVertexBuffer.GetNumVertices() > 0)
 	{
 		// Get the LOD level to use for collision
-		FStaticMeshLODResources& LOD = RenderData->LODResources[UseLODIndex];
+		const FStaticMeshLODResources& LOD = GetRenderData()->LODResources[UseLODIndex];
 		for (int32 SectionIndex = 0; SectionIndex < LOD.Sections.Num(); ++SectionIndex)
 		{
 			const FStaticMeshSection& Section = LOD.Sections[SectionIndex];
@@ -5813,13 +5960,13 @@ void UStaticMesh::GetMeshId(FString& OutMeshId)
 {
 #if WITH_EDITORONLY_DATA
 	OutMeshId.Reset();
-	if (ComplexCollisionMesh && ComplexCollisionMesh->RenderData)
+	if (ComplexCollisionMesh && ComplexCollisionMesh->GetRenderData())
 	{
-		OutMeshId = ComplexCollisionMesh->RenderData->DerivedDataKey;
+		OutMeshId = ComplexCollisionMesh->GetRenderData()->DerivedDataKey;
 	}
-	if (RenderData)
+	if (GetRenderData())
 	{
-		OutMeshId.Append(RenderData->DerivedDataKey);
+		OutMeshId.Append(GetRenderData()->DerivedDataKey);
 	}
 #endif
 }
@@ -5873,47 +6020,62 @@ const TArray<UAssetUserData*>* UStaticMesh::GetAssetUserDataArray() const
  */
 void UStaticMesh::CreateBodySetup()
 {
-	if (BodySetup==NULL)
+	if (GetBodySetup() == nullptr)
 	{
-		BodySetup = NewObject<UBodySetup>(this);
-		BodySetup->DefaultInstance.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
-		BodySetup->bSupportUVsAndFaceRemap = bSupportPhysicalMaterialMasks;
+		UBodySetup* NewBodySetup = NewObject<UBodySetup>(this);
+		NewBodySetup->DefaultInstance.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+		NewBodySetup->bSupportUVsAndFaceRemap = bSupportPhysicalMaterialMasks;
+		SetBodySetup(NewBodySetup);
 	}
 }
 
 void UStaticMesh::CreateNavCollision(const bool bIsUpdate)
 {
-	if (bHasNavigationData && BodySetup != nullptr)
+	if (bHasNavigationData && GetBodySetup() != nullptr)
 	{
-		if (NavCollision == nullptr)
+		if (GetNavCollision() == nullptr)
 		{
-			NavCollision = UNavCollisionBase::ConstructNew(*this);
+			SetNavCollision(UNavCollisionBase::ConstructNew(*this));
 		}
 
-		if (NavCollision)
+		if (GetNavCollision())
 		{
 #if WITH_EDITOR
 			if (bIsUpdate)
 			{
-				NavCollision->InvalidateCollision();
+				GetNavCollision()->InvalidateCollision();
 			}
 #endif // WITH_EDITOR
 
 			// Physics meshes need to be ready to gather the collision in Setup().
-			BodySetup->CreatePhysicsMeshes();
-			NavCollision->Setup(BodySetup);
+			GetBodySetup()->CreatePhysicsMeshes();
+			GetNavCollision()->Setup(GetBodySetup());
 		}
 	}
 	else
 	{
-		NavCollision = nullptr;
+		SetNavCollision(nullptr);
 	}
+}
+
+void UStaticMesh::SetNavCollision(UNavCollisionBase* InNavCollision)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	NavCollision = InNavCollision;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+UNavCollisionBase* UStaticMesh::GetNavCollision() const
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return NavCollision; 
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UStaticMesh::MarkAsNotHavingNavigationData()
 {
 	bHasNavigationData = false;
-	NavCollision = nullptr;
+	SetNavCollision(nullptr);
 }
 
 /**
@@ -6041,7 +6203,7 @@ ENGINE_API void UStaticMesh::RemoveVertexColors()
 void UStaticMesh::EnforceLightmapRestrictions(bool bUseRenderData)
 {
 	// Legacy content may contain a lightmap resolution of 0, which was valid when vertex lightmaps were supported, but not anymore with only texture lightmaps
-	LightMapResolution = FMath::Max(LightMapResolution, 4);
+	SetLightMapResolution(FMath::Max(GetLightMapResolution(), 4));
 
 	// Lightmass only supports 4 UVs from Lightmass::MAX_TEXCOORDS
 	int32 NumUVs = 4;
@@ -6057,11 +6219,11 @@ void UStaticMesh::EnforceLightmapRestrictions(bool bUseRenderData)
 
 	if (bUseRenderData)
 	{
-		if (RenderData)
+		if (GetRenderData())
 		{
-			for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); ++LODIndex)
+			for (int32 LODIndex = 0; LODIndex < GetRenderData()->LODResources.Num(); ++LODIndex)
 			{
-				const FStaticMeshLODResources& LODResource = RenderData->LODResources[LODIndex];
+				const FStaticMeshLODResources& LODResource = GetRenderData()->LODResources[LODIndex];
 				if (LODResource.GetNumVertices() > 0) // skip LOD that was stripped (eg. MinLOD)
 				{
 					NumUVs = FMath::Min(LODResource.GetNumTexCoords(), NumUVs);
@@ -6121,7 +6283,7 @@ void UStaticMesh::EnforceLightmapRestrictions(bool bUseRenderData)
 	check(NumUVs > 0);
 
 	// Clamp LightMapCoordinateIndex to be valid for all lightmap uvs
-	LightMapCoordinateIndex = FMath::Clamp(LightMapCoordinateIndex, 0, NumUVs - 1);
+	SetLightMapCoordinateIndex(FMath::Clamp(GetLightMapCoordinateIndex(), 0, NumUVs - 1));
 }
 
 /**
@@ -6321,8 +6483,8 @@ void UStaticMesh::CheckLightMapUVs( UStaticMesh* InStaticMesh, TArray< FString >
 	const int32 NumLods = InStaticMesh->GetNumLODs();
 	for( int32 CurLODModelIndex = 0; CurLODModelIndex < NumLods; ++CurLODModelIndex )
 	{
-		const FStaticMeshLODResources& RenderData = InStaticMesh->RenderData->LODResources[CurLODModelIndex];
-		int32 LightMapTextureCoordinateIndex = InStaticMesh->LightMapCoordinateIndex;
+		const FStaticMeshLODResources& RenderData = InStaticMesh->GetRenderData()->LODResources[CurLODModelIndex];
+		int32 LightMapTextureCoordinateIndex = InStaticMesh->GetLightMapCoordinateIndex();
 
 		// We expect the light map texture coordinate to be greater than zero, as the first UV set
 		// should never really be used for light maps, unless this mesh was exported as a light mapped uv set.
@@ -6368,7 +6530,7 @@ void UStaticMesh::CheckLightMapUVs( UStaticMesh* InStaticMesh, TArray< FString >
 					}
 					break;
 				case FLocal::UVCheck_Missing:
-					UE_LOG(LogStaticMesh, Warning, TEXT( "[%s, LOD %i] missing light map UVs (Res %i, CoordIndex %i)" ), *InStaticMesh->GetName(), CurLODModelIndex, InStaticMesh->LightMapResolution, InStaticMesh->LightMapCoordinateIndex );
+					UE_LOG(LogStaticMesh, Warning, TEXT( "[%s, LOD %i] missing light map UVs (Res %i, CoordIndex %i)" ), *InStaticMesh->GetName(), CurLODModelIndex, InStaticMesh->GetLightMapResolution(), InStaticMesh->GetLightMapCoordinateIndex() );
 					break;
 				case FLocal::UVCheck_NoTriangles:
 					UE_LOG(LogStaticMesh, Warning, TEXT( "[%s, LOD %i] doesn't have any triangles" ), *InStaticMesh->GetName(), CurLODModelIndex );
@@ -6382,9 +6544,9 @@ void UStaticMesh::CheckLightMapUVs( UStaticMesh* InStaticMesh, TArray< FString >
 
 UMaterialInterface* UStaticMesh::GetMaterial(int32 MaterialIndex) const
 {
-	if (StaticMaterials.IsValidIndex(MaterialIndex))
+	if (GetStaticMaterials().IsValidIndex(MaterialIndex))
 	{
-		return StaticMaterials[MaterialIndex].MaterialInterface;
+		return GetStaticMaterials()[MaterialIndex].MaterialInterface;
 	}
 
 	return NULL;
@@ -6400,7 +6562,7 @@ FName UStaticMesh::AddMaterial(UMaterialInterface* Material)
 
 	// Create a unique slot name for the material
 	FName MaterialName = Material->GetFName();
-	for (const FStaticMaterial& StaticMaterial : StaticMaterials)
+	for (const FStaticMaterial& StaticMaterial : GetStaticMaterials())
 	{
 		const FName ExistingName = StaticMaterial.MaterialSlotName;
 		if (ExistingName.GetComparisonIndex() == MaterialName.GetComparisonIndex())
@@ -6410,9 +6572,9 @@ FName UStaticMesh::AddMaterial(UMaterialInterface* Material)
 	}
 
 #if WITH_EDITORONLY_DATA
-	FStaticMaterial& StaticMaterial = StaticMaterials.Emplace_GetRef(Material, MaterialName, MaterialName);
+	FStaticMaterial& StaticMaterial = GetStaticMaterials().Emplace_GetRef(Material, MaterialName, MaterialName);
 #else
-	FStaticMaterial& StaticMaterial = StaticMaterials.Emplace_GetRef(Material, MaterialName);
+	FStaticMaterial& StaticMaterial = GetStaticMaterials().Emplace_GetRef(Material, MaterialName);
 #endif
 
 	StaticMaterial.UVChannelData = FMeshUVChannelInfo(1.0f);
@@ -6423,9 +6585,9 @@ FName UStaticMesh::AddMaterial(UMaterialInterface* Material)
 
 int32 UStaticMesh::GetMaterialIndex(FName MaterialSlotName) const
 {
-	for (int32 MaterialIndex = 0; MaterialIndex < StaticMaterials.Num(); ++MaterialIndex)
+	for (int32 MaterialIndex = 0; MaterialIndex < GetStaticMaterials().Num(); ++MaterialIndex)
 	{
-		const FStaticMaterial &StaticMaterial = StaticMaterials[MaterialIndex];
+		const FStaticMaterial &StaticMaterial = GetStaticMaterials()[MaterialIndex];
 		if (StaticMaterial.MaterialSlotName == MaterialSlotName)
 		{
 			return MaterialIndex;
@@ -6437,38 +6599,36 @@ int32 UStaticMesh::GetMaterialIndex(FName MaterialSlotName) const
 #if WITH_EDITOR
 void UStaticMesh::SetMaterial(int32 MaterialIndex, UMaterialInterface* NewMaterial)
 {
-	static FName NAME_StaticMaterials = GET_MEMBER_NAME_CHECKED(UStaticMesh, StaticMaterials);
-
-	if (StaticMaterials.IsValidIndex(MaterialIndex))
+	if (GetStaticMaterials().IsValidIndex(MaterialIndex))
 	{
 		FScopedTransaction ScopeTransaction(LOCTEXT("StaticMeshMaterialChanged", "StaticMesh: Material changed"));
 
 		// flag the property (Materials) we're modifying so that not all of the object is rebuilt.
-		FProperty* ChangedProperty = FindFProperty<FProperty>(UStaticMesh::StaticClass(), NAME_StaticMaterials);
+		FProperty* ChangedProperty = FindFProperty<FProperty>(UStaticMesh::StaticClass(), UStaticMesh::GetStaticMaterialsName());
 		check(ChangedProperty);
 		PreEditChange(ChangedProperty);
-		UMaterialInterface* CancelOldMaterial = StaticMaterials[MaterialIndex].MaterialInterface;
-		StaticMaterials[MaterialIndex].MaterialInterface = NewMaterial;
+		UMaterialInterface* CancelOldMaterial = GetStaticMaterials()[MaterialIndex].MaterialInterface;
+		GetStaticMaterials()[MaterialIndex].MaterialInterface = NewMaterial;
 		if (NewMaterial != nullptr)
 		{
 			//Set the Material slot name to a good default one
-			if (StaticMaterials[MaterialIndex].MaterialSlotName == NAME_None)
+			if (GetStaticMaterials()[MaterialIndex].MaterialSlotName == NAME_None)
 			{
-				StaticMaterials[MaterialIndex].MaterialSlotName = NewMaterial->GetFName();
+				GetStaticMaterials()[MaterialIndex].MaterialSlotName = NewMaterial->GetFName();
 			}
 			
 			//Set the original fbx material name so we can re-import correctly, ensure the name is unique
-			if (StaticMaterials[MaterialIndex].ImportedMaterialSlotName == NAME_None)
+			if (GetStaticMaterials()[MaterialIndex].ImportedMaterialSlotName == NAME_None)
 			{
 				auto IsMaterialNameUnique = [this, MaterialIndex](const FName TestName)
 				{
-					for (int32 MatIndex = 0; MatIndex < StaticMaterials.Num(); ++MatIndex)
+					for (int32 MatIndex = 0; MatIndex < GetStaticMaterials().Num(); ++MatIndex)
 					{
 						if (MatIndex == MaterialIndex)
 						{
 							continue;
 						}
-						if (StaticMaterials[MatIndex].ImportedMaterialSlotName == TestName)
+						if (GetStaticMaterials()[MatIndex].ImportedMaterialSlotName == TestName)
 						{
 							return false;
 						}
@@ -6490,7 +6650,7 @@ void UStaticMesh::SetMaterial(int32 MaterialIndex, UMaterialInterface* NewMateri
 						MaterialSlotName = NewMaterial->GetName() + TEXT("_") + FString::FromInt(MatchNameCounter);
 					}
 				}
-				StaticMaterials[MaterialIndex].ImportedMaterialSlotName = FName(*MaterialSlotName);
+				GetStaticMaterials()[MaterialIndex].ImportedMaterialSlotName = FName(*MaterialSlotName);
 			}
 
 			//Make sure adjacency information fit new material change
@@ -6506,7 +6666,7 @@ void UStaticMesh::SetMaterial(int32 MaterialIndex, UMaterialInterface* NewMateri
 			//Prompt the user only once
 			if (bPromptUser)
 			{
-				FText ConfirmRequiredAdjacencyText = FText::Format(LOCTEXT("ConfirmRequiredAdjacencyNoLODIndex", "Using a tessellation material required the adjacency buffer to be computed.\nDo you want to set the adjacency options to true?\n\n\tSaticMesh: {0}\n\tMaterial: {1}"), FText::FromString(GetPathName()), FText::FromString(StaticMaterials[MaterialIndex].MaterialInterface->GetPathName()));
+				FText ConfirmRequiredAdjacencyText = FText::Format(LOCTEXT("ConfirmRequiredAdjacencyNoLODIndex", "Using a tessellation material required the adjacency buffer to be computed.\nDo you want to set the adjacency options to true?\n\n\tSaticMesh: {0}\n\tMaterial: {1}"), FText::FromString(GetPathName()), FText::FromString(GetStaticMaterials()[MaterialIndex].MaterialInterface->GetPathName()));
 				EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNoCancel, ConfirmRequiredAdjacencyText);
 				bool bRevertAdjacency = false;
 				switch(Result)
@@ -6514,7 +6674,7 @@ void UStaticMesh::SetMaterial(int32 MaterialIndex, UMaterialInterface* NewMateri
 					//Handle cancel and negative answer
 					case EAppReturnType::Cancel:
 					{
-						StaticMaterials[MaterialIndex].MaterialInterface = CancelOldMaterial;
+						GetStaticMaterials()[MaterialIndex].MaterialInterface = CancelOldMaterial;
 						bRevertAdjacency = true;
 					}
 					case EAppReturnType::No:
@@ -6546,9 +6706,9 @@ void UStaticMesh::SetMaterial(int32 MaterialIndex, UMaterialInterface* NewMateri
 			Modify();
 			PostEditChange();
 		}
-		if (BodySetup)
+		if (GetBodySetup())
 		{
-			BodySetup->CreatePhysicsMeshes();
+			GetBodySetup()->CreatePhysicsMeshes();
 		}
 	}
 }
@@ -6556,9 +6716,9 @@ void UStaticMesh::SetMaterial(int32 MaterialIndex, UMaterialInterface* NewMateri
 
 int32 UStaticMesh::GetMaterialIndexFromImportedMaterialSlotName(FName ImportedMaterialSlotName) const
 {
-	for (int32 MaterialIndex = 0; MaterialIndex < StaticMaterials.Num(); ++MaterialIndex)
+	for (int32 MaterialIndex = 0; MaterialIndex < GetStaticMaterials().Num(); ++MaterialIndex)
 	{
-		const FStaticMaterial &StaticMaterial = StaticMaterials[MaterialIndex];
+		const FStaticMaterial &StaticMaterial = GetStaticMaterials()[MaterialIndex];
 		if (StaticMaterial.ImportedMaterialSlotName == ImportedMaterialSlotName)
 		{
 			return MaterialIndex;
@@ -6573,10 +6733,10 @@ int32 UStaticMesh::GetMaterialIndexFromImportedMaterialSlotName(FName ImportedMa
  */
 const FStaticMeshLODResources& UStaticMesh::GetLODForExport(int32 LODIndex) const
 {
-	check(RenderData);
-	LODIndex = FMath::Clamp<int32>( LODIndex, 0, RenderData->LODResources.Num()-1 );
+	check(GetRenderData());
+	LODIndex = FMath::Clamp<int32>( LODIndex, 0, GetRenderData()->LODResources.Num()-1 );
 	// TODO_STATICMESH: Don't allow exporting simplified meshes?
-	return RenderData->LODResources[LODIndex];
+	return GetRenderData()->LODResources[LODIndex];
 }
 
 #if WITH_EDITOR
@@ -6623,7 +6783,7 @@ void UStaticMesh::ConvertLegacyLODDistance()
 			if(SrcModel.LODDistance_DEPRECATED == 0.0f)
 			{
 				SrcModel.ScreenSize.Default = 1.0f;
-				RenderData->ScreenSize[ModelIndex] = SrcModel.ScreenSize.Default;
+				GetRenderData()->ScreenSize[ModelIndex] = SrcModel.ScreenSize.Default;
 			}
 			else
 			{
@@ -6637,7 +6797,7 @@ void UStaticMesh::ConvertLegacyLODDistance()
 				const float ScreenArea = ScreenWidth * ScreenHeight;
 				const float BoundsArea = PI * ScreenRadius * ScreenRadius;
 				SrcModel.ScreenSize.Default = FMath::Clamp(BoundsArea / ScreenArea, 0.0f, 1.0f);
-				RenderData->ScreenSize[ModelIndex] = SrcModel.ScreenSize.Default;
+				GetRenderData()->ScreenSize[ModelIndex] = SrcModel.ScreenSize.Default;
 			}
 		}
 	}
@@ -6671,7 +6831,7 @@ void UStaticMesh::ConvertLegacyLODScreenArea()
 			if (SrcModel.ScreenSize.Default == 0.0f)
 			{
 				SrcModel.ScreenSize.Default = 1.0f;
-				RenderData->ScreenSize[ModelIndex] = SrcModel.ScreenSize.Default;
+				GetRenderData()->ScreenSize[ModelIndex] = SrcModel.ScreenSize.Default;
 			}
 			else
 			{
@@ -6682,7 +6842,7 @@ void UStaticMesh::ConvertLegacyLODScreenArea()
 
 				// Now convert using the query function
 				SrcModel.ScreenSize.Default = ComputeBoundsScreenSize(FVector::ZeroVector, Bounds.SphereRadius, FVector(0.0f, 0.0f, ScreenDistance), ProjMatrix);
-				RenderData->ScreenSize[ModelIndex] = SrcModel.ScreenSize.Default;
+				GetRenderData()->ScreenSize[ModelIndex] = SrcModel.ScreenSize.Default;
 			}
 		}
 	}

@@ -27,6 +27,7 @@ PXR_NAMESPACE_CLOSE_SCOPE
 namespace UE
 {
 	class FSdfLayer;
+	class FUsdStage;
 	struct FSdfLayerOffset;
 }
 
@@ -39,10 +40,18 @@ namespace UsdUtils
 	};
 
 	/** Inserts the SubLayerFile path into ParentLayer as a sublayer */
-	USDUTILITIES_API bool InsertSubLayer( const TUsdStore< pxr::SdfLayerRefPtr >& ParentLayer, const TCHAR* SubLayerFile );
+	USDUTILITIES_API bool InsertSubLayer( const pxr::SdfLayerRefPtr& ParentLayer, const TCHAR* SubLayerFile, int32 Index = -1 );
 
+#if WITH_EDITOR
 	/** Opens a file dialog to open or save a USD file */
 	USDUTILITIES_API TOptional< FString > BrowseUsdFile( EBrowseFileMode Mode, TSharedRef< const SWidget > OriginatingWidget );
+#endif // #if WITH_EDITOR
+
+	/**
+	 * Converts the file path from being absolute or relative to engine binary, into being relative to the current project's directory.
+	 * It will only do this if the file is actually within the project's directory (or within its folder tree). Otherwise it will return an absolute path
+	 */
+	USDUTILITIES_API FString MakePathRelativeToProjectDir( const FString& Path );
 
 	/** Creates a new layer with a default prim */
 	USDUTILITIES_API TUsdStore< pxr::SdfLayerRefPtr > CreateNewLayer( TUsdStore< pxr::UsdStageRefPtr > UsdStage, const TUsdStore< pxr::SdfLayerRefPtr >& ParentLayer, const TCHAR* LayerFilePath );
@@ -61,6 +70,21 @@ namespace UsdUtils
 
 	/** Finds the layer offset that converts the Attribute local times to stage times */
 	USDUTILITIES_API UE::FSdfLayerOffset GetLayerToStageOffset( const pxr::UsdAttribute& Attribute );
+
+	/** Makes sure that the layer start and end timecodes include StartTimeCode and EndTimeCode */
+	USDUTILITIES_API void AddTimeCodeRangeToLayer( const pxr::SdfLayerRefPtr& Layer, double StartTimeCode, double EndTimeCode );
+
+	/** Makes Path relative to the file path of Layer. Conversion happens in-place. */
+	USDUTILITIES_API void MakePathRelativeToLayer( const UE::FSdfLayer& Layer, FString& Path );
+
+	/** Loads and returns the session sublayer that is used for storing persistent UE state, which can be saved to disk (e.g. metadata for whether an attribute is muted or not) */
+	USDUTILITIES_API UE::FSdfLayer GetUEPersistentStateSublayer( const UE::FUsdStage& Stage, bool bCreateIfNeeded = true );
+
+	/** Loads and returns the anonymous session sublayer that is used for storing transient UE session state, and won't be saved to disk (e.g. the opinion that actually mutes the attribute) */
+	USDUTILITIES_API UE::FSdfLayer GetUESessionStateSublayer( const UE::FUsdStage& Stage, bool bCreateIfNeeded = true );
+
+	/** Uses FindOrOpen to return the layer with the given identifier if possible. If the identifier is for an anonymous layer, it will search via display name instead */
+	USDUTILITIES_API UE::FSdfLayer FindLayerForIdentifier( const TCHAR* Identifier, const UE::FUsdStage& Stage );
 }
 
 #endif // #if USE_USD_SDK

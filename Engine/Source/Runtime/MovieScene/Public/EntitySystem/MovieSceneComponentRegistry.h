@@ -11,7 +11,7 @@ namespace UE
 namespace MovieScene
 {
 
-template<typename, typename> struct TPropertyComponents;
+template<typename> struct TPropertyComponents;
 
 struct MOVIESCENE_API FComponentRegistry
 {
@@ -56,19 +56,16 @@ public:
 		*Ref = NewComponentType<T>(DebugName, Flags);
 	}
 
-	template<typename PropertyType, typename InitialValueType>
-	void NewPropertyType(TPropertyComponents<PropertyType, InitialValueType>& OutComponents, const TCHAR* DebugName)
+	template<typename PropertyTraits>
+	void NewPropertyType(TPropertyComponents<PropertyTraits>& OutComponents, const TCHAR* DebugName)
 	{
 #if UE_MOVIESCENE_ENTITY_DEBUG
-		FString PreAnimatedDebugName = FString(TEXT("Pre Animated ")) + DebugName;
 		FString InitialValueDebugName = FString(TEXT("Initial ")) + DebugName;
 
 		OutComponents.PropertyTag = NewTag(DebugName, EComponentTypeFlags::CopyToChildren);
-		NewComponentType(&OutComponents.PreAnimatedValue, *PreAnimatedDebugName, EComponentTypeFlags::Preserved | EComponentTypeFlags::MigrateToOutput);
 		NewComponentType(&OutComponents.InitialValue, *InitialValueDebugName, EComponentTypeFlags::Preserved);
 #else
 		OutComponents.PropertyTag = NewTag(nullptr, EComponentTypeFlags::CopyToChildren);
-		NewComponentType(&OutComponents.PreAnimatedValue, nullptr, EComponentTypeFlags::Preserved | EComponentTypeFlags::MigrateToOutput);
 		NewComponentType(&OutComponents.InitialValue, nullptr, EComponentTypeFlags::Preserved);
 #endif
 	}
@@ -121,6 +118,14 @@ public:
 		return MigrationMask;
 	}
 
+	/**
+	 * Retrive a mask of all components to be copied or migrated to outputs
+	 */
+	const FComponentMask& GetCopyAndMigrationMask() const
+	{
+		return CopyAndMigrationMask;
+	}
+
 private:
 
 	FComponentTypeID NewComponentTypeInternal(FComponentTypeInfo&& TypeInfo);
@@ -138,52 +143,11 @@ private:
 
 	/** Mask containing all components that have the flag EComponentTypeFlags::MigrateToOutput */
 	FComponentMask MigrationMask;
+
+	/** Mask containing all components that have the EComponentTypeFlags::CopyToOutput and EComponentTypeFlags::MigrateToOutput */
+	FComponentMask CopyAndMigrationMask;
 };
 
 
-template<typename T>
-TComponentTypeID<T> FComponentRegistry::NewComponentType(const TCHAR* const DebugName, EComponentTypeFlags Flags)
-{
-	static const uint32 ComponentTypeSize = sizeof(T);
-	static_assert(ComponentTypeSize < TNumericLimits<decltype(FComponentTypeInfo::Sizeof)>::Max(), "Type too large to be used as component data");
-
-	static const uint32 Alignment = alignof(T);
-	static_assert(Alignment < TNumericLimits<decltype(FComponentTypeInfo::Alignment)>::Max(), "Type alignment too large to be used as component data");
-
-	FComponentTypeInfo NewTypeInfo;
-
-	NewTypeInfo.Sizeof                     = ComponentTypeSize;
-	NewTypeInfo.Alignment                  = Alignment;
-	NewTypeInfo.bIsZeroConstructType       = TIsZeroConstructType<T>::Value;
-	NewTypeInfo.bIsTriviallyDestructable   = TIsTriviallyDestructible<T>::Value;
-	NewTypeInfo.bIsTriviallyCopyAssignable = TIsTriviallyCopyAssignable<T>::Value;
-	NewTypeInfo.bIsPreserved               = EnumHasAnyFlags(Flags, EComponentTypeFlags::Preserved);
-	NewTypeInfo.bIsMigratedToOutput        = EnumHasAnyFlags(Flags, EComponentTypeFlags::MigrateToOutput);
-	NewTypeInfo.bHasReferencedObjects      = !TIsSame< FNotImplemented*, decltype( AddReferencedObjectForComponent((FReferenceCollector*)0, (T*)0) ) >::Value;
-
-#if UE_MOVIESCENE_ENTITY_DEBUG
-	NewTypeInfo.DebugInfo                = MakeUnique<FComponentTypeDebugInfo>();
-	NewTypeInfo.DebugInfo->DebugName     = DebugName;
-	NewTypeInfo.DebugInfo->DebugTypeName = GetGeneratedTypeName<T>();
-	NewTypeInfo.DebugInfo->Type          = TComponentDebugType<T>::Type;
-#endif
-
-	if (!NewTypeInfo.bIsZeroConstructType || !NewTypeInfo.bIsTriviallyDestructable || !NewTypeInfo.bIsTriviallyCopyAssignable || NewTypeInfo.bHasReferencedObjects)
-	{
-		NewTypeInfo.MakeComplexComponentOps<T>();
-	}
-
-	FComponentTypeID    NewTypeID = NewComponentTypeInternal(MoveTemp(NewTypeInfo));
-	TComponentTypeID<T> TypedTypeID = NewTypeID.ReinterpretCast<T>();
-
-	if (EnumHasAnyFlags(Flags, EComponentTypeFlags::CopyToChildren))
-	{
-		Factories.DefineChildComponent(TDuplicateChildEntityInitializer<T>(TypedTypeID));
-	}
-
-	return TypedTypeID;
-}
-
-
-}
-}
+} // namespace MovieScene
+} // namespace UE

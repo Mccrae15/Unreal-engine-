@@ -8,6 +8,8 @@
 
 #if WINDOWS_USE_FEATURE_DYNAMIC_RHI
 
+#include "Windows/WindowsPlatformApplicationMisc.h"
+
 static const TCHAR* GLoadedRHIModuleName;
 
 static bool ShouldPreferD3D12()
@@ -15,35 +17,109 @@ static bool ShouldPreferD3D12()
 	if (!GIsEditor)
 	{
 		bool bPreferD3D12 = false;
-		if (GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bPreferD3D12InGame"), bPreferD3D12, GGameUserSettingsIni))
+		if (GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bUseD3D12InGame"), bPreferD3D12, GGameUserSettingsIni))
 		{
 			return bPreferD3D12;
 		}
 	}
-
-#if 0
-	bool bPreferD3D12 = false;
-	if (GIsEditor)
-	{
-		GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bPreferD3D12InEditor"), bPreferD3D12, GEngineIni);
-	}
-	else
-	{
-		GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bPreferD3D12InGame"), bPreferD3D12, GEngineIni);
-	}
-
-	int32 MinNumCPUCores = 0;
-	GConfig->GetInt(TEXT("D3DRHIPreference"), TEXT("con.MinNumCPUCores"), MinNumCPUCores, GEngineIni);
-	const bool bHasEnoughCPUCores = FPlatformMisc::NumberOfCoresIncludingHyperthreads() >= MinNumCPUCores;
-
-	int32 MinPhysicalMemGB = 0;
-	GConfig->GetInt(TEXT("D3DRHIPreference"), TEXT("con.MinPhysicalMemGB"), MinPhysicalMemGB, GEngineIni);
-	const bool bHasEnoughMem = FPlatformMemory::GetConstants().TotalPhysical >= MinPhysicalMemGB * (1llu << 30);
-
-	return bPreferD3D12 && bHasEnoughCPUCores && bHasEnoughMem;
-#else
+	
 	return false;
-#endif
+}
+
+static bool ShouldForceFeatureLevelES31()
+{
+	static TOptional<bool> ForceES31;
+	if (ForceES31.IsSet())
+	{
+		return ForceES31.GetValue();
+	}
+
+	FConfigFile EngineSettings;
+	FString PlatformNameString = FPlatformProperties::IniPlatformName();
+	FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *PlatformNameString);
+
+	// Force Performance mode for machines with too few cores including hyperthreads
+	int MinCoreCount = 0;
+	if (EngineSettings.GetInt(TEXT("PerformanceMode"), TEXT("MinCoreCount"), MinCoreCount) && FPlatformMisc::NumberOfCoresIncludingHyperthreads() < MinCoreCount)
+	{
+		ForceES31 = true;
+		return true;
+	}
+
+	FString MinMemorySizeBucketString;
+	FString MinIntegratedMemorySizeBucketString;
+	if (EngineSettings.GetString(TEXT("PerformanceMode"), TEXT("MinMemorySizeBucket"), MinMemorySizeBucketString) && EngineSettings.GetString(TEXT("PerformanceMode"), TEXT("MinIntegratedMemorySizeBucket"), MinIntegratedMemorySizeBucketString))
+	{
+		for (int EnumIndex = int(EPlatformMemorySizeBucket::Largest); EnumIndex <= int(EPlatformMemorySizeBucket::Tiniest); EnumIndex++)
+		{
+			const TCHAR* BucketString = LexToString(EPlatformMemorySizeBucket(EnumIndex));
+			// Force Performance mode for machines with too little memory
+			if (MinMemorySizeBucketString == BucketString)
+			{
+				if (FPlatformMemory::GetMemorySizeBucket() >= EPlatformMemorySizeBucket(EnumIndex))
+				{
+					ForceES31 = true;
+					return true;
+				}
+			}
+
+			// Force Performance mode for machines with too little memory when shared with the GPU
+			if (MinIntegratedMemorySizeBucketString == BucketString)
+			{
+				if (FPlatformMemory::GetMemorySizeBucket() >= EPlatformMemorySizeBucket(EnumIndex) && FWindowsPlatformApplicationMisc::ProbablyHasIntegratedGPU())
+				{
+					ForceES31 = true;
+
+					return true;
+				}
+			}
+		}
+	}
+
+	ForceES31 = false;
+	return false;
+}
+
+static bool ShouldPreferFeatureLevelES31()
+{
+	if (!GIsEditor)
+	{
+		if (FParse::Param(FCommandLine::Get(), TEXT("FeatureLevelES31")) || FParse::Param(FCommandLine::Get(), TEXT("FeatureLevelES3_1")))
+		{
+			return true;
+		}
+
+		bool bPreferFeatureLevelES31 = false;
+		bool bFoundPreference = GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bPreferFeatureLevelES31"), bPreferFeatureLevelES31, GGameUserSettingsIni);
+
+		// Force low-spec users into performance mode but respect their choice once they have set a preference
+		bool bForceES31 = false;
+		if (!bFoundPreference)
+		{
+			bForceES31 = ShouldForceFeatureLevelES31();
+		}
+
+		if (bPreferFeatureLevelES31 || bForceES31)
+		{
+			if (!bFoundPreference)
+			{
+				GConfig->SetBool(TEXT("D3DRHIPreference"), TEXT("bPreferFeatureLevelES31"), true, GGameUserSettingsIni);
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool ShouldAllowD3D12FeatureLevelES31()
+{
+	if (!GIsEditor)
+	{
+		bool bAllowD3D12FeatureLevelES31 = true;
+		GConfig->GetBool(TEXT("SystemSettings"), TEXT("bAllowD3D12FeatureLevelES31"), bAllowD3D12FeatureLevelES31, GEngineIni);
+		return bAllowD3D12FeatureLevelES31;
+	}
+	return true;
 }
 
 static IDynamicRHIModule* LoadDynamicRHIModule(ERHIFeatureLevel::Type& DesiredFeatureLevel, const TCHAR*& LoadedRHIModuleName)
@@ -72,9 +148,11 @@ static IDynamicRHIModule* LoadDynamicRHIModule(ERHIFeatureLevel::Type& DesiredFe
 	}
 
 	bool bForceSM5 = FParse::Param(FCommandLine::Get(), TEXT("sm5"));
+	bool bPreferES31 = ShouldPreferFeatureLevelES31() && !bForceSM5;
+	bool bAllowD3D12FeatureLevelES31 = ShouldAllowD3D12FeatureLevelES31();
 	bool bForceVulkan = FParse::Param(FCommandLine::Get(), TEXT("vulkan"));
-	bool bForceD3D11 = FParse::Param(FCommandLine::Get(), TEXT("d3d11")) || FParse::Param(FCommandLine::Get(), TEXT("dx11")) || (bForceSM5 && !bForceVulkan);
-	bool bForceD3D12 = FParse::Param(FCommandLine::Get(), TEXT("d3d12")) || FParse::Param(FCommandLine::Get(), TEXT("dx12"));
+	bool bForceD3D11 = FParse::Param(FCommandLine::Get(), TEXT("d3d11")) || FParse::Param(FCommandLine::Get(), TEXT("dx11")) || ((bForceSM5 || (bPreferES31 && !bAllowD3D12FeatureLevelES31)) && !bForceVulkan && !bForceOpenGL);
+	bool bForceD3D12 = (FParse::Param(FCommandLine::Get(), TEXT("d3d12")) || FParse::Param(FCommandLine::Get(), TEXT("dx12"))) && (!bPreferES31 || bAllowD3D12FeatureLevelES31);
 	DesiredFeatureLevel = ERHIFeatureLevel::Num;
 	
 	if(!(bForceVulkan||bForceOpenGL||bForceD3D11||bForceD3D12))
@@ -124,9 +202,16 @@ static IDynamicRHIModule* LoadDynamicRHIModule(ERHIFeatureLevel::Type& DesiredFe
 			FName ShaderFormatName(*TargetedShaderFormats[0]);
 			EShaderPlatform TargetedPlatform = ShaderFormatToLegacyShaderPlatform(ShaderFormatName);
 			bForceVulkan = IsVulkanPlatform(TargetedPlatform);
-			bForceD3D11 = !bPreferD3D12 && IsD3DPlatform(TargetedPlatform, false);
+			bForceD3D11 = !bPreferD3D12 && IsD3DPlatform(TargetedPlatform);
 			bForceOpenGL = IsOpenGLPlatform(TargetedPlatform);
-			DesiredFeatureLevel = GetMaxSupportedFeatureLevel(TargetedPlatform);
+			if (bPreferES31)
+			{
+				DesiredFeatureLevel = ERHIFeatureLevel::ES3_1;
+			}
+			else
+			{
+				DesiredFeatureLevel = GetMaxSupportedFeatureLevel(TargetedPlatform);
+			}
 		}
 	}
 	else
@@ -134,6 +219,10 @@ static IDynamicRHIModule* LoadDynamicRHIModule(ERHIFeatureLevel::Type& DesiredFe
 		if (bForceSM5)
 		{
 			DesiredFeatureLevel = ERHIFeatureLevel::SM5;
+		}
+		else if (bPreferES31)
+		{
+			DesiredFeatureLevel = ERHIFeatureLevel::ES3_1;
 		}
 	}
 
@@ -240,7 +329,7 @@ static IDynamicRHIModule* LoadDynamicRHIModule(ERHIFeatureLevel::Type& DesiredFe
 
 		if (!DynamicRHIModule->IsSupported())
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("WindowsDynamicRHI", "RequiredDX11Feature", "A D3D11-compatible GPU (Feature Level 11.0, Shader Model 5.0) is required to run the engine."));
+			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("WindowsDynamicRHI", "RequiredDX11Feature_11_SM5", "A D3D11-compatible GPU (Feature Level 11.0, Shader Model 5.0) is required to run the engine."));
 			FPlatformMisc::RequestExit(1);
 			DynamicRHIModule = NULL;
 		}
@@ -289,7 +378,11 @@ FDynamicRHI* PlatformCreateDynamicRHI()
 const TCHAR* GetSelectedDynamicRHIModuleName(bool bCleanup)
 {
 	check(FApp::CanEverRender());
-	if (GDynamicRHI)
+	if (ShouldPreferFeatureLevelES31())
+	{
+		return TEXT("ES31");
+	}
+	else if (GDynamicRHI)
 	{
 		check(!!GLoadedRHIModuleName);
 		return GLoadedRHIModuleName;

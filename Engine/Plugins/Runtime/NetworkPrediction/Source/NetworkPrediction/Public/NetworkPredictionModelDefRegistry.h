@@ -20,11 +20,7 @@ public:
 	template<typename ModelDef>
 	void RegisterType()
 	{
-		// At some point we will probably need to support lazy registering due to delay-loaded plugins
-		// That should be ok as long as there are no active UNetworkPredictionWorldManagers. We would need to add some 
-		// machinery to ensure that and then force a call to FinalizeTypes after each delayed type registration
-		// (or introduce a begin/end re-registration call or something)
-		npEnsure(!bFinalized);
+		bFinalized = false; // New type must re-finalize
 
 		if (!npEnsure(ModelDefList.Contains(&ModelDef::ID) == false))
 		{
@@ -43,12 +39,17 @@ public:
 
 	void FinalizeTypes()
 	{
+		if (bFinalized)
+		{
+			return;
+		}
+
 		bFinalized = true;
 		ModelDefList.Sort([](const FTypeInfo& LHS, const FTypeInfo& RHS) -> bool
 		{
 			if (LHS.SortPriority == RHS.SortPriority)
 			{
-				UE_LOG(LogNetworkPrediction, Warning, TEXT("ModelDefs %s and %s have same sort priority. Using lexical sort as backup"), LHS.Name, RHS.Name);
+				UE_LOG(LogNetworkPrediction, Log, TEXT("ModelDefs %s and %s have same sort priority. Using lexical sort as backup"), LHS.Name, RHS.Name);
 				int32 StrCmpResult = FCString::Strcmp(LHS.Name, RHS.Name);
 				npEnsureMsgf(StrCmpResult != 0, TEXT("Duplicate ModelDefs appear to have been registered."));
 				return StrCmpResult > 0;

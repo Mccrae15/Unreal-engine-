@@ -5,6 +5,7 @@
 #include "Tracks/MovieSceneAudioTrack.h"
 #include "ScopedTransaction.h"
 #include "MovieSceneCommonHelpers.h"
+#include "MovieSceneTimeHelpers.h"
 #include "IMovieScenePlayer.h"
 #include "Channels/MovieSceneChannelProxy.h"
 #include "MovieScene.h"
@@ -33,6 +34,7 @@
 #include "Matinee/InterpTrackEvent.h"
 #include "Matinee/InterpTrackVectorProp.h"
 #include "Matinee/InterpTrackVisibility.h"
+#include "Matinee/InterpTrackSlomo.h"
 
 #include "Tracks/MovieSceneBoolTrack.h"
 #include "Tracks/MovieSceneFloatTrack.h"
@@ -47,6 +49,7 @@
 #include "Tracks/MovieSceneVisibilityTrack.h"
 #include "Tracks/MovieSceneAudioTrack.h"
 #include "Tracks/MovieSceneVectorTrack.h"
+#include "Tracks/MovieSceneSlomoTrack.h"
 
 #include "Sections/MovieSceneColorSection.h"
 #include "Sections/MovieSceneBoolSection.h"
@@ -60,9 +63,13 @@
 #include "Sections/MovieSceneEventTriggerSection.h"
 #include "Sections/MovieSceneVectorSection.h"
 #include "Sections/MovieSceneParameterSection.h"
+#include "Sections/MovieSceneSlomoSection.h"
 
 
 #include "Animation/AnimSequence.h"
+
+
+EMatineeImportSectionRangeMode FMatineeImportTools::SectionRangeMode = EMatineeImportSectionRangeMode::All;
 
 
 ERichCurveInterpMode FMatineeImportTools::MatineeInterpolationToRichCurveInterpolation( EInterpCurveMode CurveMode )
@@ -163,24 +170,32 @@ bool FMatineeImportTools::CopyInterpBoolTrack( UInterpTrackBoolProp* MatineeBool
 		BoolTrack->AddSection( *Section );
 		Section->SetRange(TRange<FFrameNumber>::All());
 		bSectionCreated = true;
+
+		if (MatineeBoolTrack->BoolTrack.Num() == 1)
+		{
+			Section->GetChannel().SetDefault(MatineeBoolTrack->BoolTrack[0].Value);
+		}
 	}
 	if (Section->TryModify())
 	{
-		TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
-
-		TMovieSceneChannelData<bool> ChannelData = Section->GetChannelProxy().GetChannel<FMovieSceneBoolChannel>(0)->GetData();
-		for ( const auto& Point : MatineeBoolTrack->BoolTrack )
+		if (MatineeBoolTrack->BoolTrack.Num() > 1)
 		{
-			FFrameNumber KeyTime = (Point.Time * FrameRate).RoundToFrame();
+			TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
 
-			ChannelData.UpdateOrAddKey(KeyTime, Point.Value);
+			TMovieSceneChannelData<bool> ChannelData = Section->GetChannelProxy().GetChannel<FMovieSceneBoolChannel>(0)->GetData();
+			for ( const auto& Point : MatineeBoolTrack->BoolTrack )
+			{
+				FFrameNumber KeyTime = (Point.Time * FrameRate).RoundToFrame();
 
-			KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
-		}
+				ChannelData.UpdateOrAddKey(KeyTime, Point.Value);
 
-		if (!KeyRange.IsEmpty())
-		{
-			Section->SetRange( KeyRange );
+				KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
+			}
+
+			if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !KeyRange.IsEmpty())
+			{
+				Section->SetRange( KeyRange );
+			}
 		}
 	}
 
@@ -204,28 +219,37 @@ bool FMatineeImportTools::CopyInterpFloatTrack( UInterpTrackFloatBase* MatineeFl
 		FloatTrack->AddSection( *Section );
 		Section->SetRange(TRange<FFrameNumber>::All());
 		bSectionCreated = true;
+
+		if (MatineeFloatTrack->FloatTrack.Points.Num() == 1)
+		{
+			FMovieSceneFloatChannel* FloatChannel = Section->GetChannelProxy().GetChannel<FMovieSceneFloatChannel>(0);
+			FloatChannel->SetDefault(MatineeFloatTrack->FloatTrack.Points[0].OutVal);
+		}
 	}
 	if (Section->TryModify())
 	{
-		TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
-
-		FMovieSceneFloatChannel* Channel = Section->GetChannelProxy().GetChannel<FMovieSceneFloatChannel>(0);
-		TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData = Channel->GetData();
-
-		for ( const auto& Point : MatineeFloatTrack->FloatTrack.Points )
+		if (MatineeFloatTrack->FloatTrack.Points.Num() > 1)
 		{
-			FFrameNumber KeyTime = (Point.InVal * FrameRate).RoundToFrame();
+			TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
 
-			FMatineeImportTools::SetOrAddKey( ChannelData, KeyTime, Point.OutVal, Point.ArriveTangent, Point.LeaveTangent, Point.InterpMode, FrameRate);
+			FMovieSceneFloatChannel* Channel = Section->GetChannelProxy().GetChannel<FMovieSceneFloatChannel>(0);
+			TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData = Channel->GetData();
 
-			KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
-		}
+			for ( const auto& Point : MatineeFloatTrack->FloatTrack.Points )
+			{
+				FFrameNumber KeyTime = (Point.InVal * FrameRate).RoundToFrame();
 
-		CleanupCurveKeys(Channel);
+				FMatineeImportTools::SetOrAddKey( ChannelData, KeyTime, Point.OutVal, Point.ArriveTangent, Point.LeaveTangent, Point.InterpMode, FrameRate);
 
-		if (!KeyRange.IsEmpty())
-		{
-			Section->SetRange( KeyRange );
+				KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
+			}
+
+			CleanupCurveKeys(Channel);
+
+			if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !KeyRange.IsEmpty())
+			{
+				Section->SetRange( KeyRange );
+			}
 		}
 	}
 
@@ -374,35 +398,50 @@ bool FMatineeImportTools::CopyInterpVectorTrack( UInterpTrackVectorProp* Matinee
 		VectorTrack->AddSection( *Section );
 		Section->SetRange(TRange<FFrameNumber>::All());
 		bSectionCreated = true;
+
+		if (MatineeVectorTrack->VectorTrack.Points.Num() == 1)
+		{
+			if (Section->GetChannelsUsed() == 3)
+			{
+				const FInterpCurvePoint<FVector> FirstPoint = MatineeVectorTrack->VectorTrack.Points[0];
+				TArrayView<FMovieSceneFloatChannel*> Channels = Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+				Channels[0]->SetDefault(FirstPoint.OutVal.X);
+				Channels[1]->SetDefault(FirstPoint.OutVal.Y);
+				Channels[2]->SetDefault(FirstPoint.OutVal.Z);
+			}
+		}
 	}
 	if (Section->TryModify())
 	{
-		TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
-
-		if (Section->GetChannelsUsed() == 3)
+		if (MatineeVectorTrack->VectorTrack.Points.Num() > 1)
 		{
-			TArrayView<FMovieSceneFloatChannel*> Channels = Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
-			TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData[3] = { Channels[0]->GetData(), Channels[1]->GetData(), Channels[2]->GetData() };
+			TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
 
-			for ( const auto& Point : MatineeVectorTrack->VectorTrack.Points )
+			if (Section->GetChannelsUsed() == 3)
 			{
-				FFrameNumber KeyTime = (Point.InVal * FrameRate).RoundToFrame();
+				TArrayView<FMovieSceneFloatChannel*> Channels = Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+				TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData[3] = { Channels[0]->GetData(), Channels[1]->GetData(), Channels[2]->GetData() };
 
-				FMatineeImportTools::SetOrAddKey( ChannelData[0], KeyTime, Point.OutVal.X, Point.ArriveTangent.X, Point.LeaveTangent.X, Point.InterpMode, FrameRate);
-				FMatineeImportTools::SetOrAddKey( ChannelData[1], KeyTime, Point.OutVal.Y, Point.ArriveTangent.Y, Point.LeaveTangent.Y, Point.InterpMode, FrameRate);
-				FMatineeImportTools::SetOrAddKey( ChannelData[2], KeyTime, Point.OutVal.Z, Point.ArriveTangent.Z, Point.LeaveTangent.Z, Point.InterpMode, FrameRate);
+				for ( const auto& Point : MatineeVectorTrack->VectorTrack.Points )
+				{
+					FFrameNumber KeyTime = (Point.InVal * FrameRate).RoundToFrame();
 
-				KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
+					FMatineeImportTools::SetOrAddKey( ChannelData[0], KeyTime, Point.OutVal.X, Point.ArriveTangent.X, Point.LeaveTangent.X, Point.InterpMode, FrameRate);
+					FMatineeImportTools::SetOrAddKey( ChannelData[1], KeyTime, Point.OutVal.Y, Point.ArriveTangent.Y, Point.LeaveTangent.Y, Point.InterpMode, FrameRate);
+					FMatineeImportTools::SetOrAddKey( ChannelData[2], KeyTime, Point.OutVal.Z, Point.ArriveTangent.Z, Point.LeaveTangent.Z, Point.InterpMode, FrameRate);
+
+					KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
+				}
+
+				CleanupCurveKeys(Channels[0]);
+				CleanupCurveKeys(Channels[1]);
+				CleanupCurveKeys(Channels[2]);
 			}
-			
-			CleanupCurveKeys(Channels[0]);
-			CleanupCurveKeys(Channels[1]);
-			CleanupCurveKeys(Channels[2]);
-		}
 
-		if (!KeyRange.IsEmpty())
-		{
-			Section->SetRange( KeyRange );
+			if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !KeyRange.IsEmpty())
+			{
+				Section->SetRange( KeyRange );
+			}
 		}
 	}
 
@@ -432,35 +471,47 @@ bool FMatineeImportTools::CopyInterpColorTrack( UInterpTrackColorProp* ColorProp
 		FloatChannels[2]->SetDefault(0.f);
 		FloatChannels[3]->SetDefault(1.f);
 
+		if (ColorPropTrack->VectorTrack.Points.Num() == 1)
+		{
+			const FInterpCurvePoint<FVector> FirstPoint = ColorPropTrack->VectorTrack.Points[0];
+			TArrayView<FMovieSceneFloatChannel*> Channels = Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+			Channels[0]->SetDefault(FirstPoint.OutVal.X);
+			Channels[1]->SetDefault(FirstPoint.OutVal.Y);
+			Channels[2]->SetDefault(FirstPoint.OutVal.Z);
+		}
+
 		Section->SetRange(TRange<FFrameNumber>::All());
 		bSectionCreated = true;
 	}
 
 	if (Section->TryModify())
 	{
-		TArrayView<FMovieSceneFloatChannel*> Channels = Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
-		TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData[3] = { Channels[0]->GetData(), Channels[1]->GetData(), Channels[2]->GetData() };
-
-		TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
-
-		for ( const FInterpCurvePoint<FVector>& Point : ColorPropTrack->VectorTrack.Points )
+		if (ColorPropTrack->VectorTrack.Points.Num() > 1)
 		{
-			FFrameNumber KeyTime = (Point.InVal * FrameRate).RoundToFrame();
+			TArrayView<FMovieSceneFloatChannel*> Channels = Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+			TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData[3] = { Channels[0]->GetData(), Channels[1]->GetData(), Channels[2]->GetData() };
 
-			FMatineeImportTools::SetOrAddKey( ChannelData[0], KeyTime, Point.OutVal.X, Point.ArriveTangent.X, Point.LeaveTangent.X, Point.InterpMode, FrameRate);
-			FMatineeImportTools::SetOrAddKey( ChannelData[1], KeyTime, Point.OutVal.Y, Point.ArriveTangent.Y, Point.LeaveTangent.Y, Point.InterpMode, FrameRate);
-			FMatineeImportTools::SetOrAddKey( ChannelData[2], KeyTime, Point.OutVal.Z, Point.ArriveTangent.Z, Point.LeaveTangent.Z, Point.InterpMode, FrameRate);
+			TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
 
-			KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
-		}
+			for ( const FInterpCurvePoint<FVector>& Point : ColorPropTrack->VectorTrack.Points )
+			{
+				FFrameNumber KeyTime = (Point.InVal * FrameRate).RoundToFrame();
 
-		CleanupCurveKeys(Channels[0]);
-		CleanupCurveKeys(Channels[1]);
-		CleanupCurveKeys(Channels[2]);
+				FMatineeImportTools::SetOrAddKey( ChannelData[0], KeyTime, Point.OutVal.X, Point.ArriveTangent.X, Point.LeaveTangent.X, Point.InterpMode, FrameRate);
+				FMatineeImportTools::SetOrAddKey( ChannelData[1], KeyTime, Point.OutVal.Y, Point.ArriveTangent.Y, Point.LeaveTangent.Y, Point.InterpMode, FrameRate);
+				FMatineeImportTools::SetOrAddKey( ChannelData[2], KeyTime, Point.OutVal.Z, Point.ArriveTangent.Z, Point.LeaveTangent.Z, Point.InterpMode, FrameRate);
 
-		if (!KeyRange.IsEmpty())
-		{
-			Section->SetRange( KeyRange );
+				KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
+			}
+
+			CleanupCurveKeys(Channels[0]);
+			CleanupCurveKeys(Channels[1]);
+			CleanupCurveKeys(Channels[2]);
+
+			if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !KeyRange.IsEmpty())
+			{
+				Section->SetRange( KeyRange );
+			}
 		}
 	}
 
@@ -490,37 +541,50 @@ bool FMatineeImportTools::CopyInterpLinearColorTrack( UInterpTrackLinearColorPro
 		FloatChannels[2]->SetDefault(0.f);
 		FloatChannels[3]->SetDefault(1.f);
 
+		if (LinearColorPropTrack->LinearColorTrack.Points.Num() == 1)
+		{
+			const FInterpCurvePoint<FLinearColor> FirstPoint = LinearColorPropTrack->LinearColorTrack.Points[0];
+			TArrayView<FMovieSceneFloatChannel*> Channels = Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+			Channels[0]->SetDefault(FirstPoint.OutVal.R);
+			Channels[1]->SetDefault(FirstPoint.OutVal.G);
+			Channels[2]->SetDefault(FirstPoint.OutVal.B);
+			Channels[3]->SetDefault(FirstPoint.OutVal.A);
+		}
+
 		Section->SetRange(TRange<FFrameNumber>::All());
 		bSectionCreated = true;
 	}
 
 	if (Section->TryModify())
 	{
-		TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
-
-		TArrayView<FMovieSceneFloatChannel*> Channels = Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
-		TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData[4] = { Channels[0]->GetData(), Channels[1]->GetData(), Channels[2]->GetData(), Channels[3]->GetData() };
-
-		for ( const auto& Point : LinearColorPropTrack->LinearColorTrack.Points )
+		if (LinearColorPropTrack->LinearColorTrack.Points.Num() > 1)
 		{
-			FFrameNumber KeyTime = (Point.InVal * FrameRate).RoundToFrame();
+			TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
 
-			FMatineeImportTools::SetOrAddKey( ChannelData[0], KeyTime, Point.OutVal.R, Point.ArriveTangent.R, Point.LeaveTangent.R, Point.InterpMode, FrameRate);
-			FMatineeImportTools::SetOrAddKey( ChannelData[1], KeyTime, Point.OutVal.G, Point.ArriveTangent.G, Point.LeaveTangent.G, Point.InterpMode, FrameRate);
-			FMatineeImportTools::SetOrAddKey( ChannelData[2], KeyTime, Point.OutVal.B, Point.ArriveTangent.B, Point.LeaveTangent.B, Point.InterpMode, FrameRate);
-			FMatineeImportTools::SetOrAddKey( ChannelData[3], KeyTime, Point.OutVal.A, Point.ArriveTangent.A, Point.LeaveTangent.A, Point.InterpMode, FrameRate);
+			TArrayView<FMovieSceneFloatChannel*> Channels = Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+			TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData[4] = { Channels[0]->GetData(), Channels[1]->GetData(), Channels[2]->GetData(), Channels[3]->GetData() };
 
-			KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
-		}
+			for ( const auto& Point : LinearColorPropTrack->LinearColorTrack.Points )
+			{
+				FFrameNumber KeyTime = (Point.InVal * FrameRate).RoundToFrame();
 
-		CleanupCurveKeys(Channels[0]);
-		CleanupCurveKeys(Channels[1]);
-		CleanupCurveKeys(Channels[2]);
-		CleanupCurveKeys(Channels[3]);
+				FMatineeImportTools::SetOrAddKey( ChannelData[0], KeyTime, Point.OutVal.R, Point.ArriveTangent.R, Point.LeaveTangent.R, Point.InterpMode, FrameRate);
+				FMatineeImportTools::SetOrAddKey( ChannelData[1], KeyTime, Point.OutVal.G, Point.ArriveTangent.G, Point.LeaveTangent.G, Point.InterpMode, FrameRate);
+				FMatineeImportTools::SetOrAddKey( ChannelData[2], KeyTime, Point.OutVal.B, Point.ArriveTangent.B, Point.LeaveTangent.B, Point.InterpMode, FrameRate);
+				FMatineeImportTools::SetOrAddKey( ChannelData[3], KeyTime, Point.OutVal.A, Point.ArriveTangent.A, Point.LeaveTangent.A, Point.InterpMode, FrameRate);
 
-		if (!KeyRange.IsEmpty())
-		{
-			Section->SetRange( KeyRange );
+				KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
+			}
+
+			CleanupCurveKeys(Channels[0]);
+			CleanupCurveKeys(Channels[1]);
+			CleanupCurveKeys(Channels[2]);
+			CleanupCurveKeys(Channels[3]);
+
+			if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !KeyRange.IsEmpty())
+			{
+				Section->SetRange( KeyRange );
+			}
 		}
 	}
 
@@ -641,7 +705,7 @@ bool FMatineeImportTools::CopyInterpMoveTrack( UInterpTrackMove* MoveTrack, UMov
 		CleanupCurveKeys(Channels[4]);
 		CleanupCurveKeys(Channels[5]);
 
-		if (!KeyRange.IsEmpty())
+		if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !UE::MovieScene::IsEmptyOrZeroSize(KeyRange))
 		{
 			Section->SetRange( KeyRange );
 		}
@@ -666,6 +730,7 @@ bool FMatineeImportTools::CopyInterpParticleTrack( UInterpTrackToggle* MatineeTo
 	{
 		Section = Cast<UMovieSceneParticleSection>( ParticleTrack->CreateNewSection() );
 		ParticleTrack->AddSection( *Section );
+		Section->SetRange(TRange<FFrameNumber>::All());
 		bSectionCreated = true;
 	}
 
@@ -690,7 +755,7 @@ bool FMatineeImportTools::CopyInterpParticleTrack( UInterpTrackToggle* MatineeTo
 			KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
 		}
 
-		if (!KeyRange.IsEmpty())
+		if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !UE::MovieScene::IsEmptyOrZeroSize(KeyRange))
 		{
 			Section->SetRange( KeyRange );
 		}
@@ -802,6 +867,7 @@ bool FMatineeImportTools::CopyInterpFadeTrack( UInterpTrackFade* MatineeFadeTrac
 	{
 		Section = Cast<UMovieSceneFadeSection>( FadeTrack->CreateNewSection() );
 		FadeTrack->AddSection( *Section );
+		Section->SetRange(TRange<FFrameNumber>::All());
 		bSectionCreated = true;
 	}
 	if (Section->TryModify())
@@ -820,7 +886,7 @@ bool FMatineeImportTools::CopyInterpFadeTrack( UInterpTrackFade* MatineeFadeTrac
 			KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
 		}
 
-		if (!KeyRange.IsEmpty())
+		if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !UE::MovieScene::IsEmptyOrZeroSize(KeyRange))
 		{
 			Section->SetRange( KeyRange );
 		}
@@ -857,8 +923,7 @@ bool FMatineeImportTools::CopyInterpDirectorTrack( UInterpTrackDirector* Directo
 				FGuid CameraHandle = Player.FindObjectId(*CameraActor, MovieSceneSequenceID::Root);
 				if (CameraHandle.IsValid())
 				{
-					FMovieSceneObjectBindingID CameraBindingID(CameraHandle, MovieSceneSequenceID::Root);
-					CameraCutTrack->AddNewCameraCut(CameraBindingID, (TrackCut.Time * FrameRate).RoundToFrame());
+					CameraCutTrack->AddNewCameraCut(UE::MovieScene::FRelativeObjectBindingID(CameraHandle), (TrackCut.Time * FrameRate).RoundToFrame());
 					bCutsAdded = true;
 				}
 			}
@@ -954,6 +1019,7 @@ bool FMatineeImportTools::CopyInterpVisibilityTrack( UInterpTrackVisibility* Mat
 		{
 			Section = Cast<UMovieSceneBoolSection>( VisibilityTrack->CreateNewSection() );
 			VisibilityTrack->AddSection( *Section );
+			Section->SetRange(TRange<FFrameNumber>::All());
 			bSectionCreated = true;
 		}
 		if (Section->TryModify())
@@ -988,12 +1054,57 @@ bool FMatineeImportTools::CopyInterpVisibilityTrack( UInterpTrackVisibility* Mat
 				KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
 			}
 
-			if (!KeyRange.IsEmpty())
+			if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !UE::MovieScene::IsEmptyOrZeroSize(KeyRange))
 			{
 				Section->SetRange( KeyRange );
 			}
 		}
 	}	
 	
+	return bSectionCreated;
+}
+
+bool FMatineeImportTools::CopyInterpSlomoTrack(UInterpTrackSlomo* MatineeSlomoTrack, UMovieSceneSlomoTrack* SlomoTrack)
+{
+	const FScopedTransaction Transaction(NSLOCTEXT("Sequencer", "PasteMatineeSlomoTrack", "Paste Matinee Slomo Track"));
+	bool bSectionCreated = false;
+
+	SlomoTrack->Modify();
+
+	FFrameRate   FrameRate = SlomoTrack->GetTypedOuter<UMovieScene>()->GetTickResolution();
+	FFrameNumber FirstKeyTime = (MatineeSlomoTrack->GetKeyframeTime(0) * FrameRate).RoundToFrame();
+
+	UMovieSceneSlomoSection* Section = Cast<UMovieSceneSlomoSection>(MovieSceneHelpers::FindSectionAtTime(SlomoTrack->GetAllSections(), FirstKeyTime));
+	if (Section == nullptr)
+	{
+		Section = Cast<UMovieSceneSlomoSection>(SlomoTrack->CreateNewSection());
+		SlomoTrack->AddSection(*Section);
+		Section->SetRange(TRange<FFrameNumber>::All());
+		bSectionCreated = true;
+	}
+	if (Section->TryModify())
+	{
+		TRange<FFrameNumber> KeyRange = TRange<FFrameNumber>::Empty();
+
+		FMovieSceneFloatChannel* SlomoChannel = Section->GetChannelProxy().GetChannel<FMovieSceneFloatChannel>(0);
+		check(SlomoChannel);
+		TMovieSceneChannelData<FMovieSceneFloatValue> SlomoInterface = SlomoChannel->GetData();
+		for (const auto& Point : MatineeSlomoTrack->FloatTrack.Points)
+		{
+			FFrameNumber KeyTime = (Point.InVal * FrameRate).RoundToFrame();
+
+			FMatineeImportTools::SetOrAddKey(SlomoInterface, KeyTime, Point.OutVal, Point.ArriveTangent, Point.LeaveTangent, Point.InterpMode, FrameRate);
+
+			KeyRange = TRange<FFrameNumber>::Hull(KeyRange, TRange<FFrameNumber>(KeyTime));
+		}
+
+		CleanupCurveKeys(SlomoChannel);
+
+		if (SectionRangeMode == EMatineeImportSectionRangeMode::KeysHull && !UE::MovieScene::IsEmptyOrZeroSize(KeyRange))
+		{
+			Section->SetRange(KeyRange);
+		}
+	}
+
 	return bSectionCreated;
 }

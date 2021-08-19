@@ -226,7 +226,6 @@ void FOpenGLGPUProfiler::EndFrame()
 				UE_LOG(LogRHI, Warning, TEXT("OpenGL perfomance data is potentially invalid because of the following build/runtime options:"));
 				
 #define LOG_GL_DEBUG_FLAG(a) UE_LOG(LogRHI, Warning, TEXT("   built with %s = %d"), TEXT(#a), a);
-				LOG_GL_DEBUG_FLAG(ENABLE_OPENGL_FRAMEDUMP);
 				LOG_GL_DEBUG_FLAG(ENABLE_VERIFY_GL);
 				LOG_GL_DEBUG_FLAG(ENABLE_UNIFORM_BUFFER_LAYOUT_VERIFICATION);
 				LOG_GL_DEBUG_FLAG(ENABLE_UNIFORM_BUFFER_LAYOUT_DUMP);
@@ -567,7 +566,7 @@ void FOpenGLBase::ProcessExtensions( const FString& ExtensionsString )
 	// Setup CVars that require the RHI initialized
 }
 
-void PE_GetCurrentOpenGLShaderDeviceCapabilities(FOpenGLShaderDeviceCapabilities& Capabilities)
+void FOpenGLBase::PE_GetCurrentOpenGLShaderDeviceCapabilities(FOpenGLShaderDeviceCapabilities& Capabilities)
 {
 	Capabilities.TargetPlatform = EOpenGLShaderTargetPlatform::OGLSTP_Unknown;
 }

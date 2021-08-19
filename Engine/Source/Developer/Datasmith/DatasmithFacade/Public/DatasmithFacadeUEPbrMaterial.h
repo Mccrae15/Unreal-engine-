@@ -16,10 +16,11 @@ class IDatasmithUEPbrMaterialElement;
 
 class FDatasmithFacadeMaterialExpression;
 
-class FDatasmithFacadeExpressionInput
+class DATASMITHFACADE_API FDatasmithFacadeExpressionInput
 {
 public:
-	const TCHAR* GetInputName() const;
+	const TCHAR* GetName() const;
+	void SetName(const TCHAR* InName);
 
 	/** Returns a new FDatasmithFacadeMaterialExpression pointing to the connected expression, the returned value must be deleted after used, can be nullptr. */
 	FDatasmithFacadeMaterialExpression* GetNewFacadeExpression();
@@ -42,12 +43,12 @@ protected:
 private:
 
 	IDatasmithExpressionInput* InternalExpressionInput;
-	
+
 	//We hold a shared pointer to the material to make sure it stays valid while a facade objects points to it.
 	TSharedPtr<IDatasmithUEPbrMaterialElement> ReferencedMaterial;
 };
 
-enum class EDatasmithFacadeMaterialExpressionType
+enum class EDatasmithFacadeMaterialExpressionType : uint64
 {
 	ConstantBool,
 	ConstantColor,
@@ -56,10 +57,24 @@ enum class EDatasmithFacadeMaterialExpressionType
 	FunctionCall,
 	Generic,
 	Texture,
-	TextureCoordinate
+	TextureCoordinate,
+	None = 255,
 };
 
-class FDatasmithFacadeMaterialExpression
+// not trivial to reuse EDatasmithMaterialExpressionType (eg with a "using" declaration). #swig
+#define DS_CHECK_ENUM_MISMATCH(name) static_assert((uint64)EDatasmithFacadeMaterialExpressionType::name == (uint64)EDatasmithMaterialExpressionType::name, "enum mismatch");
+DS_CHECK_ENUM_MISMATCH(None)
+DS_CHECK_ENUM_MISMATCH(ConstantBool)
+DS_CHECK_ENUM_MISMATCH(ConstantColor)
+DS_CHECK_ENUM_MISMATCH(ConstantScalar)
+DS_CHECK_ENUM_MISMATCH(FlattenNormal)
+DS_CHECK_ENUM_MISMATCH(FunctionCall)
+DS_CHECK_ENUM_MISMATCH(Generic)
+DS_CHECK_ENUM_MISMATCH(Texture)
+DS_CHECK_ENUM_MISMATCH(TextureCoordinate)
+#undef DS_CHECK_ENUM_MISMATCH
+
+class DATASMITHFACADE_API FDatasmithFacadeMaterialExpression
 {
 public:
 
@@ -68,7 +83,6 @@ public:
 	void SetName( const TCHAR* InName );
 
 	EDatasmithFacadeMaterialExpressionType GetExpressionType() const;
-	bool IsA( const EDatasmithFacadeMaterialExpressionType ExpressionType ) const { return ExpressionType == GetExpressionType(); }
 
 	/** Connects the default output to an expression input */
 	void ConnectExpression( FDatasmithFacadeExpressionInput& ExpressionInput );
@@ -80,7 +94,7 @@ public:
 	/**
 	 * Returns a pointer to a new FDatasmithFacadeExpressionInput object wrapping the IDatasmithExpressionInput at the specified index if it exists.
 	 * Returns null if the index is invalid.
- 	 * The caller is responsible for the destruction of returned object.
+	 * The caller is responsible for the destruction of returned object.
 	 */
 	FDatasmithFacadeExpressionInput* GetNewFacadeInput( int32 Index );
 
@@ -89,6 +103,8 @@ public:
 	void SetDefaultOutputIndex( int32 OutputIndex );
 
 	virtual ~FDatasmithFacadeMaterialExpression() = default;
+
+	void ResetExpression() { GetMaterialExpression()->ResetExpression(); }
 
 #ifdef SWIG_FACADE
 protected:
@@ -242,19 +258,12 @@ protected:
 class FDatasmithFacadeMaterialExpressionFlattenNormal : public FDatasmithFacadeMaterialExpression
 {
 public:
-	/** 
+	/**
 	 * Inputs
 	 */
 	FDatasmithFacadeExpressionInput GetNormal() const;
-	void SetNormal( FDatasmithFacadeExpressionInput InNormal );
 
 	FDatasmithFacadeExpressionInput GetFlatness() const;
-	void SetFlatness( FDatasmithFacadeExpressionInput InFlatness ) const;
-
-	/**
-	 * Outputs:
-	 * - RGB
-	 */
 
 #ifdef SWIG_FACADE
 protected:
@@ -313,27 +322,16 @@ public:
 	virtual ~FDatasmithFacadeUEPbrMaterial() {}
 
 	FDatasmithFacadeExpressionInput GetBaseColor() const;
-	void SetBaseColor( FDatasmithFacadeExpressionInput& InBaseColor );
 	FDatasmithFacadeExpressionInput GetMetallic() const;
-	void SetMetallic( FDatasmithFacadeExpressionInput&  InMetallic );
 	FDatasmithFacadeExpressionInput GetSpecular() const;
-	void SetSpecular( FDatasmithFacadeExpressionInput& InSpecular );
 	FDatasmithFacadeExpressionInput GetRoughness() const;
-	void SetRoughness( FDatasmithFacadeExpressionInput& InRoughness);
 	FDatasmithFacadeExpressionInput GetEmissiveColor() const;
-	void SetEmissiveColor( FDatasmithFacadeExpressionInput& InEmissiveColor );
 	FDatasmithFacadeExpressionInput GetOpacity() const;
-	void SetOpacity( FDatasmithFacadeExpressionInput& InOpacity );
 	FDatasmithFacadeExpressionInput GetNormal() const;
-	void SetNormal( FDatasmithFacadeExpressionInput& InNormal );
 	FDatasmithFacadeExpressionInput GetWorldDisplacement() const;
-	void SetWorldDisplacement( FDatasmithFacadeExpressionInput& InWorldDisplacement );
 	FDatasmithFacadeExpressionInput GetRefraction() const;
-	void SetRefraction( FDatasmithFacadeExpressionInput& InRefraction );
 	FDatasmithFacadeExpressionInput GetAmbientOcclusion() const;
-	void SetAmbientOcclusion( FDatasmithFacadeExpressionInput& InAmbientOcclusion );
 	FDatasmithFacadeExpressionInput GetMaterialAttributes() const;
-	void SetMaterialAttributes( FDatasmithFacadeExpressionInput& InMaterialAttributes );
 
 	int GetBlendMode() const;
 	void SetBlendMode( int bInBlendMode );
@@ -363,6 +361,13 @@ public:
 	{
 	}
 
+	/** Reset all expression to their default values and remove all connections */
+	void ResetExpressionGraph()
+	{ 
+		constexpr bool bRemoveAllExpressions = false;
+		GetDatasmithUEPbrMaterialElement()->ResetExpressionGraph( bRemoveAllExpressions );
+	}
+
 	/** If a parent material is generated from this material, this will be its label. If none, the instance and the parent will have the same label. */
 	void SetParentLabel( const TCHAR* InParentLabel );
 	const TCHAR* GetParentLabel() const;
@@ -374,11 +379,6 @@ protected:
 	FDatasmithFacadeUEPbrMaterial( const TSharedRef<IDatasmithUEPbrMaterialElement>& InMaterialRef );
 
 	IDatasmithMaterialExpression* AddMaterialExpression( const EDatasmithFacadeMaterialExpressionType ExpressionType );
-
-	// Build a Datasmith material element and add it to the Datasmith scene.
-	virtual void BuildScene(
-		FDatasmithFacadeScene& SceneRef // Datasmith scene
-	) override;
 
 	TSharedRef<IDatasmithUEPbrMaterialElement> GetDatasmithUEPbrMaterialElement() const;
 };

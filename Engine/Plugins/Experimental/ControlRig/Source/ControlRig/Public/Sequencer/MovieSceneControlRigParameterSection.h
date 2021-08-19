@@ -123,13 +123,13 @@ struct CONTROLRIG_API FChannelMapInfo
 	FChannelMapInfo(int32 InControlIndex, int32 InTotalChannelIndex,  int32 InChannelIndex, int32 InParentControlIndex = INDEX_NONE, FName InChannelTypeName = NAME_None) :
 		ControlIndex(InControlIndex),TotalChannelIndex(InTotalChannelIndex), ChannelIndex(InChannelIndex), ParentControlIndex(InParentControlIndex), ChannelTypeName(InChannelTypeName) {};
 	UPROPERTY()
-	int32 ControlIndex;
+	int32 ControlIndex = 0;
 	UPROPERTY()
-	int32 TotalChannelIndex;
+	int32 TotalChannelIndex = 0;
 	UPROPERTY()
-	int32 ChannelIndex; //channel index for it's type.. (e.g  float, int, bool).
+	int32 ChannelIndex = 0; //channel index for it's type.. (e.g  float, int, bool).
 	UPROPERTY()
-	int32 ParentControlIndex;
+	int32 ParentControlIndex = 0;
 	UPROPERTY()
 	FName ChannelTypeName; 
 
@@ -157,11 +157,18 @@ public:
 
 	TArray<FIntegerParameterNameAndCurve>& GetIntegerParameterNamesAndCurves();
 	const TArray<FIntegerParameterNameAndCurve>& GetIntegerParameterNamesAndCurves() const;
-public:
+
+private:
 
 	/** Control Rig that controls us*/
 	UPROPERTY()
 	UControlRig* ControlRig;
+
+public:
+
+	/** The class of control rig to instantiate */
+	UPROPERTY(EditAnywhere, Category = "Animation")
+	TSubclassOf<UControlRig> ControlRigClass;
 
 	/** Mask for controls themselves*/
 	UPROPERTY()
@@ -170,18 +177,6 @@ public:
 	/** Mask for Transform Mask*/
 	UPROPERTY()
 	FMovieSceneTransformMask TransformMask;
-
-	/** Blend this track in additively (using the reference pose as a base) */
-	UPROPERTY(EditAnywhere, Category = "Animation")
-	bool bAdditive;
-
-	/** Only apply bones that are in the filter */
-	UPROPERTY(EditAnywhere, Category = "Animation")
-	bool bApplyBoneFilter;
-
-	/** Per-bone filter to apply to our animation */
-	UPROPERTY(EditAnywhere, Category = "Animation", meta=(EditCondition=bApplyBoneFilter))
-	FInputBlendPose BoneFilter;
 
 	/** The weight curve for this animation controller section */
 	UPROPERTY()
@@ -217,7 +212,7 @@ public:
 	//Function to load an Anim Sequence into this section. It will automatically reszie to the section size.
 	//Will return false if fails or is canceled
 	virtual bool LoadAnimSequenceIntoThisSection(UAnimSequence* Sequence, UMovieScene* MovieScene, USkeleton* Skeleton,
-		bool bKeyReduce, float Tolerance);
+		bool bKeyReduce, float Tolerance, FFrameNumber InStartFrame = 0);
 #endif
 	const TArray<bool>& GetControlsMask() const
 	{
@@ -273,8 +268,14 @@ public:
 	}
 
 public:
+
 	/** Recreate with this Control Rig*/
 	void RecreateWithThisControlRig(UControlRig* InControlRig, bool bSetDefault);
+
+	/* Set the control rig for this section */
+	void SetControlRig(UControlRig* InControlRig);
+	/* Get the control rig for this section */
+	UControlRig* GetControlRig() const { return ControlRig; }
 
 	/** Whether or not to key currently, maybe evaluating so don't*/
 	void  SetDoNotKey(bool bIn) const { bDoNotKey = bIn; }

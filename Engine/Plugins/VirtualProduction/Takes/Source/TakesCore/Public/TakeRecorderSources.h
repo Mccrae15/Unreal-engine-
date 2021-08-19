@@ -18,7 +18,11 @@ DECLARE_LOG_CATEGORY_EXTERN(SubSequenceSerialization, Verbose, All);
 
 struct FTakeRecorderSourcesSettings
 {
+	bool bStartAtCurrentTimecode;
+	bool bRecordSourcesIntoSubSequences;
+	bool bRecordToPossessable;
 	bool bSaveRecordedAssets;
+	bool bAutoLock;
 	bool bRemoveRedundantTracks;
 };
 
@@ -89,19 +93,18 @@ public:
 	{
 		return SourcesSerialNumber;
 	}
-	UFUNCTION(BlueprintPure, Category = "Take Recorder")
-	bool GetRecordToSubSequence() const { return bRecordSourcesToSubSequences; }
-	UFUNCTION(BlueprintCallable, Category = "Take Recorder")
-	void SetRecordToSubSequence(bool bValue) { bRecordSourcesToSubSequences = bValue; }
 
-	UFUNCTION(BlueprintPure, Category = "Take Recorder")
-	bool GetStartAtCurrentTimecode() const { return bStartAtCurrentTimecode; }
-	UFUNCTION(BlueprintCallable, Category = "Take Recorder")
-	void SetStartAtCurrentTimecode(bool bValue) { bStartAtCurrentTimecode = bValue; }
+	/** Sources settings from the user and project parameters */
+	FTakeRecorderSourcesSettings GetSettings() const { return Settings; }
+	void SetSettings(FTakeRecorderSourcesSettings& InSettings) { Settings = InSettings; }
 
 	/** Calls the recording initialization flows on each of the specified sources. */
 	UFUNCTION(BlueprintCallable, Category = "Take Recorder")
-	void StartRecordingSource(TArray<UTakeRecorderSource*> InSources, const FTimecode& CurrentTiimecode);
+	void StartRecordingSource(TArray<UTakeRecorderSource*> InSources, const FQualifiedFrameTime& CurrentFrameTime);
+	
+	UE_DEPRECATED(4.27, "StartRecordingSource with FTimecode has been deprecated, please use StartRecordingSource with FQualifiedFrameTime")
+	void StartRecordingSource(TArray<UTakeRecorderSource*> InSources, const FTimecode& CurrentTimecode);
+
 public:
 
 	/**
@@ -111,7 +114,6 @@ public:
 	 * @return A handle to this specific binding that should be passed to UnbindSourcesChanged
 	 */
 	FDelegateHandle BindSourcesChanged(const FSimpleDelegate& Handler);
-
 
 	/**
 	 * Unbind a previously bound handler for when this source list changes
@@ -123,28 +125,40 @@ public:
 public:
 
 	/*
+	 * Cache assets needed for sequencer.
+	 */
+	void SetCachedAssets(class ULevelSequence* InSequence, FManifestSerializer* InManifestSerializer);
+
+	/*
 	 * Pre recording pass
 	*
 	*/
-	void PreRecording(class ULevelSequence* InSequence, FManifestSerializer* InManifestSerializer);
+	void PreRecording(class ULevelSequence* InSequence, const FQualifiedFrameTime& InCurrentFrameTime, FManifestSerializer* InManifestSerializer);
 
 	/*
 	 * Start recording pass
 	 *
 	 */
-	void StartRecording(class ULevelSequence* InSequence, const FTimecode& InTimecodeSource, FManifestSerializer* InManifestSerializer);
+	void StartRecording(class ULevelSequence* InSequence, const FQualifiedFrameTime& InCurrentFrameTime, FManifestSerializer* InManifestSerializer);
+
+	/*
+	 * Moves time forward by given DeltaTime
+	 *
+	 * @return Current Frame Number
+	 */
+	FFrameTime AdvanceTime(const FQualifiedFrameTime& CurrentFrameTime, float DeltaTime);
 
 	/*
 	* Tick recording pass
 	* @return Current Frame Number we are recording at.
 	*/
-	FFrameTime TickRecording(class ULevelSequence* InSequence, const FTimecode& InTimecodeSource, float DeltaTime);
+	FFrameTime TickRecording(class ULevelSequence* InSequence, const FQualifiedFrameTime& CurrentFrameTime, float DeltaTime);
 
 	/*
 	* Stop recording pass
 	*
 	*/
-	void StopRecording(class ULevelSequence* InSequence, FTakeRecorderSourcesSettings TakeRecorderSourcesSettings);
+	void StopRecording(class ULevelSequence* InSequence);
 
 public:
 	/*
@@ -159,6 +173,8 @@ public:
 	 */
 	static TArray<TPair<FQualifiedFrameTime, FTimecode> > RecordedTimes;
 
+	FQualifiedFrameTime GetCachedFrameTime() const { return CachedFrameTime; }
+
 private:
 	/** Called at the end of each frame in both the Editor and in Game to update all Sources. */
 	virtual void Tick(float DeltaTime) {}
@@ -171,27 +187,21 @@ private:
 	FOnSourcesChanged OnSourcesChangedEvent;
 
 	/** Calls PreRecording on sources recursively allowing them to create other sources which properly get PreRecording called on them as well. */
-	void StartRecordingRecursive(TArray<UTakeRecorderSource*> InSources, ULevelSequence* InSequence, const FTimecode& Timecode, FManifestSerializer* InManifestSerializer);
-
-	/** Calls PreRecording on sources recursively allowing them to create other sources which properly get PreRecording called on them as well. */
 	void PreRecordingRecursive(TArray<UTakeRecorderSource*> InSources, ULevelSequence* InMasterSequence, TArray<UTakeRecorderSource*>& NewSourcesOut, FManifestSerializer* InManifestSerializer);
 
 	/** Finds the folder that the given Source should be created in, creating it if necessary. */
 	class UMovieSceneFolder* AddFolderForSource(const UTakeRecorderSource* InSource, class UMovieScene* InMovieScene);
 
-	/** Gets the current frame time for recording */
-	FQualifiedFrameTime GetCurrentRecordingFrameTime() const;
-
 	/** Remove object bindings that don't have any tracks and are not bindings for attach/path tracks */
 	void RemoveRedundantTracks();
 
-	void StartRecordingPreRecordedSources(const FTimecode& CurrentTimecode);
+	void StartRecordingPreRecordedSources(const FQualifiedFrameTime& CurrentFrameTime);
 
 	void PreRecordSources(TArray<UTakeRecorderSource *> InSources);
 
-	void StartRecordingTheseSources(const TArray<UTakeRecorderSource *>& InSources, const FTimecode& CurrentTimecode);
+	void StartRecordingTheseSources(const TArray<UTakeRecorderSource *>& InSources, const FQualifiedFrameTime& CurrentFrameTime);
 
-	void SetSectionStartTimecode(UMovieSceneSubSection* SubSection, const FTimecode& Timecode, FFrameRate FrameRate, FFrameRate TickResolution);
+	void SetSectionStartTimecode(UMovieSceneSubSection* SubSection, const FTimecode& Timecode, const FQualifiedFrameTime& CurrentFrameTime);
 
 private:
 
@@ -210,9 +220,6 @@ private:
 	/** Are we currently in a recording pass and should be ticking our Sources? */
 	bool bIsRecording;
 
-	/** Float of how long the recording has been going based on delta tick times. Used when we have no Timecode Synchronization */
-	float TimeSinceRecordingStarted;
-
 	/** What Tick Resolution is the target level sequence we're recording into? Used to convert seconds into FrameNumbers. */
 	FFrameRate TargetLevelSequenceTickResolution;
 
@@ -222,11 +229,8 @@ private:
 	/** Non-serialized serial number that is used for updating UI when the source list changes */
 	uint32 SourcesSerialNumber;
 
-	/** Should we record tracks to start at the current timecode? */
-	bool bStartAtCurrentTimecode;
-
-	/** Should we record our sources to Sub Sequences and place them in the master via a Subscenes track? */
-	bool bRecordSourcesToSubSequences;
+	/** Sources settings */
+	FTakeRecorderSourcesSettings Settings;
 
 	/** Manifest Serializer that we are recording into. */
 	FManifestSerializer* CachedManifestSerializer;
@@ -237,10 +241,9 @@ private:
 	/** Array of Allocated Serializers created for each sub sequence.  Deleted at the end of the recording so memory is freed. */
 	TArray<TSharedPtr<FManifestSerializer>> CreatedManifestSerializers;
 
-	/** Timecode time at start of recording */
-	FTimecode StartRecordingTimecodeSource;
-
 	/** All sources after PreRecord */
 	TArray<UTakeRecorderSource *> PreRecordedSources;
 
+	/** The last frame time during tick recording */
+	FQualifiedFrameTime CachedFrameTime;
 };

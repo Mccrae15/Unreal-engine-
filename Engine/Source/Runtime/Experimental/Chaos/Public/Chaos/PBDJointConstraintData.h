@@ -6,6 +6,7 @@
 #include "Chaos/Framework/PhysicsProxyBase.h"
 #include "Chaos/Framework/PhysicsSolverBase.h"
 #include "Chaos/PBDConstraintBaseData.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxyFwd.h"
 
 
 namespace Chaos
@@ -39,8 +40,7 @@ namespace Chaos
 		typedef TVector<FTransform, 2> FTransformPair;
 		friend FData;
 
-		template <typename Traits>
-		friend class TPBDRigidsSolver; // friend so we can call ReleaseKinematicEndPoint when unregistering joint.
+		friend class FPBDRigidsSolver; // friend so we can call ReleaseKinematicEndPoint when unregistering joint.
 
 		FJointConstraint();
 		virtual ~FJointConstraint() override {}
@@ -56,7 +56,7 @@ namespace Chaos
 		const FData& GetJointSettings()const { return JointSettings; }
 
 		// If we created particle to serve as kinematic endpoint, track so we can release later. This will add particle to solver.
-		void SetKinematicEndPoint(TGeometryParticle<FReal, 3>* InParticle, FPBDRigidsSolver* Solver);
+		void SetKinematicEndPoint(FSingleParticlePhysicsProxy* InParticle, FPBDRigidsSolver* Solver);
 
 		CONSTRAINT_JOINT_PROPERPETY_IMPL(bool, CollisionEnabled, EJointConstraintFlags::CollisionEnabled, JointSettings.bCollisionEnabled);
 		//void SetCollisionEnabled(bool InValue);
@@ -66,13 +66,13 @@ namespace Chaos
 		//void SetProjectionEnabled(bool bInProjectionEnabled);
 		//bool GetProjectionEnabled() const;
 
-		CONSTRAINT_JOINT_PROPERPETY_IMPL(float, ProjectionLinearAlpha, EJointConstraintFlags::Projection, JointSettings.LinearProjection);
-		//void SetProjectionLinearAlpha(float InProjectionLinearAlpha);
-		//float GetProjectionLinearAlpha() const;
+		CONSTRAINT_JOINT_PROPERPETY_IMPL(FReal, ProjectionLinearAlpha, EJointConstraintFlags::Projection, JointSettings.LinearProjection);
+		//void SetProjectionLinearAlpha(FReal InProjectionLinearAlpha);
+		//FReal GetProjectionLinearAlpha() const;
 
-		CONSTRAINT_JOINT_PROPERPETY_IMPL(float, ProjectionAngularAlpha, EJointConstraintFlags::Projection, JointSettings.AngularProjection);
-		//void SetProjectionAngularAlpha(float InProjectionAngularAlpha);
-		//float GetProjectionAngularAlpha() const;
+		CONSTRAINT_JOINT_PROPERPETY_IMPL(FReal, ProjectionAngularAlpha, EJointConstraintFlags::Projection, JointSettings.AngularProjection);
+		//void SetProjectionAngularAlpha(FReal InProjectionAngularAlpha);
+		//FReal GetProjectionAngularAlpha() const;
 
 		CONSTRAINT_JOINT_PROPERPETY_IMPL(FReal, ParentInvMassScale, EJointConstraintFlags::ParentInvMassScale, JointSettings.ParentInvMassScale);
 		//void SetParentInvMassScale(FReal InParentInvMassScale);
@@ -82,9 +82,17 @@ namespace Chaos
 		//void SetLinearBreakForce(FReal InLinearBreakForce);
 		//FReal GetLinearBreakForce() const
 
+		CONSTRAINT_JOINT_PROPERPETY_IMPL(FReal, LinearPlasticityLimit, EJointConstraintFlags::LinearBreakForce, JointSettings.LinearPlasticityLimit);
+		//void SetLinearPlasticityLimit(FReal InLinearPlasticityLimit);
+		//FReal GetLinearPlasticityLimit() const
+
 		CONSTRAINT_JOINT_PROPERPETY_IMPL(FReal, AngularBreakTorque, EJointConstraintFlags::AngularBreakTorque, JointSettings.AngularBreakTorque);
 		//void SetAngularBreakTorque(FReal InAngularBreakTorque);
 		//FReal GetAngularBreakTorque() const
+
+		CONSTRAINT_JOINT_PROPERPETY_IMPL(FReal, AngularPlasticityLimit, EJointConstraintFlags::AngularBreakTorque, JointSettings.AngularPlasticityLimit);
+		//void SetAngularPlasticityLimit(FReal InAngularPlasticityLimit);
+		//FReal GetAngularPlasticityLimit() const
 
 		CONSTRAINT_JOINT_PROPERPETY_IMPL(void*, UserData, EJointConstraintFlags::UserData, UserData);
 		//void SetUserData(void* InUserData);
@@ -299,16 +307,8 @@ namespace Chaos
 
 	protected:
 
-		template <typename Traits>
-		void ReleaseKinematicEndPoint(TPBDRigidsSolver<Traits>* Solver)
-		{
-			if (KinematicEndPoint)
-			{
-				Solver->UnregisterObject(KinematicEndPoint);
-				KinematicEndPoint = nullptr;
-			}
-		}
-
+		void ReleaseKinematicEndPoint(FPBDRigidsSolver* Solver);
+		
 		FJointConstraintDirtyFlags MDirtyFlags;
 		FData JointSettings;
 
@@ -319,7 +319,7 @@ namespace Chaos
 	private:
 		// TODO: When we build constraint with only one actor, we spawn this particle to serve as kinematic endpoint
 		// to attach to, as Chaos requires two particles currently. This tracks particle that will need to be released with joint.
-		TGeometryParticle<FReal, 3>* KinematicEndPoint;
+		FSingleParticlePhysicsProxy* KinematicEndPoint;
 	};
 
 } // Chaos

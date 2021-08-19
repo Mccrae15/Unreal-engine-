@@ -198,8 +198,8 @@ UStaticMesh* FDatasmithStaticMeshImporter::ImportStaticMesh(const TSharedRef< ID
 
 	// 2. find the destination
 	UStaticMesh* ResultStaticMesh = nullptr;
-	FString StaticMeshName = AssetsContext.StaticMeshNameProvider.GenerateUniqueName( MeshElement->GetLabel() );
-	UPackage* Outer = AssetsContext.StaticMeshesImportPackage.Get();
+	int32 MaxNameCharCount = FDatasmithImporterUtils::GetAssetNameMaxCharCount(AssetsContext.StaticMeshesFinalPackage.Get());
+	FString StaticMeshName = AssetsContext.StaticMeshNameProvider.GenerateUniqueName( MeshElement->GetLabel(), MaxNameCharCount );
 
 	// Verify that the static mesh could be created in final package
 	FText FailReason;
@@ -209,6 +209,7 @@ UStaticMesh* FDatasmithStaticMeshImporter::ImportStaticMesh(const TSharedRef< ID
 		return nullptr;
 	}
 
+	UPackage* Outer = AssetsContext.StaticMeshesImportPackage.Get();
 	if ( ExistingMesh )
 	{
 		if ( ExistingMesh->GetOuter() != Outer )
@@ -373,13 +374,13 @@ void FDatasmithStaticMeshImporter::ProcessCollision(UStaticMesh* StaticMesh, con
 
 	StaticMesh->bCustomizedCollision = true;
 	StaticMesh->CreateBodySetup();
-	if ( !ensure(StaticMesh->BodySetup) )
+	if ( !ensure(StaticMesh->GetBodySetup()) )
 	{
 		return;
 	}
 
 	// Convex elements must be removed first since the re-import process uses the same flow
-	FKAggregateGeom& AggGeom = StaticMesh->BodySetup->AggGeom;
+	FKAggregateGeom& AggGeom = StaticMesh->GetBodySetup()->AggGeom;
 	AggGeom.ConvexElems.Reset();
 	FKConvexElem& ConvexElem = AggGeom.ConvexElems.AddDefaulted_GetRef();
 
@@ -575,7 +576,7 @@ void FDatasmithStaticMeshImporter::SetupStaticMesh( FDatasmithAssetsImportContex
 	int32 MaxLightmapSize = FDatasmithStaticMeshImportOptions::ConvertLightmapEnumToValue( StaticMeshImportOptions.MaxLightmapResolution );
 
 	int32 LightmapSize = DatasmithStaticMeshImporterImpl::GetLightmapSize( LightmapWeight, MinLightmapSize, MaxLightmapSize );
-	StaticMesh->LightingGuid = FGuid::NewGuid();
+	StaticMesh->SetLightingGuid();
 	StaticMesh->InitResources();
 
 	StaticMeshTemplate->LightMapResolution = LightmapSize;

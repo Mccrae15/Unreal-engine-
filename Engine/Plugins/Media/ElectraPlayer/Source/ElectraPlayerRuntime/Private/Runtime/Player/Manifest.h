@@ -4,6 +4,7 @@
 #include "PlayerCore.h"
 #include "PlayerTime.h"
 #include "StreamTypes.h"
+#include "StreamAccessUnitBuffer.h"
 #include "HTTP/HTTPManager.h"
 #include "Player/PlaybackTimeline.h"
 #include "Player/AdaptiveStreamingPlayerMetrics.h"
@@ -22,6 +23,14 @@ namespace Electra
 
 	class IStreamReader;
 
+	enum class EMediaFormatType
+	{
+		Unknown,
+		ISOBMFF,					// mp4
+		HLS,						// Apple HLS (HTTP Live Streaming)
+		DASH						// MPEG DASH
+	};
+
 
 	struct FPlayStartPosition
 	{
@@ -29,7 +38,7 @@ namespace Electra
 	};
 
 
-	class IStreamSegment : private TMediaNoncopyable<IStreamSegment>, public TSharedFromThis<IStreamSegment, ESPMode::ThreadSafe>
+	class IStreamSegment : public TSharedFromThis<IStreamSegment, ESPMode::ThreadSafe>
 	{
 	public:
 		virtual ~IStreamSegment() = default;
@@ -44,6 +53,7 @@ namespace Electra
 		 */
 		virtual uint32 GetPlaybackSequenceID() const = 0;
 
+		virtual void SetExecutionDelay(const FTimeValue& ExecutionDelay) = 0;
 
 		virtual EStreamType GetType() const = 0;
 
@@ -176,19 +186,71 @@ namespace Electra
 		//-------------------------------------------------------------------------
 		// Presentation and play time related functions.
 		//
-		//! Returns the current timeline object.
-		virtual TSharedPtrTS<IPlaybackAssetTimeline> GetTimeline() const = 0;
 
-		//! Returns the bitrate of the default stream (usually the first one specified).
-		virtual int64 GetDefaultStartingBitrate() const = 0;
+		/**
+		 * Returns the time value the timeline is anchored at.
+		 * Usually this is a UTC timestamp at which the presentation began but it could
+		 * literally be anything.
+		 * All time values are absolute and have this anchor added in.
+		 *
+		 * @return The time this presentation timeline is anchored at.
+		 */
+		virtual FTimeValue GetAnchorTime() const = 0;
 
-		//! Returns stream metadata. For period based presentations the streams can be different per period in which case the metadata of the first period is returned.
-		virtual void GetStreamMetadata(TArray<FStreamMetadata>& OutMetadata, EStreamType StreamType) const = 0;
+		/**
+		 * Returns the total time range of the timeline, including the end time of the last sample
+		 * to which the player will not be able to seek to.
+		 *
+		 * @return Time range of assets on the timeline.
+		 */
+		virtual FTimeRange GetTotalTimeRange() const = 0;
 
+		/**
+		 * Returns the seekable range of the timeline, which is a subset of the total
+		 * time range. Playback can start at any point in the seekable range with
+		 * additional constraints imposed by the format.
+		 *
+		 * @return Time range in which playback can start.
+		 */
+		virtual FTimeRange GetSeekableTimeRange() const = 0;
+
+		/**
+		 * Returns the timestamps of the segments from the video or audio track (if no video is present).
+		 * Segments are required to start with a keyframe and can thus be used to start playback with.
+		 */
+		virtual void GetSeekablePositions(TArray<FTimespan>& OutPositions) const = 0;
+
+		/**
+		 * Returns the duration of the assets on the timeline.
+		 * Typically this is the difference of the end and start values of the total time range
+		 * unless this is a Live presentation for which the duration will be set to infinite.
+		 *
+		 * @return Duration of the timeline.
+		 */
+		virtual FTimeValue GetDuration() const = 0;
+
+		/**
+		 * Returns the playback start time as defined by the presentation itself.
+		 * If the presentation has no preferred start time an invalid value is returned.
+		 */
+		virtual FTimeValue GetDefaultStartTime() const = 0;
+
+		/**
+		 * Clears the internal default start time so it will not be used again.
+		 */
+		virtual void ClearDefaultStartTime() = 0;
+
+		//! Returns track metadata. For period based presentations the streams can be different per period in which case the metadata of the first period is returned.
+		virtual void GetTrackMetadata(TArray<FTrackMetadata>& OutMetadata, EStreamType StreamType) const = 0;
 
 		//
 		virtual FTimeValue GetMinBufferTime() const = 0;
 
+
+		//! Needs to be called when the user has explicitly triggered a seek, including a programmatic loop back to the beginning.
+		//! For presentations with dynamic content changes (eg. DASH xlink:onRequest Periods) the content may need to be updated
+		//! again. This is different to internal seeking for retry purposes where content will not be re-resolved.
+		virtual void UpdateDynamicRefetchCounter() = 0;
 
 
 		//-------------------------------------------------------------------------
@@ -207,17 +269,49 @@ namespace Electra
 		public:
 			virtual ~IPlayPeriod() = default;
 
-			virtual void SetStreamPreferences(const FStreamPreferences& Preferences) = 0;
+			virtual void SetStreamPreferences(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes) = 0;
 
 			enum class EReadyState
 			{
-				NotReady,
+				NotLoaded,
+				Loading,
+				Loaded,
 				Preparing,
 				IsReady,
-				MustReselect						//!< Player must forget this Play Period and reselect it through FindPlayPeriod(). Needed if the timeline got altered.
 			};
 			virtual EReadyState GetReadyState() = 0;
-			virtual void PrepareForPlay(const FParamDict& Options) = 0;
+			virtual void Load() = 0;
+			virtual void PrepareForPlay() = 0;
+
+			//! Returns the bitrate of the default stream (usually the first one specified).
+			virtual int64 GetDefaultStartingBitrate() const = 0;
+
+			/**
+			 * Returns the selected stream's buffer source information for the specified stream type
+			 * after setting the stream preferences via SetStreamPreferences() and a following PrepareToPlay().
+			 * Valid only when GetReadyState() returns IsReady.
+			 * If a nullptr is returned there is no stream for this type.
+			 */
+			virtual TSharedPtrTS<FBufferSourceInfo> GetSelectedStreamBufferSourceInfo(EStreamType StreamType) = 0;
+
+			virtual FString GetSelectedAdaptationSetID(EStreamType StreamType) = 0;
+
+			enum class ETrackChangeResult
+			{
+				Changed,
+				NotChanged,
+				NewPeriodNeeded
+			};
+
+			/**
+			 * Changes the specified track over to one of the passed attributes.
+			 * If Changed is returned the new selection has been made active and the new FBufferSourceInfo can be fetched
+			 * with GetSelectedStreamBufferSourceInfo(). If NotChanged is returned no change has been made, either because
+			 * the track is already selected or no (better) match could be made.
+			 * If NewPeriodNeeded is returned this play period cannot perform track changing on the fly and a new period
+			 * with new stream preferences must be created instead.
+			 */
+			virtual ETrackChangeResult ChangeTrackStreamPreference(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes) = 0;
 
 			/**
 			 * Returns the media asset for this play period.
@@ -229,12 +323,10 @@ namespace Electra
 			/**
 			 * Selects a specific stream to be used for all next segment downloads.
 			 *
-			 * @param AdaptationSet
-			 * @param Representation
-			 * @param PreferredCDN
-			 *               Preferred CDN to get the segment from (retrieve through GetMediaAsset() for now)
+			 * @param AdaptationSetID
+			 * @param RepresentationID
 			 */
-			virtual void SelectStream(const TSharedPtrTS<IPlaybackAssetAdaptationSet>& AdaptationSet, const TSharedPtrTS<IPlaybackAssetRepresentation>& Representation, const FString& PreferredCDN) = 0;
+			virtual void SelectStream(const FString& AdaptationSetID, const FString& RepresentationID) = 0;
 
 			/**
 			 * Sets up a starting segment request to begin playback at the specified time.
@@ -248,6 +340,12 @@ namespace Electra
 			 */
 			virtual FResult GetStartingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
 
+
+			/**
+			 * Same as GetStartingSegment() except this is for a specific stream (video, audio, ...) only.
+			 * To be used when a track (language) change is made and a new segment is needed at the current playback position.
+			 */
+			virtual FResult GetContinuationSegment(TSharedPtrTS<IStreamSegment>& OutSegment, EStreamType StreamType, const FPlayerLoopState& LoopState, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
 
 			/**
 			 * Sets up a starting segment request to loop playback to.
@@ -272,23 +370,31 @@ namespace Electra
 			 *
 			 * @return
 			 */
-			virtual FResult GetNextSegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FParamDict& Options) = 0;
+			virtual FResult GetNextSegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment) = 0;
 
 			/**
 			 * Gets the segment request for the same segment on a different quality level or CDN.
 			 *
 			 * @param OutSegment
 			 * @param CurrentSegment
-			 * @param Options
+			 * @param bReplaceWithFillerData
 			 *
 			 * @return
 			 */
-			virtual FResult GetRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FParamDict& Options) = 0;
+			virtual FResult GetRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, bool bReplaceWithFillerData) = 0;
+
+			/**
+			 * Called by the ABR to increase the delay in fetching the next segment in case the segment returned a 404 when fetched at
+			 * the announced availability time. This may reduce 404's on the next segment fetches.
+			 *
+			 * @param IncreaseAmount
+			 */
+			virtual void IncreaseSegmentFetchDelay(const FTimeValue& IncreaseAmount) = 0;
 
 			struct FSegmentInformation
 			{
 				FTimeValue	Duration;
-				int64		ByteSize;
+				int64		ByteSize = 0;
 			};
 
 			/**
@@ -298,13 +404,17 @@ namespace Electra
 			 * @param OutAverageSegmentDuration
 			 * @param CurrentSegment
 			 * @param LookAheadTime
-			 * @param AdaptationSet
-			 * @param Representation
+			 * @param AdaptationSetID
+			 * @param RepresentationID
 			 */
-			virtual void GetSegmentInformation(TArray<FSegmentInformation>& OutSegmentInformation, FTimeValue& OutAverageSegmentDuration, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FTimeValue& LookAheadTime, const TSharedPtrTS<IPlaybackAssetAdaptationSet>& AdaptationSet, const TSharedPtrTS<IPlaybackAssetRepresentation>& Representation) = 0;
+			virtual void GetSegmentInformation(TArray<FSegmentInformation>& OutSegmentInformation, FTimeValue& OutAverageSegmentDuration, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FTimeValue& LookAheadTime, const FString& AdaptationSetID, const FString& RepresentationID) = 0;
 		};
 
+		//! Finds the playback period the specified start time falls into.
 		virtual FResult FindPlayPeriod(TSharedPtrTS<IPlayPeriod>& OutPlayPeriod, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
+
+		//! Locates the period following the given segment.
+		virtual FResult FindNextPlayPeriod(TSharedPtrTS<IPlayPeriod>& OutPlayPeriod, TSharedPtrTS<const IStreamSegment> CurrentSegment) = 0;
 	};
 
 

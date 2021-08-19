@@ -6,6 +6,7 @@
 #include "CoreFwd.h"
 #include "HAL/PlatformCrt.h"
 #include "Misc/CompressionFlags.h"
+#include "Math/NumericLimits.h"
 
 class Error;
 class GenericApplication;
@@ -218,7 +219,13 @@ enum class EDeviceScreenOrientation : uint8
 	FaceUp,
 
 	/** The orientation is as if place on a desk with the screen downward */
-	FaceDown
+	FaceDown,
+
+	/** The orientation is portrait, oriented upright with the sensor */
+	PortraitSensor,
+
+	/** The orientation is landscape, oriented upright with the sensor */
+	LandscapeSensor,
 };
 
 
@@ -933,6 +940,8 @@ public:
 	 */
 	static const TCHAR* GamePersistentDownloadDir();
 
+	static const TCHAR* GeneratedConfigDir();
+
 	static const TCHAR* GetUBTPlatform();
 
 	static const TCHAR* GetUBTTarget();
@@ -1181,17 +1190,6 @@ public:
 		return false;
 	}
 
-	/**
-	 * Returns whether this is a 'stereo only' platform. In general, stereo only platforms will not
-	 * support on-screen touch input nor require virtual joysticks (though you should use those query
-	 * functions to verify). The screen is always used for stereo output, and isn't a mode that is
-	 * enabled/disabled.
-	 */
-	static bool IsStandaloneStereoOnlyDevice()
-	{
-		return false;
-	}
-
 	/*
 	 * Returns whether the volume buttons are handled by the system
 	 */
@@ -1252,6 +1250,11 @@ public:
 	 * @see EScreenOrientation
 	 */
 	static EDeviceScreenOrientation GetDeviceOrientation();
+	/**
+	 * Change the orientation of the device: e.g. Portrait, LandscapeRight.
+	 * @see EScreenOrientation
+	 */
+	static void SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrientation);
 
 	/**
 	 * Returns the device volume if the device is capable of returning that information.
@@ -1469,11 +1472,25 @@ public:
 	/**
 	 * retrieves the maximum refresh rate supported by the platform
 	 */
-	static int32 GetMaxRefreshRate()
+	static inline int32 GetMaxRefreshRate()
 	{
 		return 60;
 	}
+
+	/**
+	 * Returns the platform's maximum allowed value for rhi.SyncInterval
+	 */
+	static inline int32 GetMaxSyncInterval()
+	{
+		// Generic platform has no limit.
+		return MAX_int32;
+	}
 	
+	/**
+	 * Returns true if PGO is currently enabled
+	 */
+	static bool IsPGOEnabled();
+
 #if !UE_BUILD_SHIPPING
 	/**
 	 * Returns any platform specific warning messages we want printed on screen

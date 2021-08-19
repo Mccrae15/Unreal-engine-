@@ -67,6 +67,7 @@
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Engine/LevelScriptActor.h"
 #include "Engine/NetworkSettings.h"
+#include "Engine/NetworkDelegates.h"
 #include "Net/NetworkGranularMemoryLogging.h"
 #include "SocketSubsystem.h"
 #include "AddressInfoTypes.h"
@@ -149,6 +150,8 @@ DECLARE_CYCLE_STAT(TEXT("NetDriver TickFlush"), STAT_NetTickFlush, STATGROUP_Gam
 DECLARE_CYCLE_STAT(TEXT("NetDriver TickFlush GatherStats"), STAT_NetTickFlushGatherStats, STATGROUP_Game);
 DECLARE_CYCLE_STAT(TEXT("NetDriver TickFlush GatherStatsPerfCounters"), STAT_NetTickFlushGatherStatsPerfCounters, STATGROUP_Game);
 
+DEFINE_LOG_CATEGORY_STATIC(LogNetSyncLoads, Log, All);
+
 int32 GNumSaturatedConnections; // Counter for how many connections are skipped/early out due to bandwidth saturation
 int32 GNumSharedSerializationHit;
 int32 GNumSharedSerializationMiss;
@@ -183,6 +186,80 @@ namespace NetEmulationHelper
 	}
 #endif //#if DO_ENABLE_NET_TEST
 }
+
+namespace NetDriverInternal
+{
+	struct FAutoDestructProperty
+	{
+		FProperty* Property = nullptr;
+		void* LocalParameters = nullptr;
+
+		FAutoDestructProperty(FProperty* InProp, void* InLocalParams) 
+			: Property(InProp)
+			, LocalParameters(InLocalParams)
+		{
+			check(Property->HasAnyPropertyFlags(CPF_OutParm));
+		}
+
+		FAutoDestructProperty(FAutoDestructProperty&& rhs)
+			: Property(rhs.Property)
+			, LocalParameters(rhs.LocalParameters)
+		{
+			rhs.Property = nullptr;
+			rhs.LocalParameters = nullptr;
+		}
+
+		~FAutoDestructProperty()
+		{
+			if (Property)
+			{
+				Property->DestroyValue_InContainer(LocalParameters);
+			}
+		}
+	};
+
+	TArray<NetDriverInternal::FAutoDestructProperty> CopyOutParametersToLocalParameters(UFunction* Function, FOutParmRec* OutParms, void* LocalParms, UObject* TargetObj)
+	{
+		TArray<NetDriverInternal::FAutoDestructProperty> CopiedProperties;
+
+		// Look for CPF_OutParm's, we'll need to copy these into the local parameter memory manually
+		// The receiving side will pull these back out when needed
+		for (TFieldIterator<FProperty> It(Function); It && (It->PropertyFlags & (CPF_Parm | CPF_ReturnParm)) == CPF_Parm; ++It)
+		{
+			if (It->HasAnyPropertyFlags(CPF_OutParm))
+			{
+				if (OutParms == nullptr)
+				{
+					UE_LOG(LogNet, Warning, TEXT("Missing OutParms. Property: %s, Function: %s, Actor: %s"), *It->GetName(), *GetNameSafe(Function), *GetFullNameSafe(TargetObj));
+					continue;
+				}
+
+				FOutParmRec* Out = OutParms;
+
+				checkSlow(Out);
+
+				while (Out->Property != *It)
+				{
+					Out = Out->NextOutParm;
+					checkSlow(Out);
+				}
+
+				void* Dest = It->ContainerPtrToValuePtr<void>(LocalParms);
+
+				const int32 CopySize = It->ElementSize * It->ArrayDim;
+
+				check(((uint8*)Dest - (uint8*)LocalParms) + CopySize <= Function->ParmsSize);
+
+				It->CopyCompleteValue(Dest, Out->PropAddr);
+
+				CopiedProperties.Emplace(*It, LocalParms);
+			}
+		}
+
+		return CopiedProperties;
+	}
+
+} //namespace NetDriverInternal
 
 #if UE_BUILD_SHIPPING
 #define DEBUG_REMOTEFUNCTION(Format, ...)
@@ -279,6 +356,8 @@ UNetDriver::UNetDriver(const FObjectInitializer& ObjectInitializer)
 ,   Notify(nullptr)
 ,	Time( 0.f )
 ,	ElapsedTime( 0.0 )
+,	bInTick(false)
+,	bPendingDestruction(false)
 ,	LastTickDispatchRealtime( 0.f )
 ,   bIsPeer(false)
 ,	bSkipLocalStats(false)
@@ -396,6 +475,7 @@ void UNetDriver::PostInitProperties()
 		OnLevelRemovedFromWorldHandle = FWorldDelegates::LevelRemovedFromWorld.AddUObject(this, &UNetDriver::OnLevelRemovedFromWorld);
 		OnLevelAddedToWorldHandle = FWorldDelegates::LevelAddedToWorld.AddUObject(this, &UNetDriver::OnLevelAddedToWorld);
 		PostGarbageCollectHandle = FCoreUObjectDelegates::GetPostGarbageCollect().AddUObject(this, &UNetDriver::PostGarbageCollect);
+		ReportSyncLoadDelegateHandle = FNetDelegates::OnSyncLoadDetected.AddUObject(this, &UNetDriver::ReportSyncLoad);
 
 		LoadChannelDefinitions();
 	}
@@ -567,6 +647,8 @@ void UNetDriver::CancelAdaptiveReplication(FNetworkObjectInfo& InNetworkActor)
 static TAutoConsoleVariable<int32> CVarOptimizedRemapping( TEXT( "net.OptimizedRemapping" ), 1, TEXT( "Uses optimized path to remap unmapped network guids" ) );
 static TAutoConsoleVariable<int32> CVarMaxClientGuidRemaps( TEXT( "net.MaxClientGuidRemaps" ), 100, TEXT( "Max client resolves of unmapped network guids per tick" ) );
 TAutoConsoleVariable<int32> CVarFilterGuidRemapping( TEXT( "net.FilterGuidRemapping" ), 1, TEXT( "Remove destroyed and parent guids from unmapped list" ) );
+bool CVar_NetDriver_ReportGameTickFlushTime = false;
+static FAutoConsoleVariableRef CVarNetDriverReportTickFlushTime(TEXT("net.ReportGameTickFlushTime"), CVar_NetDriver_ReportGameTickFlushTime, TEXT("Record and report to the perf tracking system the processing time of the GameNetDriver's TickFlush."), ECVF_Default);
 
 /** Accounts for the network time we spent in the game driver. */
 double GTickFlushGameDriverTimeSeconds = 0.0;
@@ -576,14 +658,16 @@ bool ShouldEnableScopeSecondsTimers()
 #if STATS
 	return true;
 #elif CSV_PROFILER
-	return FCsvProfiler::Get()->IsCapturing();
+	return CVar_NetDriver_ReportGameTickFlushTime || FCsvProfiler::Get()->IsCapturing();
 #else
-	return false;
+	return CVar_NetDriver_ReportGameTickFlushTime;
 #endif
 }
 
 void UNetDriver::TickFlush(float DeltaSeconds)
 {
+	TGuardValue<bool> GuardInNetTick(bInTick, true);
+
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(NetworkOutgoing);
 	SCOPE_CYCLE_COUNTER(STAT_NetTickFlush);
 	bool bEnableTimer = (NetDriverName == NAME_GameNetDriver) && ShouldEnableScopeSecondsTimers();
@@ -1101,9 +1185,9 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 					{
 						if (ensure(NetworkGuid.IsValid()))
 						{
-						UnmappedGuids.Add(NetworkGuid);
+							UnmappedGuids.Add(NetworkGuid);
+						}
 					}
-				}
 				}
 
 				++NumRemapTests;
@@ -1192,14 +1276,6 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 
 	if ( CurrentRealtimeSeconds - LastCleanupTime > CleanupTimeSeconds )
 	{
-		for ( auto It = RepChangedPropertyTrackerMap.CreateIterator(); It; ++It )
-		{
-			if ( !It.Value().IsObjectValid() )
-			{
-				It.RemoveCurrent();
-			}
-		}
-
 		for ( auto It = ReplicationChangeListMap.CreateIterator(); It; ++It )
 		{
 			if ( !It.Value().IsObjectValid() )
@@ -1399,6 +1475,19 @@ void UNetDriver::PostTickFlush()
 	{
 		UOnlineEngineInterface::Get()->ClearVoicePackets(World);
 	}
+
+	if (bPendingDestruction)
+	{
+		if (World)
+		{
+			GEngine->DestroyNamedNetDriver(World, NetDriverName);
+		}
+		else
+		{
+			UE_LOG(LogNet, Error, TEXT("NetDriver %s pending destruction without valid world."), *NetDriverName.ToString());
+		}
+		bPendingDestruction = false;
+	}
 }
 
 bool UNetDriver::InitConnectionClass(void)
@@ -1508,11 +1597,6 @@ void UNetDriver::InitConnectionlessHandler()
 
 		if (ConnectionlessHandler.IsValid())
 		{
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			ConnectionlessHandler->InitializeAddressSerializer([this](const FString& InAddress) {
-				return GetSocketSubsystem()->GetAddressFromString(InAddress);
-			});
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			ConnectionlessHandler->NotifyAnalyticsProvider(AnalyticsProvider, AnalyticsAggregator);
 			ConnectionlessHandler->Initialize(Handler::Mode::Server, MAX_PACKET_SIZE, true, nullptr, nullptr, NetDriverName);
 
@@ -1765,6 +1849,8 @@ struct FRPCCSVTracker
 
 void UNetDriver::TickDispatch( float DeltaTime )
 {
+	TGuardValue<bool> GuardInNetTick(bInTick, true);
+
 	SendCycles=0;
 
 	const double CurrentRealtime = FPlatformTime::Seconds();
@@ -1869,6 +1955,19 @@ void UNetDriver::PostTickDispatch()
 		GRPCCSVTracker.EndTickDispatch();
 		GReceiveRPCTimingEnabled = false;
 	}
+
+	if (bPendingDestruction)
+	{
+		if (World)
+		{ 
+			GEngine->DestroyNamedNetDriver(World, NetDriverName);
+		}
+		else
+		{
+			UE_LOG(LogNet, Error, TEXT("NetDriver %s pending destruction without valid world."), *NetDriverName.ToString());
+		}
+		bPendingDestruction = false;
+	}
 }
 
 void UNetDriver::NotifyRPCProcessed(UFunction* Function, UNetConnection* Connection, double ElapsedTimeSeconds)
@@ -1926,7 +2025,7 @@ void UNetDriver::InternalProcessRemoteFunctionPrivate(
 	}
 
 	// If saturated and function is unimportant, skip it. Note unreliable multicasts are queued at the actor channel level so they are not gated here.
-	if (!(Function->FunctionFlags & FUNC_NetReliable) && (!(Function->FunctionFlags & FUNC_NetMulticast)) && !Connection->IsNetReady(0))
+	if (!(Function->FunctionFlags & FUNC_NetReliable) && (!(Function->FunctionFlags & FUNC_NetMulticast)) && (!Connection->IsNetReady(0)))
 	{
 		DEBUG_REMOTEFUNCTION(TEXT("Network saturated, not calling %s::%s"), *GetNameSafe(Actor), *GetNameSafe(Function));
 		return;
@@ -2152,43 +2251,10 @@ void UNetDriver::ProcessRemoteFunctionForChannelPrivate(
 	SetTraceCollector(Bunch, UE_NET_TRACE_CREATE_COLLECTOR(ENetTraceVerbosity::Trace));
 #endif
 
-	TArray<FProperty*> LocalOutParms;
-
+	TArray<NetDriverInternal::FAutoDestructProperty> LocalOutParms;
 	if (Stack == nullptr)
 	{
-		// Look for CPF_OutParm's, we'll need to copy these into the local parameter memory manually
-		// The receiving side will pull these back out when needed
-		for (TFieldIterator<FProperty> It(Function); It && (It->PropertyFlags & (CPF_Parm|CPF_ReturnParm))==CPF_Parm; ++It)
-		{
-			if (It->HasAnyPropertyFlags(CPF_OutParm))
-			{
-				if (OutParms == nullptr)
-				{
-					UE_LOG(LogNet, Warning, TEXT("Missing OutParms. Property: %s, Function: %s, Actor: %s"), *It->GetName(), *GetNameSafe(Function), *GetFullNameSafe(TargetObj));
-					continue;
-				}
-
-				FOutParmRec* Out = OutParms;
-
-				checkSlow(Out);
-
-				while (Out->Property != *It)
-				{
-					Out = Out->NextOutParm;
-					checkSlow(Out);
-				}
-
-				void* Dest = It->ContainerPtrToValuePtr<void>(Parms);
-
-				const int32 CopySize = It->ElementSize * It->ArrayDim;
-
-				check(((uint8*)Dest - (uint8*)Parms) + CopySize <= Function->ParmsSize);
-
-				It->CopyCompleteValue(Dest, Out->PropAddr);
-
-				LocalOutParms.Add(*It);
-			}
-		}
+		LocalOutParms = NetDriverInternal::CopyOutParametersToLocalParameters(Function, OutParms, Parms, TargetObj);
 	}
 
 	bool LogAsWarning = (GNetRPCDebug == 1);
@@ -2269,13 +2335,6 @@ void UNetDriver::ProcessRemoteFunctionForChannelPrivate(
 			HeaderBits = Ch->WriteContentBlockPayload(TargetObj, Bunch, false, TempBlockWriter);
 
 			UE_NET_TRACE_DESTROY_COLLECTOR(GetTraceCollector(TempBlockWriter));
-		}
-
-		// Destroy the memory used for the copied out parameters
-		for (int32 i=0; i < LocalOutParms.Num(); i++)
-		{
-			check(LocalOutParms[i]->HasAnyPropertyFlags(CPF_OutParm));
-			LocalOutParms[i]->DestroyValue_InContainer(Parms);
 		}
 
 		// Send the bunch.
@@ -2631,6 +2690,7 @@ void UNetDriver::FinishDestroy()
 		FWorldDelegates::LevelRemovedFromWorld.Remove(OnLevelRemovedFromWorldHandle);
 		FWorldDelegates::LevelAddedToWorld.Remove(OnLevelAddedToWorldHandle);
 		FCoreUObjectDelegates::GetPostGarbageCollect().Remove(PostGarbageCollectHandle);
+		FNetDelegates::OnSyncLoadDetected.Remove(ReportSyncLoadDelegateHandle);
 	}
 	else
 	{
@@ -2652,6 +2712,11 @@ void UNetDriver::LowLevelDestroy()
 	// We are closing down all our sockets and low level communications.
 	// Sever the link with UWorld to ensure we don't tick again
 	SetWorld(NULL);
+
+	if(GuidCache.IsValid())
+	{
+		GuidCache->ReportSyncLoadedGUIDs();
+	}
 }
 
 FString UNetDriver::LowLevelGetNetworkNumber()
@@ -3463,6 +3528,14 @@ void UNetDriver::PostGarbageCollect()
 	}
 
 	for (auto It = ReplicationChangeListMap.CreateIterator(); It; ++It)
+	{
+		if (!It.Value().IsObjectValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	for (auto It = RepChangedPropertyTrackerMap.CreateIterator(); It; ++It)
 	{
 		if (!It.Value().IsObjectValid())
 		{
@@ -4339,7 +4412,7 @@ int32 UNetDriver::ServerReplicateActors_ProcessPrioritizedActors( UNetConnection
 	int32 ActorUpdatesThisConnectionSent	= 0;
 	int32 FinalRelevantCount				= 0;
 
-	if ( !Connection->IsNetReady( 0 ) )
+	if (!Connection->IsNetReady( 0 ))
 	{
 		GNumSaturatedConnections++;
 		// Connection saturated, don't process any actors
@@ -4503,7 +4576,7 @@ int32 UNetDriver::ServerReplicateActors_ProcessPrioritizedActors( UNetConnection
 						Actor->ForceNetUpdate();
 					}
 					// second check for channel saturation
-					if ( !Connection->IsNetReady( 0 ) )
+					if (!Connection->IsNetReady( 0 ))
 					{
 						// We can bail out now since this connection is saturated, we'll return how far we got though
 						GNumSaturatedConnections++;
@@ -4565,6 +4638,42 @@ int64 UNetDriver::SendDestructionInfo(UNetConnection* Connection, FActorDestruct
 
 	return NumBits;
 }
+
+void UNetDriver::ReportSyncLoad(const FNetSyncLoadReport& Report)
+{
+	if (Report.NetDriver != this)
+	{
+		return;
+	}
+
+	switch(Report.Type)
+	{
+		case ENetSyncLoadType::ActorSpawn:
+		{
+			UE_LOG(LogNetSyncLoads, Log, TEXT("Spawning actor %s caused a sync load of %s!"), *GetNameSafe(Report.OwningObject), *GetFullNameSafe(Report.LoadedObject));
+			break;
+		}
+
+		case ENetSyncLoadType::PropertyReference:
+		{
+			UE_LOG(LogNetSyncLoads, Log, TEXT("%s of object %s caused a sync load of %s!"), *GetFullNameSafe(Report.Property), *GetNameSafe(Report.OwningObject), *GetFullNameSafe(Report.LoadedObject));
+			break;
+		}
+
+		case ENetSyncLoadType::Unknown:
+		{
+			UE_LOG(LogNetSyncLoads, Log, TEXT("%s was sync loaded by an unknown source."), *GetFullNameSafe(Report.LoadedObject));
+			break;
+		}
+
+		default:
+		{
+			UE_LOG(LogNetSyncLoads, Error, TEXT("%s was sync loaded but its type %d isn't supported by UNetDriver::ReportSyncLoad."), *GetFullNameSafe(Report.LoadedObject), static_cast<int32>(Report.Type));
+			break;
+		}
+	}
+}
+
 
 // -------------------------------------------------------------------------------------------------------------------------
 //	Replication profiling (server cpu) helpers.
@@ -5722,6 +5831,18 @@ void UNetDriver::OnLevelRemovedFromWorld(class ULevel* Level, class UWorld* InWo
 	}
 }
 
+bool UNetDriver::ShouldSkipRepNotifies() const
+{
+#if !UE_BUILD_SHIPPING
+	if (SkipRepNotifiesDel.IsBound())
+	{
+		return SkipRepNotifiesDel.Execute();
+	}
+#endif
+
+	return false;
+}
+
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -5801,6 +5922,7 @@ void UNetDriver::ProcessRemoteFunction(
 
 	{
 		UObject* TestObject = (SubObject == nullptr) ? Actor : SubObject;
+		checkf(IsInGameThread(), TEXT("Attempted to call ProcessRemoteFunction from a thread other than the game thread, which is not supported.  Object: %s Function: %s"), *GetPathNameSafe(TestObject), *GetNameSafe(Function));
 		ensureMsgf(TestObject->IsSupportedForNetworking() || TestObject->IsNameStableForNetworking(), TEXT("Attempted to call ProcessRemoteFunction with object that is not supported for networking. Object: %s Function: %s"), *TestObject->GetPathName(), *Function->GetName());
 	}
 

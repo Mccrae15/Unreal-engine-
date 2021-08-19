@@ -784,7 +784,7 @@ void FDistanceFieldVolumeTextureAtlas::UpdateAllocations(FRHICommandListImmediat
 
 				}, !GDistanceFieldParallelAtlasUpdate, false);
 
-			if (!bRuntimeDownsampling)
+			if (!bRuntimeDownsampling && UpdateDataArray.Num())
 			{
 				// For some RHIs, this has the advantage of reducing transition barriers
 				RHIEndMultiUpdateTexture3D(UpdateDataArray);
@@ -918,7 +918,7 @@ void FDistanceFieldVolumeData::CacheDerivedData(const FString& InDDCKey, UStatic
 		FMemoryReader Ar(DerivedData, /*bIsPersistent=*/ true);
 		Ar << *this;
 	}
-	else
+	else if (GDistanceFieldAsyncQueue)
 	{
 		// We don't actually build the resource until later, so only track the cycles used here.
 		COOK_STAT(Timer.TrackCyclesOnly());
@@ -931,14 +931,14 @@ void FDistanceFieldVolumeData::CacheDerivedData(const FString& InDDCKey, UStatic
 		NewTask->bGenerateDistanceFieldAsIfTwoSided = bGenerateDistanceFieldAsIfTwoSided;
 		NewTask->GeneratedVolumeData = new FDistanceFieldVolumeData();
 
-		for (int32 MaterialIndex = 0; MaterialIndex < Mesh->StaticMaterials.Num(); MaterialIndex++)
+		for (int32 MaterialIndex = 0; MaterialIndex < Mesh->GetStaticMaterials().Num(); MaterialIndex++)
 		{
 			// Default material blend mode
 			EBlendMode BlendMode = BLEND_Opaque;
 
-			if (Mesh->StaticMaterials[MaterialIndex].MaterialInterface)
+			if (Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface)
 			{
-				BlendMode = Mesh->StaticMaterials[MaterialIndex].MaterialInterface->GetBlendMode();
+				BlendMode = Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface->GetBlendMode();
 			}
 
 			NewTask->MaterialBlendModes.Add(BlendMode);
@@ -1207,14 +1207,14 @@ void FDistanceFieldAsyncQueue::Build(FAsyncDistanceFieldTask* Task, FQueuedThrea
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(FDistanceFieldAsyncQueue::Build)
 
-		const FStaticMeshLODResources& LODModel = Task->GenerateSource->RenderData->LODResources[0];
+		const FStaticMeshLODResources& LODModel = Task->GenerateSource->GetRenderData()->LODResources[0];
 
 		MeshUtilities->GenerateSignedDistanceFieldVolumeData(
 			Task->StaticMesh->GetName(),
 			LODModel,
 			ThreadPool,
 			Task->MaterialBlendModes,
-			Task->GenerateSource->RenderData->Bounds,
+			Task->GenerateSource->GetRenderData()->Bounds,
 			Task->DistanceFieldResolutionScale,
 			Task->bGenerateDistanceFieldAsIfTwoSided,
 			*Task->GeneratedVolumeData);
@@ -1259,33 +1259,36 @@ void FDistanceFieldAsyncQueue::ProcessAsyncTasks()
 		if (Task->StaticMesh)
 		{
 			Task->GeneratedVolumeData->VolumeTexture.Initialize(Task->StaticMesh);
-			FDistanceFieldVolumeData* OldVolumeData = Task->StaticMesh->RenderData->LODResources[0].DistanceFieldData;
+			FDistanceFieldVolumeData* OldVolumeData = Task->StaticMesh->GetRenderData()->LODResources[0].DistanceFieldData;
 
 			// Renderstates are not initialized between UStaticMesh::PreEditChange() and UStaticMesh::PostEditChange()
-			if (Task->StaticMesh->RenderData->IsInitialized())
+			if (Task->StaticMesh->GetRenderData()->IsInitialized())
 			{
 				// Cause all components using this static mesh to get re-registered, which will recreate their proxies and primitive uniform buffers
 				FStaticMeshComponentRecreateRenderStateContext RecreateRenderStateContext(Task->StaticMesh, false);
 
 				// Assign the new volume data
-				Task->StaticMesh->RenderData->LODResources[0].DistanceFieldData = Task->GeneratedVolumeData;
+				Task->StaticMesh->GetRenderData()->LODResources[0].DistanceFieldData = Task->GeneratedVolumeData;
 			}
 			else
 			{
 				// Assign the new volume data
-				Task->StaticMesh->RenderData->LODResources[0].DistanceFieldData = Task->GeneratedVolumeData;
+				Task->StaticMesh->GetRenderData()->LODResources[0].DistanceFieldData = Task->GeneratedVolumeData;
 			}
 
-			OldVolumeData->VolumeTexture.Release();
+			if (OldVolumeData)
+			{
+				OldVolumeData->VolumeTexture.Release();
 
-			// Rendering thread may still be referencing the old one, use the deferred cleanup interface to delete it next frame when it is safe
-			BeginCleanup(OldVolumeData);
+				// Rendering thread may still be referencing the old one, use the deferred cleanup interface to delete it next frame when it is safe
+				BeginCleanup(OldVolumeData);
+			}
 
 			{
 				TArray<uint8> DerivedData;
 				// Save built distance field volume to DDC
 				FMemoryWriter Ar(DerivedData, /*bIsPersistent=*/ true);
-				Ar << *(Task->StaticMesh->RenderData->LODResources[0].DistanceFieldData);
+				Ar << *(Task->StaticMesh->GetRenderData()->LODResources[0].DistanceFieldData);
 				GetDerivedDataCacheRef().Put(*Task->DDCKey, DerivedData, Task->StaticMesh->GetPathName());
 				COOK_STAT(Timer.AddMiss(DerivedData.Num()));
 			}

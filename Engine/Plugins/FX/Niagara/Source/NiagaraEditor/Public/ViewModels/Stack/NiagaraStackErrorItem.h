@@ -4,7 +4,6 @@
 
 #include "ViewModels/Stack/NiagaraStackEntry.h"
 #include "Input/Reply.h"
-#include "Layout/Visibility.h"
 #include "NiagaraStackErrorItem.generated.h"
 
 UCLASS()
@@ -22,14 +21,17 @@ public:
 	FOnIssueNotify& OnIssueModified();
 	virtual void GetSearchItems(TArray<FStackSearchItem>& SearchItems) const override;
 	virtual EStackIssueSeverity GetIssueSeverity() const override;
+	virtual bool IsExpandedByDefault() const override;
+	virtual void SetIsExpandedByDefault(bool bIsExpanded);
 
 protected:
-	virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues);
+	virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
 
 protected:
 	FStackIssue StackIssue;
 	FString EntryStackEditorDataKey;
 	FOnIssueNotify IssueModifiedDelegate;
+	bool bIsExpandedByDefault = true;
 
 private:
 	void IssueFixed();

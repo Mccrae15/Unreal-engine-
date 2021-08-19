@@ -15,23 +15,28 @@
 #include "Misc/QualifiedFrameTime.h"
 #include "Widgets/Input/NumericTypeInterface.h"
 #include "Editor/SequencerWidgets/Public/ITimeSlider.h"
+#include "KeyParams.h"
 
 struct FFrameTime;
 struct FQualifiedFrameTime;
 struct FMovieSceneChannelHandle;
 
+class UMovieSceneSection;
 class UMovieSceneTrack;
 class AActor;
+class ACameraActor;
 class FSequencerSelection;
 class FSequencerSelectionPreview;
 class FUICommandList;
 class FSequencerKeyCollection;
 class UMovieSceneSequence;
 class UMovieSceneSubSection;
+class UMovieSceneCinematicShotSection;
 class IDetailsView;
 class IKeyArea;
 enum class EMapChangeType : uint8;
 class FCurveModel;
+struct FMovieSceneSequencePlaybackParams;
 struct FMovieSceneChannelMetaData;
 
 /**
@@ -157,8 +162,10 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnGlobalTimeChanged);
 	DECLARE_MULTICAST_DELEGATE(FOnPlayEvent);
 	DECLARE_MULTICAST_DELEGATE(FOnStopEvent);
+	DECLARE_MULTICAST_DELEGATE(FOnRecordEvent);
 	DECLARE_MULTICAST_DELEGATE(FOnBeginScrubbingEvent);
 	DECLARE_MULTICAST_DELEGATE(FOnEndScrubbingEvent);
+	DECLARE_DELEGATE_RetVal(TArray<float>, FOnGetPlaybackSpeeds);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMovieSceneDataChanged, EMovieSceneDataChangeType);
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnChannelChanged, const FMovieSceneChannelMetaData* MetaData, UMovieSceneSection*)
 	DECLARE_MULTICAST_DELEGATE(FOnMovieSceneBindingsChanged);
@@ -195,6 +202,9 @@ public:
 
 	/** @return Returns the MovieScene that is currently focused for editing by the sequencer.  This can change at any time. */
 	virtual UMovieSceneSequence* GetFocusedMovieSceneSequence() const = 0;
+
+	/**@return Returns the time transform from the focused sequence back to the root*/
+	virtual FMovieSceneSequenceTransform GetFocusedMovieSceneSequenceTransform() const = 0;
 
 	/** @return The root movie scene being used */
 	virtual FMovieSceneSequenceIDRef GetRootTemplateID() const = 0;
@@ -293,12 +303,6 @@ public:
 	*/
 	virtual void SetKeyGroupMode(EKeyGroupMode Mode) = 0;
 
-	/** @return Returns whether or not to key only interp properties in this sequencer */
-	virtual bool GetKeyInterpPropertiesOnly() const = 0;
-
-	/** Sets whether or not to key only interp properties in this sequencer. */
-	virtual void SetKeyInterpPropertiesOnly(bool bKeyInterpPropertiesOnly) = 0;
-
 	/** @return Returns default key interpolation */
 	virtual EMovieSceneKeyInterpolation GetKeyInterpolation() const = 0;
 
@@ -353,6 +357,9 @@ public:
 
 	/** Set the global time directly, without performing any auto-scroll, snapping or other adjustments to the supplied time  */
 	virtual void SetGlobalTime(FFrameTime Time) = 0;
+
+	/** Play from the current time to the requested time */
+	virtual void PlayTo(FMovieSceneSequencePlaybackParams PlaybackParams) = 0;
 
 	/** Invalidate cached data so that it will be reevaluated on the next frame */
 	virtual void RequestInvalidateCachedData() = 0;
@@ -412,9 +419,9 @@ public:
 	/*
 	 * Render movie for a section.
 	 * 
-	 * @param InSection The given section to render.
+	 * @param InSections The given sections to render.
 	 */
-	virtual void RenderMovie(UMovieSceneSection* InSection) const = 0;
+	virtual void RenderMovie(const TArray<UMovieSceneCinematicShotSection*>& InSections) const = 0;
 
 	/*
 	 * Puts sequencer in a silent state (whereby it will not redraw viewports, or attempt to update external state besides the sequence itself)
@@ -448,6 +455,10 @@ public:
 	DECLARE_EVENT_TwoParams(ISequencer, FOnInitializeDetailsPanel, TSharedRef<IDetailsView>, TSharedRef<ISequencer>)
 	FOnInitializeDetailsPanel& OnInitializeDetailsPanel() { return InitializeDetailsPanelEvent; }
 
+	/** A delegate which will can be used in response to a camera being added to the sequence. If true, the default behavior of locking the camera to the viewport and adding a camera cut will be executed */
+	DECLARE_DELEGATE_RetVal_TwoParams(bool, FOnCameraAddedToSequencer, ACameraActor*, FGuid)
+	FOnCameraAddedToSequencer& OnCameraAddedToSequencer() { return CameraAddedToSequencer; }
+
 	/** A delegate which will determine whether a binding should be visible in the tree. */
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnGetIsBindingVisible, const FMovieSceneBinding&)
 	FOnGetIsBindingVisible& OnGetIsBindingVisible() { return GetIsBindingVisible; }
@@ -455,6 +466,14 @@ public:
 	/** A delegate which will determine whether a track should be visible in the tree. */
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnGetIsTrackVisible, const UMovieSceneTrack*)
 	FOnGetIsTrackVisible& OnGetIsTrackVisible() { return GetIsTrackVisible; }
+
+	/** A delegate which will determine whether a recording is possible */
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnGetCanRecord, FText& OutInfoText)
+	FOnGetCanRecord& OnGetCanRecord() { return GetCanRecord; }
+
+	/** A delegate which will determine whether there is a recording in progress */
+	DECLARE_DELEGATE_RetVal(bool, FOnGetIsRecording)
+	FOnGetIsRecording& OnGetIsRecording() { return GetIsRecording; }
 
 	/**
 	 * Gets a handle to runtime information about the object being manipulated by a movie scene
@@ -488,6 +507,12 @@ public:
 
 	virtual void SetPlaybackSpeed(float InPlaybackSpeed) = 0;
 	virtual float GetPlaybackSpeed() const = 0;
+
+	/** Restores the speed to 1. */
+	virtual void RestorePlaybackSpeed() = 0;
+	/** Snaps to the closest available speed to the current one.
+	 * Useful when external systems update the available speeds so the current speed is no longer valid. */
+	virtual void SnapToClosestPlaybackSpeed() = 0;
 
 	/** Get all the keys for the current sequencer selection */
 	virtual void GetKeysFromSelection(TUniquePtr<FSequencerKeyCollection>& KeyCollection, float DuplicateThresoldTime) = 0;
@@ -554,6 +579,9 @@ public:
 
 	/** Gets a multicast delegate which is executed whenever the user stops playing the sequence. */
 	virtual FOnStopEvent& OnStopEvent() = 0;
+
+	/** Gets a multicast delegate which is executed whenever the user toggles recording. */
+	virtual FOnRecordEvent& OnRecordEvent() = 0;
 
 	/** Gets a multicast delegate which is executed whenever the user begins scrubbing. */
 	virtual FOnBeginScrubbingEvent& OnBeginScrubbingEvent() = 0;
@@ -707,6 +735,10 @@ public:
 	virtual void SetDisplayName(FGuid InBinding, const FText& InDisplayName) = 0;
 protected:
 	FOnInitializeDetailsPanel InitializeDetailsPanelEvent;
+	FOnCameraAddedToSequencer CameraAddedToSequencer;
 	FOnGetIsBindingVisible GetIsBindingVisible;
 	FOnGetIsTrackVisible GetIsTrackVisible;
+	FOnGetPlaybackSpeeds GetPlaybackSpeeds;
+	FOnGetIsRecording GetIsRecording;
+	FOnGetCanRecord GetCanRecord;
 };

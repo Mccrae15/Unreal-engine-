@@ -32,6 +32,8 @@ public:
 	const TArray<TSharedRef<FTableColumn>>& GetColumns() const { return Columns; }
 	void SetColumns(const TArray<TSharedRef<Insights::FTableColumn>>& InColumns);
 
+	void GetVisibleColumns(TArray<TSharedRef<FTableColumn>>& InArray) const;
+
 	TSharedRef<FTableColumn> FindColumnChecked(const FName& ColumnId) const
 	{
 		return ColumnIdToPtrMapping.FindChecked(ColumnId);
@@ -48,6 +50,8 @@ public:
 	}
 
 	int32 GetColumnPositionIndex(const FName& ColumnId) const;
+
+	void GetVisibleColumnsData(const TArray<TSharedPtr<class FBaseTreeNode>>& InNodes, FString& OutData) const;
 
 protected:
 	void ResetColumns() { Columns.Reset(); }

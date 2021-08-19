@@ -41,8 +41,8 @@ class MOVIESCENE_API UMovieSceneSubSection
 
 public:
 
-	/** Default constructor. */
-	UMovieSceneSubSection();
+	/** Object constructor. */
+	UMovieSceneSubSection(const FObjectInitializer& ObjInitializer);
 
 	/**
 	 * Get the sequence that is assigned to this section.
@@ -50,7 +50,7 @@ public:
 	 * @return The sequence.
 	 * @see SetSequence
 	 */
-	UFUNCTION(BlueprintPure, Category = "Movie Scene Section")
+	UFUNCTION(BlueprintPure, Category = "Sequencer|Section")
 	UMovieSceneSequence* GetSequence() const;
 
 	/**
@@ -91,7 +91,7 @@ public:
 	 * @param Sequence The sequence to play.
 	 * @see GetSequence
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Movie Scene Section")
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Section")
 	void SetSequence(UMovieSceneSequence* Sequence);
 
 	/** Prime this section as the one and only recording section */
@@ -148,6 +148,16 @@ public:
 
 	FFrameNumber MapTimeToSectionFrame(FFrameTime InPosition) const;
 
+	EMovieSceneServerClientMask GetNetworkMask() const
+	{
+		return (EMovieSceneServerClientMask)NetworkMask;
+	}
+
+	void SetNetworkMask(EMovieSceneServerClientMask InNetworkMask)
+	{
+		NetworkMask = (uint8)InNetworkMask;
+	}
+
 public:
 
 	//~ UMovieSceneSection interface
@@ -155,6 +165,7 @@ public:
 	virtual UMovieSceneSection* SplitSection( FQualifiedFrameTime SplitTime, bool bDeleteKeys ) override;
 	virtual void TrimSection( FQualifiedFrameTime TrimTime, bool bTrimLeft, bool bDeleteKeys) override;
 	virtual TOptional<FFrameTime> GetOffsetTime() const override { return TOptional<FFrameTime>(FFrameTime(Parameters.StartFrameOffset)); }
+	virtual void GetSnapTimes(TArray<FFrameNumber>& OutSnapTimes, bool bGetSectionBorders) const override;
 
 protected:
 
@@ -175,6 +186,9 @@ private:
 
 	UPROPERTY()
 	float PrerollTime_DEPRECATED;
+
+	UPROPERTY(EditAnywhere, Category="Networking", meta=(Bitmask, BitmaskEnum=EMovieSceneServerClientMask))
+	uint8 NetworkMask;
 
 protected:
 

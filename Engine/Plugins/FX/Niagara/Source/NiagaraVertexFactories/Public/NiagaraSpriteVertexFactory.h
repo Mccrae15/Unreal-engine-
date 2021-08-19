@@ -31,11 +31,16 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FNiagaraSpriteUniformParameters, NIAGARAVE
 	SHADER_PARAMETER_EX( float, RotationBias, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER_EX( float, NormalsType, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER_EX( float, DeltaSeconds, EShaderPrecisionModifier::Half )
-	SHADER_PARAMETER_EX( FVector2D, PivotOffset, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER_EX( FVector2D, DefaultPivotOffset, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER_EX( FVector2D, DefaultPrevPivotOffset, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER(int, PositionDataOffset)
+	SHADER_PARAMETER(int, PrevPositionDataOffset)
 	SHADER_PARAMETER(int, VelocityDataOffset)
+	SHADER_PARAMETER(int, PrevVelocityDataOffset)
 	SHADER_PARAMETER(int, RotationDataOffset)
+	SHADER_PARAMETER(int, PrevRotationDataOffset)
 	SHADER_PARAMETER(int, SizeDataOffset)
+	SHADER_PARAMETER(int, PrevSizeDataOffset)
 	SHADER_PARAMETER(int, SubimageDataOffset)
 	SHADER_PARAMETER(int, ColorDataOffset)
 	SHADER_PARAMETER(uint32, MaterialParamValidMask)
@@ -44,24 +49,36 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FNiagaraSpriteUniformParameters, NIAGARAVE
 	SHADER_PARAMETER(int, MaterialParam2DataOffset)
 	SHADER_PARAMETER(int, MaterialParam3DataOffset)
 	SHADER_PARAMETER(int, FacingDataOffset)
+	SHADER_PARAMETER(int, PrevFacingDataOffset)
 	SHADER_PARAMETER(int, AlignmentDataOffset)
+	SHADER_PARAMETER(int, PrevAlignmentDataOffset)
 	SHADER_PARAMETER(int, SubImageBlendMode)
 	SHADER_PARAMETER(int, CameraOffsetDataOffset)
+	SHADER_PARAMETER(int, PrevCameraOffsetDataOffset)
 	SHADER_PARAMETER(int, UVScaleDataOffset)
+	SHADER_PARAMETER(int, PivotOffsetDataOffset)
+	SHADER_PARAMETER(int, PrevPivotOffsetDataOffset)
 	SHADER_PARAMETER(int, NormalizedAgeDataOffset)
 	SHADER_PARAMETER(int, MaterialRandomDataOffset)
 	SHADER_PARAMETER(FVector4, DefaultPos)
+	SHADER_PARAMETER(FVector4, DefaultPrevPos)
 	SHADER_PARAMETER(FVector2D, DefaultSize)
+	SHADER_PARAMETER(FVector2D, DefaultPrevSize)
 	SHADER_PARAMETER(FVector2D, DefaultUVScale)
 	SHADER_PARAMETER(FVector, DefaultVelocity)
+	SHADER_PARAMETER(FVector, DefaultPrevVelocity)
 	SHADER_PARAMETER(float, DefaultRotation)
+	SHADER_PARAMETER(float, DefaultPrevRotation)
 	SHADER_PARAMETER(FVector4, DefaultColor)
 	SHADER_PARAMETER(float, DefaultMatRandom)
 	SHADER_PARAMETER(float, DefaultCamOffset)
+	SHADER_PARAMETER(float, DefaultPrevCamOffset)
 	SHADER_PARAMETER(float, DefaultNormAge)
 	SHADER_PARAMETER(float, DefaultSubImage)
 	SHADER_PARAMETER(FVector4, DefaultFacing)
+	SHADER_PARAMETER(FVector4, DefaultPrevFacing)
 	SHADER_PARAMETER(FVector4, DefaultAlignment)
+	SHADER_PARAMETER(FVector4, DefaultPrevAlignment)
 	SHADER_PARAMETER(FVector4, DefaultDynamicMaterialParameter0)
 	SHADER_PARAMETER(FVector4, DefaultDynamicMaterialParameter1)
 	SHADER_PARAMETER(FVector4, DefaultDynamicMaterialParameter2)
@@ -97,24 +114,25 @@ public:
 
 	/** Default constructor. */
 	FNiagaraSpriteVertexFactory(ENiagaraVertexFactoryType InType, ERHIFeatureLevel::Type InFeatureLevel )
-		: FNiagaraVertexFactoryBase(InType, InFeatureLevel),
-		LooseParameterUniformBuffer(nullptr),
-		NumCutoutVerticesPerFrame(0),
-		CutoutGeometrySRV(nullptr),
-		AlignmentMode(0),
-		FacingMode(0),
-		SortedIndicesOffset(0)
+		: FNiagaraVertexFactoryBase(InType, InFeatureLevel)
+		, LooseParameterUniformBuffer(nullptr)
+		, NumCutoutVerticesPerFrame(0)
+		, CutoutGeometrySRV(nullptr)
+		, AlignmentMode(0)
+		, FacingMode(0)
+		, SortedIndicesSRV(nullptr)
+		, SortedIndicesOffset(0)
 	{}
 
 	FNiagaraSpriteVertexFactory()
-		: FNiagaraVertexFactoryBase(NVFT_MAX, ERHIFeatureLevel::Num),
-		LooseParameterUniformBuffer(nullptr),
-		NumCutoutVerticesPerFrame(0),
-		CutoutGeometrySRV(nullptr),
-		AlignmentMode(0),
-		FacingMode(0),
-		SortedIndicesOffset(0)
-		
+		: FNiagaraVertexFactoryBase(NVFT_MAX, ERHIFeatureLevel::Num)
+		, LooseParameterUniformBuffer(nullptr)
+		, NumCutoutVerticesPerFrame(0)
+		, CutoutGeometrySRV(nullptr)
+		, AlignmentMode(0)
+		, FacingMode(0)
+		, SortedIndicesSRV(nullptr)
+		, SortedIndicesOffset(0)
 	{}
 
 	// FRenderResource interface.
@@ -220,4 +238,26 @@ private:
 
 	FShaderResourceViewRHIRef SortedIndicesSRV;
 	uint32 SortedIndicesOffset;
+};
+
+class NIAGARAVERTEXFACTORIES_API FNiagaraSpriteVertexFactoryEx : public FNiagaraSpriteVertexFactory
+{
+	DECLARE_VERTEX_FACTORY_TYPE(FNiagaraSpriteVertexFactoryEx);
+
+public:
+
+	FNiagaraSpriteVertexFactoryEx(ENiagaraVertexFactoryType InType, ERHIFeatureLevel::Type InFeatureLevel )
+		: FNiagaraSpriteVertexFactory(InType, InFeatureLevel)
+	{}
+
+	FNiagaraSpriteVertexFactoryEx()
+		: FNiagaraSpriteVertexFactory(NVFT_MAX, ERHIFeatureLevel::Num)
+	{}
+
+	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FNiagaraSpriteVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+		OutEnvironment.SetDefine(TEXT("ENABLE_PRECISE_MOTION_VECTORS"), TEXT("1"));
+	}
 };

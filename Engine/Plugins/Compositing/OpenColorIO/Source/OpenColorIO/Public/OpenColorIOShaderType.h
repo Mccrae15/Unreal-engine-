@@ -22,8 +22,8 @@
 		);
 
 class FOpenColorIOTransformResource;
-class FShaderCommonCompileJob;
 class FShaderCompileJob;
+class FShaderCommonCompileJob;
 class FUniformExpressionSet;
 
 
@@ -46,18 +46,18 @@ struct FOpenColorIOShaderPermutationParameters : public FShaderPermutationParame
 class FOpenColorIOShaderType : public FShaderType
 {
 public:
-	struct CompiledShaderInitializerType : FGlobalShaderType::CompiledShaderInitializerType
+	struct CompiledShaderInitializerType : FShaderCompiledShaderInitializerType
 	{
 		const FString DebugDescription;
 
 		CompiledShaderInitializerType(
-			FShaderType* InType,
+			const FShaderType* InType,
 			int32 InPermutationId,
 			const FShaderCompilerOutput& CompilerOutput,
 			const FSHAHash& InOCIOShaderMapHash,
 			const FString& InDebugDescription
 			)
-		: FGlobalShaderType::CompiledShaderInitializerType(InType,InPermutationId,CompilerOutput, InOCIOShaderMapHash,nullptr,nullptr)
+		: FShaderCompiledShaderInitializerType(InType,InPermutationId,CompilerOutput, InOCIOShaderMapHash,nullptr,nullptr)
 		, DebugDescription(InDebugDescription)
 		{}
 	};
@@ -93,12 +93,12 @@ public:
 	 * Enqueues a compilation for a new shader of this type.
 	 * @param InColorTransform - The ColorTransform to link the shader with.
 	 */
-	class FShaderCompileJob* BeginCompileShader(
+	void BeginCompileShader(
 			uint32 ShaderMapId,
 			const FOpenColorIOTransformResource* InColorTransform,
-			FShaderCompilerEnvironment* CompilationEnvironment,
+			FSharedShaderCompilerEnvironment* CompilationEnvironment,
 			EShaderPlatform Platform,
-			TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>>& NewJobs,
+			TArray<TRefCountPtr<class FShaderCommonCompileJob>>& NewJobs,
 			FShaderTarget Target
 		);
 
@@ -110,7 +110,7 @@ public:
 		const FSHAHash& InOCIOShaderMapHash,
 		const FShaderCompileJob& CurrentJob,
 		const FString& InDebugDescription
-		);
+		) const;
 
 	/**
 	 * Checks if the shader type should be cached for a particular platform and color transform.

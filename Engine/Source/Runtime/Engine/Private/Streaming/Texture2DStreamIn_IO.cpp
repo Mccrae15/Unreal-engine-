@@ -14,7 +14,6 @@ Texture2DStreamIn.cpp: Stream in helper for 2D textures using texture streaming 
 #include "Streaming/TextureStreamingHelpers.h"
 #include "ContentStreaming.h"
 
-
 FTexture2DStreamIn_IO::FTexture2DStreamIn_IO(UTexture2D* InTexture, bool InPrioritizedIORequest)
 	: FTexture2DStreamIn(InTexture)
 	, bPrioritizedIORequest(InPrioritizedIORequest)
@@ -33,21 +32,40 @@ FTexture2DStreamIn_IO::~FTexture2DStreamIn_IO()
 #endif
 }
 
+static void ValidateMipBulkDataSize(const UTexture2D& Texture, int32 MipSizeX, int32 MipSizeY, int32 MipIndex, int64& BulkDataSize)
+{
+#if PLATFORM_ANDROID
+	const int64 ExpectedMipSize = CalcTextureMipMapSize((uint32)MipSizeX, (uint32)MipSizeY, Texture.GetPixelFormat(), 0);
+	if (BulkDataSize != ExpectedMipSize)
+	{
+#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTexture, Warning, TEXT("Mip (%d) %dx%d has an unexpected size %lld, expected size %lld. %s, Pixel format %s"), 
+			MipIndex, MipSizeX, MipSizeY, BulkDataSize, ExpectedMipSize, *Texture.GetFullName(), GPixelFormats[Texture.GetPixelFormat()].Name);
+#endif
+		// Make sure we don't overrun buffer allocated for this mip
+		BulkDataSize = FMath::Min(BulkDataSize, ExpectedMipSize);
+	}
+#endif // PLATFORM_ANDROID
+}
+
 void FTexture2DStreamIn_IO::SetIORequests(const FContext& Context)
 {
 	SetAsyncFileCallback();
-
+	
 	for (int32 MipIndex = PendingFirstLODIdx; MipIndex < CurrentFirstLODIdx && !IsCancelled(); ++MipIndex)
 	{
 		const FTexture2DMipMap& MipMap = *Context.MipsView[MipIndex];
 		check(MipData[MipIndex]);
 
-		const int64 BulkDataSize = MipMap.BulkData.GetBulkDataSize();
+		int64 BulkDataSize = MipMap.BulkData.GetBulkDataSize();
 		if (BulkDataSize > 0)
 		{
 			// Increment as we push the requests. If a requests complete immediately, then it will call the callback
 			// but that won't do anything because the tick would not try to acquire the lock since it is already locked.
 			TaskSynchronization.Increment();
+
+			// Validate buffer size for the mip, so we don't overrun it on streaming
+			ValidateMipBulkDataSize(*Context.Texture, MipMap.SizeX, MipMap.SizeY, MipIndex, BulkDataSize);
 
 			IORequests[MipIndex] = MipMap.BulkData.CreateStreamingRequest(
 				0,

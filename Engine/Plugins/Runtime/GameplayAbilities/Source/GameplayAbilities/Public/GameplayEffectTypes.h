@@ -905,11 +905,11 @@ struct FGameplayEffectRemovalInfo
 
 	/** True when the gameplay effect's duration has not expired, meaning the gameplay effect is being forcefully removed.  */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Removal")
-	bool bPrematureRemoval;
+	bool bPrematureRemoval = false;
 
 	/** Number of Stacks this gameplay effect had before it was removed. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Removal")
-	int32 StackCount;
+	int32 StackCount = 0;
 
 	/** Actor this gameplay effect was targeting. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Removal")
@@ -950,11 +950,11 @@ struct GAMEPLAYABILITIES_API FGameplayCueParameters
 
 	/** The tag name that matched this specific gameplay cue handler */
 	UPROPERTY(BlueprintReadWrite, Category=GameplayCue, NotReplicated)
-	FGameplayTag MatchedTagName;
+	mutable FGameplayTag MatchedTagName;
 
 	/** The original tag of the gameplay cue */
 	UPROPERTY(BlueprintReadWrite, Category=GameplayCue, NotReplicated)
-	FGameplayTag OriginalTag;
+	mutable FGameplayTag OriginalTag;
 
 	/** The aggregated source tags taken from the effect spec */
 	UPROPERTY(BlueprintReadWrite, Category=GameplayCue)
@@ -999,6 +999,10 @@ struct GAMEPLAYABILITIES_API FGameplayCueParameters
 	/** Could be used to say "attach FX to this component always" */
 	UPROPERTY(BlueprintReadWrite, Category = GameplayCue)
 	TWeakObjectPtr<USceneComponent> TargetAttachComponent;
+
+	/** If we're using a minimal replication proxy, should we replicate location for this cue */
+	UPROPERTY(BlueprintReadWrite, Category = GameplayCue)
+	bool bReplicateLocationWhenUsingMinimalRepProxy = false;
 
 	/** Optimized serializer */
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);

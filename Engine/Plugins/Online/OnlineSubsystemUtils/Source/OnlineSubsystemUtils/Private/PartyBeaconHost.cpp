@@ -104,7 +104,7 @@ void APartyBeaconHost::Tick(float DeltaTime)
 			FNamedOnlineSession* Session = SessionInt->GetNamedSession(SessionName);
 			if (Session)
 			{
-				TArray< TSharedPtr<const FUniqueNetId> > PlayersToLogout;
+				TArray< FUniqueNetIdPtr > PlayersToLogout;
 				for (int32 ResIdx = 0; ResIdx < Reservations.Num(); ResIdx++)
 				{
 					FPartyReservation& PartyRes = Reservations[ResIdx];
@@ -200,7 +200,7 @@ void APartyBeaconHost::Tick(float DeltaTime)
 					for (int32 LogoutIdx = 0; LogoutIdx < PlayersToLogout.Num(); LogoutIdx++)
 					{
 						bool bFound = false;
-						const TSharedPtr<const FUniqueNetId>& UniqueId = PlayersToLogout[LogoutIdx];
+						const FUniqueNetIdPtr& UniqueId = PlayersToLogout[LogoutIdx];
 						float ElapsedSessionTime = 0.f;
 						for (int32 ResIdx = 0; ResIdx < Reservations.Num(); ResIdx++)
 						{
@@ -1123,7 +1123,8 @@ void APartyBeaconHost::ProcessReservationRequest(APartyBeaconClient* Client, con
 
 void APartyBeaconHost::ProcessReservationUpdateRequest(APartyBeaconClient* Client, const FString& SessionId, const FPartyReservation& ReservationUpdateRequest, bool bIsRemovingMember)
 {
-	UE_LOG(LogPartyBeacon, Verbose, TEXT("ProcessReservationUpdateRequest %s SessionId %s PartyLeader: %s PartySize: %d from (%s)"),
+	UE_LOG(LogPartyBeacon, Verbose, TEXT("%s - %s SessionId %s PartyLeader: %s PartySize: %d from (%s)"),
+		ANSI_TO_TCHAR(__FUNCTION__), 
 		Client ? *Client->GetName() : TEXT("NULL"),
 		*SessionId,
 		ReservationUpdateRequest.PartyLeader.IsValid() ? *ReservationUpdateRequest.PartyLeader->ToString() : TEXT("INVALID"),
@@ -1150,6 +1151,43 @@ void APartyBeaconHost::ProcessReservationUpdateRequest(APartyBeaconClient* Clien
 	}
 }
 
+void APartyBeaconHost::ProcessReservationAddOrUpdateRequest(APartyBeaconClient* Client, const FString& SessionId, const FPartyReservation& ReservationRequest)
+{
+	UE_LOG(LogPartyBeacon, Verbose, TEXT("ProcessReservationAddOrUpdateRequest %s SessionId %s PartyLeader: %s PartySize: %d from (%s)"),
+		Client ? *Client->GetName() : TEXT("NULL"),
+		*SessionId,
+		ReservationRequest.PartyLeader.IsValid() ? *ReservationRequest.PartyLeader->ToString() : TEXT("INVALID"),
+		ReservationRequest.PartyMembers.Num(),
+		Client ? *Client->GetNetConnection()->LowLevelDescribe() : TEXT("NULL"));
+
+	if (Client)
+	{
+		EPartyReservationResult::Type Result = EPartyReservationResult::BadSessionId;
+		if (DoesSessionMatch(SessionId))
+		{
+			int32 ExistingReservationIdx = State->GetExistingReservation(ReservationRequest.PartyLeader);
+			if (ExistingReservationIdx != INDEX_NONE)
+			{
+				Result = UpdatePartyReservation(ReservationRequest, false);
+			}
+			else
+			{
+				Result = AddPartyReservation(ReservationRequest);
+			}
+		}
+
+		UE_LOG(LogPartyBeacon, Verbose, TEXT("ProcessReservationUpdateRequest result: %s"), EPartyReservationResult::ToString(Result));
+		if (UE_LOG_ACTIVE(LogPartyBeacon, Verbose) &&
+			(Result != EPartyReservationResult::ReservationAccepted))
+		{
+			DumpReservations();
+			ReservationRequest.Dump();
+		}
+
+		Client->ClientReservationResponse(Result);
+	}
+}
+
 bool APartyBeaconHost::HasCrossplayOptOutReservation() const
 {
 	if (State)
@@ -1160,11 +1198,11 @@ bool APartyBeaconHost::HasCrossplayOptOutReservation() const
 	return false;
 }
 
-int32 APartyBeaconHost::GetReservationPlatformCount(const FString& InPlatform) const
+int32 APartyBeaconHost::GetReservationPlatformCount(const FString& InPlatform, bool bIncludeMappedPlatforms) const
 {
 	if (State)
 	{
-		return State->GetReservationPlatformCount(InPlatform);
+		return State->GetReservationPlatformCount(InPlatform, bIncludeMappedPlatforms);
 	}
 
 	return 0;

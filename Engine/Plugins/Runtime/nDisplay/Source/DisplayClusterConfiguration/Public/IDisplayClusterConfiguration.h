@@ -6,6 +6,8 @@
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 
+#include "DisplayClusterConfigurationVersion.h"
+
 class UDisplayClusterConfigurationData;
 
 
@@ -17,9 +19,10 @@ class IDisplayClusterConfiguration : public IModuleInterface
 public:
 	static constexpr auto ModuleName = TEXT("DisplayClusterConfiguration");
 
-	virtual ~IDisplayClusterConfiguration() = 0
-	{ }
+public:
+	virtual ~IDisplayClusterConfiguration() = default;
 
+public:
 	/**
 	* Singleton-like access to this module's interface.  This is just for convenience!
 	* Beware of calling this during the shutdown phase, though.  Your module might have been unloaded already.
@@ -42,11 +45,32 @@ public:
 	}
 
 public:
+
+	/**
+	 * Sets the transaction flags so that we don't necessarily re-run the construction scripts all the time.
+	 */
+	virtual void SetIsSnapshotTransacting(bool bIsSnapshot) = 0;
+
+	/**
+	 * Gets the current transaction snapshot status.
+	 */
+	virtual bool IsTransactingSnapshot() const = 0;
+
+	/**
+	* Returns version of a specified config file
+	*
+	* @param FilePath   - Config file path
+	*
+	* @return Config version if succeeded, otherwise nulltpr
+	*/
+	virtual EDisplayClusterConfigurationVersion GetConfigVersion(const FString& FilePath) = 0;
+
 	/**
 	* Load configuration data from specified file
 	*
-	* @param FilePath - Config file path
-	* 
+	* @param FilePath   - Config file path
+	* @param Owner      - UObject owner for the configuration data object
+	*
 	* @return Configuration data if succeeded, otherwise nulltpr
 	*/
 	virtual UDisplayClusterConfigurationData* LoadConfig(const FString& FilePath, UObject* Owner = nullptr) = 0;
@@ -60,4 +84,14 @@ public:
 	* @return true if succeeded
 	*/
 	virtual bool SaveConfig(const UDisplayClusterConfigurationData* Config, const FString& FilePath) = 0;
+
+	/**
+	* Converts configuration data to string
+	*
+	* @param Config - Configuration data
+	* @param OutString - String to contain the configuration data
+	*
+	* @return true if succeeded
+	*/
+	virtual bool ConfigAsString(const UDisplayClusterConfigurationData* Config, FString& OutString) const = 0;
 };

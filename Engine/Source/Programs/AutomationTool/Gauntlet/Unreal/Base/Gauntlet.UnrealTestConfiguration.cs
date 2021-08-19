@@ -588,6 +588,12 @@ namespace Gauntlet
 		[AutoParam(false)]
 		public bool DisableHeartbeatTimeout { get; set; }
 
+		/// <summary>
+		/// Enforce Vertical resolution
+		/// </summary>
+		[AutoParam]
+		public int ForceVerticalRes = 0;
+
 		// Member variables 
 
 		/// <summary>
@@ -674,6 +680,14 @@ namespace Gauntlet
 		}
 
 		/// <summary>
+		/// Clears all roles from this config. 
+		/// </summary>
+		public void ClearRoles()
+		{
+			RequiredRoles.Clear();
+		}
+
+		/// <summary>
 		/// Returns the number of roles of the specified type that exist for this test
 		/// </summary>
 		/// <param name="Role"></param>
@@ -716,7 +730,7 @@ namespace Gauntlet
 				{
 					if (!IgnoreDefaultResolutionAndWindowMode)
 					{
-						if (Globals.Params.ToString().Contains("-resx") == false)
+						if (Globals.Params.ParseValues("resx").Count() == 0)
 						{
 							AppConfig.CommandLine += String.Format(" -ResX={0} -ResY={1}", ResX, ResY);
 						}

@@ -15,10 +15,8 @@ namespace DisplayClusterRenderSyncStrings
 
 	constexpr static auto ArgumentsDefaultCategory = "RS";
 
-	struct WaitForSwapSync
+	namespace WaitForSwapSync
 	{
 		constexpr static auto Name = "WaitForSwapSync";
-		constexpr static auto ArgThreadTime  = "ThreadTime";
-		constexpr static auto ArgBarrierTime = "BarrierTime";
 	};
 };

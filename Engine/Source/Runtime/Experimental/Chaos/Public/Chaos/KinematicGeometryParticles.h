@@ -47,10 +47,10 @@ class TKinematicGeometryParticlesImp : public TGeometryParticlesImp<T, d, SimTyp
 	}
 
 	typedef TKinematicGeometryParticleHandle<T, d> THandleType;
-	const THandleType* Handle(int32 Index) const;
+	CHAOS_API const THandleType* Handle(int32 Index) const;
 
 	//cannot be reference because double pointer would allow for badness, but still useful to have non const access to handle
-	THandleType* Handle(int32 Index);
+	CHAOS_API THandleType* Handle(int32 Index);
 
 	CHAOS_API virtual void Serialize(FChaosArchive& Ar) override
 	{
@@ -82,16 +82,21 @@ FChaosArchive& operator<<(FChaosArchive& Ar, TKinematicGeometryParticlesImp<T, d
 }
 
 #if PLATFORM_MAC || PLATFORM_LINUX
-extern template class CHAOS_API Chaos::TKinematicGeometryParticlesImp<float, 3, Chaos::EGeometryParticlesSimType::RigidBodySim>;
-extern template class CHAOS_API Chaos::TKinematicGeometryParticlesImp<float, 3, Chaos::EGeometryParticlesSimType::Other>;
+extern template class CHAOS_API Chaos::TKinematicGeometryParticlesImp<Chaos::FReal, 3, Chaos::EGeometryParticlesSimType::RigidBodySim>;
+extern template class CHAOS_API Chaos::TKinematicGeometryParticlesImp<Chaos::FReal, 3, Chaos::EGeometryParticlesSimType::Other>;
 #else
-extern template class Chaos::TKinematicGeometryParticlesImp<float, 3, Chaos::EGeometryParticlesSimType::RigidBodySim>;
-extern template class Chaos::TKinematicGeometryParticlesImp<float, 3, Chaos::EGeometryParticlesSimType::Other>;
+extern template class Chaos::TKinematicGeometryParticlesImp<Chaos::FReal, 3, Chaos::EGeometryParticlesSimType::RigidBodySim>;
+extern template class Chaos::TKinematicGeometryParticlesImp<Chaos::FReal, 3, Chaos::EGeometryParticlesSimType::Other>;
 #endif
 
 template <typename T, int d>
 using TKinematicGeometryParticles = TKinematicGeometryParticlesImp<T, d, EGeometryParticlesSimType::RigidBodySim>;
 
+using FKinematicGeometryParticles = TKinematicGeometryParticles<FReal, 3>;
+
 template <typename T, int d>
 using TKinematicGeometryClothParticles = TKinematicGeometryParticlesImp<T, d, EGeometryParticlesSimType::Other>;
+
+using FKinematicGeometryClothParticles = TKinematicGeometryClothParticles<FReal, 3>;
 }
+

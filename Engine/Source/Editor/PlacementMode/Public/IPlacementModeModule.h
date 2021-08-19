@@ -15,6 +15,8 @@
 #include "GameFramework/Volume.h"
 #include "Editor.h"
 
+class FBlacklistNames;
+
 /**
  * Struct that defines an identifier for a particular placeable item in this module.
  * Only be obtainable through IPlacementModeModule::RegisterPlaceableItem
@@ -80,20 +82,20 @@ struct FPlaceableItem
 	FPlaceableItem(UActorFactory* InFactory, const FAssetData& InAssetData, TOptional<int32> InSortOrder = TOptional<int32>())
 		: Factory(InFactory)
 		, AssetData(InAssetData)
+		, bAlwaysUseGenericThumbnail(false)
 		, SortOrder(InSortOrder)
 	{
-		bAlwaysUseGenericThumbnail = false;
-		AutoSetDisplayName();
+		AutoSetNativeAndDisplayName();
 	}
 
 	/** Constructor for any placeable class */
 	FPlaceableItem(UClass& InAssetClass, TOptional<int32> InSortOrder = TOptional<int32>())
 		: Factory(GEditor->FindActorFactoryByClass(&InAssetClass))
-		, AssetData(Factory ? Factory->GetDefaultActorClass( FAssetData() ) : FAssetData())
+		, AssetData(Factory ? Factory->GetDefaultActorClass(FAssetData()) : FAssetData())
+		, bAlwaysUseGenericThumbnail(false)
 		, SortOrder(InSortOrder)
 	{
-		bAlwaysUseGenericThumbnail = false;
-		AutoSetDisplayName();
+		AutoSetNativeAndDisplayName();
 	}
 
 	/** Constructor for any placeable class with associated asset data, brush and display name overrides */
@@ -108,22 +110,19 @@ struct FPlaceableItem
 		: Factory(GEditor->FindActorFactoryByClass(&InAssetClass))
 		, AssetData(InAssetData)
 		, ClassThumbnailBrushOverride(InClassThumbnailBrushOverride)
+		, bAlwaysUseGenericThumbnail(true)
 		, AssetTypeColorOverride(InAssetTypeColorOverride)
 		, SortOrder(InSortOrder)
 	{
-		bAlwaysUseGenericThumbnail = true;
+		AutoSetNativeAndDisplayName();
 		if (InDisplayName.IsSet())
 		{
 			DisplayName = InDisplayName.GetValue();
 		}
-		else
-		{
-			AutoSetDisplayName();
-		}
 	}
 
-	/** Automatically set this item's display name from its class or asset */
-	void AutoSetDisplayName()
+	/** Automatically set this item's native and display names from its class or asset */
+	void AutoSetNativeAndDisplayName()
 	{
 		UClass* Class = AssetData.GetClass() == UClass::StaticClass() ? Cast<UClass>(AssetData.GetAsset()) : nullptr;
 		const bool bIsVolume = Class && Class->IsChildOf<AVolume>();
@@ -132,13 +131,17 @@ struct FPlaceableItem
 		// Use the factory unless its a volume or shape.  Those need custom names as the factory that spawns them does not properly represent what is being spawned.
 		if (Factory && !bIsVolume && !bIsShape) 
 		{
-			if (Factory->NewActorClassName.IsEmpty() == false)
+			if (!Factory->NewActorClassName.IsEmpty())
 			{
 				NativeName = Factory->NewActorClassName;
 			}
-			else if (Factory->NewActorClass != nullptr)
+			else if (Factory->NewActorClass)
 			{
 				Factory->NewActorClass->GetName(NativeName);
+			}
+			else
+			{
+				NativeName = Factory->GetName();
 			}
 
 			DisplayName = Factory->GetDisplayName();
@@ -150,9 +153,25 @@ struct FPlaceableItem
 		}
 		else
 		{
+			NativeName = AssetData.AssetName.ToString();
 			DisplayName = FText::FromName(AssetData.AssetName);
 		}
 	}
+
+	UE_DEPRECATED(4.27, "Use AutoSetNativeAndDisplayName instead")
+	void AutoSetDisplayName() { AutoSetNativeAndDisplayName(); }
+
+	/** Return NativeName as an FName (and cache it) */
+	FName GetNativeFName() const
+	{ 
+		if (NativeFName.IsNone() && !NativeName.IsEmpty())
+		{
+			NativeFName = FName(*NativeName);
+		}
+		return NativeFName;
+	}
+
+public:
 
 	/** The factory used to create an instance of this placeable item */
 	UActorFactory* Factory;
@@ -177,6 +196,11 @@ struct FPlaceableItem
 
 	/** Optional sort order (lowest first). Overrides default class name sorting. */
 	TOptional<int32> SortOrder;
+
+private:
+
+	/** This item's native name as an FName (initialized on access only) */
+	mutable FName NativeFName;
 };
 
 /** Structure of built-in placement categories. Defined as functions to enable external use without linkage */
@@ -231,6 +255,12 @@ public:
 	virtual const TArray< FActorPlacementInfo >& GetRecentlyPlaced() const = 0;
 
 	/**
+	 * @return the event that is broadcast whenever the user facing list of placement mode categories gets modified
+	 */
+	DECLARE_EVENT(IPlacementMode, FOnPlacementModeCategoryListChanged);
+	virtual FOnPlacementModeCategoryListChanged& OnPlacementModeCategoryListChanged() = 0;
+
+	/**
 	 * @return the event that is broadcast whenever a placement mode category is refreshed
 	 */
 	DECLARE_EVENT_OneParam( IPlacementMode, FOnPlacementModeCategoryRefreshed, FName /*CategoryName*/ );
@@ -247,6 +277,12 @@ public:
 	 */
 	DECLARE_EVENT( IPlacementMode, FOnAllPlaceableAssetsChanged );
 	virtual FOnAllPlaceableAssetsChanged& OnAllPlaceableAssetsChanged() = 0;
+
+	/**
+	 * @return the event that is broadcast whenever the filtering of placeable items changes (system filtering, not user filtering)
+	 */
+	DECLARE_EVENT(IPlacementMode, FOnPlaceableItemFilteringChanged);
+	virtual FOnPlaceableItemFilteringChanged& OnPlaceableItemFilteringChanged() = 0;
 
 	/**
 	 * @return the event that is broadcast whenever a placement mode enters a placing session
@@ -266,6 +302,7 @@ public:
 	 * Creates the placement browser widget
 	 */
 	virtual TSharedRef<SWidget> CreatePlacementModeBrowser() = 0;
+
 public:
 
 	/**
@@ -277,6 +314,13 @@ public:
 	virtual bool RegisterPlacementCategory(const FPlacementCategoryInfo& Info) = 0;
 
 	/**
+	 * Unregister a previously registered category
+	 *
+	 * @param UniqueHandle	The unique handle of the category to unregister
+	 */
+	virtual void UnregisterPlacementCategory(FName Handle) = 0;
+
+	/**
 	 * Retrieve an already registered category
 	 *
 	 * @param UniqueHandle	The unique handle of the category to retrieve
@@ -284,19 +328,15 @@ public:
 	 */
 	virtual const FPlacementCategoryInfo* GetRegisteredPlacementCategory(FName UniqueHandle) const = 0;
 
-	/**
-	 * Populate the specified array with all registered category information, sorted by SortOrder
-	 *
-	 * @param OutCategories	The array to populate with registered category inforamtion
-	 */
-	virtual void GetSortedCategories(TArray<FPlacementCategoryInfo>& OutCategories) const = 0;
+	/** Placement categories blacklist */
+	virtual TSharedRef<FBlacklistNames>& GetCategoryBlacklist() = 0;
 
 	/**
-	 * Unregister a previously registered category
+	 * Get all placement categories that aren't blacklisted, sorted by SortOrder
 	 *
-	 * @param UniqueHandle	The unique handle of the category to unregister
+	 * @param OutCategories	The array to populate with registered category information
 	 */
-	virtual void UnregisterPlacementCategory(FName Handle) = 0;
+	virtual void GetSortedCategories(TArray<FPlacementCategoryInfo>& OutCategories) const = 0;
 
 	/**
 	 * Register a new placeable item for the specified category
@@ -314,8 +354,25 @@ public:
 	 */
 	virtual void UnregisterPlaceableItem(FPlacementModeID ID) = 0;
 
+	typedef TFunction<bool(const TSharedPtr<FPlaceableItem>&)> TPlaceableItemPredicate;
+
+	/** 
+	 * Registers system-level (not user) filtering for placeable items. 
+	 * An item is displayed if at least one of the predicate returns true or if there's none registered.
+	 * @param Predicate Function that returns true if the passed item should be available
+	 * @param OwnerName Name of the predicate owner
+	 * @return False on failure to register the predicate because one already exists under the specified owner name
+	 */
+	virtual bool RegisterPlaceableItemFilter(TPlaceableItemPredicate Predicate, FName OwnerName) = 0;
+
 	/**
-	 * Get all the items in a given category, unsorted
+	 * Registers system-level (not user) filtering for placeable items.
+	 * An item is displayed if at least one of the predicate returns true or if there's none registered.
+	 */
+	virtual void UnregisterPlaceableItemFilter(FName OwnerName) = 0;
+
+	/**
+	 * Get all items in a given category, system filtered, unsorted
 	 *
 	 * @param Category		The unique handle of the category to get items for
 	 * @param OutItems		Array to populate with the items in this category
@@ -323,7 +380,7 @@ public:
 	virtual void GetItemsForCategory(FName Category, TArray<TSharedPtr<FPlaceableItem>>& OutItems) const = 0;
 
 	/**
-	 * Get all the items in a given category, filtered by the specified predicate
+	 * Get all items in a given category, system and user filtered, unsorted
 	 *
 	 * @param Category		The unique handle of the category to get items for
 	 * @param OutItems		Array to populate with the items in this category

@@ -14,10 +14,12 @@
 #include "Serialization/MemoryWriter.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "Misc/CoreMisc.h"
 #include "PlatformInfo.h"
 #include "IMeshBuilderModule.h"
 #include "EngineUtils.h"
-
+#include "Serialization/LargeMemoryReader.h"
+#include "Serialization/LargeMemoryWriter.h"
 
 #if ENABLE_COOK_STATS
 namespace SkeletalMeshCookStats
@@ -30,6 +32,130 @@ namespace SkeletalMeshCookStats
 }
 #endif
 
+extern int32 GStripSkeletalMeshLodsDuringCooking;
+
+#endif // WITH_EDITOR
+
+static TAutoConsoleVariable<int32> CVarSkeletalMeshKeepMobileMinLODSettingOnDesktop(
+	TEXT("r.SkeletalMesh.KeepMobileMinLODSettingOnDesktop"),
+	0,
+	TEXT("If non-zero, mobile setting for MinLOD will be stored in the cooked data for desktop platforms"));
+
+#if WITH_EDITOR
+
+/** 
+ * Utility functions for storing and accessing data that exceeds the usual signed 32bit limits 
+ * for data length.
+ * We achieve this by splitting the data into multiple chunks that the DDC can handle along with 
+ * a header chunk. Then when the data is requested we can load each chunk and reconstruct the 
+ * original data.
+ */
+namespace DDCUtils64Bit
+{
+	struct FDDCChunkingHeader
+	{
+		/** Overall size of the data when reconstructed. */
+		int64 TotalSize;
+		/** The number of chunks that the data was split into. */
+		int32 NumChunks;
+	};
+
+	/** The same as calling GetDerivedDataCacheRef().GetSynchronous(...) but with a TArray64 as the output parameter. */
+	bool GetSynchronous(const FString& DerivedDataKey, USkeletalMesh* Owner, TArray64<uint8>& OutDerivedData)
+	{
+		TStringBuilder<512> OwnerPathName;
+		Owner->GetPathName(nullptr, OwnerPathName);
+
+		TArray<uint8> Data32Bit;
+		if (GetDerivedDataCacheRef().GetSynchronous(*DerivedDataKey, Data32Bit, OwnerPathName))
+		{
+			// Note that currently the MoveTemp does nothing and the data is being copied although 
+			// at some point this might be optimized and the TArray64 will just assume ownership of
+			// the TArrays allocation instead.
+			OutDerivedData = MoveTemp(Data32Bit);
+			return true;
+		}
+		else
+		{
+			TStringBuilder<512> HeaderKey;
+			HeaderKey << DerivedDataKey << TEXT("Header");
+
+			TArray<uint8> HeaderData;
+			HeaderData.Reserve(sizeof(FDDCChunkingHeader));
+
+			// Early out if we cannot find the header or that it is the wrong size (in which case we cannot cast it)
+			if (!GetDerivedDataCacheRef().GetSynchronous(HeaderKey.ToString(), HeaderData, Owner->GetPathName()) || HeaderData.Num() != sizeof(FDDCChunkingHeader))
+			{
+				return false;
+			}
+
+			FDDCChunkingHeader* Header = (FDDCChunkingHeader*)HeaderData.GetData();
+			OutDerivedData.Reserve(Header->TotalSize);
+
+			for (int32 ChunkIndex = 0; ChunkIndex < Header->NumChunks; ChunkIndex++)
+			{
+				TStringBuilder<512> ChunkKey;
+				ChunkKey << DerivedDataKey << TEXT("Chunk") << ChunkIndex;
+
+				TArray<uint8> ChunkData;
+				if (!GetDerivedDataCacheRef().GetSynchronous(ChunkKey.ToString(), ChunkData, OwnerPathName))
+				{
+					OutDerivedData.Empty(); // Get rid of any partial results we might have
+					return false;
+				}
+
+				OutDerivedData.Append(ChunkData);
+			}
+
+			return true;
+		}
+	}
+
+	/** The same as calling GetDerivedDataCacheRef().Put(...) but with a TArrayView64 as the input data. */
+	void Put(const FString& DerivedDataKey, USkeletalMesh* Owner, TArrayView64<const uint8> DerivedData)
+	{
+		TStringBuilder<512> OwnerPathName;
+		Owner->GetPathName(nullptr, OwnerPathName);
+
+		// We don't use the full 32 bit range as internally the DDC might append info to the end of 
+		// the chunk, so we reserve 4kb for this, which is more than enough space to be safe.
+
+		const int64 ChunkSize = MAX_int32 - (4 * 1024);
+		if (DerivedData.Num() <= ChunkSize)
+		{
+			TArrayView<const uint8> DerivedData32Bit(DerivedData.GetData(), (int32)DerivedData.Num());
+			GetDerivedDataCacheRef().Put(*DerivedDataKey, DerivedData32Bit, OwnerPathName);
+		}
+		else
+		{
+			const int32 NumChunks = (int32)FMath::DivideAndRoundUp(DerivedData.Num(), ChunkSize);
+
+			FDDCChunkingHeader Header{ DerivedData.Num(), NumChunks };
+
+			{
+				TStringBuilder<512> HeaderKey;
+				HeaderKey << DerivedDataKey << TEXT("Header");
+
+				TArrayView<const uint8> HeaderView((uint8*)&Header, sizeof(FDDCChunkingHeader));
+
+				GetDerivedDataCacheRef().Put(HeaderKey.ToString(), HeaderView, OwnerPathName);
+			}
+
+			for (int32 ChunkIndex = 0; ChunkIndex < NumChunks; ++ChunkIndex)
+			{
+				const int64 ChunkStart = ChunkIndex * ChunkSize;
+				const uint64 BytesInChunk = FMath::Min(ChunkSize, DerivedData.Num() - ChunkStart);
+
+				TArrayView<const uint8> ChunkData(DerivedData.GetData() + ChunkStart, (int32)BytesInChunk);
+
+				TStringBuilder<512> ChunkKey;
+				ChunkKey << DerivedDataKey << TEXT("Chunk") << ChunkIndex;
+				GetDerivedDataCacheRef().Put(ChunkKey.ToString(), ChunkData, OwnerPathName);
+			}
+		}
+	}
+} //namespace DDCUtils64Bit
+
 //Serialize the LODInfo and append the result to the KeySuffix to build the LODInfo part of the DDC KEY
 //Note: this serializer is only used to build the mesh DDC key, no versioning is required
 static void SerializeLODInfoForDDC(USkeletalMesh* SkeletalMesh, FString& KeySuffix)
@@ -41,15 +167,15 @@ static void SerializeLODInfoForDDC(USkeletalMesh* SkeletalMesh, FString& KeySuff
 		check(LODInfos.IsValidIndex(LODIndex));
 		FSkeletalMeshLODInfo& LODInfo = LODInfos[LODIndex];
 		bool bValidLODSettings = false;
-		if (SkeletalMesh->LODSettings != nullptr)
+		if (SkeletalMesh->GetLODSettings() != nullptr)
 		{
-			const int32 NumSettings = FMath::Min(SkeletalMesh->LODSettings->GetNumberOfSettings(), SkeletalMesh->GetLODNum());
+			const int32 NumSettings = FMath::Min(SkeletalMesh->GetLODSettings()->GetNumberOfSettings(), SkeletalMesh->GetLODNum());
 			if (LODIndex < NumSettings)
 			{
 				bValidLODSettings = true;
 			}
 		}
-		const FSkeletalMeshLODGroupSettings* SkeletalMeshLODGroupSettings = bValidLODSettings ? &SkeletalMesh->LODSettings->GetSettingsForLODLevel(LODIndex) : nullptr;
+		const FSkeletalMeshLODGroupSettings* SkeletalMeshLODGroupSettings = bValidLODSettings ? &SkeletalMesh->GetLODSettings()->GetSettingsForLODLevel(LODIndex) : nullptr;
 		LODInfo.BuildGUID = LODInfo.ComputeDeriveDataCacheKey(SkeletalMeshLODGroupSettings);
 		KeySuffix += LODInfo.BuildGUID.ToString(EGuidFormats::Digits);
 	}
@@ -58,8 +184,8 @@ static void SerializeLODInfoForDDC(USkeletalMesh* SkeletalMesh, FString& KeySuff
 // If skeletal mesh derived data needs to be rebuilt (new format, serialization
 // differences, etc.) replace the version GUID below with a new one.
 // In case of merge conflicts with DDC versions, you MUST generate a new GUID
-// and set this new GUID as the version.           
-#define SKELETALMESH_DERIVEDDATA_VER TEXT("7E02F227B356416F95DACCC99F757AD7")
+// and set this new GUID as the version.
+#define SKELETALMESH_DERIVEDDATA_VER TEXT("91550326BADA436B92C8BF16C910465C")
 
 static const FString& GetSkeletalMeshDerivedDataVersion()
 {
@@ -67,11 +193,11 @@ static const FString& GetSkeletalMeshDerivedDataVersion()
 	return CachedVersionString;
 }
 
-static FString BuildSkeletalMeshDerivedDataKey(const ITargetPlatform* TargetPlatform, USkeletalMesh* SkelMesh)
+FString BuildSkeletalMeshDerivedDataKey(const ITargetPlatform* TargetPlatform, USkeletalMesh* SkelMesh)
 {
 	FString KeySuffix(TEXT(""));
 
-	if (SkelMesh->UseLegacyMeshDerivedDataKey )
+	if (SkelMesh->GetUseLegacyMeshDerivedDataKey() )
 	{
 		//Old asset will have the same LOD settings for bUseFullPrecisionUVs. We can use the LOD 0
 		const FSkeletalMeshLODInfo* BaseLODInfo = SkelMesh->GetLODInfo(0);
@@ -90,16 +216,16 @@ static FString BuildSkeletalMeshDerivedDataKey(const ITargetPlatform* TargetPlat
 		KeySuffix += tmpDebugString;
 		
 		//Add the max gpu bone per section
-		const uint32 MaxGPUSkinBones = FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones();
-		KeySuffix += FString::FromInt((int32)MaxGPUSkinBones);
+		const int32 MaxGPUSkinBones = FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones(TargetPlatform);
+		KeySuffix += FString::FromInt(MaxGPUSkinBones);
 
 		tmpDebugString = TEXT("");
 		SerializeLODInfoForDDC(SkelMesh, tmpDebugString);
 		KeySuffix += tmpDebugString;
 	}
 
-	KeySuffix += SkelMesh->bHasVertexColors ? "1" : "0";
-	KeySuffix += SkelMesh->VertexColorGuid.ToString(EGuidFormats::Digits);
+	KeySuffix += SkelMesh->GetHasVertexColors() ? "1" : "0";
+	KeySuffix += SkelMesh->GetVertexColorGuid().ToString(EGuidFormats::Digits);
 
 	static auto* VarMeshStreaming = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MeshStreaming"));
 	const bool bMeshStreamingEnabled = !VarMeshStreaming || VarMeshStreaming->GetInt() != 0;
@@ -116,6 +242,14 @@ static FString BuildSkeletalMeshDerivedDataKey(const ITargetPlatform* TargetPlat
 		KeySuffix += TEXT("0zzzzzzzzzzzzzzzz");
 	}
 
+	if (TargetPlatform->GetPlatformInfo().PlatformGroupName == TEXT("Desktop")
+		&& GStripSkeletalMeshLodsDuringCooking != 0
+		&& CVarSkeletalMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0)
+	{
+		KeySuffix += TEXT("_MinMLOD");
+	}
+
+	IMeshBuilderModule::GetForPlatform(TargetPlatform).AppendToDDCKey(KeySuffix);
 	const bool bUnlimitedBoneInfluences = FGPUBaseSkinVertexFactory::GetUnlimitedBoneInfluences();
 	KeySuffix += bUnlimitedBoneInfluences ? "1" : "0";
 
@@ -124,6 +258,57 @@ static FString BuildSkeletalMeshDerivedDataKey(const ITargetPlatform* TargetPlat
 		*GetSkeletalMeshDerivedDataVersion(),
 		*KeySuffix
 	);
+}
+
+/** This code verify that the data is all in sync index buffer versus sections data. It is active only in debug build*/
+void VerifyAllLodSkeletalMeshModelIntegrity(USkeletalMesh* Owner)
+{
+	if (!Owner || !Owner->GetImportedModel())
+	{
+		return;
+	}
+
+	FSkeletalMeshModel* SkelMeshModel = Owner->GetImportedModel();
+	for (int32 LODIndex = 0; LODIndex < SkelMeshModel->LODModels.Num(); LODIndex++)
+	{
+		FSkeletalMeshLODModel* LODModel = &(SkelMeshModel->LODModels[LODIndex]);
+		int32 SectionsVerticeNum = 0;
+		int32 SectionsTriangleNum = 0;
+		for (const FSkelMeshSection& Section : LODModel->Sections)
+		{
+			SectionsVerticeNum += Section.GetNumVertices();
+			SectionsTriangleNum += Section.NumTriangles;
+			int32 LastSectionIndexBuffer = Section.BaseIndex + (Section.NumTriangles * 3);
+			if (Section.NumTriangles > 0)
+			{
+				//Remove 1 if we have at least one triangle
+				LastSectionIndexBuffer--;
+			}
+
+			if (LODModel->IndexBuffer.IsValidIndex(LastSectionIndexBuffer))
+			{
+				uint32 FirstSectionIndexBufferValue = LODModel->IndexBuffer[Section.BaseIndex];
+				uint32 LastSectionIndexBufferValue = LODModel->IndexBuffer[LastSectionIndexBuffer];
+				if (FirstSectionIndexBufferValue < Section.BaseVertexIndex || LastSectionIndexBufferValue >= Section.BaseVertexIndex + Section.GetNumVertices())
+				{
+					UE_ASSET_LOG(LogSkeletalMesh, Error, Owner, TEXT("The source model is corrupted! Section triangle refer to a vertex not in the section. LOD %"), LODIndex);
+				}
+			}
+			else
+			{
+				UE_ASSET_LOG(LogSkeletalMesh, Error, Owner, TEXT("The source model is corrupted! Section index buffer is invalid. LOD %"), LODIndex);
+			}
+		}
+
+		if (LODModel->NumVertices != SectionsVerticeNum)
+		{
+			UE_ASSET_LOG(LogSkeletalMesh, Error, Owner, TEXT("The source model is corrupted! Total sections vertice count is different from source model vertice count. LOD %"), LODIndex);
+		}
+		if ((LODModel->IndexBuffer.Num() / 3) != SectionsTriangleNum)
+		{
+			UE_ASSET_LOG(LogSkeletalMesh, Error, Owner, TEXT("The source model is corrupted! Total sections triangle count is different from source model triangle count (index count divide by 3). LOD %"), LODIndex);
+		}
+	}
 }
 
 FString FSkeletalMeshRenderData::GetDerivedDataKey(const ITargetPlatform* TargetPlatform, USkeletalMesh* Owner)
@@ -135,32 +320,41 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 {
 	check(Owner);
 
-	if (Owner->GetOutermost()->HasAnyPackageFlags(PKG_FilterEditorOnly))
-	{
-		// Don't cache for cooked packages, source data will not be present
-		return;
-	}
 
 	check(LODRenderData.Num() == 0); // Should only be called on new, empty RenderData
+	check(TargetPlatform);
 
+	auto SerializeLodModelDdcData = [&Owner](FSkeletalMeshLODModel* LODModel, FArchive& Ar)
+	{
+		//Make sure we add everything FSkeletalMeshLODModel got modified by the skeletalmesh builder
+		Ar << LODModel->Sections;
+		Ar << LODModel->NumVertices;
+		Ar << LODModel->NumTexCoords;
+		Ar << LODModel->IndexBuffer;
+		Ar << LODModel->ActiveBoneIndices;
+		Ar << LODModel->RequiredBones;
+		Ar << LODModel->MeshToImportVertexMap;
+		Ar << LODModel->MaxImportVertex;
+		LODModel->RawPointIndices.Serialize(Ar, Owner);
+	};
 
 	{
 		COOK_STAT(auto Timer = SkeletalMeshCookStats::UsageStats.TimeSyncWork());
 		int32 T0 = FPlatformTime::Cycles();
-		FString DerivedDataKey = BuildSkeletalMeshDerivedDataKey(TargetPlatform, Owner);
+		DerivedDataKey = BuildSkeletalMeshDerivedDataKey(TargetPlatform, Owner);
 
-		TArray<uint8> DerivedData;
-		if (GetDerivedDataCacheRef().GetSynchronous(*DerivedDataKey, DerivedData, Owner->GetPathName()))
+		TArray64<uint8> DerivedData;
+		if(DDCUtils64Bit::GetSynchronous(DerivedDataKey, Owner, DerivedData))
 		{
 			COOK_STAT(Timer.AddHit(DerivedData.Num()));
 			
-			FMemoryReader Ar(DerivedData, /*bIsPersistent=*/ true);
+			FLargeMemoryReader Ar(DerivedData.GetData(), DerivedData.Num(), ELargeMemoryReaderFlags::Persistent);
 
 			//With skeletal mesh build refactor we serialize the LODModel sections into the DDC
 			//We need to store those so we do not have to rerun the reduction to make them up to date
 			//with the serialize renderdata. This allow to use DDC when changing the reduction settings.
 			//The old workflow has to reduce the LODModel before getting the render data DDC.
-			if (!Owner->UseLegacyMeshDerivedDataKey)
+			if (!Owner->GetUseLegacyMeshDerivedDataKey())
 			{
 				FSkeletalMeshModel* SkelMeshModel = Owner->GetImportedModel();
 				check(SkelMeshModel);
@@ -168,8 +362,8 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 				int32 MorphTargetNumber = 0;
 				Ar << MorphTargetNumber;
 				TArray<UMorphTarget*> ToDeleteMorphTargets;
-				ToDeleteMorphTargets.Append(Owner->MorphTargets);
-				Owner->MorphTargets.Empty();
+				ToDeleteMorphTargets.Append(Owner->GetMorphTargets());
+				Owner->GetMorphTargets().Empty();
 				//Rebuild the MorphTarget object
 				//We cannot serialize directly the UMorphTarget with a FMemoryArchive. This is not supported.
 				for (int32 MorphTargetIndex = 0; MorphTargetIndex < MorphTargetNumber; ++MorphTargetIndex)
@@ -187,8 +381,8 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 						ToDeleteMorphTargets.Remove(MorphTarget);
 					}
 					MorphTarget->MorphLODModels.Empty();
-					Owner->MorphTargets.Add(MorphTarget);
-					check(MorphTargetIndex == Owner->MorphTargets.Num() - 1);
+					Owner->GetMorphTargets().Add(MorphTarget);
+					check(MorphTargetIndex == Owner->GetMorphTargets().Num() - 1);
 					int32 MorphLODModelNumber = 0;
 					Ar << MorphLODModelNumber;
 					MorphTarget->MorphLODModels.AddDefaulted(MorphLODModelNumber);
@@ -212,14 +406,7 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 				for (int32 LODIndex = 0; LODIndex < SkelMeshModel->LODModels.Num(); LODIndex++)
 				{
 					FSkeletalMeshLODModel* LODModel = &(SkelMeshModel->LODModels[LODIndex]);
-					int32 SectionNum = 0;
-					Ar << SectionNum;
-					LODModel->Sections.Reset(SectionNum);
-					LODModel->Sections.AddDefaulted(SectionNum);
-					for (int32 SectionIndex = 0; SectionIndex < LODModel->Sections.Num(); ++SectionIndex)
-					{
-						Ar << LODModel->Sections[SectionIndex];
-					}
+					SerializeLodModelDdcData(LODModel, Ar);
 					LODModel->SyncronizeUserSectionsDataArray();
 				}
 			}
@@ -262,7 +449,9 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 				IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForPlatform(TargetPlatform);
 				if (!bRawDataEmpty && bRawBuildDataAvailable)
 				{
-					MeshBuilderModule.BuildSkeletalMesh(Owner, LODIndex, true);
+					const bool bRegenDepLODs = true;
+					FSkeletalMeshBuildParameters BuildParameters(Owner, TargetPlatform, LODIndex, bRegenDepLODs);
+					MeshBuilderModule.BuildSkeletalMesh(BuildParameters);
 					LODModel = &(SkelMeshModel->LODModels[LODIndex]);
 				}
 				else
@@ -295,23 +484,23 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 				LODData->BuildFromLODModel(LODModel, VertexBufferBuildFlags);
 			}
 
-			FMemoryWriter Ar(DerivedData, /*bIsPersistent=*/ true);
+			FLargeMemoryWriter Ar(0, /*bIsPersistent=*/ true);
 			
 			//If we load an old asset we want to be sure the serialize ddc will be the same has before the skeletalmesh build refactor
 			//So we do not serialize the LODModel sections.
-			if (!Owner->UseLegacyMeshDerivedDataKey)
+			if (!Owner->GetUseLegacyMeshDerivedDataKey())
 			{
-				int32 MorphTargetNumber = Owner->MorphTargets.Num();
+				int32 MorphTargetNumber = Owner->GetMorphTargets().Num();
 				Ar << MorphTargetNumber;
 				for (int32 MorphTargetIndex = 0; MorphTargetIndex < MorphTargetNumber; ++MorphTargetIndex)
 				{
-					FName MorphTargetName = Owner->MorphTargets[MorphTargetIndex]->GetFName();
+					FName MorphTargetName = Owner->GetMorphTargets()[MorphTargetIndex]->GetFName();
 					Ar << MorphTargetName;
-					int32 MorphLODModelNumber = Owner->MorphTargets[MorphTargetIndex]->MorphLODModels.Num();
+					int32 MorphLODModelNumber = Owner->GetMorphTargets()[MorphTargetIndex]->MorphLODModels.Num();
 					Ar << MorphLODModelNumber;
 					for (int32 MorphIndex = 0; MorphIndex < MorphLODModelNumber; ++MorphIndex)
 					{
-						Ar << Owner->MorphTargets[MorphTargetIndex]->MorphLODModels[MorphIndex];
+						Ar << Owner->GetMorphTargets()[MorphTargetIndex]->MorphLODModels[MorphIndex];
 					}
 				}
 				//No need to serialize the morph target mapping since we will rebuild the mapping when loading a ddc
@@ -320,14 +509,13 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 				for (int32 LODIndex = 0; LODIndex < SkelMeshModel->LODModels.Num(); LODIndex++)
 				{
 					FSkeletalMeshLODModel* LODModel = &(SkelMeshModel->LODModels[LODIndex]);
-					int32 SectionNum = LODModel->Sections.Num();
-					Ar << SectionNum;
-					for (int32 SectionIndex = 0; SectionIndex < LODModel->Sections.Num(); ++SectionIndex)
-					{
-						Ar << LODModel->Sections[SectionIndex];
-					}
+					SerializeLodModelDdcData(LODModel, Ar);
 				}
 			}
+
+			IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForPlatform(TargetPlatform);
+
+			MeshBuilderModule.PostBuildSkeletalMesh(this, Owner);
 
 			//Serialize the render data
 			Serialize(Ar, Owner);
@@ -356,13 +544,15 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 			}
 
 			//Store the data using the built key to avoid DDC corruption
-			GetDerivedDataCacheRef().Put(*BuiltDerivedDataKey, DerivedData, Owner->GetPathName());
+			TArrayView64<const uint8> ArView(Ar.GetData(), Ar.TotalSize());
+			DDCUtils64Bit::Put(BuiltDerivedDataKey, Owner, ArView);
 
 			int32 T1 = FPlatformTime::Cycles();
 			UE_LOG(LogSkeletalMesh, Log, TEXT("Built Skeletal Mesh [%.2fs] %s"), FPlatformTime::ToMilliseconds(T1 - T0) / 1000.0f, *Owner->GetPathName());
 			COOK_STAT(Timer.AddMiss(DerivedData.Num()));
 		}
 	}
+	VerifyAllLodSkeletalMeshModelIntegrity(Owner);
 }
 
 void FSkeletalMeshRenderData::SyncUVChannelData(const TArray<FSkeletalMaterial>& ObjectData)
@@ -389,6 +579,8 @@ FSkeletalMeshRenderData::FSkeletalMeshRenderData()
 	, NumNonOptionalLODs(0)
 	, CurrentFirstLODIdx(0)
 	, PendingFirstLODIdx(0)
+	, LODBiasModifier(0)
+	, bSupportRayTracing(true)
 	, bInitialized(false)
 {}
 
@@ -460,6 +652,41 @@ void FSkeletalMeshRenderData::Serialize(FArchive& Ar, USkeletalMesh* Owner)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FSkeletalMeshRenderData::Serialize"), STAT_SkeletalMeshRenderData_Serialize, STATGROUP_LoadTime);
 
+#if PLATFORM_DESKTOP
+	if (Ar.IsCooking() || FPlatformProperties::RequiresCookedData())
+	{
+		int32 MinMobileLODIdx = 0;
+		bool bShouldSerialize = CVarSkeletalMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0;
+#if WITH_EDITOR
+		if (Ar.IsSaving())
+		{
+			if (Ar.CookingTarget()->GetPlatformInfo().PlatformGroupName == TEXT("Desktop")
+				&& GStripSkeletalMeshLodsDuringCooking != 0
+				&& CVarSkeletalMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0)
+			{
+				MinMobileLODIdx = Owner->GetMinLod().GetValueForPlatformIdentifiers(TEXT("Mobile")) - Owner->GetMinLod().GetValueForPlatformIdentifiers(TEXT("Desktop"));
+				MinMobileLODIdx = FMath::Clamp(MinMobileLODIdx, 0, 255); // Will be cast to uint8 when applying LOD bias. Also, make sure it's not < 0,
+																		 // which can happen if the desktop min LOD is higher than the mobile setting
+			}
+			else
+			{
+				bShouldSerialize = false;
+			}
+		}
+#endif
+
+		if (bShouldSerialize)
+		{
+			Ar << MinMobileLODIdx;
+
+			if (Ar.IsLoading() && GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1)
+			{
+				LODBiasModifier = MinMobileLODIdx;
+			}
+		}
+	}
+#endif // PLATFORM_DESKTOP
+
 	LODRenderData.Serialize(Ar, Owner);
 
 #if WITH_EDITOR
@@ -481,6 +708,8 @@ void FSkeletalMeshRenderData::Serialize(FArchive& Ar, USkeletalMesh* Owner)
 	
 	CurrentFirstLODIdx = LODRenderData.Num() - NumInlinedLODs;
 	PendingFirstLODIdx = CurrentFirstLODIdx;
+
+	bSupportRayTracing = Owner->bSupportRayTracing;
 }
 
 void FSkeletalMeshRenderData::InitResources(bool bNeedsVertexColors, TArray<UMorphTarget*>& InMorphTargets, USkeletalMesh* Owner)
@@ -540,7 +769,7 @@ uint32 FSkeletalMeshRenderData::GetNumBoneInfluences() const
 
 bool FSkeletalMeshRenderData::RequiresCPUSkinning(ERHIFeatureLevel::Type FeatureLevel, int32 MinLODIndex) const
 {
-	const int32 MaxGPUSkinBones = FMath::Min(GetFeatureLevelMaxNumberOfBones(FeatureLevel), FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones());
+	const int32 MaxGPUSkinBones = FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones();
 	const int32 MaxBonesPerChunk = GetMaxBonesPerSection(MinLODIndex);
 	// Do CPU skinning if we need too many bones per chunk, or if we have too many influences per vertex on lower end
 	return (MaxBonesPerChunk > MaxGPUSkinBones) || (GetNumBoneInfluences(MinLODIndex) > MAX_INFLUENCES_PER_STREAM && FeatureLevel < ERHIFeatureLevel::ES3_1);

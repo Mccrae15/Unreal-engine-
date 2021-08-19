@@ -34,7 +34,7 @@ namespace UnrealBuildTool
 	class VSCodeProjectFileGenerator : ProjectFileGenerator
 	{
 		private DirectoryReference VSCodeDir;
-		private UnrealTargetPlatform HostPlatform { get; } = BuildHostPlatform.Current.Platform;
+		private UnrealTargetPlatform HostPlatform = BuildHostPlatform.Current.Platform;
 		private bool bForeignProject;
 		private DirectoryReference UE4ProjectRoot;
 		private bool bBuildingForDotNetCore;
@@ -300,14 +300,16 @@ namespace UnrealBuildTool
 			public readonly TargetType Type;
 			public readonly UnrealTargetPlatform Platform;
 			public readonly UnrealTargetConfiguration Configuration;
+			public readonly FileReference CompilerPath;
 			public readonly Dictionary<DirectoryReference, string> ModuleCommandLines;
 
-			public BuildTarget(string InName, TargetType InType, UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration, Dictionary<DirectoryReference, string> InModulesCommandLines)
+			public BuildTarget(string InName, TargetType InType, UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration, FileReference InCompilerPath, Dictionary<DirectoryReference, string> InModulesCommandLines)
 			{
 				Name = InName;
 				Type = InType;
 				Platform = InPlatform;
 				Configuration = InConfiguration;
+				CompilerPath = InCompilerPath;
 				ModuleCommandLines = InModulesCommandLines;
 			}
 
@@ -320,6 +322,28 @@ namespace UnrealBuildTool
 		protected override void AddTargetForIntellisense(UEBuildTarget Target)
 		{
 			base.AddTargetForIntellisense(Target);
+
+			bool UsingClang = true;
+			FileReference CompilerPath;
+			if (HostPlatform == UnrealTargetPlatform.Win64)
+			{
+				VCEnvironment Environment = VCEnvironment.Create(WindowsPlatform.GetDefaultCompiler(null), Target.Platform, Target.Rules.WindowsPlatform.Architecture, null, Target.Rules.WindowsPlatform.WindowsSdkVersion, null);
+				CompilerPath = FileReference.FromString(Environment.CompilerPath.FullName);
+				UsingClang = false;
+			}
+			else if (HostPlatform == UnrealTargetPlatform.Linux)
+			{
+				CompilerPath = FileReference.FromString(LinuxCommon.WhichClang());
+			}
+			else if (HostPlatform == UnrealTargetPlatform.Mac)
+			{
+				MacToolChainSettings Settings = new MacToolChainSettings(false);
+				CompilerPath = FileReference.FromString(Settings.ToolchainDir + "clang++");
+			}
+			else
+			{
+				throw new Exception("Unknown platform " + HostPlatform.ToString());
+			}
 
 			// we do not need to keep track of which binary the invocation belongs to, only which target, as such we join all binaries into a single set
 			Dictionary<DirectoryReference, string> ModuleDirectoryToCompileCommand = new Dictionary<DirectoryReference, string>();
@@ -340,54 +364,29 @@ namespace UnrealBuildTool
 					}
 
 					StringBuilder CommandBuilder = new StringBuilder();
-					if (HostPlatform == UnrealTargetPlatform.Win64)
-					{
-						foreach (FileReference ForceIncludeFile in ForceIncludePaths)
-						{
-							CommandBuilder.AppendFormat("/FI\"{0}\"{1}", ForceIncludeFile.FullName, Environment.NewLine);
-						}
-						foreach (string Definition in ModuleCompileEnvironment.Definitions)
-						{
-							CommandBuilder.AppendFormat("/D\"{0}\"{1}", Definition, Environment.NewLine);
-						}
-						foreach (DirectoryReference IncludePath in ModuleCompileEnvironment.UserIncludePaths)
-						{
-							CommandBuilder.AppendFormat("/I\"{0}\"{1}", IncludePath, Environment.NewLine);
-						}
-						foreach (DirectoryReference IncludePath in ModuleCompileEnvironment.SystemIncludePaths)
-						{
-							CommandBuilder.AppendFormat("/I\"{0}\"{1}", IncludePath, Environment.NewLine);
-						}
-					}
-					else
-					{
-						// Technically the command should include the compiler to use, but we only generate these for intellisense and thus the compiler is not needed
-						// And resolving the compiler when it would not be used is a waste of effort.
-						//CommandBuilder.AppendFormat("\"{0}\"", ClangPath.FullName);
 
-						foreach (FileReference ForceIncludeFile in ForceIncludePaths)
-						{
-							CommandBuilder.AppendFormat("-include \"{0}\"{1}", ForceIncludeFile.FullName, Environment.NewLine);
-						}
-						foreach (string Definition in ModuleCompileEnvironment.Definitions)
-						{
-							CommandBuilder.AppendFormat("-D\"{0}\"{1}", Definition, Environment.NewLine);
-						}
-						foreach (DirectoryReference IncludePath in ModuleCompileEnvironment.UserIncludePaths)
-						{
-							CommandBuilder.AppendFormat("-I\"{0}\"{1}", IncludePath, Environment.NewLine);
-						}
-						foreach (DirectoryReference IncludePath in ModuleCompileEnvironment.SystemIncludePaths)
-						{
-							CommandBuilder.AppendFormat("-I\"{0}\"{1}", IncludePath, Environment.NewLine);
-						}
+					foreach (FileReference ForceIncludeFile in ForceIncludePaths)
+					{
+						CommandBuilder.AppendFormat("{0} \"{1}\" {2}", UsingClang ? "-include" : "/FI", ForceIncludeFile.FullName, Environment.NewLine);
+					}
+					foreach (string Definition in ModuleCompileEnvironment.Definitions)
+					{
+						CommandBuilder.AppendFormat("{0} \"{1}\" {2}", UsingClang ? "-D" : "/D", Definition, Environment.NewLine);
+					}
+					foreach (DirectoryReference IncludePath in ModuleCompileEnvironment.UserIncludePaths)
+					{
+						CommandBuilder.AppendFormat("{0} \"{1}\" {2}",  UsingClang ? "-I" : "/I", IncludePath, Environment.NewLine);
+					}
+					foreach (DirectoryReference IncludePath in ModuleCompileEnvironment.SystemIncludePaths)
+					{
+						CommandBuilder.AppendFormat("{0} \"{1}\" {2}", UsingClang ? "-I" : "/I", IncludePath, Environment.NewLine);
 					}
 
 					ModuleDirectoryToCompileCommand.Add(Module.ModuleDirectory, CommandBuilder.ToString());
 				}
 			}
 
-			BuildTargets.Add(new BuildTarget(Target.TargetName, Target.TargetType, Target.Platform, Target.Configuration, ModuleDirectoryToCompileCommand));
+			BuildTargets.Add(new BuildTarget(Target.TargetName, Target.TargetType, Target.Platform, Target.Configuration, CompilerPath, ModuleDirectoryToCompileCommand));
 		}
 
 		private class ProjectData
@@ -590,7 +589,8 @@ namespace UnrealBuildTool
 				{
 					HashSet<FileReference> AllSourceFiles = new HashSet<FileReference>();
 					Dictionary<DirectoryReference, string> AllModuleCommandLines = new Dictionary<DirectoryReference, string>();
-
+					FileReference CompilerPath = null;
+					
 					foreach (ProjectData.Project Project in Projects.AllProjects)
 					{
 						foreach (ProjectData.Target ProjectTarget in Project.Targets)
@@ -602,10 +602,11 @@ namespace UnrealBuildTool
 								continue;
 
 							string Name = string.Format("{0} {1} {2} {3} ({4})", ProjectTarget.Name, ProjectTarget.Type, BuildTarget.Platform, BuildTarget.Configuration, Project.Name);
-							WriteConfiguration(Name, Project.Name, Project.SourceProject.SourceFiles.Select(x => x.Reference), BuildTarget.ModuleCommandLines, OutFile, OutputDirectory);
+							WriteConfiguration(Name, Project.Name, Project.SourceProject.SourceFiles.Select(x => x.Reference), BuildTarget.CompilerPath, BuildTarget.ModuleCommandLines, OutFile, OutputDirectory);
 
 							AllSourceFiles.UnionWith(Project.SourceProject.SourceFiles.Select(x => x.Reference));
 
+							CompilerPath = BuildTarget.CompilerPath;
 							foreach (KeyValuePair<DirectoryReference, string> Pair in BuildTarget.ModuleCommandLines)
 							{
 								if(!AllModuleCommandLines.ContainsKey(Pair.Key))
@@ -630,7 +631,7 @@ namespace UnrealBuildTool
 						DefaultConfigName = "Win32";
 					}
 
-					WriteConfiguration(DefaultConfigName, "Default", AllSourceFiles, AllModuleCommandLines, OutFile, OutputDirectory);
+					WriteConfiguration(DefaultConfigName, "Default", AllSourceFiles, CompilerPath, AllModuleCommandLines, OutFile, OutputDirectory);
 				}
 				OutFile.EndArray();
 			}
@@ -639,7 +640,7 @@ namespace UnrealBuildTool
 			OutFile.Write(FileReference.Combine(OutputDirectory, "c_cpp_properties.json"));
 		}
 
-		private void WriteConfiguration(string Name, string ProjectName, IEnumerable<FileReference> SourceFiles, Dictionary<DirectoryReference, string> ModuleCommandLines, JsonFile OutFile, DirectoryReference OutputDirectory)
+		private void WriteConfiguration(string Name, string ProjectName, IEnumerable<FileReference> SourceFiles, FileReference CompilerPath, Dictionary<DirectoryReference, string> ModuleCommandLines, JsonFile OutFile, DirectoryReference OutputDirectory)
 		{
 			OutFile.BeginObject();
 
@@ -665,13 +666,114 @@ namespace UnrealBuildTool
 			}
 
 			FileReference CompileCommands = FileReference.Combine(OutputDirectory, string.Format("compileCommands_{0}.json", ProjectName));
-			WriteCompileCommands(CompileCommands, SourceFiles, ModuleCommandLines);
+			WriteCompileCommands(CompileCommands, SourceFiles, CompilerPath, ModuleCommandLines);
 			OutFile.AddField("compileCommands", MakePathString(CompileCommands, bInAbsolute: true, bForceSkipQuotes: true));
 
 			OutFile.EndObject();
 		}
 
-		private void WriteCompileCommands(FileReference CompileCommandsFile, IEnumerable<FileReference> SourceFiles, Dictionary<DirectoryReference, string> ModuleCommandLines)
+		private void WriteNativeTaskDeployAndroid(ProjectData.Project InProject, JsonFile OutFile, ProjectData.Target Target, ProjectData.BuildProduct BuildProduct)
+		{
+			if (BuildProduct.UProjectFile == null)
+			{
+				return;
+			}
+
+			string[] ConfigTypes = new string[] { "Cook+Deploy", "Cook", "Deploy" };
+
+			foreach (string ConfigType in ConfigTypes)
+			{
+				OutFile.BeginObject();
+				{
+					string TaskName = String.Format("{0} {1} {2} {3}", Target.Name, BuildProduct.Platform.ToString(), BuildProduct.Config, ConfigType);
+					OutFile.AddField("label", TaskName);
+					OutFile.AddField("group", "build");
+
+					if (HostPlatform == UnrealTargetPlatform.Win64)
+					{
+						OutFile.AddField("command", MakePathString(FileReference.Combine(UE4ProjectRoot, "Engine", "Build", "BatchFiles", "RunUAT.bat")));
+					}
+					else
+					{
+						OutFile.AddField("command", MakePathString(FileReference.Combine(UE4ProjectRoot, "Engine", "Build", "BatchFiles", "RunUAT.sh")));
+					}
+
+					OutFile.BeginArray("args");
+					{
+						OutFile.AddUnnamedField("BuildCookRun");
+						OutFile.AddUnnamedField("-ScriptsForProject=" + BuildProduct.UProjectFile.ToNormalizedPath());
+						OutFile.AddUnnamedField("-Project=" + BuildProduct.UProjectFile.ToNormalizedPath());
+						OutFile.AddUnnamedField("-noP4");
+						OutFile.AddUnnamedField(String.Format("-ClientConfig={0}", BuildProduct.Config.ToString()));
+						OutFile.AddUnnamedField(String.Format("-ServerConfig={0}", BuildProduct.Config.ToString()));
+						OutFile.AddUnnamedField("-NoCompileEditor");
+						OutFile.AddUnnamedField("-utf8output");
+						OutFile.AddUnnamedField(String.Format("-Platform={0}", BuildProduct.Platform.ToString()));
+						OutFile.AddUnnamedField(String.Format("-TargetPlatform={0}", BuildProduct.Platform.ToString()));
+						OutFile.AddUnnamedField("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:BlueprintNativizationMethod=Disabled");
+						OutFile.AddUnnamedField("-Compressed");
+						OutFile.AddUnnamedField("-IterativeCooking");
+						OutFile.AddUnnamedField("-IterativeDeploy");
+						switch (ConfigType)
+						{
+							case "Cook+Deploy":
+								{
+									OutFile.AddUnnamedField("-Cook");
+									OutFile.AddUnnamedField("-Stage");
+									OutFile.AddUnnamedField("-Deploy");
+									break;
+								}
+							case "Cook":
+								{
+									OutFile.AddUnnamedField("-Cook");
+									break;
+								}
+							case "Deploy":
+								{
+									OutFile.AddUnnamedField("-DeploySoToDevice");
+									OutFile.AddUnnamedField("-SkipCook");
+									OutFile.AddUnnamedField("-Stage");
+									OutFile.AddUnnamedField("-Deploy");
+									break;
+								}
+						}
+					}
+					OutFile.EndArray();
+					OutFile.BeginArray("dependsOn");
+					{
+						switch (ConfigType)
+						{
+							case "Cook+Deploy":
+							case "Cook":
+								{
+									OutFile.AddUnnamedField(String.Format("{0}Editor {1} Development Build", Target.Name, HostPlatform.ToString()));
+									OutFile.AddUnnamedField(String.Format("{0} {1} {2} Build", Target.Name, BuildProduct.Platform.ToString(), BuildProduct.Config));
+									break;
+								}
+							default:
+								{
+									OutFile.AddUnnamedField(String.Format("{0} {1} {2} Build", Target.Name, BuildProduct.Platform.ToString(), BuildProduct.Config));
+									break;
+								}
+						}
+					}
+					OutFile.EndArray();
+
+					OutFile.AddField("type", "shell");
+
+					OutFile.BeginObject("options");
+					{
+						OutFile.AddField("cwd", MakeUnquotedPathString(UE4ProjectRoot, EPathType.Absolute));
+					}
+					OutFile.EndObject();
+				}
+				OutFile.EndObject();
+			}
+
+		}
+
+		private void WriteCompileCommands(FileReference CompileCommandsFile, IEnumerable<FileReference> SourceFiles, 
+			FileReference CompilerPath, Dictionary<DirectoryReference, string> ModuleCommandLines)
 		{
 			// this creates a compileCommands.json
 			// see VsCode Docs - https://code.visualstudio.com/docs/cpp/c-cpp-properties-schema-reference (compileCommands attribute)
@@ -717,7 +819,7 @@ namespace UnrealBuildTool
 
 					Writer.WriteObjectStart();
 					Writer.WriteValue("file", MakePathString(File, bInAbsolute: true, bForceSkipQuotes: true));
-					Writer.WriteValue("command", String.Format("cl.exe @\"{0}\"", ResponseFile.FullName));
+					Writer.WriteValue("command", String.Format("{0} @\"{1}\"", CompilerPath, ResponseFile.FullName));
 					Writer.WriteValue("directory", UnrealBuildTool.EngineSourceDirectory.ToString());
 					Writer.WriteObjectEnd();
 				}
@@ -824,6 +926,11 @@ namespace UnrealBuildTool
 							OutFile.EndObject();
 						}
 						OutFile.EndObject();
+
+						if (BuildProduct.Platform == UnrealTargetPlatform.Android && BaseCommand.Equals("Build"))
+						{
+							WriteNativeTaskDeployAndroid(InProject, OutFile, Target, BuildProduct);
+						}
 					}
 				}
 			}
@@ -1009,6 +1116,129 @@ namespace UnrealBuildTool
 			return new FileReference(ExecutableFilename);
 		}
 
+		private void WriteNativeLaunchConfigAndroidOculus(ProjectData.Project InProject, JsonFile OutFile, ProjectData.Target Target, ProjectData.BuildProduct BuildProduct)
+		{
+			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(BuildProduct.UProjectFile), BuildProduct.Platform);
+
+			List<string> OculusMobileDevices;
+			bool result = Ini.GetArray("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "PackageForOculusMobile", out OculusMobileDevices);
+			// Check if packaging for oculus
+			if (!result || OculusMobileDevices == null || OculusMobileDevices.Count == 0)
+			{
+				return;
+			}
+
+			// Get package name
+			string PackageName;
+			Ini.GetString("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "PackageName", out PackageName);
+			if (PackageName.Contains("[PROJECT]"))
+			{
+				// project name must start with a letter
+				if (!char.IsLetter(Target.Name[0]))
+				{
+					Trace.TraceWarning("Package name segments must all start with a letter. Please replace [PROJECT] with a valid name");
+				}
+
+				string ProjectName = Target.Name;
+				// hyphens not allowed so change them to underscores in project name
+				if (ProjectName.Contains("-"))
+				{
+					Trace.TraceWarning("Project name contained hyphens, converted to underscore");
+					ProjectName = ProjectName.Replace("-", "_");
+				}
+
+				// check for special characters
+				for (int Index = 0; Index < ProjectName.Length; Index++)
+				{
+					char c = ProjectName[Index];
+					if (c != '.' && c != '_' && !char.IsLetterOrDigit(c))
+					{
+						Trace.TraceWarning("Project name contains illegal characters (only letters, numbers, and underscore allowed); please replace [PROJECT] with a valid name");
+						ProjectName.Replace(c, '_');
+					}
+				}
+
+				PackageName = PackageName.Replace("[PROJECT]", ProjectName);
+			}
+
+			// Get store version
+			int StoreVersion = 1;
+			int StoreVersionArm64 = 1;
+			int StoreVersionArmV7 = 1;
+			int StoreVersionOffsetArm64 = 0;
+			int StoreVersionOffsetArmV7 = 0;
+			Ini.GetInt32("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "StoreVersion", out StoreVersion);
+			Ini.GetInt32("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "StoreVersionOffsetArm64", out StoreVersionOffsetArm64);
+			Ini.GetInt32("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "StoreVersionOffsetArmV7", out StoreVersionOffsetArmV7);
+			StoreVersionArm64 = StoreVersion + StoreVersionOffsetArm64;
+			StoreVersionArmV7 = StoreVersion + StoreVersionOffsetArmV7;
+
+			DirectoryReference SymbolPathArm64 = DirectoryReference.Combine(
+				BuildProduct.OutputFile.Directory,
+				Target.Name + "_Symbols_v" + StoreVersionArm64.ToString(),
+				Target.Name + "-arm64");
+
+			DirectoryReference SymbolPathArmV7 = DirectoryReference.Combine(
+				BuildProduct.OutputFile.Directory,
+				Target.Name + "_Symbols_v" + StoreVersionArmV7.ToString(),
+				Target.Name + "-armv7");
+
+
+			string LaunchTaskName = String.Format("{0} {1} {2} Deploy", Target.Name, BuildProduct.Platform, BuildProduct.Config);
+
+			List<string> ConfigTypes = new List<string>();
+			ConfigTypes.Add("Launch");
+			if (BuildProduct.Config == UnrealTargetConfiguration.Development)
+			{
+				ConfigTypes.Add("Attach");
+			}
+
+			foreach (string ConfigType in ConfigTypes)
+			{
+				OutFile.BeginObject();
+				{
+					OutFile.AddField("name", Target.Name + " Oculus (" + BuildProduct.Config.ToString() + ") " + ConfigType);
+					OutFile.AddField("request", ConfigType.ToLowerInvariant());
+					if (ConfigType == "Launch")
+					{
+						OutFile.AddField("preLaunchTask", LaunchTaskName);
+					}
+					OutFile.AddField("type", "fb-lldb");
+
+					OutFile.BeginObject("android");
+					{
+						OutFile.BeginObject("application");
+						{
+							OutFile.AddField("package", PackageName);
+							OutFile.AddField("activity", "com.epicgames.ue4.GameActivity");
+						}
+						OutFile.EndObject();
+
+						OutFile.BeginObject("lldbConfig");
+						{
+							OutFile.BeginArray("librarySearchPaths");
+							OutFile.AddUnnamedField("\\\"" + SymbolPathArm64.ToNormalizedPath() + "\\\"");
+							OutFile.AddUnnamedField("\\\"" + SymbolPathArmV7.ToNormalizedPath() + "\\\"");
+							OutFile.EndArray();
+
+							OutFile.BeginArray("lldbPreTargetCreateCommands");
+							FileReference UE4DataFormatters = FileReference.Combine(UE4ProjectRoot, "Engine", "Extras", "LLDBDataFormatters", "UE4DataFormatters_2ByteChars.py");
+							OutFile.AddUnnamedField("command script import \\\"" + UE4DataFormatters.FullName.Replace("\\", "/") + "\\\"");
+							OutFile.EndArray();
+
+							OutFile.BeginArray("lldbPostTargetCreateCommands");
+							//on Oculus devices, we use SIGILL for input redirection, so the debugger shouldn't catch it.
+							OutFile.AddUnnamedField("process handle --pass true --stop false --notify true SIGILL");
+							OutFile.EndArray();
+						}
+						OutFile.EndObject();
+					}
+					OutFile.EndObject();
+				}
+				OutFile.EndObject();
+			}
+		}
+
 		private void WriteNativeLaunchConfig(ProjectData.Project InProject, JsonFile OutFile)
 		{
 			foreach (ProjectData.Target Target in InProject.Targets)
@@ -1073,6 +1303,10 @@ namespace UnrealBuildTool
 							}
 						}
 						OutFile.EndObject();
+					}
+					else if (BuildProduct.Platform == UnrealTargetPlatform.Android)
+					{
+						WriteNativeLaunchConfigAndroidOculus(InProject, OutFile, Target, BuildProduct);
 					}
 				}
 			}

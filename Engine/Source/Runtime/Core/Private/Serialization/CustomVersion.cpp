@@ -191,7 +191,7 @@ TOptional<FCustomVersion> FCurrentCustomVersions::Get(const FGuid& Guid)
 	return Registry.Find(Guid);
 }
 
-TArray<FCustomVersionDifference> FCurrentCustomVersions::Compare(const FCustomVersionArray& CompareVersions)
+TArray<FCustomVersionDifference> FCurrentCustomVersions::Compare(const FCustomVersionArray& CompareVersions, const TCHAR* DebugContext)
 {
 	TArray<FCustomVersionDifference> Result;
 
@@ -205,7 +205,7 @@ TArray<FCustomVersionDifference> FCurrentCustomVersions::Compare(const FCustomVe
 		{
 			if (TOptional<FCustomVersion> CurrentVersion = Registry.Find(CompareVersion.Key))
 			{
-				if (CurrentVersion.GetValue().Validator && !CurrentVersion.GetValue().Validator(CompareVersion, CompareVersions))
+				if (CurrentVersion.GetValue().Validator && !CurrentVersion.GetValue().Validator(CompareVersion, CompareVersions, DebugContext))
 				{
 					Result.Add({ ECustomVersionDifference::Invalid, &CompareVersion });
 				}
@@ -363,7 +363,7 @@ const FCustomVersion* FCustomVersionContainer::GetVersion(FGuid Key) const
 
 const FName FCustomVersionContainer::GetFriendlyName(FGuid Key) const
 {
-	FName FriendlyName = NAME_Name;
+	FName FriendlyName = NAME_None;
 	const FCustomVersion* CustomVersion = GetVersion(Key);
 	if (CustomVersion)
 	{

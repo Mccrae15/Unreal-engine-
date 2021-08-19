@@ -14,7 +14,6 @@
 #include "NiagaraGraph.h"
 #include "NiagaraActions.h"
 #include "EditorStyleSet.h"
-#include "NiagaraEditorSettings.h"
 
 class SGraphActionMenu;
 class SEditableTextBox;
@@ -28,7 +27,6 @@ struct FSlateBrush;
 class UNiagaraSystem;
 struct FNiagaraNamespaceMetadata;
 class IToolTip;
-class UNiagaraEditorSettings;
 
 /* Enums to use when grouping the blueprint members in the list panel. The order here will determine the order in the list */
 namespace NiagaraParameterMapSectionID
@@ -59,7 +57,65 @@ namespace NiagaraParameterMapSectionID
 
 	static FText OnGetSectionTitle(const NiagaraParameterMapSectionID::Type InSection);
 	void OnGetSectionNamespaces(const NiagaraParameterMapSectionID::Type InSection, TArray<FName>& OutSectionNamespaces);
-	static NiagaraParameterMapSectionID::Type OnGetSectionFromVariable(const FNiagaraVariable& InVar, bool IsStaticSwitchVariable, FNiagaraParameterHandle& OutParameterHandle, const NiagaraParameterMapSectionID::Type DefaultType = NiagaraParameterMapSectionID::Type::NONE);
+	static NiagaraParameterMapSectionID::Type OnGetSectionFromVariable(const FNiagaraVariable& InVar, bool IsStaticSwitchVariable, FNiagaraParameterHandle& OutParameterHandle, const NiagaraParameterMapSectionID::Type DefaultType = NiagaraParameterMapSectionID::Type::NONE)
+	{
+		OutParameterHandle = FNiagaraParameterHandle(InVar.GetName());
+		Type SectionID = DefaultType;
+		if (IsStaticSwitchVariable)
+		{
+			SectionID = NiagaraParameterMapSectionID::STATIC_SWITCH;
+		}
+		else if (OutParameterHandle.IsEmitterHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::EMITTER;
+		}
+		else if (OutParameterHandle.IsModuleHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::MODULE_INPUT;
+		}
+		else if (OutParameterHandle.IsOutputHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::MODULE_OUTPUT;
+		}
+		else if (OutParameterHandle.IsLocalHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::MODULE_LOCAL;
+		}
+		else if (OutParameterHandle.IsUserHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::USER;
+		}
+		else if (OutParameterHandle.IsEngineHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::ENGINE;
+		}
+		else if (OutParameterHandle.IsSystemHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::SYSTEM;
+		}
+		else if (OutParameterHandle.IsParticleAttributeHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::PARTICLE;
+		}
+		else if (OutParameterHandle.IsParameterCollectionHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::PARAMETERCOLLECTION;
+		}
+		else if (OutParameterHandle.IsTransientHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::TRANSIENT;
+		}
+		else if (OutParameterHandle.IsDataInstanceHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::DATA_INSTANCE;
+		}
+		else if (OutParameterHandle.IsStackContextHandle())
+		{
+			SectionID = NiagaraParameterMapSectionID::STACK_CONTEXT;
+		}
+
+		return SectionID;
+	}
 	static bool GetSectionIsAdvancedForScript(const NiagaraParameterMapSectionID::Type InSection);
 	static bool GetSectionIsAdvancedForSystem(const NiagaraParameterMapSectionID::Type InSection);
 };
@@ -98,12 +154,9 @@ public:
 
 	static bool IsStaticSwitchParameter(const FNiagaraVariable& Variable, const TArray<TWeakObjectPtr<UNiagaraGraph>>& Graphs);
 
-private:
-	void NiagaraEditorSettingsChanged(const FString& PropertyName, const UNiagaraEditorSettings* NiagaraEditorSettings);
-	
-	TSharedRef<SWidget> GetViewOptionsMenu();
-	static const FSlateBrush* GetViewOptionsBorderBrush();
+	static NiagaraParameterMapSectionID::Type NamespaceMetaDataToSectionID(const FNiagaraNamespaceMetadata& NamespaceMetaData);
 
+private:
 	/** Function to bind to SNiagaraAddParameterMenus to filter types we allow creating in generic parameters*/
 	bool AllowMakeTypeGeneric(const FNiagaraTypeDefinition& InType) const;
 
@@ -206,6 +259,8 @@ private:
 
 	void HandleGraphSubObjectSelectionChanged(const UObject* NewSelection);
 
+	void GetAllGraphsInSystem(TArray<UNiagaraGraph*>& OutResult) const;
+
 	/** Graph Action Menu for displaying all our variables and functions */
 	TSharedPtr<SGraphActionMenu> GraphActionMenu;
 
@@ -219,7 +274,7 @@ private:
 	TSharedPtr<FNiagaraObjectSelection> SelectedScriptObjects;
 	TSharedPtr<FNiagaraObjectSelection> SelectedVariableObjects;
 
-	TArray<TWeakObjectPtr<UNiagaraGraph>> Graphs;
+	TArray<TWeakObjectPtr<UNiagaraGraph>> SelectedGraphs;
 	TWeakObjectPtr<UNiagaraSystem> CachedSystem;
 	FDelegateHandle UserParameterStoreChangedHandle;
 	FDelegateHandle AddedParameterStoreChangedHandle;
@@ -269,7 +324,7 @@ public:
 
 	void Construct(const FArguments& InArgs, TArray<TWeakObjectPtr<UNiagaraGraph>> InGraphs);
 
-	TSharedRef<SEditableTextBox> GetSearchBox();
+	TSharedPtr<SEditableTextBox> GetSearchBox();
 
 	void AddParameterGroup(
 		FGraphActionListBuilderBase& OutActions,

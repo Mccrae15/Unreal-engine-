@@ -2,15 +2,17 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/EnumClassFlags.h"
-#include "UObject/ObjectMacros.h"
-#include "Misc/Guid.h"
-#include "MovieSceneSignedObject.h"
-#include "MovieSceneSection.h"
-#include "Misc/InlineValue.h"
 #include "Compilation/MovieSceneSegmentCompiler.h"
+#include "CoreMinimal.h"
+#include "Evaluation/MovieSceneEvaluationField.h"
+#include "Misc/CoreMiscDefines.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Guid.h"
+#include "Misc/InlineValue.h"
+#include "MovieSceneSection.h"
+#include "MovieSceneSignedObject.h"
 #include "MovieSceneTrackEvaluationField.h"
+#include "UObject/ObjectMacros.h"
 #include "MovieSceneTrack.generated.h"
 
 struct FMovieSceneEvaluationTrack;
@@ -94,6 +96,17 @@ struct FMovieSceneSupportsEasingParams
 	FMovieSceneSupportsEasingParams(const UMovieSceneSection* InSection) : ForSection(InSection) {}
 };
 
+/** Pre-compilation result */
+struct FMovieSceneTrackPreCompileResult
+{
+	/**
+	 * The default metadata that will be used for all entity provider sections found on the current track.
+	 *
+	 * A track can change this metadata by overriding PreCompile.
+	 */
+	FMovieSceneEvaluationFieldEntityMetaData DefaultMetaData;
+};
+
 #if WITH_EDITOR
 /** Parameters for sections moving in the editor */
 struct FMovieSceneSectionMovedParams
@@ -102,6 +115,16 @@ struct FMovieSceneSectionMovedParams
 
 	FMovieSceneSectionMovedParams(EPropertyChangeType::Type InMoveType) : MoveType(InMoveType) {}
 };
+
+/** Result of having moved sections in the editor */
+enum class EMovieSceneSectionMovedResult
+{
+	/** Nothing significant has changed */
+	None = 0,
+	/** Sections have been added or removed, which requires a UI refresh */
+	SectionsChanged = 1
+};
+ENUM_CLASS_FLAGS(EMovieSceneSectionMovedResult);
 #endif
 
 /**
@@ -168,13 +191,17 @@ protected:
 	UPROPERTY()
 	bool bIsEvalDisabled;
 
+	/** Which rows have been disabled via mute/solo */
+	UPROPERTY()
+	TArray<int32> RowsDisabled;
+
 public:
 
 	/**
 	 * Run the pre-compilation step for this track.
 	 * This method is called by the sequence compiler and is not meant to be called by 3rd party code.
 	 */
-	void PreCompile();
+	void PreCompile(FMovieSceneTrackPreCompileResult& OutPreCompileResult);
 
 	/**
 	 * Retrieve a fully up-to-date evaluation field for this track.
@@ -213,6 +240,14 @@ private:
 	}
 
 	/** Sub-classes can override this method to perform custom pre-compilation logic. */
+	virtual void PreCompileImpl(FMovieSceneTrackPreCompileResult& OutPreCompileResult)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		PreCompileImpl();
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	UE_DEPRECATED(4.27, "Please override the PreCompileImpl method that takes a parameter")
 	virtual void PreCompileImpl() {}
 
 private:
@@ -287,12 +322,14 @@ public:
 	/**
 	* @return Whether evaluation of this track should be disabled due to mute/solo settings
 	*/
-	MOVIESCENE_API bool IsEvalDisabled() const { return bIsEvalDisabled; };
+	MOVIESCENE_API bool IsEvalDisabled() const { return bIsEvalDisabled; }
+	MOVIESCENE_API bool IsRowEvalDisabled(int32 RowIndex) const;
 
 	/**
 	* Called by Sequencer to set whether evaluation of this track should be disabled due to mute/solo settings
 	*/
 	MOVIESCENE_API void SetEvalDisabled(bool bEvalDisabled) { bIsEvalDisabled = bEvalDisabled; }
+	MOVIESCENE_API void SetRowEvalDisabled(bool bEvalDisabled, int32 RowIndex);
 
 public:
 
@@ -429,7 +466,10 @@ public:
 	 *
 	 * @param Section The section that moved.
 	 */
-	virtual void OnSectionMoved(UMovieSceneSection& Section, const FMovieSceneSectionMovedParams& Params) {}
+	virtual EMovieSceneSectionMovedResult OnSectionMoved(UMovieSceneSection& Section, const FMovieSceneSectionMovedParams& Params)
+	{
+		return EMovieSceneSectionMovedResult::None;
+	}
 
 	#endif
 };

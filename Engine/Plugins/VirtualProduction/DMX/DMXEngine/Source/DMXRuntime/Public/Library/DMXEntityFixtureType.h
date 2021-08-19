@@ -2,9 +2,10 @@
 
 #pragma once
 
-#include "Library/DMXEntity.h"
-#include "DMXProtocolTypes.h"
 #include "DMXAttribute.h"
+#include "DMXProtocolTypes.h"
+#include "Library/DMXEntity.h"
+#include "Modulators/DMXModulator.h"
 
 #include "DMXEntityFixtureType.generated.h"
 
@@ -91,6 +92,9 @@ struct DMXRUNTIME_API FDMXFixtureFunction
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (DisplayName = "Use LSB Mode", DisplayPriority = "29"), Category = "DMX")
 	bool bUseLSBMode = false;
 
+	/** Returns the number of channels the function spans, according to its data type */
+	FORCEINLINE uint8 GetNumChannels() const { return static_cast<uint8>(DataType) + 1;	}
+
 	FDMXFixtureFunction()
 		: Attribute(FDMXNameListItem::None)
 		, FunctionName()
@@ -151,6 +155,9 @@ struct DMXRUNTIME_API FDMXFixtureCellAttribute
 		, DataType(EDMXFixtureSignalFormat::E8Bit)
 		, bUseLSBMode(false)
 	{}
+
+	/** Returns the number of channels of the attribute */
+	uint8 GetNumChannels() const { return static_cast<uint8>(DataType) + 1; }
 };
 
 USTRUCT(BlueprintType)
@@ -189,9 +196,11 @@ struct DMXRUNTIME_API FDMXCell
 {
 	GENERATED_BODY()
 
+	/** The cell index in a 1D Array (row order), starting from 0 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (DisplayPriority = "20", DisplayName = "Cell ID", ClampMin = "0"), Category = "DMX")
 	int32 CellID;
 
+	/** The cell coordinate in a 2D Array, starting from (0, 0) */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (DisplayPriority = "30", DisplayName = "Coordinate"), Category = "DMX")
 	FIntPoint Coordinate;
 
@@ -269,6 +278,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Settings")
 	TArray<FDMXFixtureMode> Modes;
 
+	/** 
+	 * Modulators applied right before a patch of this type is received. 
+	 * NOTE: Modulators only affect the patch's normalized values! Untouched values are still available when accesing raw values. 
+	 */
+	UPROPERTY(EditAnywhere, Instanced, Category = "Fixture Settings")
+	TArray<UDMXModulator*> InputModulators;
+
 public:
 #if WITH_EDITOR
 	UFUNCTION(BlueprintCallable, Category = "Fixture Settings")
@@ -316,10 +332,25 @@ public:
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
 
+	/** DEPRECATED 4.27 */
+	UE_DEPRECATED(4.27, "Use UpdateChannelSpan instead.")
 	void UpdateModeChannelProperties(FDMXFixtureMode& Mode);
+
+	/** Updates the channel span of the Mode */
+	void UpdateChannelSpan(FDMXFixtureMode& Mode);
+
+	/** Updates the FixtureMatrixConfig's YCells property given num XCells for the specified Mode */
+	void UpdateYCellsFromXCells(FDMXFixtureMode& Mode);
+
+	/** Updates the FixtureMatrixConfig's XCells property given num YCells for the specified Mode */
+	void UpdateXCellsFromYCells(FDMXFixtureMode& Mode);
+
 #endif // WITH_EDITOR
 
 private:
+	/** Rebuilds the cache of fixture patches that use this fixture type */
+	void RebuildFixturePatchCaches();
+
 #if WITH_EDITOR
 	/** Editor only data type change delagate */
 	static FDataTypeChangeDelegate DataTypeChangeDelegate;

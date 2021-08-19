@@ -901,14 +901,15 @@ void UAnimSequence::PreSave(const class ITargetPlatform* TargetPlatform)
 	}
 
 	WaitOnExistingCompression(); // Wait on updated data
+
+	const bool bIsCooking = (TargetPlatform != nullptr);
+	if (!bIsCooking)
+	{
+		UpdateRetargetSourceAsset();
+	}
 #endif
 
 	Super::PreSave(TargetPlatform);
-}
-
-bool UAnimSequence::IsPostLoadThreadSafe() const
-{
-	return true;
 }
 
 void UAnimSequence::PostLoad()
@@ -1195,6 +1196,11 @@ void UAnimSequence::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 
 	if(PropertyChangedEvent.Property)
 	{
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UAnimSequence, RetargetSourceAsset))
+		{
+			UpdateRetargetSourceAsset();
+		}
+
 		const bool bChangedRefFrameIndex = PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UAnimSequence, RefFrameIndex);
 
 		if (bChangedRefFrameIndex)
@@ -1596,7 +1602,7 @@ void UAnimSequence::GetBonePose(FAnimationPoseData& OutAnimationPoseData, const 
 		// if retargeting is disabled, we initialize pose with 'Retargeting Source' ref pose.
 		if (bDisableRetargeting)
 		{
-			TArray<FTransform> const& AuthoredOnRefSkeleton = MySkeleton->GetRefLocalPoses(RetargetSource);
+			TArray<FTransform> const& AuthoredOnRefSkeleton = GetRetargetTransforms();
 			TArray<FBoneIndexType> const& RequireBonesIndexArray = RequiredBones.GetBoneIndicesArray();
 
 			int32 const NumRequiredBones = RequireBonesIndexArray.Num();
@@ -1648,7 +1654,7 @@ void UAnimSequence::GetBonePose(FAnimationPoseData& OutAnimationPoseData, const 
 			}
 		}
 
-		BuildPoseFromRawData(AnimationData, TrackToSkeletonMapTable, OutPose, ExtractionContext.CurrentTime, Interpolation, NumFrames, SequenceLength, RetargetSource);
+		BuildPoseFromRawData(AnimationData, TrackToSkeletonMapTable, OutPose, ExtractionContext.CurrentTime, Interpolation, NumFrames, SequenceLength, GetRetargetTransformsSourceName(), GetRetargetTransforms());
 
 		if ((ExtractionContext.bExtractRootMotion && RootMotionReset.bEnableRootMotion) || RootMotionReset.bForceRootLock)
 		{
@@ -1661,7 +1667,8 @@ void UAnimSequence::GetBonePose(FAnimationPoseData& OutAnimationPoseData, const 
 	}
 #endif // WITH_EDITOR
 
-	DecompressPose(OutPose, CompressedData, ExtractionContext, GetSkeleton(), SequenceLength, Interpolation, bIsBakedAdditive, RetargetSource, GetFName(), RootMotionReset);
+	DecompressPose(OutPose, CompressedData, ExtractionContext, GetSkeleton(), SequenceLength, Interpolation, bIsBakedAdditive, GetRetargetTransforms(), GetRetargetTransformsSourceName(), RootMotionReset);
+
 	GetCustomAttributes(OutAnimationPoseData, ExtractionContext, false);
 }
 
@@ -1864,10 +1871,58 @@ void UAnimSequence::GetBonePose_AdditiveMeshRotationOnly(FAnimationPoseData& Out
 	FCustomAttributesRuntime::SubtractAttributes(BaseAttributes, OutAttributes);
 }
 
+#if WITH_EDITORONLY_DATA
+void UAnimSequence::UpdateRetargetSourceAsset()
+{
+	USkeletalMesh* SourceReferenceMesh = RetargetSourceAsset.LoadSynchronous();
+	const USkeleton* MySkeleton = GetSkeleton();
+	if (SourceReferenceMesh && MySkeleton)
+	{
+		FAnimationRuntime::MakeSkeletonRefPoseFromMesh(SourceReferenceMesh, MySkeleton, RetargetSourceAssetReferencePose);
+	}
+	else
+	{
+		RetargetSourceAssetReferencePose.Empty();
+	}
+}
+#endif // WITH_EDITORONLY_DATA
+
+const TArray<FTransform>& UAnimSequence::GetRetargetTransforms() const
+{
+	if (RetargetSource.IsNone() && RetargetSourceAssetReferencePose.Num() > 0)
+	{
+		return RetargetSourceAssetReferencePose;
+	}
+	else
+	{
+		const USkeleton* MySkeleton = GetSkeleton();
+		if (MySkeleton)
+		{
+			return MySkeleton->GetRefLocalPoses(RetargetSource);
+		}
+		else
+		{
+			static TArray<FTransform> EmptyTransformArray;
+			return EmptyTransformArray;
+		}
+	}
+}
+
+FName UAnimSequence::GetRetargetTransformsSourceName() const
+{
+	if (RetargetSource.IsNone() && RetargetSourceAssetReferencePose.Num() > 0)
+	{
+		return GetOutermost()->GetFName();
+	}
+	else
+	{
+		return RetargetSource;
+	}
+}
+
 void UAnimSequence::RetargetBoneTransform(FTransform& BoneTransform, const int32 SkeletonBoneIndex, const FCompactPoseBoneIndex& BoneIndex, const FBoneContainer& RequiredBones, const bool bIsBakedAdditive) const
 {
-	const USkeleton* MySkeleton = GetSkeleton();
-	FAnimationRuntime::RetargetBoneTransform(MySkeleton, RetargetSource, BoneTransform, SkeletonBoneIndex, BoneIndex, RequiredBones, bIsBakedAdditive);
+	FAnimationRuntime::RetargetBoneTransform(GetSkeleton(), GetRetargetTransformsSourceName(), GetRetargetTransforms(), BoneTransform, SkeletonBoneIndex, BoneIndex, RequiredBones, bIsBakedAdditive);
 }
 
 #if WITH_EDITOR
@@ -2500,16 +2555,92 @@ public:
 
 void UAnimSequence::BakeOutVirtualBoneTracks(TArray<FRawAnimSequenceTrack>& NewRawTracks, TArray<FName>& NewAnimationTrackNames, TArray<FTrackToSkeletonMap>& NewTrackToSkeletonMapTable)
 {
-	const int32 NumVirtualBones = GetSkeleton()->GetVirtualBones().Num();
-	check( (RawAnimationData.Num() == TrackToSkeletonMapTable.Num()) && (RawAnimationData.Num() == AnimationTrackNames.Num()) ); //Make sure starting data is valid
+	const int32 NumVirtualBonesOnSkeleton = GetSkeleton()->GetVirtualBones().Num();
 
-	NewRawTracks = TArray<FRawAnimSequenceTrack>(RawAnimationData, NumVirtualBones);
+	check((RawAnimationData.Num() == TrackToSkeletonMapTable.Num()) && (RawAnimationData.Num() == AnimationTrackNames.Num())); //Make sure starting data is valid
 
-	NewTrackToSkeletonMapTable = TArray<FTrackToSkeletonMap>(TrackToSkeletonMapTable, NumVirtualBones);
+	TArray<int> VirtualBonesToAdd;
+	VirtualBonesToAdd.Reserve(NumVirtualBonesOnSkeleton);
 
-	NewAnimationTrackNames = TArray<FName>(AnimationTrackNames, NumVirtualBones);
+	TArray<int32> SourceParents;
 
-	for (int32 VBIndex = 0; VBIndex < NumVirtualBones; ++VBIndex)
+	const FReferenceSkeleton& RefSkeleton = GetSkeleton()->GetReferenceSkeleton();
+
+	const TArray<FVirtualBone>& VirtualBones = GetSkeleton()->GetVirtualBones();
+	for (int32 VBIndex = 0; VBIndex < NumVirtualBonesOnSkeleton; ++VBIndex)
+	{
+		const FVirtualBone& VirtualBone = VirtualBones[VBIndex];
+		if (!NewAnimationTrackNames.Contains(VirtualBone.VirtualBoneName))
+		{
+			//Need to test if we will animation virtual bone. This involves seeing if any bone that can affect the position
+			//of the target relative to the source is animated by this animation. A bone that can affect the relative position
+			//is any both that is a child of the common ancestor of the target and source
+
+			SourceParents.Reset();
+			bool bBuildVirtualBone = false;
+
+			// First get all the bones that form the chain to the source bone. 
+			int32 CurrentBone = RefSkeleton.FindBoneIndex(VirtualBone.SourceBoneName);
+			while (CurrentBone != INDEX_NONE)
+			{
+				SourceParents.Add(CurrentBone);
+				CurrentBone = RefSkeleton.GetParentIndex(CurrentBone);
+			}
+
+			// Now start checking every bone in the target bones hierarchy until a common ancestor is reached. 
+			CurrentBone = RefSkeleton.FindBoneIndex(VirtualBone.TargetBoneName);
+
+			while (!SourceParents.Contains(CurrentBone))
+			{
+				if (Algo::FindBy(TrackToSkeletonMapTable, CurrentBone, &FTrackToSkeletonMap::BoneTreeIndex) != nullptr)
+				{
+					//We animate this bone so the virtual bone is needed
+					bBuildVirtualBone = true;
+					break;
+				}
+
+				CurrentBone = RefSkeleton.GetParentIndex(CurrentBone);
+				check(CurrentBone != INDEX_NONE);
+			}
+
+			// Now we have all the non common bones from the target chain we need the same check from the source chain
+			const int32 FirstCommon = SourceParents.IndexOfByKey(CurrentBone);
+			for (int32 i = FirstCommon - 1; i >= 0; --i)
+			{
+				if (Algo::FindBy(TrackToSkeletonMapTable, i, &FTrackToSkeletonMap::BoneTreeIndex) != nullptr)
+				{
+					//We animate this bone so the virtual bone is needed
+					bBuildVirtualBone = true;
+					break;
+				}
+			}
+
+			if (bBuildVirtualBone)
+			{
+				VirtualBonesToAdd.Add(VBIndex);
+			}
+		}
+	}
+
+	const int32 NumVirtualBonesToAdd = VirtualBonesToAdd.Num();
+
+	auto SetupData = [NumVirtualBonesToAdd](auto& InOutData, const auto& BaseData)
+	{
+		if (InOutData.Num() == 0)
+		{
+			InOutData = BaseData;
+		}
+
+		InOutData.Reserve(InOutData.Num() + NumVirtualBonesToAdd);
+	};
+
+	SetupData(NewRawTracks, RawAnimationData);
+	SetupData(NewTrackToSkeletonMapTable, TrackToSkeletonMapTable);
+	SetupData(NewAnimationTrackNames, AnimationTrackNames);
+
+	const int32 VirtualBoneStartIndex = NewRawTracks.Num();
+
+	for (int32 VBIndex : VirtualBonesToAdd)
 	{
 		const int32 TrackIndex = NewRawTracks.Add(FRawAnimSequenceTrack());
 
@@ -2517,9 +2648,9 @@ void UAnimSequence::BakeOutVirtualBoneTracks(TArray<FRawAnimSequenceTrack>& NewR
 		NewRawTracks[TrackIndex].PosKeys.SetNumUninitialized(NumFrames);
 		NewRawTracks[TrackIndex].RotKeys.SetNumUninitialized(NumFrames);
 		NewRawTracks[TrackIndex].ScaleKeys.SetNumUninitialized(NumFrames);
-		
+
 		NewTrackToSkeletonMapTable.Add(FTrackToSkeletonMap(GetSkeleton()->GetReferenceSkeleton().GetRequiredVirtualBones()[VBIndex]));
-		NewAnimationTrackNames.Add(GetSkeleton()->GetVirtualBones()[VBIndex].VirtualBoneName);
+		NewAnimationTrackNames.Add(VirtualBones[VBIndex].VirtualBoneName);
 	}
 
 	FMemMark Mark(FMemStack::Get());
@@ -2547,14 +2678,18 @@ void UAnimSequence::BakeOutVirtualBoneTracks(TArray<FRawAnimSequenceTrack>& NewR
 		FAnimationPoseData AnimPoseData(Pose, Curve, TempAttributes);
 		GetAnimationPose(AnimPoseData, ExtractContext);
 
-		for (int32 VBIndex = 0; VBIndex < VBRefData.Num(); ++VBIndex)
+		for (int32 VBToAddIndex = 0; VBToAddIndex < VirtualBonesToAdd.Num(); ++VBToAddIndex)
 		{
+			const int32 VBIndex = VirtualBonesToAdd[VBToAddIndex];
 			const FVirtualBoneRefData& VB = VBRefData[VBIndex];
-			CopyTransformToRawAnimationData(Pose[FCompactPoseBoneIndex(VB.VBRefSkelIndex)], NewRawTracks[VBIndex + RawAnimationData.Num()], Frame);
+			CopyTransformToRawAnimationData(Pose[FCompactPoseBoneIndex(VB.VBRefSkelIndex)], NewRawTracks[VBToAddIndex + VirtualBoneStartIndex], Frame);
 		}
 	}
 
-	StaticCompressRawAnimData(NewRawTracks, NumFrames, GetFName());
+	if (NewRawTracks.Num() > 0)
+	{
+		StaticCompressRawAnimData(NewRawTracks, NumFrames, GetFName());
+	}
 }
 
 bool IsIdentity(const FVector& Pos)
@@ -4653,7 +4788,7 @@ bool UAnimSequence::CreateAnimation(USkeletalMesh* Mesh)
 	{
 		ResetAnimation();
 
-		const FReferenceSkeleton& RefSkeleton = Mesh->RefSkeleton;
+		const FReferenceSkeleton& RefSkeleton = Mesh->GetRefSkeleton();
 		SequenceLength = MINIMUM_ANIMATION_LENGTH;
 		NumFrames = 1;
 
@@ -4695,7 +4830,7 @@ bool UAnimSequence::CreateAnimation(USkeletalMeshComponent* MeshComponent)
 
 		ResetAnimation();
 
-		const FReferenceSkeleton& RefSkeleton = Mesh->RefSkeleton;
+		const FReferenceSkeleton& RefSkeleton = Mesh->GetRefSkeleton();
 		SequenceLength = MINIMUM_ANIMATION_LENGTH;
 		NumFrames = 1;
 

@@ -1,22 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraNodeParameterMapSet.h"
-#include "EdGraphSchema_Niagara.h"
-#include "NiagaraEditorUtilities.h"
-#include "SNiagaraGraphNodeConvert.h"
-#include "NiagaraHlslTranslator.h"
-#include "Templates/SharedPointer.h"
-#include "NiagaraGraph.h"
-#include "NiagaraConstants.h"
-#include "ToolMenus.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "EdGraph/EdGraphNode.h"
-#include "NiagaraScriptVariable.h"
-#include "NiagaraConstants.h"
 
+#include "Algo/RemoveIf.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraphSchema_Niagara.h"
+#include "NiagaraConstants.h"
+#include "NiagaraEditorUtilities.h"
+#include "NiagaraHlslTranslator.h"
+#include "NiagaraGraph.h"
+#include "NiagaraScriptVariable.h"
 #include "ScopedTransaction.h"
+#include "SNiagaraGraphNodeConvert.h"
 #include "SNiagaraGraphParameterMapSetNode.h"
+#include "Templates/SharedPointer.h"
+#include "ToolMenus.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBox.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraNodeParameterMapSet"
 
@@ -82,7 +82,7 @@ bool UNiagaraNodeParameterMapSet::VerifyEditablePinName(const FText& InName, FTe
 	return true;
 }
 
-void UNiagaraNodeParameterMapSet::OnNewTypedPinAdded(UEdGraphPin* NewPin)
+void UNiagaraNodeParameterMapSet::OnNewTypedPinAdded(UEdGraphPin*& NewPin)
 {
 	if (HasAnyFlags(RF_NeedLoad | RF_NeedPostLoad | RF_NeedInitialization))
 	{
@@ -94,8 +94,12 @@ void UNiagaraNodeParameterMapSet::OnNewTypedPinAdded(UEdGraphPin* NewPin)
 		FPinCollectorArray InputPins;
 		GetInputPins(InputPins);
 		
-		// Determine if this is already namespaced or not. We need to do things differently below if not...
-		FName NewPinName = NewPin->GetFName();
+		// Determine if this is already namespaced or not. We need to do things differently below if not.  Also use the friendly
+		// name to build the new parameter name since it's what is displayed in the UI.
+		FName NewPinName = NewPin->PinFriendlyName.IsEmpty() == false 
+			? *NewPin->PinFriendlyName.ToString()
+			: NewPin->GetFName();
+
 		bool bCreatedNamespace = false;
 		FName PinNameWithoutNamespace;
 		if (FNiagaraEditorUtilities::DecomposeVariableNamespace(NewPinName, PinNameWithoutNamespace).Num() == 0)
@@ -117,6 +121,7 @@ void UNiagaraNodeParameterMapSet::OnNewTypedPinAdded(UEdGraphPin* NewPin)
 
 		//GetDefault<UEdGraphSchema_Niagara>()->PinToNiagaraVariable()
 		NewPin->PinName = NewUniqueName;
+		NewPin->PinFriendlyName = FText::FromName(NewPin->PinName);
 		NewPin->PinType.PinSubCategory = UNiagaraNodeParameterMapBase::ParameterPinSubCategory;
 		
 		// If dragging from a function or other non-namespaced parent node, we should 
@@ -125,18 +130,10 @@ void UNiagaraNodeParameterMapSet::OnNewTypedPinAdded(UEdGraphPin* NewPin)
 		{
 			const UEdGraphSchema_Niagara* Schema = GetDefault<UEdGraphSchema_Niagara>();
 			FNiagaraVariable PinVariable = Schema->PinToNiagaraVariable(NewPin, false);
-			UNiagaraGraph::FAddParameterOptions AddParameterOptions = UNiagaraGraph::FAddParameterOptions();
-
-			//FNiagaraEditorUtilities::GetParameterMetaDataFromName(NewUniqueName, MetaDataGuess);
-			//AddParameterOptions.NewParameterScopeName = FNiagaraConstants::LocalNamespace;
-			//AddParameterOptions.NewParameterUsage = ENiagaraScriptParameterUsage::Local;
-			//AddParameterOptions.bMakeParameterNameUnique = true;
-			AddParameterOptions.bRefreshMetaDataScopeAndUsage = true;
-
-			UNiagaraScriptVariable* Var = GetNiagaraGraph()->AddParameter(PinVariable, AddParameterOptions);
+			const bool bIsStaticSwitch = false;
+			UNiagaraScriptVariable* Var = GetNiagaraGraph()->AddParameter(PinVariable, bIsStaticSwitch);
 			NewPin->PinName = Var->Variable.GetName();
 		}
-		UpdateAddedPinMetaData(NewPin);
 	}
 
 	if (!NewPin->PersistentGuid.IsValid())
@@ -192,6 +189,7 @@ bool UNiagaraNodeParameterMapSet::CommitEditablePinName(const FText& InName, UEd
 		InGraphPinObj->Modify();
 
 		InGraphPinObj->PinName = *NewPinName;
+		InGraphPinObj->PinFriendlyName = InName;
 		if (bSuppressEvents == false)	
 			OnPinRenamed(InGraphPinObj, OldPinName);
 
@@ -267,45 +265,46 @@ void UNiagaraNodeParameterMapSet::BuildParameterMapHistory(FNiagaraParameterMapH
 	int32 ParamMapIdx = INDEX_NONE;
 	uint32 NodeIdx = INDEX_NONE;
 
-	for (int32 i = 0; i < InputPins.Num(); i++)
+	// filter out any AddPins
+	InputPins.SetNum(Algo::StableRemoveIf(InputPins, [&](UEdGraphPin* InPin)
 	{
-		UEdGraphPin* InputPin = InputPins[i];
-		if (IsAddPin(InputPin))
-		{
-			continue;
-		}
+		return IsAddPin(InPin);
+	}));
 
+	for (UEdGraphPin* InputPin : InputPins)
+	{
 		OutHistory.VisitInputPin(InputPin, this, bFilterForCompilation);
-
-
-		if (!IsNodeEnabled() && OutHistory.GetIgnoreDisabled())
-		{
-			continue;
-		}
-
-		FNiagaraTypeDefinition VarTypeDef = Schema->PinToTypeDefinition(InputPin);
-		if (i == 0 && InputPin != nullptr && VarTypeDef == FNiagaraTypeDefinition::GetParameterMapDef())
-		{
-			UEdGraphPin* PriorParamPin = nullptr;
-			if (InputPin->LinkedTo.Num() > 0)
-			{
-				PriorParamPin = InputPin->LinkedTo[0];
-			}
-
-			// Now plow into our ancestor node
-			if (PriorParamPin)
-			{
-				ParamMapIdx = OutHistory.TraceParameterMapOutputPin(PriorParamPin);
-				NodeIdx = OutHistory.BeginNodeVisitation(ParamMapIdx, this);
-			}
-		}
-		else if (i > 0 && InputPin != nullptr && ParamMapIdx != INDEX_NONE)
-		{
-			OutHistory.HandleVariableWrite(ParamMapIdx, InputPin);
-		}
 	}
 
-	if (!IsNodeEnabled() && OutHistory.GetIgnoreDisabled())
+	if (IsNodeEnabled() || !OutHistory.GetIgnoreDisabled())
+	{
+		for (int32 i = 0; i < InputPins.Num(); i++)
+		{
+			UEdGraphPin* InputPin = InputPins[i];
+
+			FNiagaraTypeDefinition VarTypeDef = Schema->PinToTypeDefinition(InputPin);
+			if (i == 0 && InputPin != nullptr && VarTypeDef == FNiagaraTypeDefinition::GetParameterMapDef())
+			{
+				UEdGraphPin* PriorParamPin = nullptr;
+				if (InputPin->LinkedTo.Num() > 0)
+				{
+					PriorParamPin = InputPin->LinkedTo[0];
+				}
+
+				// Now plow into our ancestor node
+				if (PriorParamPin)
+				{
+					ParamMapIdx = OutHistory.TraceParameterMapOutputPin(PriorParamPin);
+					NodeIdx = OutHistory.BeginNodeVisitation(ParamMapIdx, this);
+				}
+			}
+			else if (i > 0 && InputPin != nullptr && ParamMapIdx != INDEX_NONE)
+			{
+				OutHistory.HandleVariableWrite(ParamMapIdx, InputPin);
+			}
+		}
+	}
+	else
 	{
 		RouteParameterMapAroundMe(OutHistory, bRecursive);
 		return;

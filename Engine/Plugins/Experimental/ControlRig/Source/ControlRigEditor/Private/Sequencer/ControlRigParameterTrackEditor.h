@@ -15,6 +15,7 @@
 #include "Sections/MovieScene3DTransformSection.h"
 #include "AcquiredResources.h"
 #include "MovieSceneToolHelpers.h"
+#include "MovieSceneToolsModule.h"
 
 struct FAssetData;
 class FMenuBuilder;
@@ -25,7 +26,7 @@ class UFKControlRig;
 /**
  * Tools for animation tracks
  */
-class FControlRigParameterTrackEditor : public FKeyframeTrackEditor<UMovieSceneControlRigParameterTrack>
+class FControlRigParameterTrackEditor : public FKeyframeTrackEditor<UMovieSceneControlRigParameterTrack>, public IMovieSceneToolsAnimationBakeHelper
 {
 public:
 	/**
@@ -61,6 +62,9 @@ public:
 	virtual void ObjectImplicitlyAdded(UObject* InObject)  override;
 	virtual void BuildTrackContextMenu(FMenuBuilder& MenuBuilder, UMovieSceneTrack* InTrack) override;
 
+	//IMovieSceneToolsAnimationBakeHelper
+	virtual void PostEvaluation(UMovieScene* MovieScene, FFrameNumber Frame);
+
 private:
 
 	void HandleAddTrackSubMenu(FMenuBuilder& MenuBuilder, TArray<FGuid> ObjectBindings, UMovieSceneTrack* Track);
@@ -71,6 +75,7 @@ private:
 
 	void ToggleFilterAssetByAnimatableControls();
 	bool IsToggleFilterAssetByAnimatableControls();
+	void SelectSequencerNodeInSection(UMovieSceneControlRigParameterSection* ParamSection, const FName& ControlName, bool bSelected);
 
 	/** Control Rig Picked */
 	void AddControlRig(UClass* InClass, UObject* BoundActor, FGuid ObjectBinding);
@@ -81,9 +86,6 @@ private:
 	/** Delegate for Selection Changed Event */
 	void OnSelectionChanged(TArray<UMovieSceneTrack*> InTracks);
 
-	/** Delegate for  Tree View Changed Event */
-	void OnTreeViewChanged();
-
 	/** Delegate for MovieScene Changing so we can see if our track got deleted*/
 	void OnSequencerDataChanged(EMovieSceneDataChangeType DataChangeType);
 
@@ -92,6 +94,9 @@ private:
 
 	/** Delegate for Curve Selection Changed Event */
 	void OnCurveDisplayChanged(FCurveModel* InCurveModel, bool bDisplayed);
+
+	/** Delegate for difference focused movie scene sequence*/
+	void OnActivateSequenceChanged(FMovieSceneSequenceIDRef ID);
 
 	/** Actor Added Delegate*/
 	void HandleActorAdded(AActor* Actor, FGuid TargetObjectGuid);
@@ -113,7 +118,7 @@ private:
 		TArray<FFBXNodeAndChannels>* NodeAndChannels);
 
 	/** Select Bones to Animate on FK Rig*/
-	void SelectFKBonesToAnimate(UFKControlRig* FKControlRig);
+	void SelectFKBonesToAnimate(UFKControlRig* FKControlRig, UMovieSceneControlRigParameterTrack* Track);
 
 	/** Toggle FK Control Rig*/
 	void ToggleFKControlRig(UMovieSceneControlRigParameterTrack* Track, UFKControlRig* FKControlRig);
@@ -137,7 +142,7 @@ private:
 public:
 
 	void AddControlKeys(USceneComponent *InSceneComp, UControlRig* InControlRig, FName PropertyName, FName ParameterName, EMovieSceneTransformChannel ChannelsToKey, ESequencerKeyMode KeyMode, float InLocalTime);
-	void GetControlRigKeys(UControlRig* InControlRig, FName ParameterName, EMovieSceneTransformChannel ChannelsToKey, FGeneratedTrackKeys& OutGeneratedKeys);
+	void GetControlRigKeys(UControlRig* InControlRig, FName ParameterName, EMovieSceneTransformChannel ChannelsToKey, UMovieSceneControlRigParameterSection* SectionToKey, FGeneratedTrackKeys& OutGeneratedKeys);
 	FKeyPropertyResult AddKeysToControlRig(
 		USceneComponent *InSceneComp, UControlRig* InControlRig, FFrameNumber KeyTime, FGeneratedTrackKeys& GeneratedKeys,
 		ESequencerKeyMode KeyMode, TSubclassOf<UMovieSceneTrack> TrackClass, FName ControlRigName, FName RigControlName);
@@ -160,11 +165,11 @@ public:
 private:
 	FDelegateHandle SelectionChangedHandle;
 	FDelegateHandle SequencerChangedHandle;
+	FDelegateHandle OnActivateSequenceChangedHandle;
 	FDelegateHandle CurveChangedHandle;
 	FDelegateHandle OnChannelChangedHandle;
 	FDelegateHandle OnMovieSceneChannelChangedHandle;
 	FDelegateHandle OnActorAddedToSequencerHandle;
-	FDelegateHandle OnTreeViewChangedHandle;
 
 	void BindControlRig(UControlRig* ControlRig);
 	void UnbindControlRig(UControlRig* ControlRig);
@@ -173,8 +178,8 @@ private:
 
 
 	//used to sync curve editor selections/displays on next tick for performance reasons
-	TArray<FMovieSceneChannelHandle> DisplayedChannels;
-	TArray<FMovieSceneChannelHandle> UnDisplayedChannels;
+	TSet<FName> DisplayedControls;
+	TSet<FName> UnDisplayedControls;
 	bool bCurveDisplayTickIsPending;
 
 private:

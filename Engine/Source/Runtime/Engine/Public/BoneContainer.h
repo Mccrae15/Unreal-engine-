@@ -149,6 +149,9 @@ private:
 	/** Look up table of UID to array index UIDToArrayIndexLUT[InUID] = ArrayIndex of order. If MAX_uint16, it is invalid.*/
 	TArray<uint16> UIDToArrayIndexLUT;
 
+	/** Number of valid entries in UIDToArrayIndexLUT. I.e. a count of entries whose value does not equal to  MAX_uint16. */
+	int32 UIDToArrayIndexLUTValidCount;
+
 	/** Look up table of UID to Name UIDToNameLUT[InUID] = Name of curve. If NAME_None, it is invalid.*/
 	TArray<FName> UIDToNameLUT;
 
@@ -156,6 +159,10 @@ private:
 	TArray<FAnimCurveType> UIDToCurveTypeLUT;
 
 	/** For debugging. */
+#if DO_CHECK
+	/** The LOD that we calculated required bones when regenerated */
+	int32 CalculatedForLOD;
+#endif
 	/** Disable Retargeting. Extract animation, but do not retarget it. */
 	bool bDisableRetargeting;
 	/** Disable animation compression, use RAW data instead. */
@@ -321,6 +328,13 @@ public:
 		return UIDToArrayIndexLUT;
 	}
 
+	/** Returns the number of valid entries in the GetUIDToArrayLookupTable result array */
+	int32 GetUIDToArrayIndexLookupTableValidCount() const
+	{
+		return UIDToArrayIndexLUTValidCount;
+	}
+	
+
 	/** Get UID To Name look up table */
 	TArray<FName> const& GetUIDToNameLookupTable() const
 	{
@@ -408,7 +422,13 @@ public:
 	void CacheRequiredAnimCurveUids(const FCurveEvaluationOption& CurveEvalOption);
 
 	const FRetargetSourceCachedData& GetRetargetSourceCachedData(const FName& InRetargetSource) const;
+	const FRetargetSourceCachedData& GetRetargetSourceCachedData(const FName& InSourceName, const TArray<FTransform>& InRetargetTransforms) const;
 
+#if DO_CHECK
+	/** Get the LOD that we calculated required bones when regenerated */
+	int32 GetCalculatedForLOD() const { return CalculatedForLOD; }
+#endif
+	
 private:
 	/** 
 	 * Runtime cached data for retargeting from a specific RetargetSource to this current SkelMesh LOD.

@@ -126,6 +126,21 @@ struct CORE_API FReleaseObjectVersion
 		// Add structure data to Chaos Convex
 		StructureDataAddedToConvex,
 
+		// Changed axis UI for LiveLink AxisSwitch Pre Processor
+		AddedFrontRightUpAxesToLiveLinkPreProcessor,
+
+		// Some sequencer event sections that were copy-pasted left broken links to the director BP
+		FixupCopiedEventSections,
+
+		// Serialize the number of bytes written when serializing function arguments
+		RemoteControlSerializeFunctionArgumentsSize,
+
+		// Add loop counters to sequencer's compiled sub-sequence data
+		AddedSubSequenceEntryWarpCounter,
+
+		// Remove default resolution limit of 512 pixels for cubemaps generated from long-lat sources
+		LonglatTextureCubeDefaultMaxResolution,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

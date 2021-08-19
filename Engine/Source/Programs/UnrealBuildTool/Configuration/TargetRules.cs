@@ -274,6 +274,7 @@ namespace UnrealBuildTool
 		/// Whether the output from this target can be publicly distributed, even if it has dependencies on modules that are in folders
 		/// with special restrictions (eg. CarefullyRedist, NotForLicensees, NoRedist).
 		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
 		public bool bLegalToDistributeBinary = false;
 
 		/// <summary>
@@ -700,7 +701,7 @@ namespace UnrealBuildTool
 		[RequiresUniqueBuildEnvironment]
 		public bool bWithLiveCoding
 		{
-			get { return bWithLiveCodingPrivate ?? (Platform == UnrealTargetPlatform.Win64 && Configuration != UnrealTargetConfiguration.Shipping && Type != TargetType.Program); }
+			get { return bWithLiveCodingPrivate ?? (Platform == UnrealTargetPlatform.Win64 && Configuration != UnrealTargetConfiguration.Shipping && Configuration != UnrealTargetConfiguration.Test && Type != TargetType.Program); }
 			set { bWithLiveCodingPrivate = value; }
 		}
 		bool? bWithLiveCodingPrivate;
@@ -919,6 +920,18 @@ namespace UnrealBuildTool
 		public int MinGameModuleSourceFilesForUnityBuild = 32;
 
 		/// <summary>
+		/// Default treatment of uncategorized warnings
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public WarningLevel DefaultWarningLevel = WarningLevel.Warning;
+
+		/// <summary>
+		/// Whether to treat all warnings as errors. UE generally treats most warnings as errors, with the exception of deprecation warnings,
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public WarningLevel DeprecationWarningLevel = WarningLevel.Warning;
+
+		/// <summary>
 		/// Forces shadow variable warnings to be treated as errors on platforms that support it.
 		/// </summary>
 		[CommandLine("-ShadowVariableErrors", Value = nameof(WarningLevel.Error))]
@@ -945,6 +958,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
 		public bool bUndefinedIdentifierErrors = true;
+
+		/// <summary>
+		/// Forces frame pointers to be retained this is usually required when you want reliable callstacks e.g. mallocframeprofiler
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public bool bRetainFramePointers = true;
 
 		/// <summary>
 		/// New Monolithic Graphics drivers have optional "fast calls" replacing various D3d functions
@@ -1165,8 +1184,13 @@ namespace UnrealBuildTool
 		/// Whether to deploy the executable after compilation on platforms that require deployment.
 		/// </summary>
 		[CommandLine("-Deploy")]
-		[CommandLine("-SkipDeploy", Value = "false")]
 		public bool bDeployAfterCompile = false;
+
+		/// <summary>
+		/// Whether to force skipping deployment for platforms that require deployment by default.
+		/// </summary>
+		[CommandLine("-SkipDeploy")]
+		private bool bForceSkipDeploy = false; 
 
 		/// <summary>
 		/// When enabled, allows XGE to compile pre-compiled header files on remote machines.  Otherwise, PCHs are always generated locally.
@@ -1547,6 +1571,7 @@ namespace UnrealBuildTool
 
 			// Allow the build platform to set defaults for this target
 			UEBuildPlatform.GetBuildPlatform(Platform).ResetTarget(this);
+			bDeployAfterCompile = bForceSkipDeploy ? false : bDeployAfterCompile;
 
 			// Set the default build version
 			if(String.IsNullOrEmpty(BuildVersion))
@@ -1767,6 +1792,18 @@ namespace UnrealBuildTool
 		public bool bGenerateProjectFiles
 		{
 			get { return ProjectFileGenerator.bGenerateProjectFiles; }
+		}
+
+		/// <summary>
+		/// Indicates whether target rules should be used to explicitly enable or disable plugins. Usually not needed for project generation unless project files indicate whether referenced plugins should be built or not.
+		/// </summary>
+		public bool bShouldTargetRulesTogglePlugins
+		{
+			get
+			{
+				return ((ProjectFileGenerator.Current != null) && ProjectFileGenerator.Current.ShouldTargetRulesTogglePlugins())
+					|| ((ProjectFileGenerator.Current == null) && !ProjectFileGenerator.bGenerateProjectFiles);
+			}
 		}
 
 		/// <summary>
@@ -2239,6 +2276,11 @@ namespace UnrealBuildTool
 			get { return Inner.bCompileForSize; }
 		}
 
+		public bool bRetainFramePointers
+		{
+			get { return Inner.bRetainFramePointers; }
+		}
+
 		public bool bForceCompileDevelopmentAutomationTests
 		{
 			get { return Inner.bForceCompileDevelopmentAutomationTests; }
@@ -2345,6 +2387,16 @@ namespace UnrealBuildTool
 		public int MinGameModuleSourceFilesForUnityBuild
 		{
 			get { return Inner.MinGameModuleSourceFilesForUnityBuild; }
+		}
+
+		public WarningLevel DefaultWarningLevel
+		{
+			get { return Inner.DefaultWarningLevel; }
+		}
+
+		public WarningLevel DeprecationWarningLevel
+		{
+			get { return Inner.DeprecationWarningLevel; }
 		}
 
 		public WarningLevel ShadowVariableWarningLevel

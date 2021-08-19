@@ -13,7 +13,9 @@ namespace Private
 {
 
 ////////////////////////////////////////////////////////////////////////////////
+void	Writer_MemorySetHooks(AllocFunc, FreeFunc);
 void	Writer_Initialize(const FInitializeDesc&);
+void	Writer_Shutdown();
 void	Writer_Update();
 bool	Writer_SendTo(const ANSICHAR*, uint32);
 bool	Writer_WriteTo(const ANSICHAR*);
@@ -41,10 +43,22 @@ static uint32 ToAnsiCheap(ANSICHAR (&Dest)[DestSize], const WIDECHAR* Src)
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+void SetMemoryHooks(AllocFunc Alloc, FreeFunc Free)
+{
+	Private::Writer_MemorySetHooks(Alloc, Free);
+}
+
+////////////////////////////////////////////////////////////////////////////////
 void Initialize(const FInitializeDesc& Desc)
 {
 	Private::Writer_Initialize(Desc);
 	FChannel::Initialize();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void Shutdown()
+{
+	Private::Writer_Shutdown();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

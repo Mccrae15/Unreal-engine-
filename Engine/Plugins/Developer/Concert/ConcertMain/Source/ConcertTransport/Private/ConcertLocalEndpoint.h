@@ -7,6 +7,7 @@
 #include "IConcertTransportLogger.h"
 #include "ConcertRemoteEndpoint.h"
 #include "ConcertTransportSettings.h"
+#include "Containers/Queue.h"
 
 class FMessageEndpoint;
 struct FMessageBusNotification;
@@ -19,7 +20,7 @@ typedef TSharedRef<FConcertRemoteEndpoint, ESPMode::ThreadSafe> FConcertRemoteEn
 /**
  * Implements a local endpoint for Concert
  */
-class FConcertLocalEndpoint 
+class FConcertLocalEndpoint
 	: public IConcertLocalEndpoint
 {
 	friend class FConcertLocalEndpointKeepAliveRunnable;
@@ -44,7 +45,7 @@ protected:
 
 	virtual void InternalQueueRequest(const TSharedRef<IConcertRequest>& Request, const FGuid& Endpoint) override;
 	virtual void InternalQueueResponse(const TSharedRef<IConcertResponse>& Response, const FGuid& Endpoint) override;
-	virtual void InternalQueueEvent(const TSharedRef<IConcertEvent>& Event, const FGuid& Endpoint, EConcertMessageFlags Flags, const TMap<FName, FString>& Annotations) override;
+	virtual void InternalQueueEvent(const TSharedRef<IConcertEvent>& Event, const FGuid& Endpoint, EConcertMessageFlags Flags) override;
 	virtual void InternalPublishEvent(const TSharedRef<IConcertEvent>& Event) override;
 
 private:
@@ -76,7 +77,7 @@ private:
 	void PublishMessage(const TSharedRef<IConcertMessage>& Message);
 
 	/** Send a message to a specific remote endpoint */
-	void SendMessage(const TSharedRef<IConcertMessage>& Message, const FConcertRemoteEndpointRef& RemoteEndpoint, const FDateTime& UtcNow, const TMap<FName, FString>& Annotations = TMap<FName, FString>());
+	void SendMessage(const TSharedRef<IConcertMessage>& Message, const FConcertRemoteEndpointRef& RemoteEndpoint, const FDateTime& UtcNow, EConcertMessageFlags Flags = EConcertMessageFlags::None);
 
 	/** Handle an incoming message from the message bus */
 	void InternalHandleMessage(const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context);
@@ -95,7 +96,7 @@ private:
 
 	/** Process a concert event using a registered event handler */
 	void ProcessEvent(const FConcertMessageContext& ConcertContext);
-	
+
 	/** Process a concert request using a registered request handler */
 	void ProcessRequest(const FConcertMessageContext& ConcertContext);
 
@@ -119,7 +120,7 @@ private:
 
 	/** Timeout remote endpoint from which we haven't received a message or keep alive in a while */
 	void TimeoutRemoteEndpoints(const FDateTime& UtcNow);
-	
+
 	/** Process messages that have been received out of order */
 	void ProcessQueuedReceivedMessages(const FDateTime& UtcNow);
 
@@ -128,6 +129,15 @@ private:
 
 	/** Resend pending messages to remote endpoints if need be. */
 	void ResendPendingMessages(const TArray<FConcertRemoteEndpointPtr>& InRemoteEndpoints, const FDateTime& UtcNow);
+
+	/** Handles the inbound message from MessageBus. Operates on the game thread. */
+	void HandleInboundMessages(const FDateTime& UtcNow);
+
+	/** Updates the last receive time for a KeepAlive message. */
+	void ProcessKeepAliveMessage(const TSharedPtr<IMessageContext, ESPMode::ThreadSafe>& Context, const FDateTime& UtcNow);
+
+	/** Force pending resend on endpoints */
+	void ForcePendingResend();
 
 	/** This context of this endpoint */
 	FConcertEndpointContext EndpointContext;
@@ -138,6 +148,9 @@ private:
 	/** Map of remote Endpoints we are sending messages to from this endpoint */
 	mutable FCriticalSection RemoteEndpointsCS;
 	TMap<FGuid, FConcertRemoteEndpointPtr> RemoteEndpoints;
+
+	/** Incoming message bus messages */
+	TQueue<TSharedPtr<IMessageContext, ESPMode::ThreadSafe>, EQueueMode::Spsc> InboundMessages;
 
 	/** Callback when a remote endpoint connection status changes. */
 	TArray<TTuple<FConcertEndpointContext, EConcertRemoteEndpointConnection>> PendingRemoteEndpointConnectionChangedEvents;
@@ -164,6 +177,6 @@ private:
 	/** Holds the endpoint settings */
 	FConcertEndpointSettings Settings;
 
-	/** Holds the Transport Logger, if any */
+	/** Holds the Transport Logger, if any. */
 	FConcertTransportLoggerWrapper Logger;
 };

@@ -51,6 +51,7 @@
 #include "Misc/OutputDevice.h"
 #include "Logging/LogMacros.h"
 #include "Misc/OutputDeviceError.h"
+#include "Async/Async.h"
 
 #if USE_ANDROID_JNI
 extern AAssetManager * AndroidThunkCpp_GetAssetManager();
@@ -88,6 +89,14 @@ static TAutoConsoleVariable<FString> CVarAndroidCPUThermalSensorFilePath(
 	TEXT("android.CPUThermalSensorFilePath"),
 	"",
 	TEXT("Overrides CPU Thermal sensor file path")
+);
+
+static float GAndroidMemoryStateChangeThreshold = 0.1f;
+static FAutoConsoleVariableRef CAndroidMemoryStateChangeThreshold(
+	TEXT("android.AndroidMemoryStateChangeThreshold"),
+	GAndroidMemoryStateChangeThreshold,
+	TEXT("The memory state change threshold after which memory state is reported to memory warning callback"),
+	ECVF_Default
 );
 
 #if STATS || ENABLE_STATNAMEDEVENTS
@@ -129,6 +138,8 @@ TMap<FString, FString> FAndroidMisc::ConfigRulesVariables;
 EDeviceScreenOrientation FAndroidMisc::DeviceOrientation = EDeviceScreenOrientation::Unknown;
 
 extern void AndroidThunkCpp_ForceQuit();
+
+extern void AndroidThunkCpp_SetOrientation(int32 Value);
 
 // From AndroidFile.cpp
 extern FString GFontPathBase;
@@ -204,6 +215,16 @@ static void InitCpuThermalSensor()
 
 void FAndroidMisc::RequestExit( bool Force )
 {
+
+#if PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING
+	// Write the PGO profiling file on a clean shutdown.
+	extern void PGO_WriteFile();
+	if (!GIsCriticalError)
+	{
+		PGO_WriteFile();
+	}
+#endif
+
 	UE_LOG(LogAndroid, Log, TEXT("FAndroidMisc::RequestExit(%i)"), Force);
 	if (Force)
 	{
@@ -532,6 +553,11 @@ void FAndroidMisc::PlatformInit()
 #endif
 
 	InitCpuThermalSensor();
+
+	UE_LOG(LogInit, Log, TEXT(" - This binary is optimized with LTO: %s, PGO: %s, instrumented for PGO data collection: %s"),
+		PLATFORM_COMPILER_OPTIMIZATION_LTCG ? TEXT("yes") : TEXT("no"),
+		FPlatformMisc::IsPGOEnabled() ? TEXT("yes") : TEXT("no"),
+		PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING ? TEXT("yes") : TEXT("no"));
 }
 
 extern void AndroidThunkCpp_DismissSplashScreen();
@@ -945,6 +971,119 @@ bool FAndroidMisc::SupportsLocalCaching()
 	}*/
 
 
+}
+
+static int SysGetRandomSupported = -1;
+
+// http://man7.org/linux/man-pages/man2/getrandom.2.html
+// getrandom() was introduced in version 3.17 of the Linux kernel
+//   and glibc version 2.25.
+
+// Check known platforms if SYS_getrandom isn't defined
+#if !defined(SYS_getrandom)
+	#if PLATFORM_CPU_X86_FAMILY && PLATFORM_64BITS
+		#define SYS_getrandom 318
+	#elif PLATFORM_CPU_X86_FAMILY && !PLATFORM_64BITS
+		#define SYS_getrandom 355
+	#elif PLATFORM_CPU_ARM_FAMILY && PLATFORM_64BITS
+		#define SYS_getrandom 278
+	#elif PLATFORM_CPU_ARM_FAMILY && !PLATFORM_64BITS
+		#define SYS_getrandom 384
+	#endif
+#endif // !defined(SYS_getrandom)
+
+namespace
+{
+#if defined(SYS_getrandom)
+
+#if !defined(GRND_NONBLOCK)
+	#define GRND_NONBLOCK 0x0001
+#endif
+
+	int SysGetRandom(void *buf, size_t buflen)
+	{
+		if (SysGetRandomSupported < 0)
+		{
+			int Ret = syscall(SYS_getrandom, buf, buflen, GRND_NONBLOCK);
+
+			// If -1 is returned with ENOSYS, kernel doesn't support getrandom
+			SysGetRandomSupported = ((Ret == -1) && (errno == ENOSYS)) ? 0 : 1;
+		}
+
+		return SysGetRandomSupported ?
+			syscall(SYS_getrandom, buf, buflen, GRND_NONBLOCK) : -1;
+	}
+
+#else
+
+	int SysGetRandom(void *buf, size_t buflen)
+	{
+		return -1;
+	}
+
+#endif // !SYS_getrandom
+}
+
+/**
+ * Try to use SYS_getrandom which would be the fastest, otherwise fall back to 
+ * use /proc/sys/kernel/random/uuid to get GUID; do NOT use JNI since this may be called too early
+ */
+void  FAndroidMisc::CreateGuid(struct FGuid& Result)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FGenericPlatformMisc_CreateGuid);
+
+	static bool bGetRandomFailed = false;
+	static bool bProcUUIDFailed = false;
+
+	if (!bGetRandomFailed)
+	{
+		int BytesRead = SysGetRandom(&Result, sizeof(Result));
+
+		if (BytesRead == sizeof(Result))
+		{
+			// https://tools.ietf.org/html/rfc4122#section-4.4
+			// https://en.wikipedia.org/wiki/Universally_unique_identifier
+			//
+			// The 4 bits of digit M indicate the UUID version, and the 1â€“3
+			//   most significant bits of digit N indicate the UUID variant.
+			// xxxxxxxx-xxxx-Mxxx-Nxxx-xxxxxxxxxxxx
+			Result[1] = (Result[1] & 0xffff0fff) | 0x00004000; // version 4
+			Result[2] = (Result[2] & 0x3fffffff) | 0x80000000; // variant 1
+			return;
+		}
+		bGetRandomFailed = true;
+	}
+
+#define FROM_HEX(_a) ( (_a) <= '9' ? (_a) - '0' : (_a) <= 'F' ?  (_a) - 'A' + 10 : (_a) - 'a' + 10 )
+
+	if (!bProcUUIDFailed)
+	{
+		int32 Handle = open("/proc/sys/kernel/random/uuid", O_RDONLY);
+		if (Handle != -1)
+		{
+			char LineBuffer[36];
+			int ReadBytes = read(Handle, LineBuffer, 36);
+			close(Handle);
+			if (ReadBytes == 36)
+			{
+				Result.A = FROM_HEX(LineBuffer[0]) << 28 | FROM_HEX(LineBuffer[1]) << 24 | FROM_HEX(LineBuffer[2]) << 20 | FROM_HEX(LineBuffer[3]) << 16 |
+					FROM_HEX(LineBuffer[4]) << 12 | FROM_HEX(LineBuffer[5]) << 8 | FROM_HEX(LineBuffer[6]) << 4 | FROM_HEX(LineBuffer[7]);
+				Result.B = FROM_HEX(LineBuffer[9]) << 28 | FROM_HEX(LineBuffer[10]) << 24 | FROM_HEX(LineBuffer[11]) << 20 | FROM_HEX(LineBuffer[12]) << 16 |
+					FROM_HEX(LineBuffer[14]) << 12 | FROM_HEX(LineBuffer[15]) << 8 | FROM_HEX(LineBuffer[16]) << 4 | FROM_HEX(LineBuffer[17]);
+				Result.C = FROM_HEX(LineBuffer[19]) << 28 | FROM_HEX(LineBuffer[20]) << 24 | FROM_HEX(LineBuffer[21]) << 20 | FROM_HEX(LineBuffer[22]) << 16 |
+					FROM_HEX(LineBuffer[24]) << 12 | FROM_HEX(LineBuffer[25]) << 8 | FROM_HEX(LineBuffer[26]) << 4 | FROM_HEX(LineBuffer[27]);
+				Result.D = FROM_HEX(LineBuffer[28]) << 28 | FROM_HEX(LineBuffer[29]) << 24 | FROM_HEX(LineBuffer[30]) << 20 | FROM_HEX(LineBuffer[31]) << 16 |
+					FROM_HEX(LineBuffer[32]) << 12 | FROM_HEX(LineBuffer[33]) << 8 | FROM_HEX(LineBuffer[34]) << 4 | FROM_HEX(LineBuffer[35]);
+				return;
+			}
+		}
+		bProcUUIDFailed = true;
+	}
+
+#undef FROM_HEX
+
+	// fall back to generic CreateGuid
+	FGenericPlatformMisc::CreateGuid(Result);
 }
 
 /**
@@ -1409,8 +1548,8 @@ bool FAndroidMisc::GetUseVirtualJoysticks()
 		}
 	}
 
-	// Stereo-only HMDs don't require virtual joysticks
-	if (IsStandaloneStereoOnlyDevice())
+	// Oculus HMDs don't require virtual joysticks
+	if (FAndroidMisc::GetDeviceMake() == FString("Oculus"))
 	{
 		return false;
 	}
@@ -1429,24 +1568,13 @@ bool FAndroidMisc::SupportsTouchInput()
 		}
 	}
 
-	// Stereo-only HMDs don't support touch input
-	if (IsStandaloneStereoOnlyDevice())
+	// Oculus HMDs don't support touch input
+	if (FAndroidMisc::GetDeviceMake() == FString("Oculus"))
 	{
 		return false;
 	}
 
 	return true;
-}
-
-bool FAndroidMisc::IsStandaloneStereoOnlyDevice()
-{
-	// Oculus HMDs are always in stereo mode
-	if (FAndroidMisc::GetDeviceMake() == FString("Oculus"))
-	{
-		return true;
-	}
-
-	return false;
 }
 
 extern void AndroidThunkCpp_RegisterForRemoteNotifications();
@@ -1681,6 +1809,12 @@ int32 FAndroidMisc::GetAndroidBuildVersion()
 }
 #endif
 
+static bool bForceUnsupported = false;
+void FAndroidMisc::SetForceUnsupported(bool bInOverride)
+{
+	bForceUnsupported = bInOverride;
+}
+
 #if USE_ANDROID_JNI
 bool FAndroidMisc::IsSupportedAndroidDevice()
 {
@@ -1706,12 +1840,12 @@ bool FAndroidMisc::IsSupportedAndroidDevice()
 			}
 		}
 	}
-	return bSupported;
+	return bForceUnsupported ? false : bSupported;
 }
 #else
 bool FAndroidMisc::IsSupportedAndroidDevice()
 {
-	return true;
+	return !bForceUnsupported;
 }
 #endif
 
@@ -2281,7 +2415,7 @@ bool FAndroidMisc::ShouldUseVulkan()
 
 		const bool bVulkanAvailable = IsVulkanAvailable();
 
-		const bool bVulkanDisabledCVar = !IsStandaloneStereoOnlyDevice() && CVarDisableVulkan->GetValueOnAnyThread() == 1;
+		const bool bVulkanDisabledCVar = CVarDisableVulkan->GetValueOnAnyThread() == 1;
 
 		if (bVulkanAvailable && !bVulkanDisabledCVar)
 		{
@@ -2908,6 +3042,78 @@ int32 FAndroidMisc::GetNativeDisplayRefreshRate()
 
 }
 
+static FAndroidMemoryWarningContext GAndroidMemoryWarningContext;
+void (*GMemoryWarningHandler)(const FGenericMemoryWarningContext& Context) = NULL;
+
+static void SendMemoryWarningContext()
+	{
+	if (FTaskGraphInterface::IsRunning())
+	{
+		// Run on game thread to avoid mem handler callback getting confused.
+		AsyncTask(ENamedThreads::GameThread, [AndroidMemoryWarningContext = GAndroidMemoryWarningContext]()
+			{
+				if (GMemoryWarningHandler)
+				{
+					// note that we may also call this when recovering from low memory conditions. (i.e. not in low memory state.)
+					GMemoryWarningHandler(AndroidMemoryWarningContext);
+				}
+			});
+	}
+	else
+	{
+		const FAndroidMemoryWarningContext& Context = GAndroidMemoryWarningContext;
+		UE_LOG(LogAndroid, Warning, TEXT("Not calling memory warning handler, received too early. %d, %d %d %d"), Context.LastTrimMemoryState
+			   , Context.LastNativeMemoryAdvisorState, Context.MemoryAdvisorEstimatedAvailableMemoryMB, Context.OomScore);
+	}
+}
+
+void FAndroidMisc::UpdateOSMemoryStatus(EOSMemoryStatusCategory OSMemoryStatusCategory, int Value)
+{
+	switch (OSMemoryStatusCategory)
+	{
+		case EOSMemoryStatusCategory::OSTrim:
+			GAndroidMemoryWarningContext.LastTrimMemoryState = Value;
+			break;
+		default:
+			checkNoEntry();
+	}
+
+	SendMemoryWarningContext();
+}
+
+FORCEINLINE bool ValueOutsideThreshold(float Value, float BaseLine, float Threshold)
+{
+	return Value > BaseLine * (1.0f + Threshold)
+		|| Value < BaseLine * (1.0f - Threshold);
+}
+
+void FAndroidMisc::UpdateMemoryAdvisorState(int State, int EstimateAvailableMB, int OOMScore)
+{
+	bool bUpdate = GAndroidMemoryWarningContext.LastNativeMemoryAdvisorState != State;
+	bUpdate |= ValueOutsideThreshold(EstimateAvailableMB, GAndroidMemoryWarningContext.MemoryAdvisorEstimatedAvailableMemoryMB, GAndroidMemoryStateChangeThreshold);
+	bUpdate |= ValueOutsideThreshold(OOMScore, GAndroidMemoryWarningContext.OomScore, GAndroidMemoryStateChangeThreshold);
+
+	if (bUpdate)
+	{
+		GAndroidMemoryWarningContext.LastNativeMemoryAdvisorState = State;
+		GAndroidMemoryWarningContext.MemoryAdvisorEstimatedAvailableMemoryMB = EstimateAvailableMB;
+		GAndroidMemoryWarningContext.OomScore = OOMScore;
+		SendMemoryWarningContext();
+	}
+}
+
+void FAndroidMisc::SetMemoryWarningHandler(void (*InHandler)(const FGenericMemoryWarningContext& Context))
+{
+	check(IsInGameThread());
+	GMemoryWarningHandler = InHandler;
+}
+
+bool FAndroidMisc::HasMemoryWarningHandler()
+{
+	check(IsInGameThread());
+	return GMemoryWarningHandler != nullptr;
+}
+
 bool FAndroidMisc::SupportsBackbufferSampling()
 {
 	static int32 CachedAndroidOpenGLSupportsBackbufferSampling = -1;
@@ -2923,5 +3129,61 @@ bool FAndroidMisc::SupportsBackbufferSampling()
 	return CachedAndroidOpenGLSupportsBackbufferSampling == 1;
 }
 
+void FAndroidMisc::NonReentrantRequestExit()
+{
+#if UE_SET_REQUEST_EXIT_ON_TICK_ONLY
+	// Cheating here to grab access to this. This function should only be used in extreme cases in which non-reentrant functions are needed (ie. crash handling/signal handler)
+	extern bool GShouldRequestExit;
+	GShouldRequestExit = true;
+#else
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	GIsRequestingExit = true;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif // UE_SET_REQUEST_EXIT_ON_TICK_ONLY
+}
 
+void FAndroidMisc::SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrentation)
+{
+#if USE_ANDROID_JNI
+	AndroidThunkCpp_SetOrientation(GetAndroidScreenOrientation(NewDeviceOrentation));
+#endif // USE_ANDROID_JNI
+}
 
+#if USE_ANDROID_JNI
+int32 FAndroidMisc::GetAndroidScreenOrientation(EDeviceScreenOrientation ScreenOrientation)
+{
+	EAndroidScreenOrientation AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_UNSPECIFIED;
+	switch (ScreenOrientation)
+	{
+	case EDeviceScreenOrientation::Unknown:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_UNSPECIFIED;
+		break;
+	case EDeviceScreenOrientation::Portrait:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_PORTRAIT;
+		break;
+	case EDeviceScreenOrientation::PortraitUpsideDown:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_REVERSE_PORTRAIT;
+		break;
+	case EDeviceScreenOrientation::LandscapeLeft:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_LANDSCAPE;
+		break;
+	case EDeviceScreenOrientation::LandscapeRight:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
+		break;
+	case EDeviceScreenOrientation::FaceUp:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_UNSPECIFIED;
+		break;
+	case EDeviceScreenOrientation::FaceDown:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_UNSPECIFIED;
+		break;
+	case EDeviceScreenOrientation::PortraitSensor:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_SENSOR_PORTRAIT;
+		break;
+	case EDeviceScreenOrientation::LandscapeSensor:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+		break;
+	}
+
+	return static_cast<int32>(AndroidScreenOrientation);
+}
+#endif // USE_ANDROID_JNI

@@ -3,6 +3,7 @@
 #pragma once
 
 // Datasmith SDK.
+#include "DatasmithMeshExporter.h"
 #include "DatasmithSceneFactory.h"
 #include "DatasmithSceneExporter.h"
 
@@ -11,8 +12,10 @@ class FDatasmithFacadeActor;
 class FDatasmithFacadeBaseMaterial;
 class FDatasmithFacadeElement;
 class FDatasmithFacadeMesh;
+class FDatasmithFacadeMeshElement;
 class FDatasmithFacadeMetaData;
 class FDatasmithFacadeTexture;
+class FDatasmithFacadeLevelVariantSets;
 
 
 class DATASMITHFACADE_API FDatasmithFacadeScene
@@ -80,8 +83,32 @@ public:
 		FDatasmithFacadeBaseMaterial* InMaterialPtr
 	);
 
+	FDatasmithFacadeMeshElement* ExportDatasmithMesh(
+		FDatasmithFacadeMesh* Mesh,
+		FDatasmithFacadeMesh* CollisionMesh = nullptr
+	);
+
+	bool ExportDatasmithMesh(
+		FDatasmithFacadeMeshElement* MeshElement,
+		FDatasmithFacadeMesh* Mesh,
+		FDatasmithFacadeMesh* CollisionMesh = nullptr
+	);
+
 	void AddMesh(
-		FDatasmithFacadeMesh* InMeshPtr
+		FDatasmithFacadeMeshElement* InMeshPtr
+	);
+
+	int32 GetMeshesCount() const
+	{
+		return SceneRef->GetMeshesCount();
+	}
+
+	FDatasmithFacadeMeshElement* GetNewMesh(
+		int32 MeshIndex
+	);
+
+	void RemoveMesh(
+		FDatasmithFacadeMeshElement* MeshElement
 	);
 
 	void AddTexture(
@@ -102,6 +129,20 @@ public:
 		FDatasmithFacadeTexture* InTexturePtr
 	);
 
+	void AddLevelVariantSets(
+		FDatasmithFacadeLevelVariantSets* InLevelVariantSetsPtr
+	);
+
+	int32 GetLevelVariantSetsCount() const;
+
+	FDatasmithFacadeLevelVariantSets* GetNewLevelVariantSets(
+		int32 LevelVariantSetsIndex
+	);
+
+	void RemoveLevelVariantSets(
+		FDatasmithFacadeLevelVariantSets* InLevelVariantSetsPtr
+	);
+
 	void AddMetaData(
 		FDatasmithFacadeMetaData* InMetaDataPtr
 	);
@@ -116,12 +157,38 @@ public:
 		int32 MetaDataIndex
 	);
 
+	/**
+	 *	Returns a new FDatasmithFacadeMetaData pointing to the MetaData associated to the specified DatasmithElement.
+	 *	If there is no associated metadata or the element is null, the returned value is nullptr.
+	 */
+	FDatasmithFacadeMetaData* GetNewMetaData(
+		FDatasmithFacadeElement* Element
+	);
+
 	void RemoveMetaData(
 		FDatasmithFacadeMetaData* InMetaDataPtr
 	);
 	
+	/** Set the Datasmith scene name */
+	void SetName(const TCHAR* InName);
+
+	/** Set the Datasmith scene file name */
+	const TCHAR* GetName() const;
+
+	/** Set the path to the folder where the .datasmith file will be saved. */
+	void SetOutputPath(const TCHAR* InOutputPath);
+
+	/** Get the path to the folder where the .datasmith file will be saved. */
+	const TCHAR* GetOutputPath() const;
+
+	/** Get the path were additional assets will be saved to. */
+	const TCHAR* GetAssetsOutputPath() const;
+
 	/** Instantiate an exporter and register export start time */
 	void PreExport();
+
+	/** Validate assets and remove unused ones. */
+	void CleanUp();
 
 	/** 
 	 * Manually shutdown the Facade and close down all the core engine systems and release the resources they allocated
@@ -129,24 +196,23 @@ public:
 	 */
 	static void Shutdown();
 
-	/** Build and export a Datasmith scene instance and its scene element assets. */
-	void ExportScene(
-		const TCHAR* InOutputPath // Datasmith scene output file path
-	);
-
-	/** 
-	 * Build and export the Datasmith scene element assets.
-	 * This must be done before building a Datasmith scene instance.
+	/** Build and export a Datasmith scene instance and its scene element assets.
+	 *  The passed InOutputPath parameter will override any Name and OutputPath previously specified.
+	 *	@param bCleanupUnusedElements Remove unused meshes, textures and materials before exporting
+	 *	@return True if the scene was properly exported.
 	 */
-	void ExportAssets(
-		const TCHAR* InAssetFolder // Datasmith asset folder path
+	bool ExportScene(
+		const TCHAR* InOutputPath, // Datasmith scene output file path
+		bool bCleanupUnusedElements = true
 	);
 
-	/** Build a Datasmith scene instance. */
-	void BuildScene(
-		const TCHAR* InSceneName // Datasmith scene name
+	/** Build and export a Datasmith scene instance and its scene element assets.
+	 *	@param bCleanupUnusedElements Remove unused meshes, textures and materials before exporting
+	 *	@return True if the scene was properly exported.
+	 */
+	bool ExportScene(
+		bool bCleanupUnusedElements = true
 	);
-
 
 	/**
 	 * Set the Datasmith scene's label.
@@ -160,6 +226,83 @@ public:
 	/** Return the Datasmith scene's label. */
 	const TCHAR* GetLabel() const;
 
+	void Reset()
+	{
+		SceneRef->Reset();
+	}
+
+
+	/** Gets the name of the host application which created the scene */
+	const TCHAR* GetHost() const
+	{
+		return SceneRef->GetHost();
+	}
+
+	/**
+	 * Sets the name of the host application from which we're exporting from.
+	 *
+	 * @param InHost	The host application name
+	 */
+	void SetHost(
+		const TCHAR* InHost
+	)
+	{
+		SceneRef->SetHost(InHost);
+	}
+
+	/** Returns the vendor name of the application used to export the scene */
+	const TCHAR* GetVendor() const
+	{
+		return SceneRef->GetVendor();
+	}
+
+	/**
+	 * Sets the vendor name of the application used to export the scene.
+	 *
+	 * @param InVendor	The application vendor name
+	 */
+	void SetVendor(
+		const TCHAR* InApplicationVendorName
+	)
+	{
+		SceneRef->SetVendor(InApplicationVendorName);
+	}
+
+	/** Returns the product name of the application used to export the scene */
+	const TCHAR* GetProductName() const
+	{
+		return SceneRef->GetProductName();
+	}
+
+	/**
+	 * Sets the product name of the application used to export the scene.
+	 *
+	 * @param InProductName	The application name
+	 */
+	void SetProductName(
+		const TCHAR* InApplicationProductName
+	)
+	{
+		SceneRef->SetProductName(InApplicationProductName);
+	}
+
+	/** Returns the product version of the application used to export the scene */
+	const TCHAR* GetProductVersion() const
+	{
+		return SceneRef->GetProductVersion();
+	}
+
+	/**
+	 * Sets the product version of the application used to export the scene.
+	 *
+	 * @param InProductVersion	The application version
+	 */
+	void SetProductVersion(
+		const TCHAR* InApplicationProductVersion
+	)
+	{
+		SceneRef->SetProductVersion(InApplicationProductVersion);
+	}
 
 #ifdef SWIG_FACADE
 protected:
@@ -168,36 +311,11 @@ protected:
 	// Return the build Datasmith scene instance.
 	TSharedRef<IDatasmithScene> GetScene() const;
 
-	// Return the list of texture names added to the current datasmith scene.
-	TSharedRef<TSet<FString>> GetExportedTextures() const;
-
 private:
-
-	// Name of the host application used to build the scene.
-	FString ApplicationHostName;
-
-	// Vendor name of the application used to build the scene.
-	FString ApplicationVendorName;
-
-	// Product name of the application used to build the scene.
-	FString ApplicationProductName;
-
-	// Product version of the application used to build the scene.
-	FString ApplicationProductVersion;
-
-	// Array of collected elements for the Datasmith scene to build.
-	TSet<TSharedPtr<FDatasmithFacadeElement>> SceneElementSet;
 
 	// Datasmith scene instance built with the collected elements.
 	TSharedRef<IDatasmithScene> SceneRef;
 
 	// Datasmith scene exporter
-	TSharedPtr<FDatasmithSceneExporter> SceneExporterRef;
-
-	// Set of texture name to make sure we don't export duplicates.
-	TSharedRef<TSet<FString>> ExportedTextureSet;
-
-	// Indicates if a clean up is required or not.
-	// Always true except on an export as the SceneExporter is performing the clean up
-	bool bCleanUpNeeded;
+	TSharedRef<FDatasmithSceneExporter> SceneExporterRef;
 };

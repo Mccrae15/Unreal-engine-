@@ -15,7 +15,13 @@
 #include "Templates/SubclassOf.h"
 #include "Engine/EngineTypes.h"
 #include "UObject/ScriptMacros.h"
+#include "UObject/Interface.h"
+
 #include "CheatManager.generated.h"
+
+#ifndef UE_WITH_CHEAT_MANAGER
+#define UE_WITH_CHEAT_MANAGER (1 && !UE_BUILD_SHIPPING)
+#endif
 
 /** Debug Trace info for capturing **/
 struct FDebugTraceInfo
@@ -58,7 +64,20 @@ struct FDebugTraceInfo
 		, bInsideOfObject(false)
 	{
 	}
+};
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnCheatManagerCreated, UCheatManager*);
+
+
+/** A cheat manager extension can extend the main cheat manager in a modular way, being enabled or disabled when the system associated with the cheats is enabled or disabled */
+UCLASS(Blueprintable, Within=CheatManager)
+class ENGINE_API UCheatManagerExtension : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	/** Use the outer cheat manager to get a World. */
+	virtual UWorld* GetWorld() const override;
 };
 
 /** 
@@ -69,6 +88,10 @@ UCLASS(Blueprintable, Within=PlayerController)
 class ENGINE_API UCheatManager : public UObject
 {
 	GENERATED_UCLASS_BODY()
+
+	//~UObject interface
+	virtual bool ProcessConsoleExec(const TCHAR* Cmd, FOutputDevice& Ar, UObject* Executor) override;
+	//~End of UObject interface
 
 	/** Debug camera - used to have independent camera without stopping gameplay */
 	UPROPERTY()
@@ -390,8 +413,49 @@ class ENGINE_API UCheatManager : public UObject
 
 	/** Use the Outer Player Controller to get a World.  */
 	virtual UWorld* GetWorld() const override;
-protected:
 
+public:
+	/** Registers a cheat manager extension with this cheat manager */
+	void AddCheatManagerExtension(UCheatManagerExtension* CheatObject);
+
+	/** Removes a cheat manager extension from this cheat manager */
+	void RemoveCheatManagerExtension(UCheatManagerExtension* CheatObject);
+	
+	/** Finds a previously registered cheat manager extension of the specified class */
+	UCheatManagerExtension* FindCheatManagerExtension(const UClass* InClass) const;
+
+	/** Finds a previously registered cheat manager extension of the specified class */
+	template<typename T>
+	T* FindCheatManagerExtension() const
+	{
+		return CastChecked<T>(FindCheatManagerExtension(T::StaticClass()), ECastCheckedType::NullAllowed);
+	}
+
+	/** Finds a previously registered cheat manager extension that implements the specified interface */
+	UCheatManagerExtension* FindCheatManagerExtensionInterface(const UClass* InClass) const;
+
+	/** Finds a previously registered cheat manager extension that implements the specified interface */
+	template<class T = UInterface>
+	T* FindCheatManagerExtensionInterface() const
+	{
+		return CastChecked<T>(FindCheatManagerExtensionInterface(T::UClassType::StaticClass()), ECastCheckedType::NullAllowed);
+	}
+
+	/** Register a delegate to call whenever a cheat manager is spawned; it will also be called immediately for cheat managers that already exist at this point */
+	static FDelegateHandle RegisterForOnCheatManagerCreated(FOnCheatManagerCreated::FDelegate&& Delegate);
+
+	/** Unregister a delegate previously registered with CallOrRegister_OnCheatManagerCreated */
+	static void UnregisterFromOnCheatManagerCreated(FDelegateHandle DelegateHandle);
+
+protected:
+	/** List of registered cheat manager extensions */
+	UPROPERTY(Transient)
+	TArray<UCheatManagerExtension*> CheatManagerExtensions;
+
+	/** Delegate called when the asset manager singleton is created */
+	static FOnCheatManagerCreated OnCheatManagerCreatedDelegate;
+
+protected:
 	/** Do game specific bugIt */
 	virtual bool DoGameSpecificBugItLog(FOutputDevice& OutputFile) { return true; }
 

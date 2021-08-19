@@ -85,6 +85,9 @@ FText FNiagaraMessageUtilities::MakePostCompileSummaryText(const FText& Compiled
 
 UNiagaraStackEntry::FStackIssue FNiagaraMessageUtilities::MessageToStackIssue(TSharedRef<const INiagaraMessage> InMessage, FString InStackEditorDataKey)
 {
+	bool bDismissable = InMessage->AllowDismissal();
+	FText ShortDescription = InMessage->GenerateMessageTitle();
+	
 	TSharedRef<FTokenizedMessage> TokenizedMessage = InMessage->GenerateTokenizedMessage();
 	EStackIssueSeverity StackIssueSeverity;
 	switch (TokenizedMessage->GetSeverity())
@@ -105,15 +108,9 @@ UNiagaraStackEntry::FStackIssue FNiagaraMessageUtilities::MessageToStackIssue(TS
 		break;
 	}
 
-	FText ShortDescription;
-	const FName& MessageTopic = InMessage->GetMessageTopic();
-	if(MessageTopic == FNiagaraMessageTopics::CompilerTopicName)
+	if(ShortDescription.IsEmpty())
 	{
-		ShortDescription = LOCTEXT("CompileErrorShortDescription", "Compile Error");
-	}
-	else
-	{
-		ShortDescription = LOCTEXT("UnspecifiedErrorShortDescription", "Unspecified Error");
+		ShortDescription = LOCTEXT("UnspecifiedTitle", "Message");
 	}
 
 	TArray<UNiagaraStackEntry::FStackIssueFix> FixLinks;
@@ -135,8 +132,130 @@ UNiagaraStackEntry::FStackIssue FNiagaraMessageUtilities::MessageToStackIssue(TS
 		ShortDescription,
 		InMessage->GenerateMessageText(),
 		InStackEditorDataKey,
-		false,
+		bDismissable,
 		FixLinks);
+}
+
+UNiagaraStackEntry::FStackIssue FNiagaraMessageUtilities::StackMessageToStackIssue(const FNiagaraStackMessage& InMessage, FString InStackEditorDataKey, const TArray<FLinkNameAndDelegate>& Links)
+{
+	EStackIssueSeverity StackIssueSeverity;
+	switch (InMessage.MessageSeverity)
+	{
+	case ENiagaraMessageSeverity::CriticalError:
+	case ENiagaraMessageSeverity::Error:
+		StackIssueSeverity = EStackIssueSeverity::Error;
+		break;
+	case ENiagaraMessageSeverity::PerformanceWarning:
+	case ENiagaraMessageSeverity::Warning:
+		StackIssueSeverity = EStackIssueSeverity::Warning;
+		break;
+	case ENiagaraMessageSeverity::Info:
+		StackIssueSeverity = EStackIssueSeverity::Info;
+		break;
+	case ENiagaraMessageSeverity::CustomNote:
+		StackIssueSeverity = EStackIssueSeverity::CustomNote;
+		break;
+	default:
+		StackIssueSeverity = EStackIssueSeverity::Info;
+		break;
+	}
+
+	TArray<UNiagaraStackEntry::FStackIssueFix> FixLinks;
+
+	for(const FLinkNameAndDelegate& Link : Links)
+	{
+		const FSimpleDelegate& Delegate  = Link.LinkDelegate;
+		FixLinks.Add(UNiagaraStackEntry::FStackIssueFix(
+			Link.LinkNameText,
+			UNiagaraStackEntry::FStackIssueFixDelegate::CreateLambda([Delegate]() { Delegate.Execute(); }),
+			UNiagaraStackEntry::EStackIssueFixStyle::Link));
+	}
+
+	FText ShortDescription = InMessage.ShortDescription;
+
+	if(ShortDescription.IsEmptyOrWhitespace())
+	{
+		if(StackIssueSeverity == EStackIssueSeverity::Info)
+		{
+			ShortDescription = LOCTEXT("EmptyShortDescriptionFromStackMessage_Info", "Information");
+		}
+		else if(StackIssueSeverity == EStackIssueSeverity::Warning)
+		{
+			ShortDescription = LOCTEXT("EmptyShortDescriptionFromStackMessage_Warning", "Warning");
+		}
+		else if(StackIssueSeverity == EStackIssueSeverity::Error)
+		{
+			ShortDescription = LOCTEXT("EmptyShortDescriptionFromStackMessage_Error", "Error");
+		}
+		else if(StackIssueSeverity == EStackIssueSeverity::CustomNote)
+		{
+			ShortDescription = LOCTEXT("EmptyShortDescriptionFromStackMessage_CustomNote", "Custom Note");
+		}
+	}
+	
+	return UNiagaraStackEntry::FStackIssue(
+		StackIssueSeverity,
+		ShortDescription,
+		InMessage.MessageText,
+		InStackEditorDataKey,
+		InMessage.bAllowDismissal,
+		FixLinks);
+}
+
+void FNiagaraMessageUtilities::GetCompileMessageData(TSharedRef<const FNiagaraMessageCompileEvent> InMessage, bool& bOutDismissable, FText& OutShortDescription)
+{
+	TSharedRef<FTokenizedMessage> TokenizedMessage = InMessage->GenerateTokenizedMessage();
+	EStackIssueSeverity StackIssueSeverity;
+	switch (TokenizedMessage->GetSeverity())
+	{
+	case EMessageSeverity::CriticalError:
+	case EMessageSeverity::Error:
+		StackIssueSeverity = EStackIssueSeverity::Error;
+		break;
+	case EMessageSeverity::PerformanceWarning:
+	case EMessageSeverity::Warning:
+		StackIssueSeverity = EStackIssueSeverity::Warning;
+		break;
+	case EMessageSeverity::Info:
+		StackIssueSeverity = EStackIssueSeverity::Info;
+		break;
+	default:
+		StackIssueSeverity = EStackIssueSeverity::Info;
+		break;
+	}
+
+	const FName& MessageTopic = InMessage->GetMessageTopic();
+
+	if(!InMessage->GetCompileEvent().ShortDescription.IsEmpty())
+	{
+		OutShortDescription = FText::FromString(InMessage->GetCompileEvent().ShortDescription);
+	}
+	else if(MessageTopic == FNiagaraMessageTopics::CompilerTopicName)
+	{
+		OutShortDescription = GetShortDescriptionFromSeverity(StackIssueSeverity);
+	}
+
+	bOutDismissable = InMessage->GetCompileEvent().bDismissable;
+}
+
+FText FNiagaraMessageUtilities::GetShortDescriptionFromSeverity(EStackIssueSeverity Severity)
+{
+	if(Severity == EStackIssueSeverity::Error)
+	{
+		return LOCTEXT("CompileErrorShortDescription", "Compile Error");
+	}
+	else if(Severity == EStackIssueSeverity::Warning)
+	{
+		return LOCTEXT("CompileWarningShortDescription", "Compile Warning");			
+	}
+	else if(Severity == EStackIssueSeverity::Info)
+	{
+		return LOCTEXT("CompileNoteShortDescription", "Compile Note");
+	}
+	else
+	{
+		return LOCTEXT("SeverityNotFoundShortDescription", "Compile Error");
+	}
 }
 
 #undef LOCTEXT_NAMESPACE /** NiagaraMessageUtilities */

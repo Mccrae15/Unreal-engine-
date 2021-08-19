@@ -1,13 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Particles/ParticlePerfStats.h"
+#include "Particles/ParticlePerfStatsManager.h"
+
 #include "CoreMinimal.h"
 
 #if WITH_PARTICLE_PERF_STATS
 
+#include "CanvasTypes.h"
+#include "Engine/Engine.h"
+#include "Engine/Font.h"
 #include "Misc/ScopeLock.h"
 #include "RenderingThread.h"
-#include "Particles/ParticlePerfStats.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/FileManager.h"
 #include "Particles/ParticleSystem.h"
@@ -15,319 +19,1077 @@
 #include "Particles/ParticleSystem.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/OutputDeviceArchiveWrapper.h"
+#include "Misc/Paths.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "ProfilingDebugging/ProfilingHelpers.h"
+#include "Containers/UnrealString.h"
+#include "Misc/Paths.h"
+#include "CanvasTypes.h"
+#include "Engine/Font.h"
+#include "FXSystem.h"
+#include "Particles/ParticleSystemComponent.h"
 
-namespace ParticlePerfStatsLocal
-{
-	static FDelegateHandle BeginFrameHandle;
+
+TAtomic<bool> FParticlePerfStats::bStatsEnabled(true);
+TAtomic<int32> FParticlePerfStats::WorldStatsReaders(0);
+TAtomic<int32> FParticlePerfStats::SystemStatsReaders(0);
+TAtomic<int32> FParticlePerfStats::ComponentStatsReaders(0);
+
+FDelegateHandle FParticlePerfStatsManager::BeginFrameHandle;
 #if CSV_PROFILER
-	static FDelegateHandle CSVStartHandle;
-	static FDelegateHandle CSVEndHandle;
+FDelegateHandle FParticlePerfStatsManager::CSVStartHandle;
+FDelegateHandle FParticlePerfStatsManager::CSVEndHandle;
 #endif
-	static int32 GbParticlePerfStatsEnabled = 0;
-	static int32 GbParticlePerfStatsEnabledLatch = 0;
-	static int32 GParticlePerfStatsFramesRemaining = 0;
-	static FCriticalSection SystemToPerfStatsGuard;
-	static TMap<FName, TUniquePtr<FParticlePerfStats>> SystemToPerfStats;
 
-	static void DumpParticlePerfStatsToDevice(FOutputDevice& Ar)
-	{
-		FlushRenderingCommands();
-		FScopeLock ScopeLock(&ParticlePerfStatsLocal::SystemToPerfStatsGuard);
+FCriticalSection FParticlePerfStatsManager::WorldToPerfStatsGuard;
+TMap<TWeakObjectPtr<UWorld>, TUniquePtr<FParticlePerfStats>> FParticlePerfStatsManager::WorldToPerfStats;
+TArray<TUniquePtr<FParticlePerfStats>> FParticlePerfStatsManager::FreeWorldStatsPool;
 
-		FString tempString;
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+FCriticalSection FParticlePerfStatsManager::SystemToPerfStatsGuard;
+TMap<TWeakObjectPtr<UFXSystemAsset>, TUniquePtr<FParticlePerfStats>> FParticlePerfStatsManager::SystemToPerfStats;
+TArray<TUniquePtr<FParticlePerfStats>> FParticlePerfStatsManager::FreeSystemStatsPool;
+#endif
 
-		Ar.Logf(TEXT(",**** Particle Performance Stats"));
-		Ar.Logf(TEXT(",Name,Average PerFrame GameThread,Average PerInstance GameThread,Average PerFrame RenderThread,Average PerInstance RenderThread,NumFrames,Total Instances,Total Tick GameThread,Total Tick Concurrent,Total Finalize,Total End Of Frame,Total Render Update,Total Get Dynamic Mesh Elements,Max PerFrame GameThread,Max Range PerFrame GameThread,Max PerFrame RenderThread,Max Range PerFrame RenderThread"));
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+FCriticalSection FParticlePerfStatsManager::ComponentToPerfStatsGuard;
+TMap<TWeakObjectPtr<UFXSystemComponent>, TUniquePtr<FParticlePerfStats>> FParticlePerfStatsManager::ComponentToPerfStats;
+TArray<TUniquePtr<FParticlePerfStats>> FParticlePerfStatsManager::FreeComponentStatsPool;
+#endif
 
-		for (auto it = SystemToPerfStats.CreateIterator(); it; ++it)
+TArray<FParticlePerfStatsListenerPtr, TInlineAllocator<8>> FParticlePerfStatsManager::Listeners;
+
+#if ENABLE_PARTICLE_PERF_STATS_RENDER
+TMap<TWeakObjectPtr<UWorld>, TSharedPtr<FParticlePerfStatsListener_DebugRender, ESPMode::ThreadSafe>> FParticlePerfStatsManager::DebugRenderListenerUsers;
+#endif
+
+
+bool GbLocalStatsEnabled = FParticlePerfStats::bStatsEnabled;
+static FAutoConsoleVariableRef CVarParticlePerfStatsEnabled(
+	TEXT("fx.ParticlePerfStats.Enabled"),
+	GbLocalStatsEnabled,
+	TEXT("Used to control if stat gathering is enabled or not.\n"),
+	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* CVar)
 		{
-			const FParticlePerfStats& PerfStats = *it.Value();
+			check(CVar);
+			FParticlePerfStats::SetStatsEnabled(CVar->GetBool());
+		}),
+	ECVF_Default
+);
 
-			if (PerfStats.AccumulatedNumFrames == 0)
+static FAutoConsoleCommandWithWorldAndArgs GParticlePerfStatsRunTest(
+	TEXT("fx.ParticlePerfStats.RunTest"),
+	TEXT("Runs for a number of frames then logs out the results.\nArg0 = NumFrames.\nArg1 = Gather World Stats (default 0).\nArg2 = Gather System Stats (default 1).\nArg3 = Gather Component Stats (default 0)."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			if (Args.Num() < 1)
 			{
-				continue;
+				return;
 			}
 
-			FString SystemName = it.Key().ToString();
-
-			const uint64 TotalGameThread = PerfStats.AccumulatedStats.TickGameThreadCycles + PerfStats.AccumulatedStats.TickConcurrentCycles + PerfStats.AccumulatedStats.FinalizeCycles + PerfStats.AccumulatedStats.EndOfFrameCycles;
-			const uint64 TotalRenderThread = PerfStats.AccumulatedStats.RenderUpdateCycles + PerfStats.AccumulatedStats.GetDynamicMeshElementsCycles;
-
-			const uint64 MaxPerFrameTotalGameThreadFirst = PerfStats.MaxPerFrameTotalGameThreadCycles.Num() > 0 ? PerfStats.MaxPerFrameTotalGameThreadCycles[0] : 0;
-			const uint64 MaxPerFrameTotalRenderThreadFirst = PerfStats.MaxPerFrameTotalRenderThreadCycles.Num() > 0 ? PerfStats.MaxPerFrameTotalRenderThreadCycles[0] : 0;
-			const uint64 MaxPerFrameTotalGameThreadLast = PerfStats.MaxPerFrameTotalGameThreadCycles.Num() > 0 ? PerfStats.MaxPerFrameTotalGameThreadCycles.Last() : 0;
-			const uint64 MaxPerFrameTotalRenderThreadLast = PerfStats.MaxPerFrameTotalRenderThreadCycles.Num() > 0 ? PerfStats.MaxPerFrameTotalRenderThreadCycles.Last() : 0;
-
-			tempString.Reset();
-			tempString.Appendf(TEXT(",%s"), *SystemName);
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(TotalGameThread) * 1000.0 / double(PerfStats.AccumulatedNumFrames)));
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(TotalGameThread) * 1000.0 / double(PerfStats.AccumulatedStats.NumInstances)));
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(TotalRenderThread) * 1000.0 / double(PerfStats.AccumulatedNumFrames)));
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(TotalRenderThread) * 1000.0 / double(PerfStats.AccumulatedStats.NumInstances)));
-			tempString.Appendf(TEXT(",%u"), uint32(PerfStats.AccumulatedNumFrames));
-			tempString.Appendf(TEXT(",%u"), uint32(PerfStats.AccumulatedStats.NumInstances));
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.TickGameThreadCycles) * 1000.0));
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.TickConcurrentCycles) * 1000.0));
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.FinalizeCycles) * 1000.0));
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.EndOfFrameCycles) * 1000.0));
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.RenderUpdateCycles) * 1000.0));
-			tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.GetDynamicMeshElementsCycles) * 1000.0));
-
-			tempString.Appendf(TEXT(",%u,[ "), uint32(FPlatformTime::ToMilliseconds64(PerfStats.MaxPerFrameTotalGameThreadCycles.Num() > 0 ? PerfStats.MaxPerFrameTotalGameThreadCycles[0] : 0) * 1000.0));
-			for (uint64 v : PerfStats.MaxPerFrameTotalGameThreadCycles)
+			const int32 NumFrames = FCString::Atoi(*Args[0]);
+			if (NumFrames <= 0)
 			{
-				tempString.Appendf(TEXT("%u "), uint32(FPlatformTime::ToMilliseconds64(v) * 1000.0));
+				return;
 			}
-			tempString.Append(TEXT("]"));
 
-			tempString.Appendf(TEXT(",%u,[ "), uint32(FPlatformTime::ToMilliseconds64(PerfStats.MaxPerFrameTotalRenderThreadCycles.Num() > 0 ? PerfStats.MaxPerFrameTotalRenderThreadCycles[0] : 0) * 1000.0));
-			for (uint64 v : PerfStats.MaxPerFrameTotalRenderThreadCycles)
+			bool bGatherWorldStats = false;
+			bool bGatherSystemStats = true;
+			bool bGatherComponentStats = false;
+
+			if (Args.Num() > 1)
 			{
-				tempString.Appendf(TEXT("%u "), uint32(FPlatformTime::ToMilliseconds64(v) * 1000.0));
+				bGatherWorldStats = FCString::Atoi(*Args[1]) != 0;
 			}
-			tempString.Append(TEXT("]"));
+			if (Args.Num() > 2)
+			{
+				bGatherSystemStats = FCString::Atoi(*Args[2]) != 0;
+			}
+			if (Args.Num() > 3)
+			{
+				bGatherComponentStats = FCString::Atoi(*Args[3]) != 0;
+			}
 
-			Ar.Log(*tempString);
+			FParticlePerfStatsListenerPtr NewTimedTest = MakeShared<FParticlePerfStatsListener_TimedTest, ESPMode::ThreadSafe>(NumFrames, bGatherWorldStats, bGatherSystemStats, bGatherComponentStats);
+			FParticlePerfStatsManager::AddListener(NewTimedTest);
 		}
+	)
+);
+
+void FParticlePerfStatsManager::AddListener(FParticlePerfStatsListenerPtr Listener, bool bReset)
+{
+	if (bReset)
+	{
+		Reset();
 	}
 
-	static void DumpParticlePerfStatsToFile()
+	if (FParticlePerfStats::GetStatsEnabled())
 	{
-		const FString PathName = FPaths::ProfilingDir() + TEXT("ParticlePerf");
-		IFileManager::Get().MakeDirectory(*PathName);
+		Listeners.Add(Listener);
+		Listener->Begin();
 
-		const FString Filename = FString::Printf(TEXT("ParticlePerf-%s.csv"), *FDateTime::Now().ToString(TEXT("%d-%H.%M.%S")));
-		const FString FilePath = PathName / Filename;
-
-		if (FArchive* FileAr = IFileManager::Get().CreateDebugFileWriter(*FilePath))
+		//Ensure we're gathering stats.
+		if (Listener->NeedsWorldStats())
 		{
-			TUniquePtr<FOutputDeviceArchiveWrapper> FileArWrapper(new FOutputDeviceArchiveWrapper(FileAr));
-			DumpParticlePerfStatsToDevice(*FileArWrapper.Get());
-			delete FileAr;
+			FParticlePerfStats::AddWorldStatReader();
+		}
+		if (Listener->NeedsSystemStats())
+		{
+			FParticlePerfStats::AddSystemStatReader();
+		}
+		if (Listener->NeedsComponentStats())
+		{
+			FParticlePerfStats::AddComponentStatReader();
 		}
 	}
+}
 
-	static void ResetParticlePerfStats()
+void FParticlePerfStatsManager::RemoveListener(FParticlePerfStatsListener* Listener)
+{
+	RemoveListener(Listener->AsShared());
+}
+
+void FParticlePerfStatsManager::RemoveListener(FParticlePerfStatsListenerPtr Listener)
+{
+	//Pass a ptr off to the RT just so we can ensure it's lifetime past any RT commands it may have issued.
+	ENQUEUE_RENDER_COMMAND(FRemoveParticlePerfStatsListenerCmd)
+	(
+		[Listener](FRHICommandListImmediate& RHICmdList)mutable
+		{
+			Listener.Reset();
+		}
+	);
+
+	Listener->End();
+	Listeners.Remove(Listener);
+
+	//Unregister the listener from the stats so we will stop gathering if there are no listeners.
+	if (Listener->NeedsWorldStats())
 	{
-		FlushRenderingCommands();
+		FParticlePerfStats::RemoveWorldStatReader();
+	}
+	if (Listener->NeedsSystemStats())
+	{
+		FParticlePerfStats::RemoveSystemStatReader();
+	}
+	if (Listener->NeedsComponentStats())
+	{
+		FParticlePerfStats::RemoveComponentStatReader();
+	}
+}
 
-		FScopeLock ScopeLock(&ParticlePerfStatsLocal::SystemToPerfStatsGuard);
+void FParticlePerfStatsManager::Reset()
+{
+	FlushRenderingCommands();
+
+	{
+		FScopeLock ScopeLock(&FParticlePerfStatsManager::WorldToPerfStatsGuard);
+		for (TObjectIterator<UWorld> WorldIt; WorldIt; ++WorldIt)
+		{
+			WorldIt->ParticlePerfStats = nullptr;
+		}
+		WorldToPerfStats.Empty();
+	}
+
+	#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+	{
+		FScopeLock ScopeLock(&FParticlePerfStatsManager::SystemToPerfStatsGuard);
 		for (TObjectIterator<UFXSystemAsset> SystemIt; SystemIt; ++SystemIt)
 		{
 			SystemIt->ParticlePerfStats = nullptr;
 		}
 		SystemToPerfStats.Empty();
 	}
+	#endif
 
-	static void TickParticlePerfStats()
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
 	{
-		if (GbParticlePerfStatsEnabledLatch != 0)
+		FScopeLock ScopeLock(&FParticlePerfStatsManager::ComponentToPerfStatsGuard);
+		for (TObjectIterator<UFXSystemComponent> CompIt; CompIt; ++CompIt)
 		{
-			FScopeLock ScopeLock(&ParticlePerfStatsLocal::SystemToPerfStatsGuard);
-			for (auto it=SystemToPerfStats.CreateIterator(); it; ++it)
-			{
-				it.Value()->Tick();
-			}
-
-			bool bDisableGathering = GbParticlePerfStatsEnabled == 0;
-			if (GParticlePerfStatsFramesRemaining > 0)
-			{
-				--GParticlePerfStatsFramesRemaining;
-				bDisableGathering = GParticlePerfStatsFramesRemaining == 0;
-			}
-
-			if (bDisableGathering)
-			{
-				if (GLog != nullptr)
-				{
-					DumpParticlePerfStatsToDevice(*GLog);
-				}
-				DumpParticlePerfStatsToFile();
-
-				GbParticlePerfStatsEnabledLatch = 0;
-			}
+			CompIt->ParticlePerfStats = nullptr;
+			CompIt->RecreateRenderState_Concurrent();
 		}
-		else
-		{
-			if (GbParticlePerfStatsEnabled != 0 || GParticlePerfStatsFramesRemaining > 0)
-			{
-				GbParticlePerfStatsEnabledLatch = true;
-				ResetParticlePerfStats();
-			}
-		}
+		ComponentToPerfStats.Empty();
 	}
-
-#if CSV_PROFILER
-	static void OnCSVStart()
+#else
 	{
-		ResetParticlePerfStats();
-		GbParticlePerfStatsEnabled = true;
-	}
-
-	static void OnCSVEnd()
-	{
-		if (GbParticlePerfStatsEnabledLatch != 0)
+		for (TObjectIterator<UFXSystemComponent> CompIt; CompIt; ++CompIt)
 		{
-			if (GLog != nullptr)
-			{
-				DumpParticlePerfStatsToDevice(*GLog);
-			}
-			DumpParticlePerfStatsToFile();
-
-			GbParticlePerfStatsEnabledLatch = false;
-			GbParticlePerfStatsEnabled = false;
+			CompIt->RecreateRenderState_Concurrent();
 		}
 	}
 #endif
-
-	static FAutoConsoleVariableRef CVarParticlePerfStatsEnabled(
-		TEXT("fx.ParticlePerfStats.Enabled"),
-		GbParticlePerfStatsEnabled,
-		TEXT("Used to control if stat gathering is enabled or not.\n"),
-		ECVF_Default
-	);
-
-	static FAutoConsoleCommandWithOutputDevice GParticlePerfStatsDump(
-		TEXT("fx.ParticlePerfStats.Dump"),
-		TEXT("Dumps current particle perf stats to output"),
-		FConsoleCommandWithOutputDeviceDelegate::CreateLambda(
-			[](FOutputDevice& Ar)
-			{
-				DumpParticlePerfStatsToDevice(Ar);
-				DumpParticlePerfStatsToFile();
-			}
-		)
-	);
-
-	static FAutoConsoleCommand GParticlePerfStatsReset(
-		TEXT("fx.ParticlePerfStats.Reset"),
-		TEXT("Resets all particle perf stats to zero"),
-		FConsoleCommandDelegate::CreateStatic(ResetParticlePerfStats)
-	);
-
-	static FAutoConsoleCommandWithWorldAndArgs GParticlePerfStatsRunTest(
-		TEXT("fx.ParticlePerfStats.RunTest"),
-		TEXT("Runs for a number of frames then logs out the results"),
-		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
-			[](const TArray<FString>& Args, UWorld* World)
-			{
-				if ( Args.Num() != 1 )
-				{
-					return;
-				}
-				const int32 NumFrames = FCString::Atoi(*Args[0]);
-				if (NumFrames <= 0)
-				{
-					return;
-				}
-
-				GbParticlePerfStatsEnabledLatch = 0;
-				GParticlePerfStatsFramesRemaining = NumFrames;
-			}
-		)
-	);
 }
 
-FParticlePerfStats* FParticlePerfStats::GetPerfStats(class UFXSystemAsset* Asset)
+void FParticlePerfStatsManager::Tick()
 {
-	static FParticlePerfStats Dummy;
-
-	if (Asset == nullptr)
+	if (FParticlePerfStats::ShouldGatherStats())
 	{
-		return &Dummy;
+		check(Listeners.Num() > 0);
+
+		//Tick our listeners so they can consume the finished frame data.
+		TArray<FParticlePerfStatsListenerPtr, TInlineAllocator<8>> ToRemove;
+		for (FParticlePerfStatsListenerPtr& Listener : Listeners)
+		{
+			if (Listener->Tick() == false)
+			{
+				ToRemove.Add(Listener);
+			}
+		}
+
+		//Kick off the RT tick for listeners and stats
+		ENQUEUE_RENDER_COMMAND(FParticlePerfStatsListenersRTTick)
+		(
+			[ListenersRT=TArray<FParticlePerfStatsListenerPtr, TInlineAllocator<8>>(Listeners)](FRHICommandListImmediate& RHICmdList)
+			{
+				for (FParticlePerfStatsListenerPtr Listener : ListenersRT)
+				{
+					Listener->TickRT();
+				}
+
+				//Reset current frame data
+				{
+					FScopeLock ScopeLock(&FParticlePerfStatsManager::WorldToPerfStatsGuard);
+					for (auto it = WorldToPerfStats.CreateIterator(); it; ++it)
+					{
+						it.Value()->TickRT();
+					}
+				}
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+				{
+					FScopeLock ScopeLock(&FParticlePerfStatsManager::SystemToPerfStatsGuard);
+					for (auto it = SystemToPerfStats.CreateIterator(); it; ++it)
+					{
+						it.Value()->TickRT();
+					}
+				} 
+#endif
+
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+				{
+					FScopeLock ScopeLock(&FParticlePerfStatsManager::ComponentToPerfStatsGuard);
+					for (auto it = ComponentToPerfStats.CreateIterator(); it; ++it)
+					{
+						it.Value()->TickRT();
+					}
+				}
+#endif
+			}
+		);
+
+		//Reset current frame data
+		{
+			FScopeLock ScopeLock(&FParticlePerfStatsManager::WorldToPerfStatsGuard);
+			for (auto it = WorldToPerfStats.CreateIterator(); it; ++it)
+			{
+				if(it->Key.Get())
+				{
+					it.Value()->Tick();
+				}
+				else
+				{
+					FreeWorldStatsPool.Emplace(it.Value().Release());
+					for (FParticlePerfStatsListenerPtr& Listener : Listeners)
+					{
+						Listener->OnRemoveWorld(it.Key());
+					}
+					it.RemoveCurrent();
+				}				
+			}
+		}
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+		{
+			FScopeLock ScopeLock(&FParticlePerfStatsManager::SystemToPerfStatsGuard);
+			for (auto it = SystemToPerfStats.CreateIterator(); it; ++it)
+			{
+				if (it->Key.Get())
+				{
+					it.Value()->Tick();
+				}
+				else
+				{
+					FreeSystemStatsPool.Emplace(it.Value().Release());
+					for (FParticlePerfStatsListenerPtr& Listener : Listeners)
+					{
+						Listener->OnRemoveSystem(it.Key());
+					}
+					it.RemoveCurrent();
+				}
+			}
+		}
+#endif
+
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+		{
+			FScopeLock ScopeLock(&FParticlePerfStatsManager::ComponentToPerfStatsGuard);
+			for (auto it = ComponentToPerfStats.CreateIterator(); it; ++it)
+			{
+				if (it->Key.Get())
+				{
+					it.Value()->Tick();
+				}
+				else
+				{
+					FreeComponentStatsPool.Emplace(it.Value().Release());
+					for (FParticlePerfStatsListenerPtr& Listener : Listeners)
+					{
+						Listener->OnRemoveComponent(it.Key());
+					}
+					it.RemoveCurrent();
+				}
+			}
+		}
+#endif
+		//Remove any listeners that are done.
+		for (FParticlePerfStatsListenerPtr& Listener : ToRemove)
+		{
+			RemoveListener(Listener);
+		}
 	}
-
-	if (Asset->ParticlePerfStats == nullptr)
+	else
 	{
-		FScopeLock ScopeLock(&ParticlePerfStatsLocal::SystemToPerfStatsGuard);
-		TUniquePtr<FParticlePerfStats>& PerfStats = ParticlePerfStatsLocal::SystemToPerfStats.FindOrAdd(Asset->GetFName());
+		//Ensure any existing listeners are removed if stats have been disabled.
+		while (Listeners.Num())
+		{
+			RemoveListener(Listeners.Last());
+		}
+	}
+}
+
+FParticlePerfStats* FParticlePerfStatsManager::GetWorldPerfStats(UWorld* World)
+{
+	checkSlow(World && FParticlePerfStats::GetGatherWorldStats() && FParticlePerfStats::GetStatsEnabled());
+
+	if (World->ParticlePerfStats == nullptr)
+	{
+		FScopeLock ScopeLock(&WorldToPerfStatsGuard);
+		TUniquePtr<FParticlePerfStats>& PerfStats = WorldToPerfStats.FindOrAdd(World);
 		if (PerfStats == nullptr)
 		{
-			PerfStats.Reset(new FParticlePerfStats());
+			if (FreeWorldStatsPool.Num())
+			{
+				PerfStats = FreeWorldStatsPool.Pop();
+			}
+			else
+			{
+				PerfStats.Reset(new FParticlePerfStats());
+			}
 		}
-		Asset->ParticlePerfStats = PerfStats.Get();
+		World->ParticlePerfStats = PerfStats.Get();
+
+		for (auto& Listener : Listeners)
+		{
+			Listener->OnAddWorld(World);
+		}
 	}
-	return Asset->ParticlePerfStats;
+	return World->ParticlePerfStats;
 }
 
-void FParticlePerfStats::Reset()
+FParticlePerfStats* FParticlePerfStatsManager::GetSystemPerfStats(UFXSystemAsset* FXAsset)
 {
-	AccumulatedNumFrames = 0;
-	AccumulatedStats.Reset();
-	MaxPerFrameTotalGameThreadCycles.Empty();
-	MaxPerFrameTotalRenderThreadCycles.Empty();
-	CurrentFrameStats.Reset();
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+	checkSlow(FXAsset && FParticlePerfStats::GetGatherSystemStats() && FParticlePerfStats::GetStatsEnabled());
+	if (FXAsset->ParticlePerfStats == nullptr)
+	{
+		FScopeLock ScopeLock(&SystemToPerfStatsGuard);
+		TUniquePtr<FParticlePerfStats>& PerfStats = SystemToPerfStats.FindOrAdd(FXAsset);
+		if (PerfStats == nullptr)
+		{
+			if (FreeSystemStatsPool.Num())
+			{
+				PerfStats = FreeSystemStatsPool.Pop();
+			}
+			else
+			{
+				PerfStats.Reset(new FParticlePerfStats());
+			}
+
+		}
+		FXAsset->ParticlePerfStats = PerfStats.Get();
+
+		for (auto& Listener : Listeners)
+		{
+			Listener->OnAddSystem(FXAsset);
+		}
+	}
+	return FXAsset->ParticlePerfStats;
+#endif
+	return nullptr;
+}
+
+FParticlePerfStats* FParticlePerfStatsManager::GetComponentPerfStats(UFXSystemComponent* FXComponent)
+{
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+	checkSlow(FXComponent && FParticlePerfStats::GetGatherComponentStats() && FParticlePerfStats::GetStatsEnabled());
+	if (FXComponent->ParticlePerfStats == nullptr)
+	{
+		FScopeLock ScopeLock(&ComponentToPerfStatsGuard);
+		TUniquePtr<FParticlePerfStats>& PerfStats = ComponentToPerfStats.FindOrAdd(FXComponent);
+		if (PerfStats == nullptr)
+		{
+			if (FreeComponentStatsPool.Num())
+			{
+				PerfStats = FreeComponentStatsPool.Pop();
+			}
+			else
+			{
+				PerfStats.Reset(new FParticlePerfStats());
+			}
+
+		}
+		FXComponent->ParticlePerfStats = PerfStats.Get();
+
+		for (auto& Listener : Listeners)
+		{
+			Listener->OnAddComponent(FXComponent);
+		}
+	}
+	return FXComponent->ParticlePerfStats;
+#endif
+	return nullptr;
+}
+
+void FParticlePerfStatsManager::TogglePerfStatsRender(UWorld* World)
+{
+#if ENABLE_PARTICLE_PERF_STATS_RENDER
+	if (auto* Found = DebugRenderListenerUsers.Find(World))
+	{
+		//Already have an entry so we're toggling rendering off. Remove.
+		RemoveListener(*Found);
+		DebugRenderListenerUsers.Remove(World);
+	}
+	else
+	{
+		//Need not found. Add a new listener for this world.
+		TSharedPtr<FParticlePerfStatsListener_DebugRender, ESPMode::ThreadSafe> NewListener = MakeShared<FParticlePerfStatsListener_DebugRender, ESPMode::ThreadSafe>();
+		DebugRenderListenerUsers.Add(World) = NewListener;
+		AddListener(NewListener);
+	}
+#endif
+}
+
+int32 FParticlePerfStatsManager::RenderStats(class UWorld* World, class FViewport* Viewport, class FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation)
+{
+#if ENABLE_PARTICLE_PERF_STATS_RENDER
+	//We shouldn't get into this rendering function unless we have registered users.
+	if (auto* DebugRenderListener = DebugRenderListenerUsers.Find(World))
+	{
+		return (*DebugRenderListener)->RenderStats(World, Viewport, Canvas, X, Y, ViewLocation, ViewRotation);
+	}
+#endif 
+	return Y;
+}
+
+void FParticlePerfStatsManager::OnStartup()
+{
+	BeginFrameHandle = FCoreDelegates::OnBeginFrame.AddStatic(Tick);
+#if CSV_PROFILER
+	if (FCsvProfiler* CSVProfiler = FCsvProfiler::Get())
+	{
+		CSVStartHandle = CSVProfiler->OnCSVProfileStart().AddStatic(FParticlePerfStatsListener_CSVProfiler::OnCSVStart);
+		CSVEndHandle = CSVProfiler->OnCSVProfileEnd().AddStatic(FParticlePerfStatsListener_CSVProfiler::OnCSVEnd);
+	}
+#endif
+}
+
+void FParticlePerfStatsManager::OnShutdown()
+{
+	FCoreDelegates::OnBeginFrame.Remove(BeginFrameHandle);
+#if CSV_PROFILER
+	if (FCsvProfiler* CSVProfiler = FCsvProfiler::Get())
+	{
+		CSVProfiler->OnCSVProfileStart().Remove(CSVStartHandle);
+		CSVProfiler->OnCSVProfileEnd().Remove(CSVEndHandle);
+	}
+#endif
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+FParticlePerfStats* FParticlePerfStats::GetWorldPerfStats(UWorld* World)
+{
+	return FParticlePerfStatsManager::GetWorldPerfStats(World);
+}
+
+FParticlePerfStats* FParticlePerfStats::GetSystemPerfStats(UFXSystemAsset* FXAsset)
+{
+	return FParticlePerfStatsManager::GetSystemPerfStats(FXAsset);
+}
+
+FParticlePerfStats* FParticlePerfStats::GetComponentPerfStats(UFXSystemComponent* FXComponent)
+{
+	return FParticlePerfStatsManager::GetComponentPerfStats(FXComponent);
+}
+
+void FParticlePerfStats::ResetGT()
+{
+	check(IsInGameThread());
+	GetGameThreadStats().Reset();
+}
+
+void FParticlePerfStats::ResetRT()
+{
+	check(IsInActualRenderingThread());
+	GetRenderThreadStats().Reset();
+}
+
+FParticlePerfStats::FParticlePerfStats()
+{
+}
+
+void FParticlePerfStats::Reset(bool bSyncWithRT)
+{
+	check(IsInGameThread());
+
+	ResetGT();
+
+	if (bSyncWithRT)
+	{
+		FlushRenderingCommands();
+		ResetRT();
+	}
+	else
+	{
+		ENQUEUE_RENDER_COMMAND(FResetParticlePerfStats)
+		(
+			[&](FRHICommandListImmediate& RHICmdList)
+			{
+				ResetRT();
+			}
+		);
+	}
 }
 
 void FParticlePerfStats::Tick()
 {
-	// Nothing to do if we have no instances
-	if (CurrentFrameStats.NumInstances == 0)
-		return;
+	check(IsInGameThread());
+	GetGameThreadStats().Reset();
+}
 
-	++AccumulatedNumFrames;
+void FParticlePerfStats::TickRT()
+{	
+	check(IsInActualRenderingThread());
+	GetRenderThreadStats().Reset();
+}
 
-	AccumulatedStats.NumInstances += CurrentFrameStats.NumInstances;
-	AccumulatedStats.TickGameThreadCycles += CurrentFrameStats.TickGameThreadCycles;
-	AccumulatedStats.TickConcurrentCycles += CurrentFrameStats.TickConcurrentCycles;
-	AccumulatedStats.FinalizeCycles += CurrentFrameStats.FinalizeCycles;
-	AccumulatedStats.EndOfFrameCycles += CurrentFrameStats.EndOfFrameCycles;
+//////////////////////////////////////////////////////////////////////////
 
-	const uint64 ThisFrameMaxTotalGameThread = CurrentFrameStats.TickGameThreadCycles + CurrentFrameStats.TickConcurrentCycles + CurrentFrameStats.FinalizeCycles + CurrentFrameStats.EndOfFrameCycles;
-	const uint64 ThisFrameMaxTotalRenderThread = CurrentFrameStats.RenderUpdateCycles + CurrentFrameStats.GetDynamicMeshElementsCycles;
+FAccumulatedParticlePerfStats_GT::FAccumulatedParticlePerfStats_GT()
+{
+	Reset();
+}
 
-	// Update Max Samples
+void FAccumulatedParticlePerfStats_GT::Reset()
+{
+	FAccumulatedParticlePerfStats::ResetMaxArray(MaxPerFrameTotalCycles);
+	FAccumulatedParticlePerfStats::ResetMaxArray(MaxPerInstanceCycles);
+
+	NumFrames = 0;
+	AccumulatedStats.Reset();
+}
+
+void FAccumulatedParticlePerfStats_GT::Tick(FParticlePerfStats& Stats)
+{
+	FParticlePerfStats_GT& GTStats = Stats.GetGameThreadStats();
+	if (GTStats.NumInstances > 0)
 	{
-		int32 InsertIndex;
-		InsertIndex = MaxPerFrameTotalGameThreadCycles.IndexOfByPredicate([&](uint32 v) {return ThisFrameMaxTotalGameThread > v; });
-		if (InsertIndex != INDEX_NONE)
+		++NumFrames;
+		AccumulatedStats.NumInstances += GTStats.NumInstances;
+		AccumulatedStats.TickGameThreadCycles += GTStats.TickGameThreadCycles;
+		AccumulatedStats.TickConcurrentCycles += GTStats.TickConcurrentCycles;
+		AccumulatedStats.FinalizeCycles += GTStats.FinalizeCycles;
+		AccumulatedStats.EndOfFrameCycles += GTStats.EndOfFrameCycles;
+
+		FAccumulatedParticlePerfStats::AddMax(MaxPerFrameTotalCycles, GTStats.GetTotalCycles());
+		FAccumulatedParticlePerfStats::AddMax(MaxPerInstanceCycles, GTStats.GetPerInstanceAvgCycles());
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+FAccumulatedParticlePerfStats_RT::FAccumulatedParticlePerfStats_RT()
+{
+	Reset();
+}
+
+void FAccumulatedParticlePerfStats_RT::Reset()
+{
+	FAccumulatedParticlePerfStats::ResetMaxArray(MaxPerFrameTotalCycles);
+	FAccumulatedParticlePerfStats::ResetMaxArray(MaxPerInstanceCycles);
+
+	NumFrames = 0;
+	AccumulatedStats.Reset();
+}
+
+void FAccumulatedParticlePerfStats_RT::Tick(FParticlePerfStats& Stats)
+{
+	FParticlePerfStats_RT& RTStats = Stats.GetRenderThreadStats();
+	if (RTStats.NumInstances > 0)
+	{
+		++NumFrames;
+		AccumulatedStats.NumInstances += RTStats.NumInstances;
+		AccumulatedStats.RenderUpdateCycles += RTStats.RenderUpdateCycles;
+		AccumulatedStats.GetDynamicMeshElementsCycles += RTStats.GetDynamicMeshElementsCycles;
+
+		FAccumulatedParticlePerfStats::AddMax(MaxPerFrameTotalCycles, RTStats.GetTotalCycles());
+		FAccumulatedParticlePerfStats::AddMax(MaxPerInstanceCycles, RTStats.GetPerInstanceAvgCycles());
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+FAccumulatedParticlePerfStats::FAccumulatedParticlePerfStats()
+{
+	ResetGT();
+	ResetRT();
+}
+
+void FAccumulatedParticlePerfStats::ResetGT()
+{
+	GameThreadStats.Reset();
+}
+
+void FAccumulatedParticlePerfStats::ResetRT()
+{
+	RenderThreadStats.Reset();
+}
+
+void FAccumulatedParticlePerfStats::Reset(bool bSyncWithRT)
+{
+	ResetGT();
+
+	if (bSyncWithRT)
+	{
+		FlushRenderingCommands();
+		ResetRT();
+	}
+	else
+	{
+		//Not syncing with RT so must update these on the RT.
+		ENQUEUE_RENDER_COMMAND(FResetAccumulatedParticlePerfMaxRT)
+		(
+			[&](FRHICommandListImmediate& RHICmdList)
+			{
+				ResetRT();
+			}
+		);
+	}
+}
+
+void FAccumulatedParticlePerfStats::Tick(FParticlePerfStats& Stats)
+{
+	check(IsInGameThread());
+	GameThreadStats.Tick(Stats);
+}
+
+void FAccumulatedParticlePerfStats::TickRT(FParticlePerfStats& Stats)
+{
+	check(IsInActualRenderingThread());
+	RenderThreadStats.Tick(Stats);
+}
+
+void FAccumulatedParticlePerfStats::AddMax(TArray<uint64, TInlineAllocator<ACCUMULATED_PARTICLE_PERF_STAT_MAX_SAMPLES>>& MaxArray, int64 NewValue)
+{
+	int32 InsertIndex;
+	InsertIndex = MaxArray.IndexOfByPredicate([&](uint32 v) {return NewValue > v; });
+	if (InsertIndex != INDEX_NONE)
+	{
+		MaxArray.Pop(false);
+		MaxArray.Insert(NewValue, InsertIndex);
+	}
+};
+
+void FAccumulatedParticlePerfStats::ResetMaxArray(TArray<uint64, TInlineAllocator<ACCUMULATED_PARTICLE_PERF_STAT_MAX_SAMPLES>>& MaxArray)
+{
+	MaxArray.SetNumUninitialized(ACCUMULATED_PARTICLE_PERF_STAT_MAX_SAMPLES);
+	for (int32 i = 0; i < ACCUMULATED_PARTICLE_PERF_STAT_MAX_SAMPLES; ++i)
+	{
+		MaxArray[i] = 0;
+	}
+};
+
+//////////////////////////////////////////////////////////////////////////
+
+void FParticlePerfStatsListener_GatherAll::Begin()
+{
+	//Init our map of accumulated stats.
+	FScopeLock Lock(&AccumulatedStatsGuard);
+
+	FParticlePerfStatsManager::ForAllWorldStats(
+		[&](TWeakObjectPtr<UWorld>& WeakWorld, TUniquePtr<FParticlePerfStats>& Stats)
 		{
-			MaxPerFrameTotalGameThreadCycles.Pop(false);
-			MaxPerFrameTotalGameThreadCycles.Insert(ThisFrameMaxTotalGameThread, InsertIndex);
+			AccumulatedWorldStats.Add(WeakWorld) = MakeUnique<FAccumulatedParticlePerfStats>();
 		}
-		else if (MaxPerFrameTotalGameThreadCycles.Num() < kNumMaxSamples)
+	);
+
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+	FParticlePerfStatsManager::ForAllSystemStats(
+		[&](TWeakObjectPtr<UFXSystemAsset>& WeakSystem, TUniquePtr<FParticlePerfStats>& Stats)
 		{
-			MaxPerFrameTotalGameThreadCycles.Add(ThisFrameMaxTotalGameThread);
+			AccumulatedSystemStats.Add(WeakSystem) = MakeUnique<FAccumulatedParticlePerfStats>();
+		}
+	);
+#endif
+
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+	FParticlePerfStatsManager::ForAllComponentStats(
+		[&](TWeakObjectPtr<UFXSystemComponent>& WeakComponent, TUniquePtr<FParticlePerfStats>& Stats)
+		{
+			AccumulatedComponentStats.Add(WeakComponent) = MakeUnique<FAccumulatedParticlePerfStats>();
+		}
+	);
+#endif
+}
+
+void FParticlePerfStatsListener_GatherAll::End()
+{
+	FScopeLock Lock(&AccumulatedStatsGuard);
+	AccumulatedWorldStats.Empty();
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+	AccumulatedSystemStats.Empty();
+#endif
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+	AccumulatedComponentStats.Empty();
+#endif
+}
+
+template<typename T, typename TFunc>
+void FParticlePerfStatsListener_GatherAll::TickStats_Internal(TMap<TWeakObjectPtr<T>, TUniquePtr<FAccumulatedParticlePerfStats>>& StatsMap, TFunc Func)
+{
+	TArray<TWeakObjectPtr<T>, TInlineAllocator<8>> ToRemove;
+	for (TPair<TWeakObjectPtr<T>, TUniquePtr<FAccumulatedParticlePerfStats>>& Pair : StatsMap)
+	{
+		if (T* Key = Pair.Key.Get())
+		{
+			FAccumulatedParticlePerfStats& Stats = *Pair.Value;
+
+			if (FParticlePerfStats* CurrentFrameStats = Key->ParticlePerfStats)
+			{
+				Func(Stats, *CurrentFrameStats);
+			}
+		}
+		else
+		{
+			ToRemove.Add(Pair.Key);
+		}
+	}
+	for (TWeakObjectPtr<T>& Item : ToRemove)
+	{
+		StatsMap.Remove(Item);
+	}
+}
+
+bool FParticlePerfStatsListener_GatherAll::Tick()
+{
+	auto TickFunc = [](FAccumulatedParticlePerfStats& Stats, FParticlePerfStats& FrameStats)
+	{
+		Stats.Tick(FrameStats);
+	};
+
+	FScopeLock Lock(&AccumulatedStatsGuard);
+	TickStats_Internal(AccumulatedWorldStats, TickFunc);
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+	TickStats_Internal(AccumulatedSystemStats, TickFunc);
+#endif
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+	TickStats_Internal(AccumulatedComponentStats, TickFunc);
+#endif
+
+	return true;
+}
+
+void FParticlePerfStatsListener_GatherAll::TickRT()
+{
+	auto TickFunc = [](FAccumulatedParticlePerfStats& Stats, FParticlePerfStats& FrameStats)
+	{
+		Stats.TickRT(FrameStats);
+	};
+
+	FScopeLock Lock(&AccumulatedStatsGuard);
+	TickStats_Internal(AccumulatedWorldStats, TickFunc);
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+	TickStats_Internal(AccumulatedSystemStats, TickFunc);
+#endif
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+	TickStats_Internal(AccumulatedComponentStats, TickFunc);
+#endif
+}
+
+void FParticlePerfStatsListener_GatherAll::OnAddWorld(const TWeakObjectPtr<UWorld>& NewWorld)
+{
+	if(bGatherWorldStats)
+	{
+		FScopeLock Lock(&AccumulatedStatsGuard);
+		AccumulatedWorldStats.Add(NewWorld) = MakeUnique<FAccumulatedParticlePerfStats>();
+	}
+}
+
+void FParticlePerfStatsListener_GatherAll::OnRemoveWorld(const TWeakObjectPtr<UWorld>& World)
+{
+	if (bGatherWorldStats)
+	{
+		FScopeLock Lock(&AccumulatedStatsGuard);
+		AccumulatedWorldStats.Remove(World);
+	}
+}
+
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+void FParticlePerfStatsListener_GatherAll::OnAddSystem(const TWeakObjectPtr<UFXSystemAsset>& NewSystem)
+{
+	if (bGatherSystemStats)
+	{
+		FScopeLock Lock(&AccumulatedStatsGuard);
+		AccumulatedSystemStats.Add(NewSystem) = MakeUnique<FAccumulatedParticlePerfStats>();
+	}
+}
+
+void FParticlePerfStatsListener_GatherAll::OnRemoveSystem(const TWeakObjectPtr<UFXSystemAsset>& System)
+{
+	if (bGatherSystemStats)
+	{
+		FScopeLock Lock(&AccumulatedStatsGuard);
+		AccumulatedSystemStats.Remove(System);
+	}
+}
+#endif
+
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+void FParticlePerfStatsListener_GatherAll ::OnAddComponent(const TWeakObjectPtr<UFXSystemComponent>& NewComponent)
+{
+	if (bGatherComponentStats)
+	{
+		FScopeLock Lock(&AccumulatedStatsGuard);
+		AccumulatedComponentStats.Add(NewComponent) = MakeUnique<FAccumulatedParticlePerfStats>();
+	}
+}
+
+void FParticlePerfStatsListener_GatherAll::OnRemoveComponent(const TWeakObjectPtr<UFXSystemComponent>& Component)
+{
+	if (bGatherComponentStats)
+	{
+		FScopeLock Lock(&AccumulatedStatsGuard);
+		AccumulatedComponentStats.Remove(Component);
+	}
+}
+#endif
+
+void FParticlePerfStatsListener_GatherAll::DumpStatsToDevice(FOutputDevice& Ar)
+{
+	FlushRenderingCommands();
+
+	FString tempString;
+
+	Ar.Logf(TEXT(",**** Particle Performance Stats"));
+	Ar.Logf(TEXT(",Name,Average PerFrame GameThread,Average PerInstance GameThread,Average PerFrame RenderThread,Average PerInstance RenderThread,NumFrames,Total Instances,Total Tick GameThread,Total Tick Concurrent,Total Finalize,Total End Of Frame,Total Render Update,Total Get Dynamic Mesh Elements,Max PerFrame GameThread,Max Range PerFrame GameThread,Max PerFrame RenderThread,Max Range PerFrame RenderThread"));
+
+	auto WriteStats = [&tempString](FOutputDevice& Ar, const FString& Name, FAccumulatedParticlePerfStats* PerfStats)
+	{
+		if(PerfStats == nullptr)
+		{
+			return;
 		}
 
-		InsertIndex = MaxPerFrameTotalRenderThreadCycles.IndexOfByPredicate([&](uint32 v) {return ThisFrameMaxTotalRenderThread > v; });
-		if (InsertIndex != INDEX_NONE)
+		const FAccumulatedParticlePerfStats_GT& GTSTats = PerfStats->GetGameThreadStats();
+		const FAccumulatedParticlePerfStats_RT& RTSTats = PerfStats->GetRenderThreadStats_GameThread();
+
+		if ((GTSTats.NumFrames == 0 && RTSTats.NumFrames == 0) || (GTSTats.AccumulatedStats.NumInstances == 0 && RTSTats.AccumulatedStats.NumInstances == 0))
 		{
-			MaxPerFrameTotalRenderThreadCycles.Pop(false);
-			MaxPerFrameTotalRenderThreadCycles.Insert(ThisFrameMaxTotalRenderThread, InsertIndex);
+			return;
 		}
-		else if (MaxPerFrameTotalRenderThreadCycles.Num() < kNumMaxSamples)
+
+		const uint64 TotalGameThread = GTSTats.GetTotalCycles();
+		const uint64 TotalRenderThread = RTSTats.GetTotalCycles();
+
+		const uint64 MaxPerFrameTotalGameThreadFirst = GTSTats.MaxPerFrameTotalCycles.Num() > 0 ? GTSTats.MaxPerFrameTotalCycles[0] : 0;
+		const uint64 MaxPerFrameTotalGameThreadLast = GTSTats.MaxPerFrameTotalCycles.Num() > 0 ? GTSTats.MaxPerFrameTotalCycles.Last() : 0;
+
+		const uint64 MaxPerFrameTotalRenderThreadFirst = RTSTats.MaxPerFrameTotalCycles.Num() > 0 ? RTSTats.MaxPerFrameTotalCycles[0] : 0;
+		const uint64 MaxPerFrameTotalRenderThreadLast = RTSTats.MaxPerFrameTotalCycles.Num() > 0 ? RTSTats.MaxPerFrameTotalCycles.Last() : 0;
+		//TODO: Add per instance max?
+
+		tempString.Reset();
+		tempString.Appendf(TEXT(",%s"), *Name);
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(GTSTats.GetPerFrameAvgCycles()) * 1000.0));
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(GTSTats.GetPerInstanceAvgCycles()) * 1000.0));
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(RTSTats.GetPerFrameAvgCycles()) * 1000.0));
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(RTSTats.GetPerInstanceAvgCycles()) * 1000.0));
+		tempString.Appendf(TEXT(",%u"), uint32(GTSTats.NumFrames));
+		tempString.Appendf(TEXT(",%u"), uint32(GTSTats.AccumulatedStats.NumInstances));
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(GTSTats.AccumulatedStats.TickGameThreadCycles) * 1000.0));
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(GTSTats.AccumulatedStats.TickConcurrentCycles) * 1000.0));
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(GTSTats.AccumulatedStats.FinalizeCycles) * 1000.0));
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(GTSTats.AccumulatedStats.EndOfFrameCycles) * 1000.0));
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(RTSTats.AccumulatedStats.RenderUpdateCycles) * 1000.0));
+		tempString.Appendf(TEXT(",%u"), uint32(FPlatformTime::ToMilliseconds64(RTSTats.AccumulatedStats.GetDynamicMeshElementsCycles) * 1000.0));
+
+		tempString.Appendf(TEXT(",%u,[ "), uint32(FPlatformTime::ToMilliseconds64(GTSTats.MaxPerFrameTotalCycles.Num() > 0 ? GTSTats.MaxPerFrameTotalCycles[0] : 0) * 1000.0));
+		for (uint64 v : GTSTats.MaxPerFrameTotalCycles)
 		{
-			MaxPerFrameTotalRenderThreadCycles.Add(ThisFrameMaxTotalRenderThread);
+			tempString.Appendf(TEXT("%u "), uint32(FPlatformTime::ToMilliseconds64(v) * 1000.0));
+		}
+		tempString.Append(TEXT("]"));
+
+		tempString.Appendf(TEXT(",%u,[ "), uint32(FPlatformTime::ToMilliseconds64(RTSTats.MaxPerInstanceCycles.Num() > 0 ? RTSTats.MaxPerInstanceCycles[0] : 0) * 1000.0));
+		for (uint64 v : RTSTats.MaxPerFrameTotalCycles)
+		{
+			tempString.Appendf(TEXT("%u "), uint32(FPlatformTime::ToMilliseconds64(v) * 1000.0));
+		}
+		tempString.Append(TEXT("]"));
+
+		Ar.Log(*tempString);
+	};
+
+	if(bGatherWorldStats)
+	{
+		Ar.Logf(TEXT(",** Per World Stats"));
+		for (auto it = AccumulatedWorldStats.CreateIterator(); it; ++it)
+		{
+			if (auto* Key = it.Key().Get())
+			{
+				WriteStats(Ar, Key->GetFName().ToString(), it.Value().Get());
+			}
 		}
 	}
 
-	CurrentFrameStats.NumInstances = 0;
-	CurrentFrameStats.TickGameThreadCycles = 0;
-	CurrentFrameStats.TickConcurrentCycles = 0;
-	CurrentFrameStats.FinalizeCycles = 0;
-	CurrentFrameStats.EndOfFrameCycles = 0;
-
-	// Update RenderThread stats
-	ENQUEUE_RENDER_COMMAND(FGatherParticlePerfStats)
-	(
-		[RTPerfStats=this](FRHICommandListImmediate& RHICmdList)
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+	if (bGatherSystemStats)
+	{
+		Ar.Logf(TEXT(",** Per System Stats"));
+		for (auto it = AccumulatedSystemStats.CreateIterator(); it; ++it)
 		{
-			RTPerfStats->AccumulatedStats.RenderUpdateCycles += RTPerfStats->CurrentFrameStats.RenderUpdateCycles;
-			RTPerfStats->AccumulatedStats.GetDynamicMeshElementsCycles += RTPerfStats->CurrentFrameStats.GetDynamicMeshElementsCycles;
-
-			RTPerfStats->CurrentFrameStats.RenderUpdateCycles = 0;
-			RTPerfStats->CurrentFrameStats.GetDynamicMeshElementsCycles = 0;
+			if (auto* Key = it.Key().Get())
+			{
+				WriteStats(Ar, Key->GetFName().ToString(), it.Value().Get());
+			}
 		}
-	);
+	}
+#endif
+
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+	if (bGatherComponentStats)
+	{
+		Ar.Logf(TEXT(",** Per Component Stats"));
+		for (auto it = AccumulatedComponentStats.CreateIterator(); it; ++it)
+		{
+			if (auto* Key = it.Key().Get())
+			{
+				WriteStats(Ar, Key->GetFName().ToString(), it.Value().Get());
+			}
+		}
+	}
+#endif
 }
 
-int32 FParticlePerfStats::RenderStats(class UWorld* World, class FViewport* Viewport, class FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation)
+void FParticlePerfStatsListener_GatherAll::DumpStatsToFile()
 {
-	FScopeLock ScopeLock(&ParticlePerfStatsLocal::SystemToPerfStatsGuard);
+#if !UE_BUILD_SHIPPING
+	const FString PathName = FPaths::ProfilingDir() + TEXT("ParticlePerf");
+	IFileManager::Get().MakeDirectory(*PathName);
 
+	const FString Filename = FString::Printf(TEXT("ParticlePerf-%s.csv"), *FDateTime::Now().ToString(TEXT("%d-%H.%M.%S")));
+	const FString FilePath = PathName / Filename;
+
+	if (FArchive* FileAr = IFileManager::Get().CreateDebugFileWriter(*FilePath))
+	{
+		TUniquePtr<FOutputDeviceArchiveWrapper> FileArWrapper(new FOutputDeviceArchiveWrapper(FileAr));
+		DumpStatsToDevice(*FileArWrapper.Get());
+		delete FileAr;
+	}
+#endif
+}
+
+
+#if WITH_PARTICLE_PERF_STATS
+FAccumulatedParticlePerfStats* FParticlePerfStatsListener_GatherAll::GetStats(UWorld* World)
+{
+	if (TUniquePtr<FAccumulatedParticlePerfStats>* StatsPtr = AccumulatedWorldStats.Find(World))
+	{
+		return StatsPtr->Get();
+	}
+	return nullptr;
+}
+#endif
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+FAccumulatedParticlePerfStats* FParticlePerfStatsListener_GatherAll::GetStats(UFXSystemAsset* System) 
+{
+	if (TUniquePtr<FAccumulatedParticlePerfStats>* StatsPtr = AccumulatedSystemStats.Find(System))
+	{
+		return StatsPtr->Get();
+	}
+	return nullptr;
+}
+#endif
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+FAccumulatedParticlePerfStats* FParticlePerfStatsListener_GatherAll::GetStats(UFXSystemComponent* Component) 
+{
+	if (TUniquePtr<FAccumulatedParticlePerfStats>* StatsPtr = AccumulatedComponentStats.Find(Component))
+	{
+		return StatsPtr->Get();
+	}
+	return nullptr;
+}
+#endif
+
+//////////////////////////////////////////////////////////////////////////
+
+FParticlePerfStatsListener_TimedTest::FParticlePerfStatsListener_TimedTest(int32 NumFrames, bool bInGatherWorldStats, bool bInGatherSystemStats, bool bInGatherComponentStats)
+	: FParticlePerfStatsListener_GatherAll(bInGatherWorldStats, bInGatherSystemStats, bInGatherComponentStats)
+	, FramesRemaining(NumFrames)
+{
+
+}
+
+void FParticlePerfStatsListener_TimedTest::End()
+{
+	//TODO: Move this stuff into the listeners themselves with some utilities in the manager so each listener can customize it's output more.
+	if (GLog != nullptr)
+	{
+		DumpStatsToDevice(*GLog);
+	}
+	DumpStatsToFile();
+}
+
+bool FParticlePerfStatsListener_TimedTest::Tick()
+{
+	FParticlePerfStatsListener_GatherAll::Tick();
+
+	return --FramesRemaining > 0;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+#if CSV_PROFILER
+
+FParticlePerfStatsListenerPtr FParticlePerfStatsListener_CSVProfiler::CSVListener;
+void FParticlePerfStatsListener_CSVProfiler::OnCSVStart()
+{
+	CSVListener = MakeShared<FParticlePerfStatsListener_CSVProfiler, ESPMode::ThreadSafe>();
+	FParticlePerfStatsManager::AddListener(CSVListener);
+}
+
+void FParticlePerfStatsListener_CSVProfiler::OnCSVEnd()
+{
+	FParticlePerfStatsManager::RemoveListener(CSVListener.Get());
+}
+
+void FParticlePerfStatsListener_CSVProfiler::End()
+{
+	if (GLog != nullptr)
+	{
+		DumpStatsToDevice(*GLog);
+	}
+	DumpStatsToFile();
+}
+
+#endif
+
+//////////////////////////////////////////////////////////////////////////
+
+int32 FParticlePerfStatsListener_DebugRender::RenderStats(class UWorld* World, class FViewport* Viewport, class FCanvas* Canvas, int32 /*X*/, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation)
+{
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
 	UFont* Font = GEngine->GetSmallFont();
 	check(Font != nullptr);
 
@@ -337,15 +1099,15 @@ int32 FParticlePerfStats::RenderStats(class UWorld* World, class FViewport* View
 	const float ColumnWidth = 32 * CharWidth;
 	const int32 FontHeight = Font->GetMaxCharHeight() + 2.0f;
 
-	X = 100;
+	int32 X = 100;
 
 	// Draw background
 	{
 		int32 NumRows = 0;
-		for (auto it = ParticlePerfStatsLocal::SystemToPerfStats.CreateIterator(); it; ++it)
+		for (auto it = AccumulatedSystemStats.CreateIterator(); it; ++it)
 		{
-			const FParticlePerfStats& PerfStats = *it.Value();
-			if (PerfStats.AccumulatedNumFrames == 0)
+			FAccumulatedParticlePerfStats* PerfStats = it.Value().Get();
+			if (PerfStats == nullptr || PerfStats->GetGameThreadStats().NumFrames == 0)
 			{
 				continue;
 			}
@@ -366,10 +1128,18 @@ int32 FParticlePerfStats::RenderStats(class UWorld* World, class FViewport* View
 
 	FString tempString;
 	int32 RowNum = 0;
-	for (auto it = ParticlePerfStatsLocal::SystemToPerfStats.CreateIterator(); it; ++it)
+	for (auto it = AccumulatedSystemStats.CreateIterator(); it; ++it)
 	{
-		const FParticlePerfStats& PerfStats = *it.Value();
-		if (PerfStats.AccumulatedNumFrames == 0)
+		FAccumulatedParticlePerfStats* PerfStats = it.Value().Get();
+		if (PerfStats == nullptr)
+		{
+			continue;
+		}
+
+		const FAccumulatedParticlePerfStats_GT& GTStats = PerfStats->GetGameThreadStats();
+		const FAccumulatedParticlePerfStats_RT& RTStats = PerfStats->GetRenderThreadStats_GameThread();
+		UFXSystemAsset* System = it.Key().Get();
+		if (GTStats.NumFrames == 0 || RTStats.NumFrames == 0 || System == nullptr)
 		{
 			continue;
 		}
@@ -379,40 +1149,40 @@ int32 FParticlePerfStats::RenderStats(class UWorld* World, class FViewport* View
 		Canvas->DrawTile(X - 2, Y - 1, (ColumnWidth * 5) + 4, FontHeight, 0.0f, 0.0f, 1.0f, 1.0f, BackgroundColors[RowNum & 1]);
 
 		// System Name
-		FString SystemName = it.Key().ToString();
+		FString SystemName = System->GetFName().ToString();
 		Canvas->DrawShadowedString(X + ColumnWidth * 0, Y, *SystemName, Font, FLinearColor::Yellow);
 
 		// Average Per Frame
 		tempString.Reset();
 		tempString.Appendf(
 			TEXT("%4u | %4u | %4u"),
-			uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.TickGameThreadCycles + PerfStats.AccumulatedStats.FinalizeCycles) * 1000.0 / double(PerfStats.AccumulatedNumFrames)),
-			uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.TickConcurrentCycles + PerfStats.AccumulatedStats.EndOfFrameCycles) * 1000.0 / double(PerfStats.AccumulatedNumFrames)),
-			uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.RenderUpdateCycles + PerfStats.AccumulatedStats.GetDynamicMeshElementsCycles) * 1000.0 / double(PerfStats.AccumulatedNumFrames)),
-			uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.TickGameThreadCycles) * 1000.0 / double(PerfStats.AccumulatedNumFrames))
+			uint32(FPlatformTime::ToMilliseconds64(GTStats.AccumulatedStats.TickGameThreadCycles + GTStats.AccumulatedStats.FinalizeCycles) * 1000.0 / double(GTStats.NumFrames)),
+			uint32(FPlatformTime::ToMilliseconds64(GTStats.AccumulatedStats.TickConcurrentCycles + GTStats.AccumulatedStats.EndOfFrameCycles) * 1000.0 / double(GTStats.NumFrames)),
+			uint32(FPlatformTime::ToMilliseconds64(RTStats.AccumulatedStats.RenderUpdateCycles + RTStats.AccumulatedStats.GetDynamicMeshElementsCycles) * 1000.0 / double(RTStats.NumFrames)),
+			uint32(FPlatformTime::ToMilliseconds64(GTStats.AccumulatedStats.TickGameThreadCycles) * 1000.0 / double(GTStats.NumFrames))
 		);
 		Canvas->DrawShadowedString(X + ColumnWidth * 1, Y, *tempString, Font, FLinearColor::Yellow);
 
-		// Average Per Instance
+		// Average Per Instances
 		tempString.Reset();
 		tempString.Appendf(
 			TEXT("%4u | %4u | %4u"),
-			uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.TickGameThreadCycles + PerfStats.AccumulatedStats.FinalizeCycles) * 1000.0 / double(PerfStats.AccumulatedStats.NumInstances)),
-			uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.TickConcurrentCycles + PerfStats.AccumulatedStats.EndOfFrameCycles) * 1000.0 / double(PerfStats.AccumulatedStats.NumInstances)),
-			uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.RenderUpdateCycles + PerfStats.AccumulatedStats.GetDynamicMeshElementsCycles) * 1000.0 / double(PerfStats.AccumulatedStats.NumInstances)),
-			uint32(FPlatformTime::ToMilliseconds64(PerfStats.AccumulatedStats.TickGameThreadCycles) * 1000.0 / double(PerfStats.AccumulatedStats.NumInstances))
+			uint32(FPlatformTime::ToMilliseconds64(GTStats.AccumulatedStats.TickGameThreadCycles + GTStats.AccumulatedStats.FinalizeCycles) * 1000.0 / double(GTStats.AccumulatedStats.NumInstances)),
+			uint32(FPlatformTime::ToMilliseconds64(GTStats.AccumulatedStats.TickConcurrentCycles + GTStats.AccumulatedStats.EndOfFrameCycles) * 1000.0 / double(GTStats.AccumulatedStats.NumInstances)),
+			uint32(FPlatformTime::ToMilliseconds64(RTStats.AccumulatedStats.RenderUpdateCycles + RTStats.AccumulatedStats.GetDynamicMeshElementsCycles) * 1000.0 / double(RTStats.AccumulatedStats.NumInstances)),
+			uint32(FPlatformTime::ToMilliseconds64(GTStats.AccumulatedStats.TickGameThreadCycles) * 1000.0 / double(GTStats.AccumulatedStats.NumInstances))
 		);
 		Canvas->DrawShadowedString(X + ColumnWidth * 2, Y, *tempString, Font, FLinearColor::Yellow);
 
 		// Peak Per Frame
 		tempString.Reset();
 		tempString.Append(TEXT("GT[ "));
-		for (uint64 v : PerfStats.MaxPerFrameTotalGameThreadCycles)
+		for (uint64 v : GTStats.MaxPerFrameTotalCycles)
 		{
 			tempString.Appendf(TEXT("%4u "), uint32(FPlatformTime::ToMilliseconds64(v) * 1000.0));
 		}
 		tempString.Append(TEXT("] RT["));
-		for (uint64 v : PerfStats.MaxPerFrameTotalRenderThreadCycles)
+		for (uint64 v : RTStats.MaxPerFrameTotalCycles)
 		{
 			tempString.Appendf(TEXT("%4u "), uint32(FPlatformTime::ToMilliseconds64(v) * 1000.0));
 		}
@@ -421,32 +1191,10 @@ int32 FParticlePerfStats::RenderStats(class UWorld* World, class FViewport* View
 
 		Y += FontHeight;
 	}
-
+#endif
 	return Y;
 }
 
-void FParticlePerfStats::OnStartup()
-{
-	ParticlePerfStatsLocal::BeginFrameHandle = FCoreDelegates::OnBeginFrame.AddStatic(ParticlePerfStatsLocal::TickParticlePerfStats);
-#if CSV_PROFILER
-	if (FCsvProfiler* CSVProfiler = FCsvProfiler::Get())
-	{
-		ParticlePerfStatsLocal::CSVStartHandle = CSVProfiler->OnCSVProfileStart().AddStatic(ParticlePerfStatsLocal::OnCSVStart);
-		ParticlePerfStatsLocal::CSVEndHandle = CSVProfiler->OnCSVProfileEnd().AddStatic(ParticlePerfStatsLocal::OnCSVEnd);
-	}
-#endif
-}
-
-void FParticlePerfStats::OnShutdown()
-{
-	FCoreDelegates::OnBeginFrame.Remove(ParticlePerfStatsLocal::BeginFrameHandle);
-#if CSV_PROFILER
-	if (FCsvProfiler* CSVProfiler = FCsvProfiler::Get())
-	{
-		CSVProfiler->OnCSVProfileStart().Remove(ParticlePerfStatsLocal::CSVStartHandle);
-		CSVProfiler->OnCSVProfileEnd().Remove(ParticlePerfStatsLocal::CSVEndHandle);
-	}
-#endif
-}
+//////////////////////////////////////////////////////////////////////////
 
 #endif //WITH_PARTICLE_PERF_STATS

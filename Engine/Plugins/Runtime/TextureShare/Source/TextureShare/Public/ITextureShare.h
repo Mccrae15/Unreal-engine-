@@ -52,9 +52,9 @@ public:
 	 *
 	 * @return True if the success
 	 */
-	virtual bool CreateShare(const FString& ShareName, const FTextureShareSyncPolicy& SyncMode, ETextureShareProcess Process = ETextureShareProcess::Server) = 0;
+	virtual bool CreateShare(const FString& ShareName, const FTextureShareSyncPolicy& SyncMode, ETextureShareProcess Process = ETextureShareProcess::Server, float SyncWaitTime = 0.03f) = 0;
 
-	/**
+	/** 
 	 * Delete TextureShare object
 	 *
 	 * @param ShareName - Unique share name (case insensitive)
@@ -91,7 +91,7 @@ public:
 	 *
 	 * @return True if the success
 	 */
-	virtual bool SetBackbufferRect(int StereoscopicPass, FIntRect* BackbufferRect) = 0;
+	virtual bool SetBackbufferRect(int StereoscopicPass, const FIntRect* BackbufferRect) = 0;
 
 	/**
 	 * Register/Update texture info for share
@@ -158,4 +158,10 @@ public:
 	 * @return True if the success
 	 */
 	virtual bool ReceiveTexture_RenderThread(FRHICommandListImmediate& RHICmdList, const TSharedPtr<ITextureShareItem>& ShareItem, const FString& TextureName, FRHITexture* DstTexture, const FIntRect* DstTextureRect = nullptr) = 0;
+
+	/**
+	 * Cast internal structures bp<->cpp
+	 *
+	 */
+	virtual void CastTextureShareBPSyncPolicy(const struct FTextureShareBPSyncPolicy& InSyncPolicy, struct FTextureShareSyncPolicy& OutSyncPolicy) = 0;
 };

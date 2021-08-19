@@ -21,6 +21,7 @@
 #include <dlfcn.h>
 #include "Android/AndroidWindow.h"
 #include "Android/AndroidApplication.h"
+#include "Android/AndroidPlatformStackWalk.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "IHeadMountedDisplayModule.h"
 #include "ISessionServicesModule.h"
@@ -518,6 +519,8 @@ int32 AndroidMain(struct android_app* state)
 	}
 #endif
 
+	FAndroidStats::Init(FParse::Param(FCommandLine::Get(), TEXT("hwcpipe")));
+
 	BootTimingPoint("Tick loop starting");
 	DumpBootTiming();
 	// tick until done
@@ -545,6 +548,7 @@ int32 AndroidMain(struct android_app* state)
 		}
 #endif
 	}
+	
 	FAppEventManager::GetInstance()->TriggerEmptyQueue();
 
 	UE_LOG(LogAndroid, Log, TEXT("Exiting"));
@@ -803,22 +807,54 @@ static int32_t HandleInputCB(struct android_app* app, AInputEvent* event)
 	{
 		static int32 previousButtonState = 0;
 
+		const int32 device = AInputEvent_getDeviceId(event);
+		const int32 action = AMotionEvent_getAction(event);
+		const int32 actionType = action & AMOTION_EVENT_ACTION_MASK;
+		int32 buttonState = AMotionEvent_getButtonState(event);
+
 		if (!GAndroidEnableMouse)
 		{
-			// this will block event
+			if (actionType == AMOTION_EVENT_ACTION_DOWN || actionType == AMOTION_EVENT_ACTION_UP)
+			{
+				const bool bDown = (actionType == AMOTION_EVENT_ACTION_DOWN);
+				if (!bDown)
+				{
+					buttonState = previousButtonState;
+				}
+				if (buttonState & AMOTION_EVENT_BUTTON_PRIMARY)
+				{
+					const int32 ReplacementKeyEvent = FAndroidInputInterface::GetAlternateKeyEventForMouse(device, 0);
+					if (ReplacementKeyEvent != 0)
+					{
+						FAndroidInputInterface::JoystickButtonEvent(device, ReplacementKeyEvent, bDown);
+					}
+				}
+				if (buttonState & AMOTION_EVENT_BUTTON_SECONDARY)
+				{
+					const int32 ReplacementKeyEvent = FAndroidInputInterface::GetAlternateKeyEventForMouse(device, 1);
+					if (ReplacementKeyEvent != 0)
+					{
+						FAndroidInputInterface::JoystickButtonEvent(device, ReplacementKeyEvent, bDown);
+					}
+				}
+				if (buttonState & AMOTION_EVENT_BUTTON_TERTIARY)
+				{
+					const int32 ReplacementKeyEvent = FAndroidInputInterface::GetAlternateKeyEventForMouse(device, 2);
+					if (ReplacementKeyEvent != 0)
+					{
+						FAndroidInputInterface::JoystickButtonEvent(device, ReplacementKeyEvent, bDown);
+					}
+				}
+				previousButtonState = buttonState;
+			}
 			return 1;
 		}
-
-		int32 action = AMotionEvent_getAction(event);
-		int32 actionType = action & AMOTION_EVENT_ACTION_MASK;
-		int32 device = AInputEvent_getDeviceId(event);
-		int32 buttonState = AMotionEvent_getButtonState(event);
 
 //		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("-- EVENT: %d, device: %d, action: %x, actionType: %x, buttonState: %x"), EventType, device, action, actionType, buttonState);
 
 		if (actionType == AMOTION_EVENT_ACTION_DOWN || actionType == AMOTION_EVENT_ACTION_UP)
 		{
-			bool bDown = (actionType == AMOTION_EVENT_ACTION_DOWN);
+			const bool bDown = (actionType == AMOTION_EVENT_ACTION_DOWN);
 			if (!bDown)
 			{
 				buttonState = previousButtonState;
@@ -831,12 +867,12 @@ static int32_t HandleInputCB(struct android_app* app, AInputEvent* event)
 			if (buttonState & AMOTION_EVENT_BUTTON_SECONDARY)
 			{
 //				FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mouse button 1: %d"), bDown ? 1 : 0);
-				FAndroidInputInterface::MouseButtonEvent(device, 0, bDown);
+				FAndroidInputInterface::MouseButtonEvent(device, 1, bDown);
 			}
 			if (buttonState & AMOTION_EVENT_BUTTON_TERTIARY)
 			{
 //				FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mouse button 2: %d"), bDown ? 1 : 0);
-				FAndroidInputInterface::MouseButtonEvent(device, 0, bDown);
+				FAndroidInputInterface::MouseButtonEvent(device, 2, bDown);
 			}
 			previousButtonState = buttonState;
 			return 1;
@@ -1165,6 +1201,12 @@ static void ActivateApp_EventThread()
 		FAppEventManager::GetInstance()->ResumeAudio();
 	}));
 
+	if (EventHandlerEvent)
+	{
+		// Must flush the queue before enabling rendering.
+		EventHandlerEvent->Trigger();
+	}
+
 	FPreLoadScreenManager::EnableRendering(true);
 
 	extern void AndroidThunkCpp_ShowHiddenAlertDialog();
@@ -1413,7 +1455,7 @@ static void OnAppCommandCB(struct android_app* app, int32_t cmd)
 
 		// Ignore pause command for Oculus if the window hasn't been initialized to prevent halting initial load
 		// if the headset is not active
-		if (!bHasWindow && FAndroidMisc::IsStandaloneStereoOnlyDevice())
+		if (!bHasWindow && FAndroidMisc::GetDeviceMake() == FString("Oculus"))
 		{
 			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Oculus: Ignoring APP_CMD_PAUSE command before APP_CMD_INIT_WINDOW"));
 			UE_LOG(LogAndroid, Log, TEXT("Oculus: Ignoring APP_CMD_PAUSE command before APP_CMD_INIT_WINDOW"));
@@ -1478,9 +1520,7 @@ static void OnAppCommandCB(struct android_app* app, int32_t cmd)
 				FCoreDelegates::ApplicationWillTerminateDelegate.Broadcast();
 			}, TStatId(), NULL, ENamedThreads::GameThread);
 			FTaskGraphInterface::Get().WaitUntilTaskCompletes(WillTerminateTask);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			GIsRequestingExit = true; //destroy immediately. Game will shutdown.
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			FAndroidMisc::NonReentrantRequestExit();
 		}));
 
 
@@ -1571,15 +1611,16 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeInitHMDs(JNIEnv* jenv,
 	GHMDsInitialized = true;
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetAndroidVersionInformation(JNIEnv* jenv, jobject thiz, jstring androidVersion, jint targetSDKversion, jstring phoneMake, jstring phoneModel, jstring phoneBuildNumber, jstring osLanguage )
+JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetAndroidVersionInformation(JNIEnv* jenv, jobject thiz, jstring androidVersion, jint targetSDKversion, jstring phoneMake, jstring phoneModel, jstring phoneBuildNumber, jstring osLanguage)
 {
 	auto UEAndroidVersion = FJavaHelper::FStringFromParam(jenv, androidVersion);
 	auto UEPhoneMake = FJavaHelper::FStringFromParam(jenv, phoneMake);
 	auto UEPhoneModel = FJavaHelper::FStringFromParam(jenv, phoneModel);
 	auto UEPhoneBuildNumber = FJavaHelper::FStringFromParam(jenv, phoneBuildNumber);
 	auto UEOSLanguage = FJavaHelper::FStringFromParam(jenv, osLanguage);
-	
-	FAndroidMisc::SetVersionInfo( UEAndroidVersion, targetSDKversion, UEPhoneMake, UEPhoneModel, UEPhoneBuildNumber, UEOSLanguage );
+
+	FAndroidMisc::SetVersionInfo(UEAndroidVersion, targetSDKversion, UEPhoneMake, UEPhoneModel, UEPhoneBuildNumber, UEOSLanguage);
+	FAndroidPlatformStackWalk::NotifyPlatformVersionInit();
 }
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeOnInitialDownloadStarted();

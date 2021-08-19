@@ -597,6 +597,7 @@ void SSkeletonTree::CreateTreeColumns()
 		.OnGetChildren(this, &SSkeletonTree::GetFilteredChildren)
 		.OnContextMenuOpening(this, &SSkeletonTree::CreateContextMenu)
 		.OnSelectionChanged(this, &SSkeletonTree::OnSelectionChanged)
+		.OnIsSelectableOrNavigable(this, &SSkeletonTree::OnIsSelectableOrNavigable)
 		.OnItemScrolledIntoView(this, &SSkeletonTree::OnItemScrolledIntoView)
 		.OnMouseButtonDoubleClick(this, &SSkeletonTree::OnTreeDoubleClick)
 		.OnSetExpansionRecursive(this, &SSkeletonTree::SetTreeItemExpansionRecursive)
@@ -1343,7 +1344,7 @@ bool SSkeletonTree::CanRemoveAllAssets() const
 	USkeletalMesh* SkeletalMesh = GetPreviewScene().IsValid() ? GetPreviewScene()->GetPreviewMeshComponent()->SkeletalMesh : nullptr;
 
 	const bool bHasPreviewAttachedObjects = GetEditableSkeletonInternal()->GetSkeleton().PreviewAttachedAssetContainer.Num() > 0;
-	const bool bHasMeshPreviewAttachedObjects = ( SkeletalMesh && SkeletalMesh->PreviewAttachedAssetContainer.Num() );
+	const bool bHasMeshPreviewAttachedObjects = ( SkeletalMesh && SkeletalMesh->GetPreviewAttachedAssetContainer().Num() );
 
 	return bHasPreviewAttachedObjects || bHasMeshPreviewAttachedObjects;
 }
@@ -1364,6 +1365,11 @@ void SSkeletonTree::OnRenameSelected()
 		SkeletonTreeView->RequestScrollIntoView(SelectedItems[0]);
 		DeferredRenameRequest = SelectedItems[0];
 	}
+}
+
+bool SSkeletonTree::OnIsSelectableOrNavigable(TSharedPtr<class ISkeletonTreeItem> InItem) const
+{
+	return InItem && InItem->GetFilterResult() == ESkeletonTreeFilterResult::Shown;
 }
 
 void SSkeletonTree::OnSelectionChanged(TSharedPtr<ISkeletonTreeItem> Selection, ESelectInfo::Type SelectInfo)
@@ -2013,7 +2019,7 @@ void SSkeletonTree::OnLODSwitched()
 
 		if (PreviewComponent)
 		{
-			LastCachedLODForPreviewMeshComponent = PreviewComponent->PredictedLODLevel;
+			LastCachedLODForPreviewMeshComponent = PreviewComponent->GetPredictedLODLevel();
 
 			if (BoneFilter == EBoneFilter::Weighted || BoneFilter == EBoneFilter::LOD)
 			{

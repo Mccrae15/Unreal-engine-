@@ -51,6 +51,7 @@ TAutoConsoleVariable<int32> CVarD3D11ZeroBufferSizeInMB(
 	ECVF_ReadOnly
 	);
 
+
 FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1,D3D_FEATURE_LEVEL InFeatureLevel, int32 InChosenAdapter, const DXGI_ADAPTER_DESC& InChosenDescription) :
 	DXGIFactory1(InDXGIFactory1),
 #if NV_AFTERMATH
@@ -108,22 +109,6 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1,D3D_FEATURE_LEV
 	else
 	{
 		bDXGISupportsHDR = false;
-	}
-
-	ERHIFeatureLevel::Type PreviewFeatureLevel;
-	if (RHIGetPreviewFeatureLevel(PreviewFeatureLevel))
-	{
-		// ES3.1 feature level emulation in D3D11
-		GMaxRHIFeatureLevel = PreviewFeatureLevel;
-		if (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1)
-		{
-			GMaxRHIShaderPlatform = SP_PCD3D_ES3_1;
-		}
-	}
-	else if(FeatureLevel == D3D_FEATURE_LEVEL_11_0 || FeatureLevel == D3D_FEATURE_LEVEL_11_1)
-	{
-		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
-		GMaxRHIShaderPlatform = SP_PCD3D_SM5;
 	}
 
 	// Initialize the platform pixel format map.
@@ -406,9 +391,13 @@ uint32 FD3D11DynamicRHI::GetMaxMSAAQuality(uint32 SampleCount)
 
 static bool GFormatSupportsTypedUAVLoad[PF_MAX];
 
+#if !defined(D3D11_PLATFORM_HAS_OPTIONS3)
+	#define D3D11_PLATFORM_HAS_OPTIONS3 PLATFORM_HOLOLENS
+#endif
+
 // The D3D11 header is not recent enough to check support for this
 static const D3D11_FEATURE D3D11_FEATURE_FORMAT_SUPPORT3 = (D3D11_FEATURE)15;
-#if !PLATFORM_HOLOLENS
+#if !D3D11_PLATFORM_HAS_OPTIONS3
 typedef struct D3D11_FEATURE_DATA_D3D11_OPTIONS3
 {
 	BOOL VPAndRTArrayIndexFromAnyShaderFeedingRasterizer;
@@ -648,4 +637,44 @@ void* FD3D11DynamicRHI::RHIGetNativeInstance()
 	return nullptr;
 }
 
+static bool CanFormatBeDisplayed(const FD3D11DynamicRHI* InD3DRHI, EPixelFormat InPixelFormat)
+{
+	const DXGI_FORMAT DxgiFormat = GetRenderTargetFormat(InPixelFormat);
+
+	UINT FormatSupport = 0;
+	const HRESULT FormatSupportResult = InD3DRHI->GetDevice()->CheckFormatSupport(DxgiFormat, &FormatSupport);
+	if (FAILED(FormatSupportResult))
+	{
+		const TCHAR* D3DFormatString = GetD3D11TextureFormatString(DxgiFormat);
+		UE_LOG(LogD3D11RHI, Warning, TEXT("CheckFormatSupport(%s) failed: 0x%08x"), D3DFormatString, FormatSupportResult);
+		return false;
+	}
+
+	const UINT RequiredFlags = D3D11_FORMAT_SUPPORT_DISPLAY | D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
+	return (FormatSupport & RequiredFlags) == RequiredFlags;
+}
+
+EPixelFormat FD3D11DynamicRHI::GetDisplayFormat(EPixelFormat InPixelFormat) const
+{
+	EPixelFormat CandidateFormat = InPixelFormat;
+
+	// Small list of supported formats and what they should fall back to. This could be expanded more in the future.
+	struct SDisplayFormat { EPixelFormat PixelFormat; EPixelFormat FallbackPixelFormat; }
+	static const DisplayFormats[]
+	{
+		{ PF_FloatRGBA, PF_A2B10G10R10 },
+		{ PF_A2B10G10R10, PF_B8G8R8A8 },
+	};
+
+	for (const SDisplayFormat& DisplayFormat : DisplayFormats)
+	{
+		if (CandidateFormat == DisplayFormat.PixelFormat && !CanFormatBeDisplayed(this, CandidateFormat))
+		{
+			CandidateFormat = DisplayFormat.FallbackPixelFormat;
+		}
+	}
+
+	check(CanFormatBeDisplayed(this, CandidateFormat));
+	return CandidateFormat;
+}
 

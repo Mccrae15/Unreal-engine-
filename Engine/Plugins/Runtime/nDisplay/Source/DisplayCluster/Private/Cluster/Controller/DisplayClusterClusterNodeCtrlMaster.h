@@ -25,10 +25,8 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IDisplayClusterProtocolClusterSync
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual void GetDeltaTime(float& DeltaSeconds) override;
-	virtual void GetFrameTime(TOptional<FQualifiedFrameTime>& FrameTime) override;
+	virtual void GetTimeData(float& InOutDeltaTime, double& InOutGameTime, TOptional<FQualifiedFrameTime>& InOutFrameTime) override;
 	virtual void GetSyncData(TMap<FString, FString>& SyncData, EDisplayClusterSyncGroup SyncGroup) override;
-	virtual void GetInputData(TMap<FString, FString>& InputData) override;
 	virtual void GetEventsData(TArray<TSharedPtr<FDisplayClusterClusterEventJson, ESPMode::ThreadSafe>>& JsonEvents, TArray<TSharedPtr<FDisplayClusterClusterEventBinary, ESPMode::ThreadSafe>>& BinaryEvents) override;
 	virtual void GetNativeInputData(TMap<FString, FString>& EventsData) override;
 
@@ -38,9 +36,9 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	virtual void ClearCache() override;
 
-	virtual bool IsSlave() const override final
+	virtual EDisplayClusterNodeRole GetClusterRole() const override
 	{
-		return false;
+		return EDisplayClusterNodeRole::Master;
 	}
 
 protected:
@@ -63,21 +61,15 @@ private:
 	TUniquePtr<FDisplayClusterClusterEventsBinaryService> ClusterEventsBinaryServer;
 
 private:
-	// GetDeltaTime internals
-	FEvent* CachedDeltaTimeEvent = nullptr;
+	// GetTimeData internals
+	FEvent* CachedTimeDataEvent = nullptr;
 	float   CachedDeltaTime = 0.f;
-
-	// GetTimecode internals
-	FEvent* CachedFrameTimeEvent = nullptr;
+	double  CachedGameTime = 0.f;
 	TOptional<FQualifiedFrameTime>  CachedFrameTime;
 
 	// GetSyncData internals
 	TMap<EDisplayClusterSyncGroup, FEvent*> CachedSyncDataEvents;
 	TMap<EDisplayClusterSyncGroup, TMap<FString, FString>> CachedSyncData;
-
-	// GetInputData internals
-	FEvent* CachedInputDataEvent = nullptr;
-	TMap<FString, FString> CachedInputData;
 
 	// GetEventsData internals
 	FEvent* CachedEventsDataEvent = nullptr;

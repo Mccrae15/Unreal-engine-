@@ -3,6 +3,7 @@
 #pragma once
 
 #include "DragAndDrop/DecoratedDragDropOp.h"
+#include "NiagaraEditorCommon.h"
 #include "Widgets/Views/STableRow.h"
 #include "NiagaraStackEntry.generated.h"
 
@@ -20,6 +21,7 @@ enum class EStackIssueSeverity : uint8
 	Error = 0,
 	Warning, 
 	Info,
+	CustomNote,
 	None
 };
 
@@ -89,8 +91,9 @@ public:
 		const FText DropMessage;
 	};
 
-	DECLARE_MULTICAST_DELEGATE(FOnStructureChanged);
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnDataObjectModified, UObject*);
+	DECLARE_MULTICAST_DELEGATE(FOnExpansionChanged);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnStructureChanged, ENiagaraStructureChangedFlags);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDataObjectModified, TArray<UObject*>, ENiagaraDataObjectChange);
 	DECLARE_MULTICAST_DELEGATE(FOnRequestFullRefresh);
 	DECLARE_MULTICAST_DELEGATE(FOnRequestFullRefreshDeferred);
 	DECLARE_DELEGATE_RetVal_TwoParams(TOptional<FDropRequestResponse>, FOnRequestDrop, const UNiagaraStackEntry& /*TargetEntry*/, const FDropRequest& /*DropRequest*/);
@@ -216,6 +219,10 @@ public:
 
 		const TArray<FStackIssueFix>& GetFixes() const;
 
+		bool GetIsExpandedByDefault() const;
+
+		void SetIsExpandedByDefault(bool InExpanded);
+		
 		void InsertFix(int32 InsertionIdx, const FStackIssueFix& Fix);
 
 	private:
@@ -223,7 +230,8 @@ public:
 		FText ShortDescription;
 		FText LongDescription;
 		FString UniqueIdentifier;
-		bool bCanBeDismissed;
+		bool bCanBeDismissed = false;
+		bool bIsExpandedByDefault = true;
 		TArray<FStackIssueFix> Fixes;
 	};
 
@@ -282,7 +290,7 @@ public:
 	void GetUnfilteredChildren(TArray<UNiagaraStackEntry*>& OutUnfilteredChildren) const;
 
 	template<typename T>
-	void GetUnfilteredChildrenOfType(TArray<T*>& OutUnfilteredChldrenOfType) const
+	void GetUnfilteredChildrenOfType(TArray<T*>& OutUnfilteredChildrenOfType) const
 	{
 		TArray<UNiagaraStackEntry*> UnfilteredChildren;
 		GetUnfilteredChildren(UnfilteredChildren);
@@ -291,10 +299,12 @@ public:
 			T* UnfilteredChildOfType = Cast<T>(UnfilteredChild);
 			if (UnfilteredChildOfType != nullptr)
 			{
-				OutUnfilteredChldrenOfType.Add(UnfilteredChildOfType);
+				OutUnfilteredChildrenOfType.Add(UnfilteredChildOfType);
 			}
 		}
 	}
+
+	FOnExpansionChanged& OnExpansionChanged();
 
 	FOnStructureChanged& OnStructureChanged();
 
@@ -308,9 +318,13 @@ public:
 
 	FOnAlternateDisplayNameChanged& OnAlternateDisplayNameChanged();
 
+	/** Recursively refreshes the children for the current stack entry.  This may cause children to be added or removed and will automatically cause the filtered 
+	children to be refreshed. This will also cause the structure changed delegate to be broadcast. */
 	void RefreshChildren();
 
-	void RefreshChildrenDeferred();
+	/** Invalidates the cached filtered children so that the filters will be run the next time that GetFilteredChildren is called.  This should be called any time
+	a change to the data is made which will affect how children are filtered.  This will also cause the structure changed delegate to be broadcast. */
+	void RefreshFilteredChildren();
 
 	FDelegateHandle AddChildFilter(FOnFilterChild ChildFilter);
 	void RemoveChildFilter(FDelegateHandle FilterHandle);
@@ -354,6 +368,8 @@ public:
 
 	bool HasIssuesOrAnyChildHasIssues() const;
 
+	int32 GetTotalNumberOfCustomNotes() const;
+	
 	int32 GetTotalNumberOfInfoIssues() const;
 
 	int32 GetTotalNumberOfWarningIssues() const;
@@ -433,9 +449,11 @@ protected:
 	virtual void FinalizeInternal();
 
 private:
-	void ChildStructureChanged();
+	void ChildStructureChanged(ENiagaraStructureChangedFlags Info);
+
+	void ChildExpansionChanged();
 	
-	void ChildDataObjectModified(UObject* ChangedObject);
+	void ChildDataObjectModified(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType);
 
 	void ChildRequestFullRefresh();
 
@@ -448,14 +466,40 @@ private:
 	void RefreshStackErrorChildren();
 
 	void IssueModified();
+
+	void InvalidateFilteredChildren();
+
+	struct FCollectedIssueData
+	{
+		FCollectedIssueData()
+			: TotalNumberOfInfoIssues(0)
+			, TotalNumberOfWarningIssues(0)
+			, TotalNumberOfErrorIssues(0)
+			, TotalNumberOfCustomNotes(0)
+		{
+		}
+
+		bool HasAnyIssues() const { return TotalNumberOfInfoIssues > 0 || TotalNumberOfWarningIssues > 0 || TotalNumberOfErrorIssues > 0 || TotalNumberOfCustomNotes > 0; }
+
+		int32 TotalNumberOfInfoIssues;
+		int32 TotalNumberOfWarningIssues;
+		int32 TotalNumberOfErrorIssues;
+		int32 TotalNumberOfCustomNotes;
+		TArray<UNiagaraStackEntry*> ChildrenWithIssues;
+	};
+
+	const FCollectedIssueData& GetCollectedIssueData() const;
 	
 	TWeakPtr<FNiagaraSystemViewModel> SystemViewModel;
 	TWeakPtr<FNiagaraEmitterViewModel> EmitterViewModel;
 
+	UPROPERTY()
 	UNiagaraStackEditorData* StackEditorData;
 
 	FString StackEditorDataKey;
 
+	FOnExpansionChanged ExpansionChangedDelegate;
+	
 	FOnStructureChanged StructureChangedDelegate;
 
 	FOnDataObjectModified DataObjectModifiedDelegate;
@@ -470,6 +514,10 @@ private:
 
 	UPROPERTY()
 	TArray<UNiagaraStackEntry*> Children;
+
+	mutable bool bFilterChildrenPending;
+
+	mutable TArray<UNiagaraStackEntry*> FilteredChildren;
 
 	UPROPERTY()
 	TArray<UNiagaraStackErrorItem*> ErrorChildren;
@@ -486,8 +534,6 @@ private:
 	
 	TArray<FStackIssue> StackIssues;
 
-	TArray<UNiagaraStackEntry*> ChildrenWithIssues;
-
 	bool bIsFinalized;
 
 	bool bIsSearchResult;
@@ -498,7 +544,5 @@ private:
 
 	TOptional<FText> AlternateDisplayName;
 
-	int32 TotalNumberOfInfoIssues;
-	int32 TotalNumberOfWarningIssues;
-	int32 TotalNumberOfErrorIssues;
+	mutable TOptional<FCollectedIssueData> CachedCollectedIssueData;
 };

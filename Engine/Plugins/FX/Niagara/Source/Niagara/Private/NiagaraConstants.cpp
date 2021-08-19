@@ -53,6 +53,9 @@ const FName FNiagaraConstants::UniqueOutputScopeName(TEXT("OutputModule"));
 const FName FNiagaraConstants::ScriptTransientScopeName(TEXT("ScriptTransient"));
 const FName FNiagaraConstants::ScriptPersistentScopeName(TEXT("ScriptPersistent"));
 
+const int32 FNiagaraConstants::MaxParameterLength(256);
+const int32 FNiagaraConstants::MaxScriptNameLength(256);
+
 void FNiagaraConstants::Init()
 {
 	if (SystemParameters.Num() == 0)
@@ -87,6 +90,7 @@ void FNiagaraConstants::Init()
 
 		SystemParameters.Add(SYS_PARAM_ENGINE_EXEC_COUNT);
 		SystemParameters.Add(SYS_PARAM_ENGINE_EMITTER_NUM_PARTICLES);
+		SystemParameters.Add(SYS_PARAM_ENGINE_EMITTER_SIMULATION_POSITION);
 		SystemParameters.Add(SYS_PARAM_ENGINE_EMITTER_TOTAL_SPAWNED_PARTICLES);
 		SystemParameters.Add(SYS_PARAM_ENGINE_EMITTER_SPAWN_COUNT_SCALE);
 		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS_ALIVE);
@@ -120,6 +124,7 @@ void FNiagaraConstants::Init()
 		SwitchParameters.Add(SYS_PARAM_EMITTER_SIMULATION_TARGET);
 		SwitchParameters.Add(SYS_PARAM_SCRIPT_USAGE);
 		SwitchParameters.Add(SYS_PARAM_SCRIPT_CONTEXT);
+		SwitchParameters.Add(SYS_PARAM_FUNCTION_DEBUG_STATE);
 	}
 
 	if (UpdatedSystemParameters.Num() == 0)
@@ -204,6 +209,7 @@ void FNiagaraConstants::Init()
 
 		SystemStrMap.Add(SYS_PARAM_ENGINE_EXEC_COUNT, LOCTEXT("ExecCountDesc", "The index of this particle in the read buffer."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_EMITTER_NUM_PARTICLES, LOCTEXT("EmitterNumParticles", "The number of particles for this emitter at the beginning of simulation. Should only be used in Emitter scripts."));
+		SystemStrMap.Add(SYS_PARAM_ENGINE_EMITTER_SIMULATION_POSITION, LOCTEXT("EngineEmitterSimulationPosition", "The frame of reference space which the Emitter simulation is relative to. Is 0,0,0 for an Emitter in local space, and is Engine.Owner.Position for an Emitter in world space."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_EMITTER_TOTAL_SPAWNED_PARTICLES, LOCTEXT("EmitterTotalSpawnedParticles", "The total number of particles spawned for this emitter at the beginning of this simulation. Should only be used by the particle spawn script the assign unique IDs."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_EMITTER_SPAWN_COUNT_SCALE, LOCTEXT("EmitterSpawnCountScale", "The global spawn count scale, based on fx.NiagaraGlobalSpawnCountScale."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_EMITTER_INSTANCE_SEED, LOCTEXT("EmitterInstanceSeed", "A random seed that changes with every execution of the emitter instance."));
@@ -236,8 +242,10 @@ void FNiagaraConstants::Init()
 		Attributes.Add(SYS_PARAM_PARTICLES_SCALE);
 		Attributes.Add(SYS_PARAM_PARTICLES_LIFETIME);
 		Attributes.Add(SYS_PARAM_PARTICLES_MESH_ORIENTATION);
+		Attributes.Add(SYS_PARAM_PARTICLES_MESH_INDEX);
 		Attributes.Add(SYS_PARAM_PARTICLES_CAMERA_OFFSET);
 		Attributes.Add(SYS_PARAM_PARTICLES_UV_SCALE);
+		Attributes.Add(SYS_PARAM_PARTICLES_PIVOT_OFFSET);
 		Attributes.Add(SYS_PARAM_PARTICLES_MATERIAL_RANDOM);
 		Attributes.Add(SYS_PARAM_PARTICLES_LIGHT_RADIUS);
 		Attributes.Add(SYS_PARAM_PARTICLES_LIGHT_ENABLED);
@@ -248,6 +256,7 @@ void FNiagaraConstants::Init()
 		Attributes.Add(SYS_PARAM_PARTICLES_RIBBONTWIST);
 		Attributes.Add(SYS_PARAM_PARTICLES_RIBBONFACING);
 		Attributes.Add(SYS_PARAM_PARTICLES_RIBBONLINKORDER);
+		Attributes.Add(RIBBONUVDISTANCE);
 		Attributes.Add(SYS_PARAM_PARTICLES_RIBBONU0OVERRIDE);
 		Attributes.Add(SYS_PARAM_PARTICLES_RIBBONV0RANGEOVERRIDE);
 		Attributes.Add(SYS_PARAM_PARTICLES_RIBBONU1OVERRIDE);
@@ -275,8 +284,10 @@ void FNiagaraConstants::Init()
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_SCALE, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_SCALE));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_LIFETIME, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_LIFETIME));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_MESH_ORIENTATION, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_MESH_ORIENTATION));
+		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_MESH_INDEX, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_MESH_INDEX));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_CAMERA_OFFSET, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_CAMERA_OFFSET));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_UV_SCALE, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_UV_SCALE));
+		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_PIVOT_OFFSET, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_PIVOT_OFFSET));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_MATERIAL_RANDOM, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_MATERIAL_RANDOM));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_LIGHT_ENABLED, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_LIGHT_ENABLED));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_LIGHT_RADIUS, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_LIGHT_RADIUS));
@@ -289,6 +300,7 @@ void FNiagaraConstants::Init()
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_RIBBONTWIST, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_RIBBONTWIST));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_RIBBONFACING, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_RIBBONFACING));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_RIBBONLINKORDER, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_RIBBONLINKORDER));
+		AttrDataSetKeyMap.Add(RIBBONUVDISTANCE, GetAttributeAsParticleDataSetKey(RIBBONUVDISTANCE));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_RIBBONU0OVERRIDE, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_RIBBONU0OVERRIDE));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_RIBBONV0RANGEOVERRIDE, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_RIBBONV0RANGEOVERRIDE));
 		AttrDataSetKeyMap.Add(SYS_PARAM_PARTICLES_RIBBONU1OVERRIDE, GetAttributeAsParticleDataSetKey(SYS_PARAM_PARTICLES_RIBBONU1OVERRIDE));
@@ -375,6 +387,11 @@ void FNiagaraConstants::Init()
 		Var = SYS_PARAM_PARTICLES_MESH_ORIENTATION;
 		Var.SetValue<FQuat>(FQuat::Identity);
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_MESH_ORIENTATION, Var);
+
+		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_MESH_INDEX, TEXT("0"));
+		Var = SYS_PARAM_PARTICLES_MESH_INDEX;
+		Var.SetValue<float>(0.0f);
+		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_MESH_INDEX, Var);
 		
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_CAMERA_OFFSET, TEXT("0.0"));
 		Var = SYS_PARAM_PARTICLES_CAMERA_OFFSET;
@@ -385,6 +402,11 @@ void FNiagaraConstants::Init()
 		Var = SYS_PARAM_PARTICLES_UV_SCALE;
 		Var.SetValue<FVector2D>(FVector2D(1.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_UV_SCALE, Var);
+
+		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_PIVOT_OFFSET, TEXT("X=0.5 Y=0.5"));
+		Var = SYS_PARAM_PARTICLES_PIVOT_OFFSET;
+		Var.SetValue<FVector2D>(FVector2D(0.5f, 0.5f));
+		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_PIVOT_OFFSET, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_MATERIAL_RANDOM, TEXT("0.0"));
 		Var = SYS_PARAM_PARTICLES_MATERIAL_RANDOM;
@@ -414,7 +436,7 @@ void FNiagaraConstants::Init()
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_VISIBILITY_TAG, TEXT("0"));
 		Var = SYS_PARAM_PARTICLES_VISIBILITY_TAG;
 		Var.SetValue<float>(0.0f);
-		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_VISIBILITY_TAG, Var);
+		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_VISIBILITY_TAG, Var);		
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_COMPONENTS_ENABLED, TEXT("true"));
 		Var = SYS_PARAM_PARTICLES_COMPONENTS_ENABLED;
@@ -445,6 +467,11 @@ void FNiagaraConstants::Init()
 		Var = SYS_PARAM_PARTICLES_RIBBONLINKORDER;
 		Var.SetValue<float>(0.0f);
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_RIBBONLINKORDER, Var);
+
+		AttrDefaultsStrMap.Add(RIBBONUVDISTANCE, TEXT("0"));
+		Var = RIBBONUVDISTANCE;
+		Var.SetValue<float>(0.0f);
+		AttrDefaultsValueMap.Add(RIBBONUVDISTANCE, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_RIBBONU0OVERRIDE, TEXT("0"));
 		Var = SYS_PARAM_PARTICLES_RIBBONU0OVERRIDE;
@@ -486,8 +513,10 @@ void FNiagaraConstants::Init()
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_SCALE, LOCTEXT("ScaleParamDesc", "The XYZ scale of the non-sprite based particle."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_LIFETIME, LOCTEXT("LifetimeParamDesc", "The lifetime of a particle in seconds."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_MESH_ORIENTATION, LOCTEXT("MeshOrientParamDesc", "The axis-angle rotation to be applied to the mesh particle."));
+		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_MESH_INDEX, LOCTEXT("MeshIndexParamDesc", "The index of the mesh to use to render this particle."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_CAMERA_OFFSET, LOCTEXT("CamOffsetParamDesc", "Used to offset position in the direction of the camera. The value is multiplied by the direction vector from the camera to the particle."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_UV_SCALE, LOCTEXT("UVScalerParamDesc", "Used to multiply the generated UVs for Sprite renderers."));
+		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_PIVOT_OFFSET, LOCTEXT("PivotOffsetParamDesc", "The central pivot point of the sprite in UV space"));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_MATERIAL_RANDOM, LOCTEXT("MaterialRandomParamDesc", "Used to drive the Particle Random node in the Material Editor. Without this set, any Particle Randoms will get 0.0."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_LIGHT_RADIUS, LOCTEXT("LightRadiusParamDesc", "Used to drive the radius of the light when using a Light renderer."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_LIGHT_ENABLED, LOCTEXT("LightEnabledParamDesc", "This can be used with the Light renderer control the spawn-rate of lights on a per-particle basis."));
@@ -501,6 +530,7 @@ void FNiagaraConstants::Init()
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONTWIST, LOCTEXT("RibbonTwistDesc", "Sets the ribbon twist for a particle, in degrees."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONFACING, LOCTEXT("RibbonFacingDesc", "Sets the facing vector of the ribbon at the particle position, or the side vector the ribbon's width is extended along, depending on the selected facing mode."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONLINKORDER, LOCTEXT("RibbonLinkOrderDesc", "Explicit order for linking particles within a ribbon. Particles of the same ribbon id will be connected into a ribbon in incrementing order of this attribute value."));
+		AttrDescStrMap.Add(RIBBONUVDISTANCE, LOCTEXT("RibbonUVDistanceDesc", "Distance from start of ribbon that the particle lies."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONU0OVERRIDE, LOCTEXT("RibbonU0OverrideDesc", "Overrides the U component of the UV0 texture coordinate of a ribbon particle."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONV0RANGEOVERRIDE, LOCTEXT("RibbonV0RangeOverrideDesc", "Overrives the V range across the width of a ribbon for the UV0 texture coordinate of a particle."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONU1OVERRIDE, LOCTEXT("RibbonU1OverrideDesc", "Overrides the U component of the UV1 texture coordinate of a ribbon particle."));
@@ -694,8 +724,7 @@ FNiagaraVariableAttributeBinding FNiagaraConstants::GetAttributeDefaultBinding(c
 	}
 
 	FNiagaraVariableAttributeBinding Binding;
-	const FNiagaraVariable* FoundVar = AttrDataSetKeyMap.Find(InVar);
-	Binding.Setup(InVar, FoundVar ? *FoundVar : InVar, GetAttributeWithDefaultValue(InVar));
+	Binding.Setup(InVar, GetAttributeWithDefaultValue(InVar));
 	return Binding;
 }
 

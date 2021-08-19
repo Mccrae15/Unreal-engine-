@@ -23,6 +23,9 @@ struct CORE_API FDataDrivenPlatformInfoRegistry
 		// the name of the ini section to use to load audio compression settings (used at runtime and cooktime)
 		FString AudioCompressionSettingsIniSectionName;
 
+		// the compression format that this platform wants; overrides game unless bForceUseProjectCompressionFormat
+		FString HardwareCompressionFormat;
+
 		// list of additonal restricted folders
 		TArray<FString> AdditionalRestrictedFolders;
 
@@ -34,6 +37,23 @@ struct CORE_API FDataDrivenPlatformInfoRegistry
 		bool Freezing_bWithRayTracing = false;
 
 		// NOTE: add more settings here (and read them in in the LoadDDPIIniSettings() function in the .cpp)
+
+		// True if users will actually interact with this plaform, IE: not a GDK
+		bool bIsInteractablePlatform = false;
+
+		// True if this platform has a non-generic gamepad specifically associated with it
+		bool bHasDedicatedGamepad = false;
+
+		// True if this platform handles input via standard keyboard layout by default, translates to PC platform
+		bool bDefaultInputStandardKeyboard = false;
+
+		// Input-related settings
+		bool bInputSupportConfigurable = false;
+		FString DefaultInputType = "Gamepad";
+		bool bSupportsMouseAndKeyboard = false;
+		bool bSupportsGamepad = true;
+		bool bCanChangeGamepadType = true;
+		bool bSupportsTouch = false;
 
 
 #if DDPI_HAS_EXTENDED_PLATFORMINFO_DATA

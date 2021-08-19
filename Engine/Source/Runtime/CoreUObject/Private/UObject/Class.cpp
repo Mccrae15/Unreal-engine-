@@ -66,6 +66,8 @@
 DEFINE_LOG_CATEGORY(LogScriptSerialization);
 DEFINE_LOG_CATEGORY(LogClass);
 
+IMPLEMENT_STRUCT(TestUninitializedScriptStructMembersTest);
+
 #if defined(_MSC_VER) && _MSC_VER == 1900
 	#ifdef PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
 		PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
@@ -1291,7 +1293,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 
 	// Determine if this struct supports optional property guid's (UBlueprintGeneratedClasses Only)
 	const bool bArePropertyGuidsAvailable = (UnderlyingArchive.UE4Ver() >= VER_UE4_PROPERTY_GUID_IN_PROPERTY_TAG) && !FPlatformProperties::RequiresCookedData() && ArePropertyGuidsAvailable();
-	const bool bUseRedirects = !FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame();
+	const bool bUseRedirects = (!FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame()) && !UnderlyingArchive.IsUsingEventDrivenLoader();
 
 	if (UnderlyingArchive.IsLoading())
 	{
@@ -1438,7 +1440,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 	#endif // WITH_EDITOR
 					// editoronly properties should be skipped if we are NOT the editor, or we are 
 					// the editor but are cooking for console (editoronly implies notforconsole)
-					if ((Property->PropertyFlags & CPF_EditorOnly) && !FPlatformProperties::HasEditorOnlyData() && !GForceLoadEditorOnly)
+					if ((Property->PropertyFlags & CPF_EditorOnly) && ((!FPlatformProperties::HasEditorOnlyData() && !GForceLoadEditorOnly) || UnderlyingArchive.IsUsingEventDrivenLoader()))
 					{
 					}
 					// check for valid array index
@@ -2916,14 +2918,18 @@ void UScriptStruct::ExportText(FString& ValueStr, const void* Value, const void*
 					Count++;
 					if (Count == 1)
 					{
-						ValueStr += TEXT("(");
+						ValueStr += TCHAR('(');
+					}
+					else if ((PortFlags & PPF_BlueprintDebugView) == 0)
+					{
+						ValueStr += TCHAR(',');
 					}
 					else
 					{
-						ValueStr += TEXT(",");
+						ValueStr += TEXT(",\n");
 					}
 
-					const FString PropertyName = (PortFlags & PPF_ExternalEditor) != 0 ? *It->GetAuthoredName() : It->GetName();
+					const FString PropertyName = (PortFlags & (PPF_ExternalEditor | PPF_BlueprintDebugView)) != 0 ? It->GetAuthoredName() : It->GetName();
 
 					if (It->ArrayDim == 1)
 					{
@@ -3262,10 +3268,17 @@ FString UScriptStruct::GetStructCPPName() const
 
 #if !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
 
+enum class EScriptStructTestCtorSyntax
+{
+	NoInit = 0,
+	CompilerZeroed = 1
+};
+
 struct FScriptStructTestWrapper
 {
 public:
-	FScriptStructTestWrapper(UScriptStruct* InStruct, uint8 InitValue = 0xFD)
+
+	FScriptStructTestWrapper(UScriptStruct* InStruct, uint8 InitValue = 0xFD, EScriptStructTestCtorSyntax ConstrutorSyntax = EScriptStructTestCtorSyntax::NoInit)
 		: ScriptStruct(InStruct)
 		, TempBuffer(nullptr)
 	{
@@ -3290,7 +3303,14 @@ public:
 				int32 InitializedSize = 0;
 				if (StructOps != nullptr)
 				{
-					StructOps->Construct(TempBuffer);
+					if (ConstrutorSyntax == EScriptStructTestCtorSyntax::NoInit)
+					{
+						StructOps->ConstructForTests(TempBuffer);
+					}
+					else
+					{
+						StructOps->Construct(TempBuffer);
+					}
 					InitializedSize = StructOps->GetSize();
 				}
 
@@ -3340,6 +3360,76 @@ private:
 	uint8* TempBuffer;
 };
 
+static void FindUninitializedScriptStructMembers(UScriptStruct* ScriptStruct, EScriptStructTestCtorSyntax ConstructorSyntax, TSet<const FProperty*>& OutUninitializedProperties)
+{
+	FScriptStructTestWrapper WrapperFF(ScriptStruct, 0xFF, ConstructorSyntax);
+	FScriptStructTestWrapper Wrapper00(ScriptStruct, 0x00, ConstructorSyntax);
+	FScriptStructTestWrapper WrapperAA(ScriptStruct, 0xAA, ConstructorSyntax);
+	FScriptStructTestWrapper Wrapper55(ScriptStruct, 0x55, ConstructorSyntax);
+
+	const void* BadPointer = (void*)0xFFFFFFFFFFFFFFFFull;
+
+	for (const FProperty* Property : TFieldRange<FProperty>(ScriptStruct, EFieldIteratorFlags::ExcludeSuper))
+	{
+#if	WITH_EDITORONLY_DATA
+		static const FName NAME_IgnoreForMemberInitializationTest(TEXT("IgnoreForMemberInitializationTest"));
+		if (Property->HasMetaData(NAME_IgnoreForMemberInitializationTest))
+		{
+			continue;
+		}
+#endif // WITH_EDITORONLY_DATA
+
+		if (const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(Property))
+		{
+			// Check any reflected pointer properties to make sure they got initialized
+			const UObject* PropValue = ObjectProperty->GetObjectPropertyValue_InContainer(WrapperFF.GetData());
+			if (PropValue == BadPointer)
+			{
+				OutUninitializedProperties.Add(Property);
+			}
+		}
+		else if (const FBoolProperty* BoolProperty = CastField<const FBoolProperty>(Property))
+		{
+			// Check for uninitialized boolean properties (done separately to deal with byte-wide booleans that would evaluate to true with either 0x55 or 0xAA)
+			const bool bValue0 = BoolProperty->GetPropertyValue_InContainer(Wrapper00.GetData());
+			const bool bValue1 = BoolProperty->GetPropertyValue_InContainer(WrapperFF.GetData());
+
+			if (bValue0 != bValue1)
+			{
+				OutUninitializedProperties.Add(Property);
+			}
+		}
+		else if (Property->IsA(FNameProperty::StaticClass()))
+		{
+			// Skip some other types that will crash in equality with garbage data
+			//@TODO: Shouldn't need to skip FName, it's got a default ctor that initializes correctly...
+		}
+		else
+		{
+			bool bShouldInspect = true;
+			if (Property->IsA(FStructProperty::StaticClass()))
+			{
+				// Skip user defined structs since we will consider those structs directly.
+				// Calling again here will just result in false positives
+				const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+				bShouldInspect = (StructProperty->Struct->StructFlags & STRUCT_NoExport) != 0;
+			}
+
+			if (bShouldInspect)
+			{
+				// Catch all remaining properties
+
+				// Uncomment the following line to aid finding crash sources encountered while running this test. A crash usually indicates an uninitialized pointer
+				// UE_LOG(LogClass, Log, TEXT("Testing %s%s::%s for proper initialization"), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP());
+				if (!Property->Identical_InContainer(WrapperAA.GetData(), Wrapper55.GetData()))
+				{
+					OutUninitializedProperties.Add(Property);
+				}
+			}
+		}
+	}
+}
+
 int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 {
 	auto GetStructLocation = [](const UScriptStruct* ScriptStruct) -> FString {
@@ -3358,78 +3448,71 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 	};
 
 	int32 UninitializedScriptStructMemberCount = 0;
+	int32 UninitializedObjectPropertyCount = 0;
+	UScriptStruct* TestUninitializedScriptStructMembersTestStruct = TBaseStructure<FTestUninitializedScriptStructMembersTest>::Get();
+	check(TestUninitializedScriptStructMembersTestStruct != nullptr);
+	
+	{
+		const void* BadPointer = (void*)0xFFFFFFFFFFFFFFFFull;
 
+		// First test if the tests aren't broken
+		FScriptStructTestWrapper WrapperFF(TestUninitializedScriptStructMembersTestStruct, 0xFF);
+		const FObjectPropertyBase* UninitializedProperty = CastFieldChecked<const FObjectPropertyBase>(TestUninitializedScriptStructMembersTestStruct->FindPropertyByName(TEXT("UninitializedObjectReference")));
+		const FObjectPropertyBase* InitializedProperty = CastFieldChecked<const FObjectPropertyBase>(TestUninitializedScriptStructMembersTestStruct->FindPropertyByName(TEXT("InitializedObjectReference")));
+		
+		const UObject* UninitializedPropValue = UninitializedProperty->GetObjectPropertyValue_InContainer(WrapperFF.GetData());
+		if (UninitializedPropValue != BadPointer)
+		{
+			UE_LOG(LogClass, Warning, TEXT("ObjectProperty %s%s::%s seems to be initialized properly but it shouldn't be. Verify that AttemptToFindUninitializedScriptStructMembers() is working properly"), 
+				TestUninitializedScriptStructMembersTestStruct->GetPrefixCPP(), *TestUninitializedScriptStructMembersTestStruct->GetName(), *UninitializedProperty->GetNameCPP());
+		}
+		const UObject* InitializedPropValue = InitializedProperty->GetObjectPropertyValue_InContainer(WrapperFF.GetData());
+		if (InitializedPropValue != nullptr)
+		{
+			UE_LOG(LogClass, Warning, TEXT("ObjectProperty %s%s::%s seems to be not initialized properly but it should be. Verify that AttemptToFindUninitializedScriptStructMembers() is working properly"),
+				TestUninitializedScriptStructMembersTestStruct->GetPrefixCPP(), *TestUninitializedScriptStructMembersTestStruct->GetName(), *InitializedProperty->GetNameCPP());
+		}
+	}
+
+	TSet<const FProperty*> UninitializedPropertiesNoInit;
+	TSet<const FProperty*> UninitializedPropertiesZeroed;
 	for (TObjectIterator<UScriptStruct> ScriptIt; ScriptIt; ++ScriptIt)
 	{
 		UScriptStruct* ScriptStruct = *ScriptIt;
-		if (FScriptStructTestWrapper::CanRunTests(ScriptStruct))
+
+		if (FScriptStructTestWrapper::CanRunTests(ScriptStruct) && ScriptStruct != TestUninitializedScriptStructMembersTestStruct)
 		{
-			FScriptStructTestWrapper WrapperFF(ScriptStruct, 0xFF);
-			FScriptStructTestWrapper Wrapper00(ScriptStruct, 0x00);
-			FScriptStructTestWrapper WrapperAA(ScriptStruct, 0xAA);
-			FScriptStructTestWrapper Wrapper55(ScriptStruct, 0x55);
+			UninitializedPropertiesNoInit.Reset();
+			UninitializedPropertiesZeroed.Reset();
 
-			const void* BadPointer = (void*)0xFFFFFFFFFFFFFFFFull;
-			
-			for (const FProperty* Property : TFieldRange<FProperty>(ScriptStruct, EFieldIteratorFlags::ExcludeSuper))
+			// Test the struct by constructing it with 'new FMyStruct();' syntax first. The compiler should zero all members in this case if the 
+			// struct doesn't have a custom default constructor defined
+			FindUninitializedScriptStructMembers(ScriptStruct, EScriptStructTestCtorSyntax::CompilerZeroed, UninitializedPropertiesZeroed);
+			// Test the struct by constructing it with 'new FStruct;' syntax in which case the compiler doesn't zero the properties automatically
+			FindUninitializedScriptStructMembers(ScriptStruct, EScriptStructTestCtorSyntax::NoInit, UninitializedPropertiesNoInit);			
+
+			for (const FProperty* Property : UninitializedPropertiesZeroed)
 			{
-#if	WITH_EDITORONLY_DATA
-				static const FName NAME_IgnoreForMemberInitializationTest(TEXT("IgnoreForMemberInitializationTest"));
-				if (Property->HasMetaData(NAME_IgnoreForMemberInitializationTest))
+				++UninitializedScriptStructMemberCount;
+				if (Property->IsA<FObjectPropertyBase>())
 				{
-					continue;
+					++UninitializedObjectPropertyCount;
 				}
-#endif // WITH_EDITORONLY_DATA
-
-				if (const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(Property))
+				UE_LOG(LogClass, Warning, TEXT("%s %s%s::%s is not initialized properly even though its struct probably has a custom default constructor.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
+			}
+			for (const FProperty* Property : UninitializedPropertiesNoInit)
+			{
+				if (!UninitializedPropertiesZeroed.Contains(Property))
 				{
-					// Check any reflected pointer properties to make sure they got initialized
-					const UObject* PropValue = ObjectProperty->GetObjectPropertyValue_InContainer(WrapperFF.GetData());
-					if (PropValue == BadPointer)
+					++UninitializedScriptStructMemberCount;
+					if (Property->IsA<FObjectPropertyBase>())
 					{
-						++UninitializedScriptStructMemberCount;
-						UE_LOG(LogClass, Warning, TEXT("ObjectProperty %s%s::%s is not initialized properly.%s"), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
+						++UninitializedObjectPropertyCount;
+						UE_LOG(LogClass, Warning, TEXT("%s %s%s::%s is not initialized properly.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
 					}
-				}
-				else if (const FBoolProperty* BoolProperty = CastField<const FBoolProperty>(Property))
-				{
-					// Check for uninitialized boolean properties (done separately to deal with byte-wide booleans that would evaluate to true with either 0x55 or 0xAA)
-					const bool Value0 = BoolProperty->GetPropertyValue_InContainer(Wrapper00.GetData());
-					const bool Value1 = BoolProperty->GetPropertyValue_InContainer(WrapperFF.GetData());
-
-					if (Value0 != Value1)
+					else
 					{
-						++UninitializedScriptStructMemberCount;
-						UE_LOG(LogClass, Warning, TEXT("BoolProperty %s%s::%s is not initialized properly.%s"), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
-					}
-				}
-				else if (Property->IsA(FNameProperty::StaticClass()))
-				{
-					// Skip some other types that will crash in equality with garbage data
-					//@TODO: Shouldn't need to skip FName, it's got a default ctor that initializes correctly...
-				}
-				else
-				{
-					bool ShouldInspect = true;
-					if (Property->IsA(FStructProperty::StaticClass()))
-					{
-						// Skip user defined structs since we will consider those structs directly.
-						// Calling again here will just result in false positives
-						const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
-						ShouldInspect = (StructProperty->Struct->StructFlags & STRUCT_NoExport) != 0;
-					}
-
-					if (ShouldInspect)
-					{
-						// Catch all remaining properties
-
-						// Uncomment the following line to aid finding crash sources encountered while running this test. A crash usually indicates an uninitialized pointer
-						// UE_LOG(LogClass, Log, TEXT("Testing %s%s::%s for proper initialization"), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP());
-						if (!Property->Identical_InContainer(WrapperAA.GetData(), Wrapper55.GetData()))
-						{
-							++UninitializedScriptStructMemberCount;
-							UE_LOG(LogClass, Warning, TEXT("%s%s::%s is not initialized properly.%s"), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
-						}
+						UE_LOG(LogClass, Display, TEXT("%s %s%s::%s is not initialized properly.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
 					}
 				}
 			}
@@ -3438,8 +3521,9 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 
 	if (UninitializedScriptStructMemberCount > 0)
 	{
-		UE_LOG(LogClass, Display, TEXT("%i Uninitialized script struct members found"), UninitializedScriptStructMemberCount);
+		UE_LOG(LogClass, Display, TEXT("%i Uninitialized script struct members found including %d object properties"), UninitializedScriptStructMemberCount, UninitializedObjectPropertyCount);
 	}
+
 	return UninitializedScriptStructMemberCount;
 }
 
@@ -4545,18 +4629,18 @@ void UClass::Serialize( FArchive& Ar )
 		if (ClassDefaultObject == NULL)
 		{
 			check(GConfig);
-			if (GEventDrivenLoaderEnabled)
+			if (GEventDrivenLoaderEnabled || Ar.IsUsingEventDrivenLoader())
 			{
-			ClassDefaultObject = GetDefaultObject();
-			// we do this later anyway, once we find it and set it in the export table. 
-			// ClassDefaultObject->SetFlags(RF_NeedLoad | RF_NeedPostLoad | RF_NeedPostLoadSubobjects);
+				ClassDefaultObject = GetDefaultObject();
+				// we do this later anyway, once we find it and set it in the export table. 
+				// ClassDefaultObject->SetFlags(RF_NeedLoad | RF_NeedPostLoad | RF_NeedPostLoadSubobjects);
 			}
 			else if( !Ar.HasAnyPortFlags(PPF_DuplicateForPIE|PPF_Duplicate) )
 			{
-			UE_LOG(LogClass, Error, TEXT("CDO for class %s did not load!"), *GetPathName());
-			ensure(ClassDefaultObject != NULL);
-			ClassDefaultObject = GetDefaultObject();
-			Ar.ForceBlueprintFinalization();
+				UE_LOG(LogClass, Error, TEXT("CDO for class %s did not load!"), *GetPathName());
+				ensure(ClassDefaultObject != NULL);
+				ClassDefaultObject = GetDefaultObject();
+				Ar.ForceBlueprintFinalization();
 			}
 		}
 	}
@@ -5039,6 +5123,7 @@ bool UClass::HotReloadPrivateStaticClass(
 		TGuardValue<bool> Guard(GIsRetrievingVTablePtr, true);
 		FVTableHelper Helper;
 		TempObjectForVTable = ClassVTableHelperCtorCaller(Helper);
+		TempObjectForVTable->AtomicallyClearInternalFlags(EInternalObjectFlags::PendingConstruction);
 	}
 
 	if( !TempObjectForVTable->IsRooted() )
@@ -5267,7 +5352,9 @@ void UClass::AssembleReferenceTokenStreams()
 
 const FString UClass::GetConfigName() const
 {
-	if( ClassConfigName == NAME_Engine )
+	static FName NAME_GameplayTags("GameplayTags");
+
+	if (ClassConfigName == NAME_Engine)
 	{
 		return GEngineIni;
 	}
@@ -5303,6 +5390,10 @@ const FString UClass::GetConfigName() const
 	else if (ClassConfigName == NAME_GameUserSettings)
 	{
 		return GGameUserSettingsIni;
+	}
+	else if (ClassConfigName == NAME_GameplayTags)
+	{
+		return GGameplayTagsIni;
 	}
 	else
 	{
@@ -6014,6 +6105,12 @@ UScriptStruct* TBaseStructure<FAssetBundleData>::Get()
 	return ScriptStruct;
 }
 
+UScriptStruct* TBaseStructure<FTestUninitializedScriptStructMembersTest>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("TestUninitializedScriptStructMembersTest"));
+	return ScriptStruct;
+}
+
 IMPLEMENT_CORE_INTRINSIC_CLASS(UFunction, UStruct,
 	{
 	}
@@ -6219,6 +6316,5 @@ IMPLEMENT_CORE_INTRINSIC_CLASS(UDynamicClass, UClass,
 		PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
 	#endif
 #endif
-
 
 #include "UObject/DefineUPropertyMacros.h"

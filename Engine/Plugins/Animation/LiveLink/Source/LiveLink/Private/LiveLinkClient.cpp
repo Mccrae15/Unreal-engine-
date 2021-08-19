@@ -73,8 +73,13 @@ FLiveLinkClient::FLiveLinkClient()
 	Collection = MakeUnique<FLiveLinkSourceCollection>();
 	FCoreDelegates::OnPreExit.AddRaw(this, &FLiveLinkClient::Shutdown);
 
-	IMediaModule& MediaModule = FModuleManager::LoadModuleChecked<IMediaModule>("Media");
-	MediaModule.GetOnTickPreEngineCompleted().AddRaw(this, &FLiveLinkClient::Tick);
+	//IMediaModule& MediaModule = FModuleManager::LoadModuleChecked<IMediaModule>("Media");
+	//MediaModule.GetOnTickPreEngineCompleted().AddRaw(this, &FLiveLinkClient::Tick);
+
+	//Use OnSamplingInput for now since it's as close as the previous PreEngineCompleted callback we were hoooked before it was changed
+	//OnBeginFrame is too early since Timecode hasn't been updated for the frame
+	//OnSamplingInput is right before ticking the engine so we can build our snapshots and be consistent throughout the frame
+	FCoreDelegates::OnSamplingInput.AddRaw(this, &FLiveLinkClient::Tick);
 
 	// Setup rebroadcaster name in case we need it later
 	RebroadcastLiveLinkProviderName = TEXT("LiveLink Rebroadcast");
@@ -152,8 +157,8 @@ void FLiveLinkClient::BuildThisTicksSubjectSnapshot()
 				LiveSubject->Update();
 				EnabledSubjects.Add(SubjectItem.Key.SubjectName, SubjectItem.Key);
 
-				// Update Source FrameRate from first enabled subject. 
-				if (!TaggedSources.Contains(SubjectItem.Key.Source))
+				// Update Source FrameRate from first enabled subject with valid data. 
+				if (LiveSubject->HasValidFrameSnapshot() && SubjectSettings->FrameRate.IsValid() && !TaggedSources.Contains(SubjectItem.Key.Source))
 				{
 					SourceSettings->BufferSettings.DetectedFrameRate = SubjectSettings->FrameRate;
 					TaggedSources.Add(SubjectItem.Key.Source);
@@ -168,11 +173,13 @@ void FLiveLinkClient::BuildThisTicksSubjectSnapshot()
 
 	for (const FLiveLinkCollectionSubjectItem& SubjectItem : Collection->GetSubjects())
 	{
+		
 		if (ULiveLinkVirtualSubject* VSubject = SubjectItem.GetVirtualSubject())
 		{
 			if (SubjectItem.bEnabled)
 			{
 				VSubject->Update();
+				HandleSubjectRebroadcast(VSubject, VSubject->GetFrameData());
 				EnabledSubjects.Add(SubjectItem.Key.SubjectName, SubjectItem.Key);
 			}
 			else
@@ -193,10 +200,12 @@ void FLiveLinkClient::CacheValues()
 
 void FLiveLinkClient::Shutdown()
 {
-	if(IMediaModule* MediaModule = FModuleManager::GetModulePtr<IMediaModule>("Media"))
+	/*if(IMediaModule* MediaModule = FModuleManager::GetModulePtr<IMediaModule>("Media"))
 	{
 		MediaModule->GetOnTickPreEngineCompleted().RemoveAll(this);
-	}
+	}*/
+
+	FCoreDelegates::OnSamplingInput.RemoveAll(this);
 
 	// Shut down the rebroadcaster if active
 	if (RebroadcastLiveLinkProvider.IsValid())
@@ -221,6 +230,53 @@ void FLiveLinkClient::Shutdown()
 				bContinue = false;
 				UE_LOG(LogLiveLink, Warning, TEXT("Force shutdown LiveLink after %f seconds. One or more sources refused to shutdown."), Timeout);
 			}
+		}
+	}
+}
+
+void FLiveLinkClient::HandleSubjectRebroadcast(ILiveLinkSubject* InSubject, const FLiveLinkFrameDataStruct& InFrameData)
+{
+	check(InSubject);
+
+	// Check the rebroadcast flag and act accordingly, creating the LiveLinkProvider and/or sending the static data if needed
+	if (InSubject->IsRebroadcasted())
+	{
+		if(InSubject->GetStaticData().IsValid() && InFrameData.IsValid())
+		{
+			// Setup rebroadcast provider
+			if (!RebroadcastLiveLinkProvider.IsValid())
+			{
+				RebroadcastLiveLinkProvider = ILiveLinkProvider::CreateLiveLinkProvider(RebroadcastLiveLinkProviderName);
+			}
+				
+			if (RebroadcastLiveLinkProvider.IsValid())
+			{
+				if (!InSubject->HasStaticDataBeenRebroadcasted())
+				{
+					FLiveLinkStaticDataStruct StaticDataCopy;
+					StaticDataCopy.InitializeWith(InSubject->GetStaticData());
+					RebroadcastLiveLinkProvider->UpdateSubjectStaticData(InSubject->GetSubjectKey().SubjectName, InSubject->GetRole(), MoveTemp(StaticDataCopy));
+					InSubject->SetStaticDataAsRebroadcasted(true);
+				}
+				
+				// Make a copy of the data for use by the rebroadcaster
+				FLiveLinkFrameDataStruct FrameDataCopy;
+				FrameDataCopy.InitializeWith(InFrameData);
+
+				RebroadcastLiveLinkProvider->UpdateSubjectFrameData(InSubject->GetSubjectKey().SubjectName, MoveTemp(FrameDataCopy));
+			}
+			else
+			{
+				UE_LOG(LogLiveLink, Warning, TEXT("Rebroadcaster doesn't exist, but was requested and failed"));
+			}
+		}
+	}
+	else if (InSubject->HasStaticDataBeenRebroadcasted())
+	{
+		if (RebroadcastLiveLinkProvider.IsValid())
+		{
+			RebroadcastLiveLinkProvider->RemoveSubject(InSubject->GetSubjectKey().SubjectName);
+			InSubject->SetStaticDataAsRebroadcasted(false);
 		}
 	}
 }
@@ -401,14 +457,14 @@ bool FLiveLinkClient::HasSourceBeenAdded(TSharedPtr<ILiveLinkSource> InSource) c
 	return false;
 }
 
-TArray<FGuid> FLiveLinkClient::GetSources() const
+TArray<FGuid> FLiveLinkClient::GetSources(bool bEvenIfPendingKill) const
 {
 	check(Collection);
 
 	TArray<FGuid> Result;
 	for (const FLiveLinkCollectionSourceItem& SourceItem : Collection->GetSources())
 	{
-		if (!SourceItem.bPendingKill && !SourceItem.IsVirtualSource())
+		if ((!SourceItem.bPendingKill || bEvenIfPendingKill) && !SourceItem.IsVirtualSource())
 		{
 			Result.Add(SourceItem.Guid);
 		}
@@ -416,14 +472,14 @@ TArray<FGuid> FLiveLinkClient::GetSources() const
 	return Result;
 }
 
-TArray<FGuid> FLiveLinkClient::GetVirtualSources() const
+TArray<FGuid> FLiveLinkClient::GetVirtualSources(bool bEvenIfPendingKill) const
 {
 	check(Collection);
 
 	TArray<FGuid> Result;
 	for (const FLiveLinkCollectionSourceItem& SourceItem : Collection->GetSources())
 	{
-		if (!SourceItem.bPendingKill && SourceItem.IsVirtualSource())
+		if ((!SourceItem.bPendingKill || bEvenIfPendingKill) && SourceItem.IsVirtualSource())
 		{
 			Result.Add(SourceItem.Guid);
 		}
@@ -731,44 +787,8 @@ void FLiveLinkClient::PushSubjectFrameData_Internal(FPendingSubjectFrame&& Subje
 		Handles->OnFrameDataAdded.Broadcast(SubjectItem->Key, Role, SubjectFrameData.FrameData);
 	}
 
-	// Check the rebroadcast flag and act accordingly, creating the LiveLinkProvider and/or sending the static data if needed
-	if (LinkSubject->IsRebroadcasting())
-	{
-		if (!RebroadcastLiveLinkProvider.IsValid())
-		{
-			RebroadcastLiveLinkProvider = ILiveLinkProvider::CreateLiveLinkProvider(RebroadcastLiveLinkProviderName);
-		}
-			
-		if (RebroadcastLiveLinkProvider.IsValid())
-		{
-			if (!LinkSubject->CheckRebroadcastStaticDataSentFlag())
-			{
-				FLiveLinkStaticDataStruct StaticDataCopy;
-				StaticDataCopy.InitializeWith(LinkSubject->GetStaticData());
-				RebroadcastLiveLinkProvider->UpdateSubjectStaticData(LinkSubject->GetSubjectKey().SubjectName, LinkSubject->GetRole(), MoveTemp(StaticDataCopy));
-				LinkSubject->SetRebroadcastStaticDataSentFlag(true);
-			}
-			
-			// Make a copy of the data for use by the rebroadcaster
-			FLiveLinkFrameDataStruct FrameDataCopy;
-			FrameDataCopy.InitializeWith(SubjectFrameData.FrameData);
+	HandleSubjectRebroadcast(LinkSubject, SubjectFrameData.FrameData);
 
-			RebroadcastLiveLinkProvider->UpdateSubjectFrameData(LinkSubject->GetSubjectKey().SubjectName, MoveTemp(FrameDataCopy));
-		}
-		else
-		{
-			UE_LOG(LogLiveLink, Warning, TEXT("Rebroadcaster doesn't exist, but was requested and failed"));
-		}
-	}
-	else if (LinkSubject->CheckRebroadcastStaticDataSentFlag())
-	{
-		if (RebroadcastLiveLinkProvider.IsValid())
-		{
-			RebroadcastLiveLinkProvider->RemoveSubject(LinkSubject->GetSubjectKey().SubjectName);
-			LinkSubject->SetRebroadcastStaticDataSentFlag(false);
-		}
-	}
-	
 	//Finally, add the new frame to the subject. After this point, the frame data is unusable, it has been moved!
 	LinkSubject->AddFrameData(MoveTemp(SubjectFrameData.FrameData));
 }

@@ -167,6 +167,8 @@ static TAutoConsoleVariable<float> CVarShadowMaxSlopeScaleDepthBias(
 	TEXT("Higher values give better self-shadowing, but increase self-shadowing artifacts"),
 	ECVF_RenderThreadSafe);
 
+FForwardScreenSpaceShadowMaskTextureMobileOutputs GScreenSpaceShadowMaskTextureMobileOutputs;
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Hair
 static TAutoConsoleVariable<int32> CVarHairStrandsCullPerObjectShadowCaster(
@@ -978,10 +980,15 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 
 	if (bSubPixelSupport)
 	{
-		// Do not apply pre-shadow on hair, as this is intended only for targed opaque geometry
+		// Do not apply pre-shadow on opaque geometry during sub-pixel pass as we only care about opaque geometry 'casting' shadow (not receiving shadow)
+		// However, applied pre-shadow onto hair primitive (which are the only one able to cast deep shadow)
 		if (bPreShadow)
 		{
-			return;
+			const bool bIsValid = ReceiverPrimitives.Num() > 0 && ReceiverPrimitives[0]->Proxy->CastsDeepShadow();
+			if (!bIsValid)
+			{
+				return;
+			}
 		}
 
 		const bool bValidPlanes = FrustumVertices.Num() > 0;
@@ -1039,7 +1046,19 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 	}
 	else if (bStencilTestEnabled)
 	{
-		if (GStencilOptimization)
+		// By pass depth/stencil test for rendering pre-shadow during sub-pixel shadow, as the hair geometry is not re-rendered
+		const bool bBypass = bSubPixelSupport && bPreShadow;
+		if (bBypass)
+		{
+			GraphicsPSOInit.DepthStencilState =
+				TStaticDepthStencilState<
+				false, CF_Always,
+				false, CF_Always, SO_Zero, SO_Zero, SO_Zero,
+				false, CF_Always, SO_Zero, SO_Zero, SO_Zero,
+				0xff, 0xff
+				>::GetRHI();
+		}
+		else if (GStencilOptimization)
 		{
 			// No depth test or writes, zero the stencil
 			// Note: this will disable hi-stencil on many GPUs, but still seems 
@@ -1217,10 +1236,15 @@ void FProjectedShadowInfo::RenderOnePassPointLightProjection(FRHICommandListImme
 		const bool bSubPixelSupport = HairVisibilityData != nullptr;
 		if (bSubPixelSupport)
 		{
-			// Do not apply pre-shadow on hair, as this is intended only for targed opaque geometry
+			// Do not apply pre-shadow on opaque geometry during sub-pixel pass as we only care about opaque geometry 'casting' shadow (not receiving shadow)
+			// However, applied pre-shadow onto hair primitive (which are the only one able to cast deep shadow)
 			if (bPreShadow)
 			{
-				return;
+				const bool bIsValid = ReceiverPrimitives.Num() > 0 && ReceiverPrimitives[0]->Proxy->CastsDeepShadow();
+				if (!bIsValid)
+				{
+					return;
+				}
 			}
 
 			// Skip volume which does not intersect hair clusters
@@ -1674,8 +1698,9 @@ void FSceneRenderer::RenderShadowProjections(
 		const FHairStrandsMacroGroupDatas* HairMacroGroupData = nullptr;
 		if (HairDatas)
 		{
-			HairVisibilityData = &(HairDatas->HairVisibilityViews.HairDatas[ViewIndex]);
-			HairMacroGroupData = &(HairDatas->MacroGroupsPerViews.Views[ViewIndex]);
+			const int32 HairViewIndex = 0; // HAIR_TODO multiview support
+			HairVisibilityData = &(HairDatas->HairVisibilityViews.HairDatas[HairViewIndex]);
+			HairMacroGroupData = &(HairDatas->MacroGroupsPerViews.Views[HairViewIndex]);
 		}
 
 		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
@@ -1822,6 +1847,8 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 	{
 		RDG_EVENT_SCOPE(GraphBuilder, "DistanceFieldShadows");
 
+		FSceneTextureShaderParameters SceneTextures;
+		SceneTextures.SceneTextures = SceneTexturesUniformBuffer;
 		// Distance field shadows need to be renderer last as they blend over far shadow cascades.
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
@@ -1842,7 +1869,7 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 					const FProjectedShadowInfo* ProjectedShadowInfo = DistanceFieldShadows[ShadowIndex];
 					ProjectedShadowInfo->RenderRayTracedDistanceFieldProjection(
 						GraphBuilder,
-						SceneTexturesUniformBuffer,
+						SceneTextures,
 						ScreenShadowMaskTexture,
 						SceneDepthTexture,
 						View,
@@ -1981,6 +2008,92 @@ void FMobileSceneRenderer::RenderModulatedShadowProjections(FRHICommandListImmed
 			}
 		}
 	}
+}
+
+void FMobileSceneRenderer::InitSDFShadowingOutputs(FRHICommandListImmediate& RHICmdList, const TRefCountPtr<IPooledRenderTarget>& SceneDepthZ)
+{
+	const FIntPoint& BufferSize = SceneDepthZ->GetDesc().Extent;
+
+	if (!GScreenSpaceShadowMaskTextureMobileOutputs.IsValid() || GScreenSpaceShadowMaskTextureMobileOutputs.ScreenSpaceShadowMaskTextureMobile->GetDesc().Extent != BufferSize)
+	{
+		GScreenSpaceShadowMaskTextureMobileOutputs.ScreenSpaceShadowMaskTextureMobile.SafeRelease();
+		GRenderTargetPool.FindFreeElement(RHICmdList, FPooledRenderTargetDesc::Create2DDesc(BufferSize, PF_B8G8R8A8, FClearValueBinding::White, TexCreate_None, TexCreate_RenderTargetable | TexCreate_ShaderResource, false, 1, false), GScreenSpaceShadowMaskTextureMobileOutputs.ScreenSpaceShadowMaskTextureMobile, TEXT("ForwardScreenSpaceShadowMaskTextureTexture"));
+	}
+}
+
+void FMobileSceneRenderer::RenderSDFShadowing(FRHICommandListImmediate& RHICmdList)
+{
+	FRDGBuilder GraphBuilder(RHICmdList);
+
+	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+	FRDGTextureRef SceneDepthTexture = GraphBuilder.RegisterExternalTexture(SceneContext.SceneDepthZ, TEXT("SceneDepthTexture"));
+	FRDGTextureRef ScreenShadowMaskTexture = GraphBuilder.RegisterExternalTexture(GScreenSpaceShadowMaskTextureMobileOutputs.ScreenSpaceShadowMaskTextureMobile, TEXT("ScreenSpaceShadowMaskTextureMobile"));
+	AddClearRenderTargetPass(GraphBuilder, ScreenShadowMaskTexture);
+
+	FSceneTextureShaderParameters SceneTextures = CreateSceneTextureShaderParameters(GraphBuilder, Views[0].GetFeatureLevel(), ESceneTextureSetupMode::All);
+	for (TSparseArray<FLightSceneInfoCompact>::TConstIterator LightIt(Scene->Lights); LightIt; ++LightIt)
+	{
+		const FLightSceneInfoCompact& LightSceneInfoCompact = *LightIt;
+		const FLightSceneInfo* LightSceneInfo = LightSceneInfoCompact.LightSceneInfo;
+
+		const FVisibleLightInfo& VisibleLightInfo = VisibleLightInfos[LightSceneInfo->Id];
+		const FLightSceneProxy* LightSceneProxy = LightSceneInfo->Proxy;
+
+		// Allocate arrays using the graph allocator so we can safely reference them in passes.
+		using FProjectedShadowInfoArray = TArray<const FProjectedShadowInfo*, SceneRenderingAllocator>;
+		auto& DistanceFieldShadows = *GraphBuilder.AllocObject<FProjectedShadowInfoArray>();
+
+		for (int32 ShadowIndex = 0; ShadowIndex < VisibleLightInfo.ShadowsToProject.Num(); ShadowIndex++)
+		{
+			const FProjectedShadowInfo* ProjectedShadowInfo = VisibleLightInfo.ShadowsToProject[ShadowIndex];
+			if (ProjectedShadowInfo->bRayTracedDistanceField)
+			{
+				DistanceFieldShadows.Add(ProjectedShadowInfo);
+			}
+		}
+
+		if (DistanceFieldShadows.Num() > 0)
+		{
+			RDG_EVENT_SCOPE(GraphBuilder, "DistanceFieldShadows");
+
+			// Distance field shadows need to be renderer last as they blend over far shadow cascades.
+			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+			{
+				const FViewInfo& View = Views[ViewIndex];
+				RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
+				RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
+
+				FIntRect ScissorRect;
+				if (!LightSceneProxy->GetScissorRect(ScissorRect, View, View.ViewRect))
+				{
+					ScissorRect = View.ViewRect;
+				}
+
+				if (ScissorRect.Area() > 0)
+				{
+					for (int32 ShadowIndex = 0; ShadowIndex < DistanceFieldShadows.Num(); ShadowIndex++)
+					{
+						const FProjectedShadowInfo* ProjectedShadowInfo = DistanceFieldShadows[ShadowIndex];
+						ProjectedShadowInfo->RenderRayTracedDistanceFieldProjection(
+							GraphBuilder,
+							SceneTextures,
+							ScreenShadowMaskTexture,
+							SceneDepthTexture,
+							View,
+							ScissorRect,
+							false);
+					}
+				}
+			}
+		}
+	}
+
+	GraphBuilder.Execute();
+}
+
+void FMobileSceneRenderer::ReleaseSDFShadowingOutputs()
+{
+	GScreenSpaceShadowMaskTextureMobileOutputs.Release();
 }
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FTranslucentSelfShadowUniformParameters, "TranslucentSelfShadow");

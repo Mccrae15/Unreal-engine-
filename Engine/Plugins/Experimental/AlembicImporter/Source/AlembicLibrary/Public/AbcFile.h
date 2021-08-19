@@ -14,6 +14,7 @@ THIRD_PARTY_INCLUDES_START
 #include <Alembic/AbcCoreFactory/IFactory.h>
 #include <Alembic/Abc/IArchive.h>
 #include <Alembic/Abc/IObject.h>
+#include <Alembic/AbcGeom/IPolyMesh.h>
 THIRD_PARTY_INCLUDES_END
 
 #if PLATFORM_WINDOWS
@@ -33,8 +34,8 @@ enum EAbcImportError : uint32;
 enum class EFrameReadFlags : uint8
 {
 	None = 0,
-	/** Will only read position data for the objects */
-	PositionOnly = 1 << 1,
+	/** Will only read position and normal data for the objects */
+	PositionAndNormalOnly = 1 << 1,
 	/** Will pre-multiply the world matrix with the read sample positions */
 	ApplyMatrix = 1 << 2,
 	/** Will force single thread processing */
@@ -97,8 +98,14 @@ public:
 	void CleanupFrameData(const int32 ReadIndex);
 	/** Returns the list of unique face set names from the meshes to be imported */
 	const TArray<FString>& GetUniqueFaceSetNames() const { return UniqueFaceSetNames; }
+
+	typedef TPair<FString, FString> FMetaData;
+	/** Returns the metadata of the Alembic archive */
+	TArray<FMetaData> GetArchiveMetaData() const;
+
 protected:
 	void TraverseAbcHierarchy(const Alembic::Abc::IObject& InObject, IAbcObject* InParent);
+	void ExtractCustomAttributes(const Alembic::AbcGeom::IPolyMesh& InMesh);
 protected:
 	/** File path for the ABC file */
 	const FString FilePath;
@@ -154,4 +161,12 @@ protected:
 
 	/** Cached Mesh utilities ptr for normal calculations */
 	IMeshUtilities* MeshUtilities;
+
+	FString AppName;
+	FString LibVersionString;
+	uint32 LibVersion;
+	FString DateWritten;
+	FString UserDescription;
+
+	TMap<FString, FString> CustomAttributes;
 };

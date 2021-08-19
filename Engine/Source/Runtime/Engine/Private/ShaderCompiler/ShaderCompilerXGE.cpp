@@ -34,6 +34,14 @@ namespace XGEShaderCompilerVariables
 
 	/** Xml Interface specific CVars */
 
+	int32 MinBatchSize = 20;
+	FAutoConsoleVariableRef CVarXGEShaderCompileXMLMinBatchSize(
+        TEXT("r.XGEShaderCompileXMLInterface.MinBatchSize"),
+        MinBatchSize,
+        TEXT("Minimum number of shaders to compile with XGE.\n")
+        TEXT("Smaller number of shaders will compile locally."),
+        ECVF_Default);
+
 	/** The maximum number of shaders to group into a single XGE task. */
 	int32 BatchSize = 16;
 	FAutoConsoleVariableRef CVarXGEShaderCompileBatchSize(
@@ -99,13 +107,15 @@ bool FShaderCompileXGEThreadRunnable_XmlInterface::IsSupported()
 	// List of possible paths to xgconsole.exe
 	static const TCHAR* Paths[] =
 	{
+		TEXT("C:\\Program Files\\IncrediBuild\\xgConsole.exe"),
+		TEXT("C:\\Program Files (x86)\\IncrediBuild\\xgConsole.exe")
 		TEXT("C:\\Program Files\\Xoreax\\IncrediBuild\\xgConsole.exe"),
 		TEXT("C:\\Program Files (x86)\\Xoreax\\IncrediBuild\\xgConsole.exe")
 	};
 
 	XGEShaderCompilerVariables::Init();
 
-	// Check for a valid installation of Incredibuild by seeing if xgconsole.exe exists.
+	// Check for a valid installation of IncrediBuild by seeing if xgConsole.exe exists.
 	bool bXgeFound = false;
 	if (XGEShaderCompilerVariables::Enabled == 1)
 	{
@@ -174,112 +184,17 @@ FShaderCompileXGEThreadRunnable_XmlInterface::~FShaderCompileXGEThreadRunnable_X
 	ShaderBatchesFull.Empty();
 }
 
-static FArchive* CreateFileHelper(const FString& Filename)
-{
-	// TODO: This logic came from FShaderCompileThreadRunnable::WriteNewTasks().
-	// We can't avoid code duplication unless we refactored the local worker too.
-
-	FArchive* File = nullptr;
-	int32 RetryCount = 0;
-	// Retry over the next two seconds if we can't write out the file.
-	// Anti-virus and indexing applications can interfere and cause this to fail.
-	while (File == nullptr && RetryCount < 200)
-	{
-		if (RetryCount > 0)
-		{
-			FPlatformProcess::Sleep(0.01f);
-		}
-		File = IFileManager::Get().CreateFileWriter(*Filename, FILEWRITE_EvenIfReadOnly);
-		RetryCount++;
-	}
-	if (File == nullptr)
-	{
-		File = IFileManager::Get().CreateFileWriter(*Filename, FILEWRITE_EvenIfReadOnly | FILEWRITE_NoFail);
-	}
-	checkf(File, TEXT("Failed to create file %s!"), *Filename);
-	return File;
-}
-
-static void MoveFileHelper(const FString& To, const FString& From)
-{
-	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-
-	if (PlatformFile.FileExists(*From))
-	{
-		FString DirectoryName;
-		int32 LastSlashIndex;
-		if (To.FindLastChar('/', LastSlashIndex))
-		{
-			DirectoryName = To.Left(LastSlashIndex);
-		}
-		else
-		{
-			DirectoryName = To;
-		}
-
-		// TODO: This logic came from FShaderCompileThreadRunnable::WriteNewTasks().
-		// We can't avoid code duplication unless we refactored the local worker too.
-
-		bool Success = false;
-		int32 RetryCount = 0;
-		// Retry over the next two seconds if we can't move the file.
-		// Anti-virus and indexing applications can interfere and cause this to fail.
-		while (!Success && RetryCount < 200)
-		{
-			if (RetryCount > 0)
-			{
-				FPlatformProcess::Sleep(0.01f);
-			}
-
-			// MoveFile does not create the directory tree, so try to do that now...
-			Success = PlatformFile.CreateDirectoryTree(*DirectoryName);
-			if (Success)
-			{
-				Success = PlatformFile.MoveFile(*To, *From);
-			}
-			RetryCount++;
-		}
-		checkf(Success, TEXT("Failed to move file %s to %s!"), *From, *To);
-	}
-}
-
-static void DeleteFileHelper(const FString& Filename)
-{
-	// TODO: This logic came from FShaderCompileThreadRunnable::WriteNewTasks().
-	// We can't avoid code duplication unless we refactored the local worker too.
-
-	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*Filename))
-	{
-		bool bDeletedOutput = IFileManager::Get().Delete(*Filename, true, true);
-
-		// Retry over the next two seconds if we couldn't delete it
-		int32 RetryCount = 0;
-		while (!bDeletedOutput && RetryCount < 200)
-		{
-			FPlatformProcess::Sleep(0.01f);
-			bDeletedOutput = IFileManager::Get().Delete(*Filename, true, true);
-			RetryCount++;
-		}
-		checkf(bDeletedOutput, TEXT("Failed to delete %s!"), *Filename);
-	}
-}
-
 void FShaderCompileXGEThreadRunnable_XmlInterface::PostCompletedJobsForBatch(FShaderBatch* Batch)
 {
 	// Enter the critical section so we can access the input and output queues
 	FScopeLock Lock(&Manager->CompileQueueSection);
-	for (auto Job : Batch->GetJobs())
+	for (const auto& Job : Batch->GetJobs())
 	{
-		FShaderMapCompileResults& ShaderMapResults = Manager->ShaderMapJobs.FindChecked(Job->Id);
-		ShaderMapResults.FinishedJobs.Add(Job);
-		ShaderMapResults.bAllJobsSucceeded = ShaderMapResults.bAllJobsSucceeded && Job->bSucceeded;
+		Manager->ProcessFinishedJob(Job);
 	}
-
-	// Using atomics to update NumOutstandingJobs since it is read outside of the critical section
-	FPlatformAtomics::InterlockedAdd(&Manager->NumOutstandingJobs, -Batch->NumJobs());
 }
 
-void FShaderCompileXGEThreadRunnable_XmlInterface::FShaderBatch::AddJob(TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe> Job)
+void FShaderCompileXGEThreadRunnable_XmlInterface::FShaderBatch::AddJob(FShaderCommonCompileJobPtr Job)
 {
 	// We can only add jobs to a batch which hasn't been written out yet.
 	if (bTransferFileWritten)
@@ -295,7 +210,7 @@ void FShaderCompileXGEThreadRunnable_XmlInterface::FShaderBatch::AddJob(TSharedR
 void FShaderCompileXGEThreadRunnable_XmlInterface::FShaderBatch::WriteTransferFile()
 {
 	// Write out the file that the worker app is waiting for, which has all the information needed to compile the shader.
-	FArchive* TransferFile = CreateFileHelper(InputFileNameAndPath);
+	FArchive* TransferFile = FShaderCompileUtilities::CreateFileHelper(InputFileNameAndPath);
 	FShaderCompileUtilities::DoWriteTasks(Jobs, *TransferFile);
 	delete TransferFile;
 
@@ -318,11 +233,11 @@ void FShaderCompileXGEThreadRunnable_XmlInterface::FShaderBatch::CleanUpFiles(bo
 {
 	if (!keepInputFile)
 	{
-		DeleteFileHelper(InputFileNameAndPath);
+		FShaderCompileUtilities::DeleteFileHelper(InputFileNameAndPath);
 	}
 
-	DeleteFileHelper(OutputFileNameAndPath);
-	DeleteFileHelper(SuccessFileNameAndPath);
+	FShaderCompileUtilities::DeleteFileHelper(OutputFileNameAndPath);
+	FShaderCompileUtilities::DeleteFileHelper(SuccessFileNameAndPath);
 }
 
 static void WriteScriptFileHeader(FArchive* ScriptFile, const FString& WorkerName)
@@ -473,7 +388,7 @@ int32 FShaderCompileXGEThreadRunnable_XmlInterface::CompilingLoop()
 				// Reset the batch/directory indices and move the input file to the correct place.
 				FString OldInputFilename = Batch->InputFileNameAndPath;
 				Batch->SetIndices(XGEDirectoryIndex, BatchIndexToCreate++);
-				MoveFileHelper(Batch->InputFileNameAndPath, OldInputFilename);
+				FShaderCompileUtilities::MoveFileHelper(Batch->InputFileNameAndPath, OldInputFilename);
 			}
 
 			ShaderBatchesInFlight.Empty();
@@ -521,7 +436,7 @@ int32 FShaderCompileXGEThreadRunnable_XmlInterface::CompilingLoop()
 			FString ScriptFilename = XGEWorkingDirectory / FString::FromInt(XGEDirectoryIndex) / XGE_ScriptFileName;
 
 			// Create the XGE script file.
-			FArchive* ScriptFile = CreateFileHelper(ScriptFilename);
+			FArchive* ScriptFile = FShaderCompileUtilities::CreateFileHelper(ScriptFilename);
 			WriteScriptFileHeader(ScriptFile, Manager->ShaderCompileWorkerName);
 
 			// Write the XML task line for each shader batch
@@ -580,23 +495,25 @@ int32 FShaderCompileXGEThreadRunnable_XmlInterface::CompilingLoop()
 	}
 
 	// Try to prepare more shader jobs (even if a build is in flight).
-	TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> JobQueue;
+	TArray<FShaderCommonCompileJobPtr> JobQueue;
 	{
-		// Enter the critical section so we can access the input and output queues
-		FScopeLock Lock(&Manager->CompileQueueSection);
-
 		// Grab as many jobs from the job queue as we can.
-		int32 NumNewJobs = Manager->CompileQueue.Num();
-		if (NumNewJobs > 0)
+		for (int32 PriorityIndex = MaxPriorityIndex; PriorityIndex >= MinPriorityIndex; --PriorityIndex)
 		{
-			int32 DestJobIndex = 0;
-			JobQueue.Reserve(NumNewJobs);
-			for (int32 SrcJobIndex = 0; SrcJobIndex < NumNewJobs; SrcJobIndex++, DestJobIndex++)
+			const EShaderCompileJobPriority Priority = (EShaderCompileJobPriority)PriorityIndex;
+			const int32 MinBatchSize = (Priority == EShaderCompileJobPriority::Low) ? 1 : XGEShaderCompilerVariables::MinBatchSize;
+			const int32 NumJobs = Manager->AllJobs.GetPendingJobs(EShaderCompilerWorkerType::XGE, Priority, MinBatchSize, INT32_MAX, JobQueue);
+			if (NumJobs > 0)
 			{
-				JobQueue.EmplaceAt(DestJobIndex, Manager->CompileQueue[SrcJobIndex]);
+				UE_LOG(LogShaderCompilers, Display, TEXT("Started %d 'XGE' shader compile jobs with '%s' priority"),
+					NumJobs,
+					ShaderCompileJobPriorityToString((EShaderCompileJobPriority)PriorityIndex));
 			}
-
-			Manager->CompileQueue.RemoveAt(0, NumNewJobs);
+			if (JobQueue.Num() >= XGEShaderCompilerVariables::MinBatchSize)
+			{
+				// Kick a batch with just the higher priority jobs, if it's large enough
+				break;
+			}
 		}
 	}
 

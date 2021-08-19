@@ -15,6 +15,8 @@
 #include "Chaos/CollisionResolutionTypes.h"
 #include "Chaos/PBDRigidsEvolutionFwd.h"
 #include "Async/TaskGraphInterfaces.h"
+#include "Chaos/SimCallbackInput.h"
+#include "Chaos/SimCallbackObject.h"
 
 // Currently compilation issue with Incredibuild when including headers required by event template functions
 #define XGE_FIXED 0
@@ -36,13 +38,12 @@ namespace Chaos
 
 	struct FCollisionEventData;
 
-	enum EEventType : int32;
+	enum class EEventType : int32;
 
 	template<typename PayloadType, typename HandlerType>
 	class TRawEventHandler;
 
-	template <typename T, int d>
-	class TAccelerationStructureHandle;
+	class FAccelerationStructureHandle;
 
 	template <typename TPayload, typename T, int d>
 	class ISpatialAcceleration;
@@ -55,6 +56,18 @@ namespace Chaos
 
 	class FPBDRigidDirtyParticlesBufferAccessor;
 }
+
+struct FChaosSceneCallbackInput : public Chaos::FSimCallbackInput
+{
+	Chaos::FVec3 Gravity;
+
+	void Reset() {}
+};
+
+struct FChaosSceneSimCallback : public Chaos::TSimCallbackObject<FChaosSceneCallbackInput>
+{
+	virtual void OnPreSimulate_Internal() override;
+};
 
 /**
 * Low level Chaos scene used when building custom simulations that don't exist in the main world physics scene.
@@ -89,11 +102,12 @@ public:
 	//////////////////////////////////////////////////////////////////////////
 #endif
 	
-	const Chaos::ISpatialAcceleration<Chaos::TAccelerationStructureHandle<float, 3>, float, 3>* GetSpacialAcceleration() const;
-	Chaos::ISpatialAcceleration<Chaos::TAccelerationStructureHandle<float, 3>, float, 3>* GetSpacialAcceleration();
+	const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>* GetSpacialAcceleration() const;
+	Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>* GetSpacialAcceleration();
 
 	void AddActorsToScene_AssumesLocked(TArray<FPhysicsActorHandle>& InHandles,const bool bImmediate=true);
 	void RemoveActorFromAccelerationStructure(FPhysicsActorHandle& Actor);
+	void RemoveActorFromAccelerationStructure(Chaos::TGeometryParticle<Chaos::FReal, 3>* Particle); // Needed for particles not owned by single particle proxy.
 	void UpdateActorsInAccelerationStructure(const TArrayView<FPhysicsActorHandle>& Actors);
 	void UpdateActorInAccelerationStructure(const FPhysicsActorHandle& Actor);
 
@@ -110,7 +124,7 @@ public:
 	 * for the scene. Required when querying against a currently non-running scene to ensure the scene
 	 * is correctly represented
 	 */
-	void Flush_AssumesLocked();
+	void Flush();
 #if WITH_EDITOR
 	void AddPieModifiedObject(UObject* InObj);
 #endif
@@ -122,21 +136,20 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPhysScenePostTick,FChaosScene*);
 	FOnPhysScenePostTick OnPhysScenePostTick;
 
+	bool AreAnyTasksPending() const;
+	void BeginDestroy();
 	bool IsCompletionEventComplete() const;
 	FGraphEventArray GetCompletionEvents();
 
 protected:
 
-	TUniquePtr<Chaos::ISpatialAccelerationCollection<Chaos::TAccelerationStructureHandle<float, 3>, float, 3>> SolverAccelerationStructure;
+	Chaos::ISpatialAccelerationCollection<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>* SolverAccelerationStructure;
 
 	// Control module for Chaos - cached to avoid constantly hitting the module manager
 	FChaosSolversModule* ChaosModule;
 
 	// Solver representing this scene
 	Chaos::FPhysicsSolver* SceneSolver;
-
-	/** Scene lock object for external threads (non-physics) */
-	Chaos::FPhysicsSceneGuard ExternalDataLock;
 
 #if WITH_EDITOR
 	// List of objects that we modified during a PIE run for physics simulation caching.
@@ -149,8 +162,11 @@ protected:
 
 	//Engine interface BEGIN
 	virtual float OnStartFrame(float InDeltaTime){ return InDeltaTime; }
-	virtual void OnSyncBodies(const int32 SolverSyncTimestamp, Chaos::FPBDRigidDirtyParticlesBufferAccessor& Accessor);
+	virtual void OnSyncBodies(Chaos::FPhysicsSolverBase* Solver);
 	//Engine interface END
+
+	template <typename RigidLambda>
+	void PullPhysicsStateForEachDirtyProxy(const int32 SyncTimestamp, const RigidLambda& DirtyRigidFunc);
 
 	float MDeltaTime;
 
@@ -158,14 +174,13 @@ protected:
 
 private:
 
-	void SetGravity(const Chaos::TVector<float,3>& Acceleration)
-	{
-		// #todo : Implement
-	}
+	void SetGravity(const Chaos::FVec3& Acceleration);
 
 	template <typename TSolver>
 	void SyncBodies(TSolver* Solver);
 
 	// Taskgraph control
 	FGraphEventArray CompletionEvents;
+
+	FChaosSceneSimCallback* SimCallback;
 };

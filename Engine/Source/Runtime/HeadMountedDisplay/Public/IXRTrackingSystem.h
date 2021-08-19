@@ -84,6 +84,22 @@ public:
 	virtual bool DoesSupportLateUpdate() const { return true; }
 
 	/**
+	 * Return true if platform and HMD support late latching
+	 * Please override to enable it.
+	 */
+
+	virtual bool LateLatchingEnabled() const { return false; }
+
+	/**
+	 * Return true if the default camera implementation should query the current projection matrix at the start of the render frame and apply late update.
+	 * In order to support late update, the plugin should refresh the current projection matrix just before rendering starts.
+	 * A good point to insert the update is in OnBeginRendering_GameThread or OnBeginRendering_RenderThread.
+	 *
+	 * Note that late projection update isn't compatible with all XR implementations because of projection matrix fetch restrictions.
+	 */
+	virtual bool DoesSupportLateProjectionUpdate() const { return false; }
+
+	/**
 	 * If the system currently has valid tracking positions. If not supported at all, returns false.
 	 */
 	virtual bool HasValidTrackingPosition() = 0;
@@ -402,7 +418,7 @@ public:
 	/**
 	 * Called just after the late update on the render thread passing back the current relative transform.
 	 */
-	virtual void OnLateUpdateApplied_RenderThread(const FTransform& NewRelativeTransform) {}
+	virtual void OnLateUpdateApplied_RenderThread(FRHICommandListImmediate& RHICmdList, const FTransform& NewRelativeTransform) {}
 
 	/**
 	 * Platform Agnostic Query about HMD details
@@ -419,6 +435,11 @@ public:
 	virtual EXRDeviceConnectionResult::Type ConnectRemoteXRDevice(const FString& IpAddress, const int32 BitRate)
 	{ 
 		return EXRDeviceConnectionResult::FeatureNotSupported;
-	};
-	virtual void DisconnectRemoteXRDevice() {};
+	}
+	virtual void DisconnectRemoteXRDevice() {}
+
+	/**
+	 * Get the bounds of the area where the user can freely move while remaining tracked centered around the specified origin
+	 */
+	virtual FVector2D GetPlayAreaBounds(EHMDTrackingOrigin::Type Origin) const { return FVector2D::ZeroVector; }
 };

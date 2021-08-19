@@ -100,7 +100,7 @@ public:
 	 * This will allow for different behaviors, ie. keying all at the current time or keying 
 	 * one after the other.
 	 */
-	static void BeginKeying();
+	static void BeginKeying(FFrameNumber InFrameNumber);
 	static void EndKeying();
 
 	void UpdatePlaybackRange();
@@ -117,6 +117,8 @@ public:
 
 	struct FFindOrCreateTrackResult
 	{
+		FFindOrCreateTrackResult() : Track(nullptr), bWasCreated(false) {}
+
 		UMovieSceneTrack* Track;
 		bool bWasCreated;
 	};
@@ -126,6 +128,8 @@ public:
 	template<typename TrackClass>
 	struct FFindOrCreateMasterTrackResult
 	{
+		FFindOrCreateMasterTrackResult() : Track(nullptr), bWasCreated(false) {}
+
 		TrackClass* Track;
 		bool bWasCreated;
 	};
@@ -174,8 +178,8 @@ public:
 	virtual TSharedPtr<SWidget> BuildOutlinerEditWidget(const FGuid& ObjectBinding, UMovieSceneTrack* Track, const FBuildEditWidgetParams& Params) override;
 	virtual void BuildTrackContextMenu( FMenuBuilder& MenuBuilder, UMovieSceneTrack* Track ) override;
 	virtual bool HandleAssetAdded(UObject* Asset, const FGuid& TargetObjectGuid) override;
-	virtual bool OnAllowDrop(const FDragDropEvent& DragDropEvent, UMovieSceneTrack* Track, int32 RowIndex, const FGuid& TargetObjectGuid) override;
-	virtual FReply OnDrop(const FDragDropEvent& DragDropEvent, UMovieSceneTrack* Track, int32 RowIndex, const FGuid& TargetObjectGuid) override;
+	virtual bool OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequencerDragDropParams& DragDropParams) override;
+	virtual FReply OnDrop(const FDragDropEvent& DragDropEvent, const FSequencerDragDropParams& DragDropParams) override;
 
 	virtual void OnInitialize() override;
 	virtual void OnRelease() override;

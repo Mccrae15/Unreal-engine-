@@ -7,6 +7,7 @@
 #include "UObject/CoreOnline.h"
 #include "OnlineSubsystemTypes.h"
 #include "OnlineDelegateMacros.h"
+#include "OnlineError.h"
 
 typedef FString FChatRoomId;
 struct FOnlineError;
@@ -37,8 +38,9 @@ enum class ERejectPartyInvitationCompletionResult : int8;
 enum class ERequestPartyInvitationCompletionResult : int8;
 enum class ESendPartyInvitationCompletionResult : int8;
 enum class EUpdateConfigCompletionResult : int8;
-
 enum class EInvitationResponse : uint8;
+
+struct FQueryPartyJoinabilityResult;
 
 struct FAnalyticsEventAttribute;
 
@@ -339,7 +341,7 @@ public:
 	 * Get the id of the user requesting to join
 	 * @return the id of the user requesting to join
 	 */
-	virtual const TSharedRef<const FUniqueNetId>& GetUserId() const = 0;
+	virtual const FUniqueNetIdRef& GetUserId() const = 0;
 
 	/**
 	 * Get the display name of the user requesting to join
@@ -377,7 +379,7 @@ public:
 	 * Get the primary user's id
 	 * @return id of the primary user of this join request
 	 */
-	virtual const TSharedRef<const FUniqueNetId>& GetSenderId() const
+	virtual const FUniqueNetIdRef& GetSenderId() const
 	{
 		TArray<IOnlinePartyUserPendingJoinRequestInfoConstRef> Users;
 		GetUsers(Users);
@@ -456,7 +458,7 @@ public:
 	/**
 	 * @return user id of where this join info came from
 	 */
-	virtual TSharedRef<const FUniqueNetId> GetSourceUserId() const = 0;
+	virtual FUniqueNetIdRef GetSourceUserId() const = 0;
 
 	/**
 	 * @return user id of where this join info came from
@@ -677,7 +679,7 @@ public:
 	/** Type of party (e.g., Primary) */
 	const FOnlinePartyTypeId PartyTypeId;
 	/** Unique id of the leader */
-	TSharedPtr<const FUniqueNetId> LeaderId;
+	FUniqueNetIdPtr LeaderId;
 	/** The current state of the party */
 	EPartyState State;
 	/** The previous state of the party */
@@ -717,7 +719,7 @@ enum class EPartyInvitationRemovedReason : uint8
 struct FPartyInvitationRecipient
 {
 	/** Constructor */
-	FPartyInvitationRecipient(const TSharedRef<const FUniqueNetId>& InId)
+	FPartyInvitationRecipient(const FUniqueNetIdRef& InId)
 		: Id(InId)
 	{}
 
@@ -727,7 +729,7 @@ struct FPartyInvitationRecipient
 	{}
 
 	/** Id of the user to send the invitation to */
-	TSharedRef<const FUniqueNetId> Id;
+	FUniqueNetIdRef Id;
 	/** Additional data to provide context for the invitee */
 	FString PlatformData;
 
@@ -793,6 +795,14 @@ DECLARE_DELEGATE_FourParams(FOnJoinPartyComplete, const FUniqueNetId& /*LocalUse
  * @param NotApprovedReason - client defined value describing why you were not approved
  */
 DECLARE_DELEGATE_FourParams(FOnQueryPartyJoinabilityComplete, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const EJoinPartyCompletionResult /*Result*/, const int32 /*NotApprovedReason*/);
+/**
+ * Party query joinability async task completed callback
+ *
+ * @param LocalUserId - id of user that initiated the request
+ * @param PartyId - id associated with the party
+ * @param Result - result of the operation
+ */
+DECLARE_DELEGATE_ThreeParams(FOnQueryPartyJoinabilityCompleteEx, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FQueryPartyJoinabilityResult& /*Result*/);
 /**
  * Party leave async task completed callback
  *
@@ -1015,6 +1025,7 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyInviteRequestReceived);
 
 /**
  * Notification when a new invite is received
+ * Deprecated - Use OnPartyInviteReceivedEx
  * @param LocalUserId id associated with this notification
  * @param PartyId id associated with the party
  * @param SenderId id of member that sent the invite
@@ -1023,7 +1034,16 @@ DECLARE_MULTICAST_DELEGATE_ThreeParams(F_PREFIX(OnPartyInviteReceived), const FU
 PARTY_DECLARE_DELEGATETYPE(OnPartyInviteReceived);
 
 /**
+ * Notification when a new invite is received
+ * @param LocalUserId id associated with this notification
+ * @param Invitation the invitation that was received
+ */
+DECLARE_MULTICAST_DELEGATE_TwoParams(F_PREFIX(OnPartyInviteReceivedEx), const FUniqueNetId& /*LocalUserId*/, const IOnlinePartyJoinInfo& /*Invitation*/);
+PARTY_DECLARE_DELEGATETYPE(OnPartyInviteReceivedEx);
+
+/**
  * Notification when an invite has been removed
+ * Deprecated - Use OnPartyInviteRemovedEx
  * @param LocalUserId id associated with this notification
  * @param PartyId id associated with the party
  * @param SenderId id of member that sent the invite
@@ -1031,6 +1051,15 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyInviteReceived);
  */
 DECLARE_MULTICAST_DELEGATE_FourParams(F_PREFIX(OnPartyInviteRemoved), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*SenderId*/, EPartyInvitationRemovedReason /*Reason*/);
 PARTY_DECLARE_DELEGATETYPE(OnPartyInviteRemoved);
+
+/**
+ * Notification when an invite has been removed
+ * @param LocalUserId id associated with this notification
+ * @param Invitation the invitation that was removed
+ * @param Reason reason the invite has been removed
+ */
+DECLARE_MULTICAST_DELEGATE_ThreeParams(F_PREFIX(OnPartyInviteRemovedEx), const FUniqueNetId& /*LocalUserId*/, const IOnlinePartyJoinInfo& /*Invitation*/, EPartyInvitationRemovedReason /*Reason*/);
+PARTY_DECLARE_DELEGATETYPE(OnPartyInviteRemovedEx);
 
 /**
  * Notification when a new invite is received
@@ -1192,7 +1221,18 @@ public:
 	 * @param OnlinePartyJoinInfo - join information containing data such as party id, leader id
 	 * @param Delegate - called on completion
 	 */
-	virtual void QueryPartyJoinability(const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& OnlinePartyJoinInfo, const FOnQueryPartyJoinabilityComplete& Delegate = FOnQueryPartyJoinabilityComplete()) = 0;
+	virtual void QueryPartyJoinability(const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& OnlinePartyJoinInfo, const FOnQueryPartyJoinabilityComplete& Delegate);
+
+	/**
+	 * Query a party to check it's current joinability
+	 * Intended to be used before a call to LeaveParty (to leave your existing party, which would then be followed by JoinParty)
+	 * Note that the party's joinability can change from moment to moment so a successful response for this does not guarantee a successful JoinParty
+	 *
+	 * @param LocalUserId - user making the request
+	 * @param OnlinePartyJoinInfo - join information containing data such as party id, leader id
+	 * @param Delegate - called on completion
+	 */
+	virtual void QueryPartyJoinability(const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& OnlinePartyJoinInfo, const FOnQueryPartyJoinabilityCompleteEx& Delegate) = 0;
 
 	/**
 	 * Attempt to rejoin a former party
@@ -1205,7 +1245,7 @@ public:
 	 *
 	 * @return true if task was started
 	 */
-	virtual bool RejoinParty(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FOnlinePartyTypeId& PartyTypeId, const TArray<TSharedRef<const FUniqueNetId>>& FormerMembers, const FOnJoinPartyComplete& Delegate = FOnJoinPartyComplete()) = 0;
+	virtual bool RejoinParty(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FOnlinePartyTypeId& PartyTypeId, const TArray<FUniqueNetIdRef>& FormerMembers, const FOnJoinPartyComplete& Delegate = FOnJoinPartyComplete()) = 0;
 
 	/**
 	 * Leave an existing party
@@ -1266,8 +1306,11 @@ public:
 	 * @param RecipientId - id of the user being invited
 	 * @param bCanJoin - whether the player can attempt to join or not
 	 * @param DeniedResultCode - used when bCanJoin is false - client defined value to return when leader denies approval
+	 * @param PartyData - data to send back to the querying user
 	 */
-	virtual void RespondToQueryJoinability(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RecipientId, bool bCanJoin, int32 DeniedResultCode = 0) = 0;
+	virtual void RespondToQueryJoinability(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RecipientId, bool bCanJoin, int32 DeniedResultCode, FOnlinePartyDataConstPtr PartyData) = 0;
+	UE_DEPRECATED(4.26, "Use RespondToQueryJoinability with PartyData")
+	virtual void RespondToQueryJoinability(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RecipientId, bool bCanJoin, int32 DeniedResultCode = 0);
 
 	/**
 	 * sends an invitation to a user that could not otherwise join a party
@@ -1551,7 +1594,7 @@ public:
 	 *
 	 * @return true if entries found
 	 */
-	virtual bool GetPendingInvitedUsers(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, TArray<TSharedRef<const FUniqueNetId>>& OutPendingInvitedUserArray) const = 0;
+	virtual bool GetPendingInvitedUsers(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, TArray<FUniqueNetIdRef>& OutPendingInvitedUserArray) const = 0;
 
 	static const FOnlinePartyTypeId::TInternalType PrimaryPartyTypeIdValue = 0x11111111;
 	/**
@@ -1622,7 +1665,9 @@ public:
 	 * OnPartyInvitesChanged
 	 * OnPartyInviteRequestReceived
 	 * OnPartyInviteReceived
+	 * OnPartyInviteReceivedEx
 	 * OnPartyInviteRemoved
+	 * OnPartyInviteRemovedEx
 	 * OnPartyInviteResponseReceived
 	 * OnPartyJoinRequestReceived
 	 * OnPartyQueryJoinabilityReceived
@@ -1741,6 +1786,7 @@ public:
 
 	/**
 	 * Notification when a new invite is received
+	 * Deprecated - use OnPartyInviteReceivedEx
 	 * @param LocalUserId - id associated with this notification
 	 * @param PartyId - id associated with the party
 	 * @param SenderId - id of member that sent the invite
@@ -1748,13 +1794,29 @@ public:
 	DEFINE_ONLINE_DELEGATE_THREE_PARAM(OnPartyInviteReceived, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*SenderId*/);
 
 	/**
+	 * Notification when a new invite is received
+	 * @param LocalUserId - id associated with this notification
+	 * @param Invitation - the invitation that was received
+	 */
+	DEFINE_ONLINE_DELEGATE_TWO_PARAM(OnPartyInviteReceivedEx, const FUniqueNetId& /*LocalUserId*/, const IOnlinePartyJoinInfo& /*Invitation*/);
+
+	/**
 	 * Notification when an invite has been removed
+	 * Deprecated Use OnPartyInviteRemovedEx
 	 * @param LocalUserId id associated with this notification
 	 * @param PartyId id associated with the party
 	 * @param SenderId id of member that sent the invite
 	 * @param Reason reason the invitation was removed
 	 */
 	DEFINE_ONLINE_DELEGATE_FOUR_PARAM(OnPartyInviteRemoved, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*SenderId*/, EPartyInvitationRemovedReason /*Reason*/);
+
+	/**
+	 * Notification when an invite has been removed
+	 * @param LocalUserId id associated with this notification
+	 * @param Invitation the invitation that was removed
+	 * @param Reason reason the invitation was removed
+	 */
+	DEFINE_ONLINE_DELEGATE_THREE_PARAM(OnPartyInviteRemovedEx, const FUniqueNetId& /*LocalUserId*/, const IOnlinePartyJoinInfo& /*Invitation*/, EPartyInvitationRemovedReason /*Reason*/);
 
 	/**
 	 * Notification when an invitation response is received
@@ -2016,6 +2078,21 @@ enum class EInvitationResponse : uint8
 	BadBuild,
 	Rejected,
 	Accepted
+};
+
+/**
+ * QueryPartyJoinability result
+ */
+struct FQueryPartyJoinabilityResult
+{
+	/** Online error representing the result of the operation */
+	FOnlineError Result;
+	/** Enum result */
+	EJoinPartyCompletionResult EnumResult = EJoinPartyCompletionResult::UnknownClientFailure;
+	/** Subcode for the EnumResult */
+	int32 SubCode = 0;
+	/** If successful, the party's data */
+	FOnlinePartyDataConstPtr PartyData;
 };
 
 /** @return the stringified version of the enum passed in */

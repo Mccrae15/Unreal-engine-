@@ -11,6 +11,12 @@
 #include "VulkanMemory.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "RHIValidationContext.h"
+#include "HAL/FileManager.h"
+
+#if NV_AFTERMATH
+#include "GFSDK_Aftermath_GpuCrashDump.h"
+#include "GFSDK_Aftermath_GpuCrashDumpDecoding.h"
+#endif
 
 FVulkanDynamicRHI*	GVulkanRHI = nullptr;
 
@@ -19,6 +25,7 @@ extern CORE_API bool GIsGPUCrashed;
 
 static FString		EventDeepString(TEXT("EventTooDeep"));
 static const uint32	EventDeepCRC = FCrc::StrCrc32<TCHAR>(*EventDeepString);
+static const uint32 BUFFERED_TIMING_QUERIES = 1;
 
 /**
  * Initializes the static variables, if necessary.
@@ -147,7 +154,7 @@ FVulkanGPUTiming::~FVulkanGPUTiming()
 /**
  * Initializes all Vulkan resources and if necessary, the static variables.
  */
-void FVulkanGPUTiming::Initialize()
+void FVulkanGPUTiming::Initialize(uint32 PoolSize)
 {
 	StaticInitialize(this, PlatformStaticInitialize);
 
@@ -156,8 +163,8 @@ void FVulkanGPUTiming::Initialize()
 	if (FVulkanPlatform::SupportsTimestampRenderQueries() && GIsSupported)
 	{
 		check(!Pool);
-		Pool = new FVulkanTimingQueryPool(Device, CmdContext->GetCommandBufferManager(), 8);
-		Pool->ResultsBuffer = Device->GetStagingManager().AcquireBuffer(Pool->GetMaxQueries() * sizeof(uint64), VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		Pool = new FVulkanTimingQueryPool(Device, CmdContext->GetCommandBufferManager(), PoolSize);
+		Pool->ResultsBuffer = Device->GetStagingManager().AcquireBuffer(Pool->GetMaxQueries() * sizeof(uint64) * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	}
 }
 
@@ -189,10 +196,11 @@ void FVulkanGPUTiming::StartTiming(FVulkanCmdBuffer* CmdBuffer)
 		}
 		Pool->CurrentTimestamp = (Pool->CurrentTimestamp + 1) % Pool->BufferSize;
 		const uint32 QueryStartIndex = Pool->CurrentTimestamp * 2;
-		VulkanRHI::vkCmdWriteTimestamp(CmdBuffer->GetHandle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, Pool->GetHandle(), QueryStartIndex);
-		CmdBuffer->AddPendingTimestampQuery(QueryStartIndex, 1, Pool->GetHandle(), Pool->ResultsBuffer->GetHandle());
+
+		VulkanRHI::vkCmdWriteTimestamp(CmdBuffer->GetHandle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, Pool->GetHandle(), QueryStartIndex);
 		Pool->TimestampListHandles[QueryStartIndex].CmdBuffer = CmdBuffer;
 		Pool->TimestampListHandles[QueryStartIndex].FenceCounter = CmdBuffer->GetFenceSignaledCounter();
+		Pool->TimestampListHandles[QueryStartIndex].FrameCount = CmdContext->GetFrameCounter();
 		bIsTiming = true;
 	}
 }
@@ -214,10 +222,23 @@ void FVulkanGPUTiming::EndTiming(FVulkanCmdBuffer* CmdBuffer)
 		const uint32 QueryStartIndex = Pool->CurrentTimestamp * 2;
 		const uint32 QueryEndIndex = Pool->CurrentTimestamp * 2 + 1;
 		check(QueryEndIndex == QueryStartIndex + 1);	// Make sure they're adjacent indices.
-		VulkanRHI::vkCmdWriteTimestamp(CmdBuffer->GetHandle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, Pool->GetHandle(), QueryEndIndex);
-		CmdBuffer->AddPendingTimestampQuery(QueryEndIndex, 1, Pool->GetHandle(), Pool->ResultsBuffer->GetHandle());
+
+		// In case we aren't reading queries, remove oldest
+		if (NumPendingQueries >= Pool->BufferSize)
+		{
+			PendingQueries.Pop();
+			NumPendingQueries--;
+		}
+
+		PendingQueries.Enqueue(Pool->CurrentTimestamp);
+		NumPendingQueries++;
+
+		VulkanRHI::vkCmdWriteTimestamp(CmdBuffer->GetHandle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, Pool->GetHandle(), QueryEndIndex);
+		CmdBuffer->AddPendingTimestampQuery(QueryStartIndex, 1, Pool->GetHandle(), Pool->ResultsBuffer->GetHandle(), false);
+		CmdBuffer->AddPendingTimestampQuery(QueryEndIndex, 1, Pool->GetHandle(), Pool->ResultsBuffer->GetHandle(), false);
 		Pool->TimestampListHandles[QueryEndIndex].CmdBuffer = CmdBuffer;
 		Pool->TimestampListHandles[QueryEndIndex].FenceCounter = CmdBuffer->GetFenceSignaledCounter();
+		Pool->TimestampListHandles[QueryEndIndex].FrameCount = CmdContext->GetFrameCounter();
 		Pool->NumIssuedTimestamps = FMath::Min<uint32>(Pool->NumIssuedTimestamps + 1, Pool->BufferSize);
 
 		bIsTiming = false;
@@ -236,51 +257,81 @@ uint64 FVulkanGPUTiming::GetTiming(bool bGetCurrentResultsAndBlock)
 	if (GIsSupported)
 	{
 		check(Pool->CurrentTimestamp < Pool->BufferSize);
-		uint64 StartTime, EndTime;
-		int32 TimestampIndex = Pool->CurrentTimestamp;
-		if (!bGetCurrentResultsAndBlock)
+		uint64 StartTime, EndTime, StartTimeAvailability, EndTimeAvailability;
+		uint32 TimestampIndex;
+
+		uint64 TotalTime = 0;
+
+		uint64_t FrameCount = CmdContext->GetFrameCounter();
+
+		// If these timings have been processed return the same time
+		if (PreviousFrame == FrameCount)
 		{
-			// Quickly check the most recent measurements to see if any of them has been resolved.  Do not flush these queries.
-			for (uint32 IssueIndex = 1; IssueIndex < Pool->NumIssuedTimestamps; ++IssueIndex)
-			{
-				const uint32 QueryStartIndex = TimestampIndex * 2;
-				const uint32 QueryEndIndex = TimestampIndex * 2 + 1;
-				const FVulkanTimingQueryPool::FCmdBufferFence& StartQuerySyncPoint = Pool->TimestampListHandles[QueryStartIndex];
-				const FVulkanTimingQueryPool::FCmdBufferFence& EndQuerySyncPoint = Pool->TimestampListHandles[QueryEndIndex];
-				if (EndQuerySyncPoint.FenceCounter < EndQuerySyncPoint.CmdBuffer->GetFenceSignaledCounter() && StartQuerySyncPoint.FenceCounter < StartQuerySyncPoint.CmdBuffer->GetFenceSignaledCounter())
-				{
-					uint64* Data = (uint64*)Pool->ResultsBuffer->GetMappedPointer();
-					StartTime = Data[QueryStartIndex];
-					EndTime = Data[QueryEndIndex];
-
-					if (EndTime > StartTime)
-					{
-						return EndTime - StartTime;
-					}
-				}
-
-				TimestampIndex = (TimestampIndex + Pool->BufferSize - 1) % Pool->BufferSize;
-			}
+			return PreviousTime;
 		}
 
-		if (Pool->NumIssuedTimestamps > 0 || bGetCurrentResultsAndBlock)
+		PreviousFrame = FrameCount;
+
+		while (PendingQueries.Peek(TimestampIndex))
 		{
-			// None of the (NumIssuedTimestamps - 1) measurements were ready yet,
-			// so check the oldest measurement more thoroughly.
-			// This really only happens if occlusion and frame sync event queries are disabled, otherwise those will block until the GPU catches up to 1 frame behind
-
-			const bool bBlocking = (Pool->NumIssuedTimestamps == Pool->BufferSize) || bGetCurrentResultsAndBlock;
-			const uint32 IdleStart = FPlatformTime::Cycles();
-
-			SCOPE_CYCLE_COUNTER(STAT_RenderQueryResultTime);
-
 			const uint32 QueryStartIndex = TimestampIndex * 2;
 			const uint32 QueryEndIndex = TimestampIndex * 2 + 1;
 
+			const FVulkanTimingQueryPool::FCmdBufferFence& StartQuerySyncPoint = Pool->TimestampListHandles[QueryStartIndex];
+			const FVulkanTimingQueryPool::FCmdBufferFence& EndQuerySyncPoint = Pool->TimestampListHandles[QueryEndIndex];
+
+			// Block if we require results or we are backed up
+			bool bBlocking = bGetCurrentResultsAndBlock;
+
+			if (!bBlocking)
+			{
+				uint64_t QueryFrameCount = EndQuerySyncPoint.FrameCount;
+				
+				// Allow queries to back up if we are non-blocking
+				if (FrameCount < BUFFERED_TIMING_QUERIES || FrameCount - BUFFERED_TIMING_QUERIES < QueryFrameCount)
+				{
+					PreviousTime = TotalTime;
+					return TotalTime;
+				}
+				else
+				{
+					// Otherwise if we don't have a result we have to block
+					bBlocking = true;
+				}
+			}
+
+			if (EndQuerySyncPoint.FenceCounter < EndQuerySyncPoint.CmdBuffer->GetFenceSignaledCounter() &&
+				StartQuerySyncPoint.FenceCounter < StartQuerySyncPoint.CmdBuffer->GetFenceSignaledCounter())
+			{
+				Pool->ResultsBuffer->InvalidateMappedMemory();
+				uint64* Data = (uint64*)Pool->ResultsBuffer->GetMappedPointer();
+				StartTimeAvailability = Data[QueryStartIndex * 2 + 1];
+				EndTimeAvailability = Data[QueryEndIndex * 2 + 1];
+				StartTime = Data[QueryStartIndex * 2];
+				EndTime = Data[QueryEndIndex * 2];
+
+				if (!StartTimeAvailability || !EndTimeAvailability)
+				{
+					break;
+				}
+
+				PendingQueries.Pop();
+				NumPendingQueries--;
+
+				if (EndTime > StartTime)
+				{
+					TotalTime += EndTime - StartTime;
+				}
+
+				continue;
+			}
+
 			if (bBlocking)
 			{
-				const FVulkanTimingQueryPool::FCmdBufferFence& StartQuerySyncPoint = Pool->TimestampListHandles[QueryStartIndex];
-				const FVulkanTimingQueryPool::FCmdBufferFence& EndQuerySyncPoint = Pool->TimestampListHandles[QueryEndIndex];
+				const uint32 IdleStart = FPlatformTime::Cycles();
+
+				SCOPE_CYCLE_COUNTER(STAT_RenderQueryResultTime);
+
 				bool bWaitForStart = StartQuerySyncPoint.FenceCounter == StartQuerySyncPoint.CmdBuffer->GetFenceSignaledCounter();
 				bool bWaitForEnd = EndQuerySyncPoint.FenceCounter == EndQuerySyncPoint.CmdBuffer->GetFenceSignaledCounter();
 				if (bWaitForEnd || bWaitForStart)
@@ -298,20 +349,29 @@ uint64 FVulkanGPUTiming::GetTiming(bool bGetCurrentResultsAndBlock)
 				{
 					CmdContext->GetCommandBufferManager()->WaitForCmdBuffer(EndQuerySyncPoint.CmdBuffer);
 				}
-			}
 
-			GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUQuery] += FPlatformTime::Cycles() - IdleStart;
-			GRenderThreadNumIdle[ERenderThreadIdleTypes::WaitingForGPUQuery]++;
+				GRenderThreadIdle[ERenderThreadIdleTypes::WaitingForGPUQuery] += FPlatformTime::Cycles() - IdleStart;
+				GRenderThreadNumIdle[ERenderThreadIdleTypes::WaitingForGPUQuery]++;
 
-			uint64* Data = (uint64*)Pool->ResultsBuffer->GetMappedPointer();
-			StartTime = Data[QueryStartIndex];
-			EndTime = Data[QueryEndIndex];
+				Pool->ResultsBuffer->InvalidateMappedMemory();
+				uint64* Data = (uint64*)Pool->ResultsBuffer->GetMappedPointer();
+				StartTimeAvailability = Data[QueryStartIndex * 2 + 1];
+				EndTimeAvailability = Data[QueryEndIndex * 2 + 1];
+				StartTime = Data[QueryStartIndex * 2];
+				EndTime = Data[QueryEndIndex * 2];
 
-			if (EndTime > StartTime)
-			{
-				return EndTime - StartTime;
+				PendingQueries.Pop();
+				NumPendingQueries--;
+
+				if (EndTime > StartTime && StartTimeAvailability && EndTimeAvailability)
+				{
+					TotalTime += EndTime - StartTime;
+				}
 			}
 		}
+
+		PreviousTime = TotalTime;
+		return TotalTime;
 	}
 
 	return 0;
@@ -600,7 +660,7 @@ void FVulkanGPUProfiler::DumpCrashMarkers(void* BufferData)
 	else
 #endif
 	{
-#if VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT
+#if VULKAN_SUPPORTS_NV_DIAGNOSTICS
 		if (Device->GetOptionalExtensions().HasNVDiagnosticCheckpoints)
 		{
 			struct FCheckpointDataNV : public VkCheckpointDataNV
@@ -624,7 +684,7 @@ void FVulkanGPUProfiler::DumpCrashMarkers(void* BufferData)
 					check(Data[Index].sType == VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV);
 					uint32 Value = (uint32)(size_t)Data[Index].pCheckpointMarker;
 					const FString* Frame = CachedStrings.Find(Value);
-					UE_LOG(LogVulkanRHI, Error, TEXT("[VK_NV_device_diagnostic_checkpoints] %i: Stage 0x%x, %s (CRC 0x%x)"), Index, Data[Index].stage, Frame ? *(*Frame) : TEXT("<undefined>"), Value);
+					UE_LOG(LogVulkanRHI, Error, TEXT("[VK_NV_device_diagnostic_checkpoints] %i: Stage 0x%08x, %s (CRC 0x%x)"), Index, Data[Index].stage, Frame ? *(*Frame) : TEXT("<undefined>"), Value);
 				}
 				GLog->PanicFlushThreadedLogs();
 				GLog->Flush();
@@ -648,6 +708,101 @@ void FVulkanGPUProfiler::DumpCrashMarkers(void* BufferData)
 		GLog->PanicFlushThreadedLogs();
 		GLog->Flush();
 	}
+}
+#endif
+
+#if NV_AFTERMATH
+void AftermathGpuCrashDumpCallback(const void* CrashDump, const uint32 CrashDumpSize, void* UserData)
+{
+	// Create a GPU crash dump decoder object for the GPU crash dump.
+	GFSDK_Aftermath_GpuCrashDump_Decoder Decoder = {};
+	{
+		GFSDK_Aftermath_Result Result = GFSDK_Aftermath_GpuCrashDump_CreateDecoder(GFSDK_Aftermath_Version_API, CrashDump, CrashDumpSize, &Decoder);
+		if (Result != GFSDK_Aftermath_Result_Success)
+		{
+			UE_LOG(LogVulkanRHI, Warning, TEXT("Unable to initialize create Aftermath decoder (Result %d, CrashDumpSize=%d)"), (int32)Result, CrashDumpSize);
+		}
+	}
+
+	// Use the decoder object to read basic information, like application
+	// name, PID, etc. from the GPU crash dump.
+	GFSDK_Aftermath_GpuCrashDump_BaseInfo BaseInfo = {};
+	{
+		GFSDK_Aftermath_Result Result = GFSDK_Aftermath_GpuCrashDump_GetBaseInfo(Decoder, &BaseInfo);
+		if (Result != GFSDK_Aftermath_Result_Success)
+		{
+			UE_LOG(LogVulkanRHI, Warning, TEXT("Unable to get Aftermath base info (Result %d)"), (int32)Result);
+		}
+	}
+
+	{
+		FString Filename = FPaths::ProjectLogDir() / TEXT("vulkan.nv-gpudmp");
+		FArchive* Writer = IFileManager::Get().CreateFileWriter(*Filename);
+		if (Writer)
+		{
+			Writer->Serialize((void*)CrashDump, CrashDumpSize);
+			Writer->Close();
+			UE_LOG(LogVulkanRHI, Warning, TEXT("Generated Aftermath crash dump at '%s'"), *Filename);
+		}
+	}
+
+	// Decode the crash dump to a JSON string.
+	// Step 1: Generate the JSON and get the size.
+	uint32 JsonSize = 0;
+	{
+		GFSDK_Aftermath_Result Result = GFSDK_Aftermath_GpuCrashDump_GenerateJSON(
+			Decoder,
+			GFSDK_Aftermath_GpuCrashDumpDecoderFlags_ALL_INFO,
+			GFSDK_Aftermath_GpuCrashDumpFormatterFlags_NONE,
+			nullptr/*ShaderDebugInfoLookupCallback*/,
+			nullptr/*ShaderLookupCallback*/,
+			nullptr,
+			nullptr/*ShaderSourceDebugInfoLookupCallback*/,
+			UserData,
+			&JsonSize);
+
+			if (Result == GFSDK_Aftermath_Result_Success)
+			{
+				// Step 2: Allocate a buffer and fetch the generated JSON.
+				TArray<ANSICHAR> Json;
+				Json.AddZeroed(JsonSize);
+				GFSDK_Aftermath_Result Result2 = GFSDK_Aftermath_GpuCrashDump_GetJSON(Decoder, (uint32)Json.Num(), Json.GetData());
+				if (Result2 == GFSDK_Aftermath_Result_Success)
+				{
+					FString Filename = FPaths::ProjectLogDir() / TEXT("vulkan.nv-gpudmp.json");
+					FArchive* Writer = IFileManager::Get().CreateFileWriter(*Filename);
+					if (Writer)
+					{
+						Writer->Serialize((void*)Json.GetData(), Json.Num());
+						Writer->Close();
+						UE_LOG(LogVulkanRHI, Warning, TEXT("Generated Aftermath crash dump json at '%s'"), *Filename);
+					}
+				}
+				else
+				{
+					UE_LOG(LogVulkanRHI, Warning, TEXT("Unable to get Aftermath JSON (Result %d)"), (int32)Result);
+				}
+			}
+			else
+			{
+				UE_LOG(LogVulkanRHI, Warning, TEXT("Unable to get Aftermath JSON Size (Result %d)"), (int32)Result);
+			}
+	}
+}
+
+void AftermathShaderDebugInfoCallback(const void* pShaderDebugInfo, const uint32 shaderDebugInfoSize, void* pUserData)
+{
+}
+
+void AftermathCrashDumpDescriptionCallback(PFN_GFSDK_Aftermath_AddGpuCrashDumpDescription AddDescription, void* pUserData)
+{
+	// Add some basic description about the crash. This is called after the GPU crash happens, but before
+	// the actual GPU crash dump callback. The provided data is included in the crash dump and can be
+	// retrieved using GFSDK_Aftermath_GpuCrashDump_GetDescription().
+	FTCHARToUTF8 ProjectNameConverter(FApp::GetProjectName());
+	AddDescription(GFSDK_Aftermath_GpuCrashDumpDescriptionKey_ApplicationName, ProjectNameConverter.Get());
+	AddDescription(GFSDK_Aftermath_GpuCrashDumpDescriptionKey_ApplicationVersion, "v1.0");
+	AddDescription(GFSDK_Aftermath_GpuCrashDumpDescriptionKey_UserDefined, "Vulkan GPU crash");
 }
 #endif
 

@@ -5,6 +5,8 @@
 #include "DataprepActionAsset.h"
 #include "DataprepAssetInterface.h"
 #include "DataprepGraph/DataprepGraph.h"
+#include "DataprepStats.h"
+#include "Widgets/SDataprepStats.h"
 #include "PreviewSystem/DataprepPreviewSystem.h"
 
 #include "CoreMinimal.h"
@@ -138,10 +140,16 @@ public:
 	/** Select all actors and assets that have status Pass from the preview system */
 	void SyncSelectionToPreviewSystem();
 
+	/** Return a weak pointer to asset preview view */
+	TWeakPtr<AssetPreviewWidget::SAssetsPreviewWidget> GetAssetPreviewView() { return AssetPreviewView; }
+
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	virtual FString GetReferencerName() const override;
 	virtual bool GetReferencerPropertyName(UObject* Object, FString& OutPropertyName) const override;
+
+	/** Returns content folder under which all assets are stored after execution of all producers */
+	FString GetTransientContentFolder();
 
 private:
 	void BindCommands();
@@ -206,9 +214,6 @@ private:
 
 	virtual bool OnRequestClose() override;
 
-	/** Returns content folder under which all assets are stored after execution of all producers */
-	FString GetTransientContentFolder();
-
 	/** Create a snapshot of the world and tracked assets */
 	void TakeSnapshot();
 
@@ -243,6 +248,8 @@ private:
 	virtual void PostRedo( bool bSuccess ) override;
 
 	void CreateGraphEditor();
+
+	void RefreshStatsTab();
 
 	// A scoped object responsible of trying to conserve the selection across imports
 	friend UE::Dataprep::Private::FScopeDataprepEditorSelectionCache;
@@ -324,6 +331,11 @@ private:
 
 	TSharedPtr<FDataprepActionContext> ActionsContext;
 
+	TSharedPtr<FDataprepStats> PreExecuteStatsPtr;
+	TSharedPtr<FDataprepStats> PostExecuteStatsPtr;
+	TWeakPtr<SDataprepStats> StatsWidgetPtr;
+	TWeakPtr<SDockTab> StatsTabPtr;
+
 	/**	The tab ids for all the tabs used */
 	static const FName ScenePreviewTabId;
 	static const FName AssetPreviewTabId;
@@ -333,4 +345,6 @@ private:
 	static const FName SceneViewportTabId;
 	static const FName DataprepStatisticsTabId;
 	static const FName DataprepGraphEditorTabId;
+
+	static const FName StatNameDrawCalls;
 };

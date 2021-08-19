@@ -23,7 +23,7 @@ namespace UE
 		{
 		public:
 			FSdfLayerImpl() = default;
-			
+
 #if USE_USD_SDK
 			explicit FSdfLayerImpl( const pxr::SdfLayerRefPtr& InSdfLayer )
 				: PxrSdfLayer( InSdfLayer )
@@ -386,6 +386,33 @@ namespace UE
 #endif // #if USE_USD_SDK
 	}
 
+	bool FSdfLayer::IsEmpty() const
+	{
+#if USE_USD_SDK
+		return Impl->PxrSdfLayer.Get()->IsEmpty();
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	bool FSdfLayer::IsAnonymous() const
+	{
+#if USE_USD_SDK
+		return Impl->PxrSdfLayer.Get()->IsAnonymous();
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	bool FSdfLayer::Export( const TCHAR* Filename ) const
+	{
+#if USE_USD_SDK
+		return Impl->PxrSdfLayer.Get()->Export( TCHAR_TO_ANSI( Filename ) );
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
 	FString FSdfLayerUtils::SdfComputeAssetPathRelativeToLayer( const FSdfLayer& Anchor, const TCHAR* AssetPath )
 	{
 #if USE_USD_SDK
@@ -396,4 +423,19 @@ namespace UE
 #endif // #if USE_USD_SDK
 	}
 
+	bool FSdfLayer::IsMuted() const
+	{
+#if USE_USD_SDK
+		return Impl->PxrSdfLayer.Get()->IsMuted();
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	void FSdfLayer::SetMuted( bool bMuted )
+	{
+#if USE_USD_SDK
+		return Impl->PxrSdfLayer.Get()->SetMuted( bMuted );
+#endif // #if USE_USD_SDK
+	}
 }

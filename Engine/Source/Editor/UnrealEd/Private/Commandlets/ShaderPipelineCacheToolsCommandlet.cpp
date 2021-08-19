@@ -16,6 +16,8 @@
 #include "String/ParseLines.h"
 #include "HAL/PlatformFilemanager.h"
 
+#include "PipelineCacheUtilities.h"
+
 DEFINE_LOG_CATEGORY_STATIC(LogShaderPipelineCacheTools, Log, All);
 
 const TCHAR* STABLE_CSV_EXT = TEXT("stablepc.csv");
@@ -24,6 +26,7 @@ const TCHAR* STABLE_COMPRESSED_EXT = TEXT(".compressed");
 const int32  STABLE_COMPRESSED_EXT_LEN = 11; // len of ".compressed";
 const int32  STABLE_COMPRESSED_VER = 2;
 const int64  STABLE_MAX_CHUNK_SIZE = MAX_int32 - 100 * 1024 * 1024;
+const TCHAR* ShaderStableKeysFileExt = TEXT("shk");
 
 struct FSCDataChunk
 {
@@ -70,57 +73,59 @@ void ExpandWildcards(TArray<FString>& Parts)
 	Parts = NewParts;
 }
 
-static void LoadStableSCL(TArray<FStableShaderKeyAndValue>& StableArray, const FStringView& FileName)
+static void LoadStableShaderKeys(TArray<FStableShaderKeyAndValue>& StableArray, const FStringView& FileName)
 {
 	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Loading %.*s..."), FileName.Len(), FileName.GetData());
 
-	TArray<FString> SourceFileLines;
-	if (FFileHelper::LoadFileToStringArrayWithPredicate(SourceFileLines, *FString(FileName), [](const FString & Line) { return !Line.IsEmpty(); }))
-	{
-		UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Loaded %.*s, %d lines..."), FileName.Len(), FileName.GetData(), SourceFileLines.Num());
-	}
-
-	if (SourceFileLines.Num() < 1)
-	{
-		UE_LOG(LogShaderPipelineCacheTools, Fatal, TEXT("Could not load %.*s..."), FileName.Len(), FileName.GetData());
-		return;
-	}
-
 	const int32 StableArrayOffset = StableArray.Num();
-	StableArray.AddZeroed(SourceFileLines.Num() - 1);
-	ParallelFor(SourceFileLines.Num() - 1, [&StableArray, &SourceFileLines, StableArrayOffset](int32 Index)
-	{
-		FStableShaderKeyAndValue& Item = StableArray[StableArrayOffset + Index];
-		Item.ParseFromString(SourceFileLines[Index + 1]);
-		check(!(Item.OutputHash == FSHAHash()));
-	});
 
-	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Loaded %d shader info lines from %.*s."), StableArray.Num(), FileName.Len(), FileName.GetData());
+	if (!UE::PipelineCacheUtilities::LoadStableKeysFile(FileName, StableArray))
+	{
+		UE_LOG(LogShaderPipelineCacheTools, Error, TEXT("Could not load stable shader keys from %.*s."), FileName.Len(), FileName.GetData());
+	}
+
+	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Loaded %d shader info lines from %.*s."), (StableArray.Num() - StableArrayOffset), FileName.Len(), FileName.GetData());
 }
 
-static void LoadStableSCLs(TMultiMap<FStableShaderKeyAndValue, FSHAHash>& StableMap, TArrayView<const FStringView> FileNames)
+static void LoadStableShaderKeysMultiple(TMultiMap<FStableShaderKeyAndValue, FSHAHash>& StableMap, TArrayView<const FStringView> FileNames)
 {
 	TArray<TArray<FStableShaderKeyAndValue>> StableArrays;
 	StableArrays.AddDefaulted(FileNames.Num());
-	ParallelFor(FileNames.Num(), [&StableArrays, &FileNames](int32 Index) { LoadStableSCL(StableArrays[Index], FileNames[Index]); });
+	ParallelFor(FileNames.Num(), [&StableArrays, &FileNames](int32 Index) { LoadStableShaderKeys(StableArrays[Index], FileNames[Index]); });
 
-	const int32 StableArrayCount = Algo::TransformAccumulate(StableArrays, &TArray<FStableShaderKeyAndValue>::Num, 0);
-	StableMap.Reserve(StableMap.Num() + StableArrayCount);
-	for (const TArray<FStableShaderKeyAndValue>& StableArray : StableArrays)
+	if (StableArrays.Num() > 0)
 	{
-		for (const FStableShaderKeyAndValue& Item : StableArray)
+		const int32 StableArrayCount = Algo::TransformAccumulate(StableArrays, &TArray<FStableShaderKeyAndValue>::Num, 0);
+		StableMap.Reserve(StableMap.Num() + StableArrayCount);
+
+		// Since stable keys are saved from a TSet, we assume that a single array does not have non-unique members, so add the largest one without using AddUnique
+		StableArrays.Sort([](const TArray<FStableShaderKeyAndValue>& A, const TArray<FStableShaderKeyAndValue>& B) { return (A.Num() > B.Num()); });
+		const TArray<FStableShaderKeyAndValue>& StableArrayLargest = StableArrays[0];
+		for (const FStableShaderKeyAndValue& Item : StableArrayLargest)
 		{
-			StableMap.AddUnique(Item, Item.OutputHash);
+			StableMap.Add(Item, Item.OutputHash);
+		}
+
+		if (StableArrays.Num() > 1)
+		{
+			for (int32 IdxStableArray = 1, StableArraysNum = StableArrays.Num(); IdxStableArray < StableArraysNum; ++IdxStableArray)
+			{
+				const TArray<FStableShaderKeyAndValue>& StableArray = StableArrays[IdxStableArray];
+				for (const FStableShaderKeyAndValue& Item : StableArray)
+				{
+					StableMap.AddUnique(Item, Item.OutputHash);
+				}
+			}
 		}
 	}
 }
 
 // Version optimized for ExpandPSOSC
-static void LoadStableSCLs(TMultiMap<int32, FSHAHash>& StableMap, TArray<FStableShaderKeyAndValue>& StableShaderKeyIndexTable, TArrayView<const FStringView> FileNames)
+static void LoadStableShaderKeysMultiple(TMultiMap<int32, FSHAHash>& StableMap, TArray<FStableShaderKeyAndValue>& StableShaderKeyIndexTable, TArrayView<const FStringView> FileNames)
 {
 	TArray<TArray<FStableShaderKeyAndValue>> StableArrays;
 	StableArrays.AddDefaulted(FileNames.Num());
-	ParallelFor(FileNames.Num(), [&StableArrays, &FileNames](int32 Index) { LoadStableSCL(StableArrays[Index], FileNames[Index]); });
+	ParallelFor(FileNames.Num(), [&StableArrays, &FileNames](int32 Index) { LoadStableShaderKeys(StableArrays[Index], FileNames[Index]); });
 
 	const int32 StableArrayCount = Algo::TransformAccumulate(StableArrays, &TArray<FStableShaderKeyAndValue>::Num, 0);
 	StableMap.Reserve(StableMap.Num() + StableArrayCount);
@@ -446,7 +451,7 @@ static bool GetStableShaders(const TMap<FSHAHash, TArray<int32>>& InverseMap, TA
 	if (!Out)
 	{
 		UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("No shaders found with hash %s"), *Shader.ToString());
-		UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("If you can find the old .scl.csv file for this build, adding it will allow these PSOs to be usable."));
+		UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("If you can find the old %s file for this build, adding it will allow these PSOs to be usable."), ShaderStableKeysFileExt);
 		bOutAnyActiveButMissing = true;
 		return false;
 	}
@@ -559,7 +564,7 @@ int32 DumpSCLCSV(const FString& Token)
 {
 	const FStringView File = Token;
 	TMultiMap<FStableShaderKeyAndValue, FSHAHash> StableMap;
-	LoadStableSCLs(StableMap, MakeArrayView(&File, 1));
+	LoadStableShaderKeysMultiple(StableMap, MakeArrayView(&File, 1));
 	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("    %s"), *FStableShaderKeyAndValue::HeaderLine());
 	for (const auto& Pair : StableMap)
 	{
@@ -587,7 +592,7 @@ struct FPermutation
 	int32 Slots[SF_NumFrequencies];
 };
 
-void GeneratePermuations(TArray<FPermutation>& Permutations, FPermutation& WorkingPerm, int32 SlotIndex , const TArray<int32> StableShadersPerSlot[SF_NumFrequencies], const TArray<FStableShaderKeyAndValue>& StableArray, const bool ActivePerSlot[SF_NumFrequencies])
+void GeneratePermutations(TArray<FPermutation>& Permutations, FPermutation& WorkingPerm, int32 SlotIndex , const TArray<int32> StableShadersPerSlot[SF_NumFrequencies], const TArray<FStableShaderKeyAndValue>& StableArray, const bool ActivePerSlot[SF_NumFrequencies])
 {
 	check(SlotIndex >= 0 && SlotIndex <= SF_NumFrequencies);
 	while (SlotIndex < SF_NumFrequencies && !ActivePerSlot[SlotIndex])
@@ -621,7 +626,7 @@ void GeneratePermuations(TArray<FPermutation>& Permutations, FPermutation& Worki
 			continue;
 		}
 		WorkingPerm.Slots[SlotIndex] = StableShadersPerSlot[SlotIndex][StableIndex];
-		GeneratePermuations(Permutations, WorkingPerm, SlotIndex + 1, StableShadersPerSlot, StableArray, ActivePerSlot);
+		GeneratePermutations(Permutations, WorkingPerm, SlotIndex + 1, StableShadersPerSlot, StableArray, ActivePerSlot);
 	}
 }
 
@@ -637,7 +642,7 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 	TArray<FStringView, TInlineAllocator<16>> StableCSVs;
 	for (int32 Index = 0; Index < Tokens.Num() - 1; Index++)
 	{
-		if (Tokens[Index].EndsWith(TEXT(".scl.csv")))
+		if (Tokens[Index].EndsWith(ShaderStableKeysFileExt))
 		{
 			StableCSVs.Add(Tokens[Index]);
 		}
@@ -647,10 +652,10 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 	// and permutation slots use indices to this array instead of storing their own copies of FStableShaderKeyAndValue objects
 	TArray<FStableShaderKeyAndValue> StableShaderKeyIndexTable;
 	TMultiMap<int32, FSHAHash> StableMap;
-	LoadStableSCLs(StableMap, StableShaderKeyIndexTable, StableCSVs);
+	LoadStableShaderKeysMultiple(StableMap, StableShaderKeyIndexTable, StableCSVs);
 	if (!StableMap.Num())
 	{
-		UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("No .scl.csv found or they were all empty. Nothing to do."));
+		UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("No %s found or they were all empty. Nothing to do."), ShaderStableKeysFileExt);
 		return 0;
 	}
 	if (UE_LOG_ACTIVE(LogShaderPipelineCacheTools, Verbose))
@@ -719,7 +724,7 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 		}
 		else
 		{
-			check(Tokens[Index].EndsWith(TEXT(".scl.csv")));
+			check(Tokens[Index].EndsWith(ShaderStableKeysFileExt));
 		}
 	}
 	if (!PSOs.Num())
@@ -798,13 +803,27 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 	TArray<FPermsPerPSO> StableResults;
 	StableResults.Reserve(PSOs.Num());
 	int32 NumSkipped = 0;
-	int32 NumExamined = 0;
+	int32 NumExamined = PSOs.Num();
+	FCriticalSection StableResultsAdditionGuard;	// guards addition to StableResults table
+	FCriticalSection ConsoleOutputGuard;			// so the printouts from various PSOs aren't interleaved. Also guards NumSkipped, TotalStablePSO and other stat vars
 
+	// we cannot run ParallelFor on a TSet, so linearize it
+	TArray<const FPipelineCacheFileFormatPSO*> PSOPtrs;
+	PSOPtrs.Reserve(PSOs.Num());
 	for (const FPipelineCacheFileFormatPSO& Item : PSOs)
-	{ 
-		NumExamined++;
+	{
+		PSOPtrs.Add(&Item);
+	}
+
+	check(SF_Vertex == 0 && SF_Compute == 5);
+	ParallelFor(
+		PSOPtrs.Num(),
+		[&StableResults, &StableResultsAdditionGuard, &ConsoleOutputGuard, &PSOPtrs,
+		&TotalStablePSOs, &NumSkipped, &InverseMap, &StableShaderKeyIndexTable
+		](int32 PSOIndex)
+	{
+		const FPipelineCacheFileFormatPSO& Item = *PSOPtrs[PSOIndex];
 		
-		check(SF_Vertex == 0 && SF_Compute == 5);
 		TArray<int32> StableShadersPerSlot[SF_NumFrequencies];
 		bool ActivePerSlot[SF_NumFrequencies] = { false };
 
@@ -829,11 +848,13 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 		}
 		else
 		{
+			FScopeLock Lock(&ConsoleOutputGuard);
 			UE_LOG(LogShaderPipelineCacheTools, Error, TEXT("Unexpected pipeline cache descriptor type %d"), int32(Item.Type));
 		}
 
 		if (OutAnyActiveButMissing)
 		{
+			FScopeLock Lock(&ConsoleOutputGuard);
 			UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("PSO had an active shader slot that did not match any current shaders, ignored."));
 			if (Item.Type == FPipelineCacheFileFormatPSO::DescriptorType::Compute)
 			{
@@ -856,7 +877,7 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 			{
 				UE_LOG(LogShaderPipelineCacheTools, Error, TEXT("Unexpected pipeline cache descriptor type %d"), int32(Item.Type));
 			}
-			continue;
+			return;
 		}
 
 		if (Item.Type == FPipelineCacheFileFormatPSO::DescriptorType::Graphics)
@@ -909,13 +930,15 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 			}
 			if (!bAnyActive)
 			{
+				FScopeLock Lock(&ConsoleOutputGuard);
 				NumSkipped++;
 				UE_LOG(LogShaderPipelineCacheTools, Verbose, TEXT("PSO did not create any stable PSOs! (no active shader slots)"));
 				UE_LOG(LogShaderPipelineCacheTools, Verbose, TEXT("   %s"), *Item.GraphicsDesc.StateToString());
-				continue;
+				return;
 			}
 			if (bRemovedAll)
 			{
+				FScopeLock Lock(&ConsoleOutputGuard);
 				UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("PSO did not create any stable PSOs! (no cross shader slot compatibility)"));
 				UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("   %s"), *Item.GraphicsDesc.StateToString());
 
@@ -925,13 +948,12 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 				PrintShaders(InverseMap, StableShaderKeyIndexTable, Item.GraphicsDesc.HullShader, TEXT("HullShader"));
 				PrintShaders(InverseMap, StableShaderKeyIndexTable, Item.GraphicsDesc.DomainShader, TEXT("DomainShader"));
 
-				continue;
+				return;
 			}
 			// We could have done this on the fly, but that loop was already pretty complicated. Here we generate all plausible permutations and write them out
 		}
 
-		StableResults.AddDefaulted();
-		FPermsPerPSO& Current = StableResults.Last();
+		FPermsPerPSO Current;
 		Current.PSO = &Item;
 
 		for (int32 Index = 0; Index < SF_NumFrequencies; Index++)
@@ -941,18 +963,28 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 
 		TArray<FPermutation>& Permutations(Current.Permutations);
 		FPermutation WorkingPerm = {};
-		GeneratePermuations(Permutations, WorkingPerm, 0, StableShadersPerSlot, StableShaderKeyIndexTable, ActivePerSlot);
+		GeneratePermutations(Permutations, WorkingPerm, 0, StableShadersPerSlot, StableShaderKeyIndexTable, ActivePerSlot);
 		if (!Permutations.Num())
 		{
+			FScopeLock Lock(&ConsoleOutputGuard);
 			UE_LOG(LogShaderPipelineCacheTools, Error, TEXT("PSO did not create any stable PSOs! (somehow)"));
 			// this is fatal because now we have a bogus thing in the list
 			UE_LOG(LogShaderPipelineCacheTools, Fatal, TEXT("   %s"), *Item.GraphicsDesc.StateToString());
-			continue;
+			return;
 		}
 
+		{
+			FScopeLock Lock(&StableResultsAdditionGuard);
+			StableResults.Add(Current);
+		}
+
+		FScopeLock Lock(&ConsoleOutputGuard);
 		UE_LOG(LogShaderPipelineCacheTools, Verbose, TEXT("----- PSO created %d stable permutations --------------"), Permutations.Num());
 		TotalStablePSOs += Permutations.Num();
-	}
+	},
+	EParallelForFlags::Unbalanced
+	);
+
 	UE_CLOG(NumSkipped > 0, LogShaderPipelineCacheTools, Warning, TEXT("%d/%d PSO did not create any stable PSOs! (no active shader slots)"), NumSkipped, NumExamined);
 	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Generated %d stable PSOs total"), TotalStablePSOs);
 	if (!TotalStablePSOs || !StableResults.Num())
@@ -1304,7 +1336,7 @@ static TSet<FPipelineCacheFileFormatPSO> ParseStableCSV(const FString& FileName,
 
 			if (Count > 1)
 			{
-				UE_LOG(LogShaderPipelineCacheTools, Error, TEXT("Stable PSO maps to multiple shaders. This is usually a bad thing and means you used .scl.csv files from multiple builds. Ignoring all but the last %s"), *Shader.ToString());
+				UE_LOG(LogShaderPipelineCacheTools, Error, TEXT("Stable PSO maps to multiple shaders. This is usually a bad thing and means you used %s files from multiple builds. Ignoring all but the last %s"), ShaderStableKeysFileExt, *Shader.ToString());
 			}
 
 			switch (AdjustedSlotIndex)
@@ -1507,6 +1539,10 @@ void FilterInvalidPSOs(TSet<FPipelineCacheFileFormatPSO>& InOutPSOs, const TMult
 				case VET_Short4N:
 				case VET_UShort4:
 				case VET_UShort4N:
+				case VET_PackedNormal:
+				case VET_UByte4:
+				case VET_UByte4N:
+				case VET_Color:
 					return 4;
 
 				case VET_Float3:
@@ -1585,6 +1621,12 @@ void FilterInvalidPSOs(TSet<FPipelineCacheFileFormatPSO>& InOutPSOs, const TMult
 					}
 
 					if (IsUShortNOrTuple(A[Idx].Type) && IsUShortNOrTuple(B[Idx].Type))
+					{
+						continue;
+					}
+
+					// also blindly allow any types that agree on the number of elements
+					if (NumElements(A[Idx].Type) == NumElements(B[Idx].Type))
 					{
 						continue;
 					}
@@ -1815,7 +1857,7 @@ int32 BuildPSOSC(const TArray<FString>& Tokens)
 
 	for (int32 Index = 0; Index < Tokens.Num() - 1; Index++)
 	{
-		if (Tokens[Index].EndsWith(TEXT(".scl.csv")))
+		if (Tokens[Index].EndsWith(ShaderStableKeysFileExt))
 		{
 			StableSCLs.Add(Tokens[Index]);
 		}
@@ -1833,7 +1875,7 @@ int32 BuildPSOSC(const TArray<FString>& Tokens)
 	TMultiMap<FStableShaderKeyAndValue, FSHAHash> StableMap;
 	FGraphEventRef StableMapTask = FFunctionGraphTask::CreateAndDispatchWhenReady([&StableSCLs, &StableMap]
 	{
-		LoadStableSCLs(StableMap, StableSCLs);
+		LoadStableShaderKeysMultiple(StableMap, StableSCLs);
 		if (UE_LOG_ACTIVE(LogShaderPipelineCacheTools, Verbose))
 		{
 			UE_LOG(LogShaderPipelineCacheTools, Verbose, TEXT("    %s"), *FStableShaderKeyAndValue::HeaderLine());
@@ -2223,7 +2265,7 @@ int32 UShaderPipelineCacheToolsCommandlet::StaticMain(const FString& Params)
 				{
 					return DumpPSOSC(Tokens[Index]);
 				}
-				if (Tokens[Index].EndsWith(TEXT(".scl.csv")))
+				if (Tokens[Index].EndsWith(ShaderStableKeysFileExt))
 				{
 					return DumpSCLCSV(Tokens[Index]);
 				}
@@ -2236,10 +2278,10 @@ int32 UShaderPipelineCacheToolsCommandlet::StaticMain(const FString& Params)
 		}
 	}
 	
-	UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("Usage: Dump ShaderCache1.upipelinecache SCLInfo2.scl.csv [...]]\n"));
+	UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("Usage: Dump ShaderCache1.upipelinecache SCLInfo2%s [...]]\n"), ShaderStableKeysFileExt);
 	UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("Usage: Diff ShaderCache1.stablepc.csv ShaderCache1.stablepc.csv [...]]\n"));
-	UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("Usage: Expand Input1.upipelinecache Dir2/*.upipelinecache InputSCLInfo1.scl.csv Dir2/*.scl.csv InputSCLInfo3.scl.csv [...] Output.stablepc.csv\n"));
-	UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("Usage: Build Input.stablepc.csv InputDir2/*.stablepc.csv InputSCLInfo1.scl.csv Dir2/*.scl.csv InputSCLInfo3.scl.csv [...] Output.upipelinecache\n"));
+	UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("Usage: Expand Input1.upipelinecache Dir2/*.upipelinecache InputSCLInfo1%s Dir2/*%s InputSCLInfo3%s [...] Output.stablepc.csv\n"), ShaderStableKeysFileExt, ShaderStableKeysFileExt, ShaderStableKeysFileExt);
+	UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("Usage: Build Input.stablepc.csv InputDir2/*.stablepc.csv InputSCLInfo1.%s Dir2/*.%s InputSCLInfo3.%s [...] Output.upipelinecache\n"), ShaderStableKeysFileExt, ShaderStableKeysFileExt, ShaderStableKeysFileExt);
 	UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("Usage: Decompress Input1.stablepc.csv.compressed Input2.stablepc.csv.compressed [...]\n"));
 	UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("Usage: All commands accept stablepc.csv.compressed instead of stablepc.csv for compressing output\n"));
 	return 0;

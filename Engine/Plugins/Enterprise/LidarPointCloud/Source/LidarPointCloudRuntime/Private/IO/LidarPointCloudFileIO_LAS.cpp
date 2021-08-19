@@ -601,13 +601,13 @@ bool ULidarPointCloudFileIO_LAS::HandleImportLAS(const FString& Filename, FLidar
 		int64 PointsRead = 0;
 
 		// Clear any existing data
-		OutImportResults.Points.Empty(TotalPointsToRead);
+		OutImportResults.Points.Empty(bUseConcurrentImport ? 0 : TotalPointsToRead);
 		OutImportResults.ClassificationsImported.Empty();
 
 		// Multi-threading
 		FCriticalSection PointsLock;
 		TArray<TFuture<void>> ThreadResults;
-		FLidarPointCloudDataBufferManager BufferManager(MaxPointsToRead * Header.PointDataRecordLength);
+		FLidarPointCloudDataBufferManager BufferManager(MaxPointsToRead * Header.PointDataRecordLength, FPlatformMisc::NumberOfCoresIncludingHyperthreads() - 1);
 
 		// Stream the data
 		while (PointsRead < TotalPointsToRead && !OutImportResults.IsCancelled())
@@ -623,7 +623,7 @@ bool ULidarPointCloudFileIO_LAS::HandleImportLAS(const FString& Filename, FLidar
 			// Read the data
 			Reader->Serialize(Buffer->GetData(), PointsToRead * Header.PointDataRecordLength);
 
-			ThreadResults.Add(Async(EAsyncExecution::ThreadPool, [PointsToRead, Buffer, &ImportScale, &bHasIntensityData, IntensityBitShift, RGBBitShift, &Header, &OutImportResults, &PointsLock, bHasRGB, RGBOffset, ClassificationOffset, bUseConcurrentImport]
+			ThreadResults.Add(Async(EAsyncExecution::Thread, [PointsToRead, Buffer, &ImportScale, &bHasIntensityData, IntensityBitShift, RGBBitShift, &Header, &OutImportResults, &PointsLock, bHasRGB, RGBOffset, ClassificationOffset, bUseConcurrentImport]
 				{
 					uint8* Data = Buffer->GetData();
 
@@ -828,7 +828,7 @@ bool ULidarPointCloudFileIO_LAS::HandleImportLAZ(const FString& Filename, FLidar
 
 			Wrapper.Seek(StartIdx);
 
-			ThreadResults.Add(Async(EAsyncExecution::ThreadPool, [t, StartIdx, EndIdx, &Wrapper, &Point, &OutImportResults, bHasIntensityData, IntensityBitShift, bHasRGB, RGBBitShift, ImportScale, Header, &PointsLock, bUseConcurrentImport]
+			ThreadResults.Add(Async(EAsyncExecution::Thread, [t, StartIdx, EndIdx, &Wrapper, &Point, &OutImportResults, bHasIntensityData, IntensityBitShift, bHasRGB, RGBBitShift, ImportScale, Header, &PointsLock, bUseConcurrentImport]
 			{
 				// Local batching to avoid spiking RAM
 				const int64 BatchSize = 1000000;

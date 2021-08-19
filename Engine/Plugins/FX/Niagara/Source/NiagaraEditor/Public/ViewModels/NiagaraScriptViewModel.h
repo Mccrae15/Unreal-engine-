@@ -6,10 +6,12 @@
 #include "INiagaraCompiler.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
 #include "EditorUndoClient.h"
-#include "Misc/NotifyHook.h"
+#include "NiagaraParameterDefinitionsSubscriberViewModel.h"
 
 class UNiagaraScript;
 class UNiagaraScriptSource;
+class UNiagaraScriptVariable;
+class UNiagaraParameterDefinitions;
 class INiagaraParameterCollectionViewModel;
 class FNiagaraScriptGraphViewModel;
 class FNiagaraScriptInputCollectionViewModel;
@@ -20,19 +22,29 @@ class FNiagaraObjectSelection;
 
 
 /** A view model for Niagara scripts which manages other script related view models. */
-class FNiagaraScriptViewModel : public TSharedFromThis<FNiagaraScriptViewModel>, public FEditorUndoClient, public TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptViewModel>
+class FNiagaraScriptViewModel
+	: public TSharedFromThis<FNiagaraScriptViewModel>
+	, public FEditorUndoClient
+	, public TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptViewModel>
+	, public INiagaraParameterDefinitionsSubscriberViewModel
 {
 public:
-	FNiagaraScriptViewModel(TAttribute<FText> DisplayName, ENiagaraParameterEditMode InParameterEditMode);
+	FNiagaraScriptViewModel(TAttribute<FText> DisplayName, ENiagaraParameterEditMode InParameterEditMode, bool bInIsForDataProcessingOnly);
 
 	virtual ~FNiagaraScriptViewModel();
 
+	//~ Begin NiagaraParameterDefinitionsSubscriberViewModel Interface
+protected:
+	virtual INiagaraParameterDefinitionsSubscriber* GetParameterDefinitionsSubscriber() override { checkf(false, TEXT("Tried to modify parameter libraries for script viewmodel; this is only a valid operation for standalone script viewmodel and scratchpad scriptviewmodel!")); return nullptr; };
+	//~ End NiagaraParameterDefinitionsSubscriberViewModel Interface
+
+public:
 	NIAGARAEDITOR_API FText GetDisplayName() const;
 
-	NIAGARAEDITOR_API const TArray<TWeakObjectPtr<UNiagaraScript>>& GetScripts() const;
+	NIAGARAEDITOR_API const TArray<FVersionedNiagaraScriptWeakPtr>& GetScripts() const;
 
 	/** Sets the view model to a different script. */
-	void SetScript(UNiagaraScript* InScript);
+	void SetScript(FVersionedNiagaraScript InScript);
 
 	void SetScripts(UNiagaraEmitter* InEmitter);
 
@@ -41,9 +53,6 @@ public:
 	
 	/** Gets the view model for the output parameter collection. */
 	TSharedRef<FNiagaraScriptOutputCollectionViewModel> GetOutputCollectionViewModel();
-
-	TSharedRef<INiagaraParameterCollectionViewModel> GetInputParameterMapViewModel();
-	TSharedRef<INiagaraParameterCollectionViewModel> GetOutputParameterMapViewModel();
 
 	/** Gets the view model for the graph. */
 	NIAGARAEDITOR_API TSharedRef<FNiagaraScriptGraphViewModel> GetGraphViewModel();
@@ -60,7 +69,7 @@ public:
 	void CompileStandaloneScript(bool bForceCompile = false);
 
 	/** Get the latest status of this view-model's script compilation.*/
-	virtual ENiagaraScriptCompileStatus GetLatestCompileStatus();
+	virtual ENiagaraScriptCompileStatus GetLatestCompileStatus(FGuid VersionGuid = FGuid());
 
 	/** Refreshes the nodes in the script graph, updating the pins to match external changes. */
 	void RefreshNodes();
@@ -76,7 +85,8 @@ public:
 	FText GetScriptErrors(ENiagaraScriptUsage InUsage, FGuid InUsageId) const;
 
 	/** If this is editing a standalone script, returns the script being edited.*/
-	UNiagaraScript* GetStandaloneScript();
+	virtual FVersionedNiagaraScript GetStandaloneScript();
+	//const UNiagaraScript* GetStandaloneScript() const;
 
 private:
 	/** Handles the selection changing in the graph view model. */
@@ -88,7 +98,7 @@ private:
 	/** Marks this script view model as dirty and marks the scripts as needing synchrnozation. */
 	void MarkAllDirty(FString Reason);
 
-	void SetScripts(UNiagaraScriptSource* InScriptSource, TArray<UNiagaraScript*>& InScripts);
+	void SetScripts(UNiagaraScriptSource* InScriptSource, TArray<FVersionedNiagaraScript>& InScripts);
 
 	/** Handles when a value in the input parameter collection changes. */
 	void InputParameterValueChanged(FName ParameterName);
@@ -98,11 +108,11 @@ private:
 
 protected:
 	/** The script which provides the data for this view model. */
-	TArray<TWeakObjectPtr<UNiagaraScript>> Scripts;
+	TArray<FVersionedNiagaraScriptWeakPtr> Scripts;
 
-	virtual void OnVMScriptCompiled(UNiagaraScript* InScript);
+	virtual void OnVMScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
 
-	virtual void OnGPUScriptCompiled(UNiagaraScript* InScript);
+	virtual void OnGPUScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
 
 	TWeakObjectPtr<UNiagaraScriptSource> Source;
 
@@ -129,10 +139,13 @@ protected:
 
 	TArray<TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptViewModel>::Handle> RegisteredHandles;
 
-	bool IsGraphDirty() const;
+	bool IsGraphDirty(FGuid VersionGuid) const;
 
 	TArray<ENiagaraScriptCompileStatus> CompileStatuses;
 	TArray<FString> CompileErrors;
 	TArray<FString> CompilePaths;
 	TArray<TPair<ENiagaraScriptUsage, FGuid>> CompileTypes;
+
+	/** Whether or not this view model is going to be used for data processing only and will not be shown in the UI. */
+	bool bIsForDataProcessingOnly;
 };

@@ -55,8 +55,7 @@ static const TCHAR* CrashReporterSettings = TEXT("/Script/UnrealEd.CrashReporter
 #endif
 
 // Optimization that only loads symbols on demand rather than always loading all symbols for loaded modules.
-// Warning: Enabling this currently has a bug where symbols are not loaded for modules outside of the main binary directory (i.e. plugins).
-#if 0
+#if 1
 #define ON_DEMAND_SYMBOL_LOADING 1
 #else
 #define ON_DEMAND_SYMBOL_LOADING 0
@@ -84,7 +83,7 @@ FString GetSymbolSearchPath();
 HMODULE* GetProcessModules(HANDLE ProcessHandle);
 void LoadSymbolsForModule(HMODULE ModuleHandle, const FString& RemoteStorage);
 void LoadSymbolsForProcessModules(const FString &RemoteStorage);
-void LoadSymbolsForModuleByAddress(uint64 Address, const FString& RemoteStorage);
+void LoadSymbolsForModuleByAddress(uint64 Address, const FString& RemoteStorage, bool bShouldReloadModuleMissingSymbols);
 
 struct FWindowsThreadContextWrapper
 {
@@ -361,7 +360,19 @@ uint32 FWindowsPlatformStackWalk::CaptureStackBackTrace( uint64* BackTrace, uint
 			DetermineMaxCallstackDepth();
 		}
 		PVOID WinBackTrace[MAX_CALLSTACK_DEPTH];
-		uint16 NumFrames = RtlCaptureStackBackTrace(0, FMath::Min<ULONG>(GMaxCallstackDepth, MaxDepth), WinBackTrace, NULL);
+		ULONG RequestedDepth = FMath::Min<ULONG>(GMaxCallstackDepth, MaxDepth);
+		uint16 NumFrames = RtlCaptureStackBackTrace(0, RequestedDepth, WinBackTrace, NULL);
+		if (NumFrames == 0 && RequestedDepth > 0)
+		{
+			// RtlCaptureStackBackTrace sometimes returns 0, which NTAPI Undocumented Functions says is the value it returns to indicate an error
+			// In all the cases we have tested, calling it again after it returns 0 will make it succeed and return non-zero
+			NumFrames = RtlCaptureStackBackTrace(0, RequestedDepth, WinBackTrace, NULL);
+			if (NumFrames == 0)
+			{
+				// Don't send a log since this might be called from inside the log system
+				FPlatformMisc::LocalPrint(TEXT("RtlCaptureStackBackTrace failed; returning an empty backtrace."));
+			}
+		}
 		Depth = NumFrames;
 		for (uint16 FrameIndex = 0; FrameIndex < NumFrames; ++FrameIndex)
 		{
@@ -431,7 +442,8 @@ void FWindowsPlatformStackWalk::ProgramCounterToSymbolInfo( uint64 ProgramCounte
 
 #if ON_DEMAND_SYMBOL_LOADING
 	// Load symbols for the module
-	LoadSymbolsForModuleByAddress(ProgramCounter, GetSymbolSearchPath());
+	bool bShouldReloadModuleMissingDebugSymbols = !FPlatformProperties::IsMonolithicBuild() && FPlatformStackWalk::WantsDetailedCallstacksInNonMonolithicBuilds();
+	LoadSymbolsForModuleByAddress(ProgramCounter, GetSymbolSearchPath(), bShouldReloadModuleMissingDebugSymbols);
 #endif
 
 	// Set the program counter.
@@ -441,13 +453,13 @@ void FWindowsPlatformStackWalk::ProgramCounterToSymbolInfo( uint64 ProgramCounte
 	HANDLE ProcessHandle = GProcessHandle;
 
 	// Initialize symbol.
-	ANSICHAR SymbolBuffer[sizeof( IMAGEHLP_SYMBOL64 ) + FProgramCounterSymbolInfo::MAX_NAME_LENGTH] = {0};
-	IMAGEHLP_SYMBOL64* Symbol = (IMAGEHLP_SYMBOL64*)SymbolBuffer;
-	Symbol->SizeOfStruct = sizeof(SymbolBuffer);
-	Symbol->MaxNameLength = FProgramCounterSymbolInfo::MAX_NAME_LENGTH;
+	ANSICHAR SymbolBuffer[sizeof( SYMBOL_INFO ) + FProgramCounterSymbolInfo::MAX_NAME_LENGTH] = {0};
+	SYMBOL_INFO* Symbol = (SYMBOL_INFO*)SymbolBuffer;
+	Symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+	Symbol->MaxNameLen = FProgramCounterSymbolInfo::MAX_NAME_LENGTH;
 
 	// Get function name.
-	if( SymGetSymFromAddr64( ProcessHandle, ProgramCounter, nullptr, Symbol ) )
+	if( SymFromAddr( ProcessHandle, ProgramCounter, nullptr, Symbol ) )
 	{
 		// Skip any funky chars in the beginning of a function name.
 		int32 Offset = 0;
@@ -486,6 +498,79 @@ void FWindowsPlatformStackWalk::ProgramCounterToSymbolInfo( uint64 ProgramCounte
 	{
 		// Write out module information.
 		FCStringAnsi::Strncpy( out_SymbolInfo.ModuleName, ImageHelpModule.ImageName, FProgramCounterSymbolInfo::MAX_NAME_LENGTH );
+	}
+	else
+	{
+		LastError = GetLastError();
+	}
+}
+
+void FWindowsPlatformStackWalk::ProgramCounterToSymbolInfoEx(uint64 ProgramCounter, FProgramCounterSymbolInfoEx& out_SymbolInfo)
+{
+#if ON_DEMAND_SYMBOL_LOADING
+	// Load symbols for the module
+	bool bShouldReloadModuleMissingDebugSymbols = !FPlatformProperties::IsMonolithicBuild() && FPlatformStackWalk::WantsDetailedCallstacksInNonMonolithicBuilds();
+	LoadSymbolsForModuleByAddress(ProgramCounter, GetSymbolSearchPath(), bShouldReloadModuleMissingDebugSymbols);
+#endif
+
+	// Set the program counter.
+	out_SymbolInfo.ProgramCounter = ProgramCounter;
+
+	uint32 LastError = 0;
+	HANDLE ProcessHandle = GProcessHandle;
+
+	// Initialize symbol.
+	ANSICHAR SymbolBuffer[sizeof(SYMBOL_INFO) + FProgramCounterSymbolInfo::MAX_NAME_LENGTH] = { 0 };
+	SYMBOL_INFO* Symbol = (SYMBOL_INFO*)SymbolBuffer;
+	Symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+	Symbol->MaxNameLen = FProgramCounterSymbolInfo::MAX_NAME_LENGTH;
+
+	// Get function name.
+	ANSICHAR FunctionName[FProgramCounterSymbolInfo::MAX_NAME_LENGTH] = { 0 };
+	if (SymFromAddr(ProcessHandle, ProgramCounter, nullptr, Symbol))
+	{
+		// Skip any funky chars in the beginning of a function name.
+		int32 Offset = 0;
+		while (Symbol->Name[Offset] < 32 || Symbol->Name[Offset] > 127)
+		{
+			Offset++;
+		}
+
+		// Write out function name.
+		FCStringAnsi::Strncpy(FunctionName, Symbol->Name + Offset, FProgramCounterSymbolInfo::MAX_NAME_LENGTH);
+		FCStringAnsi::Strncat(FunctionName, "()", FProgramCounterSymbolInfo::MAX_NAME_LENGTH);
+		out_SymbolInfo.FunctionName = ANSI_TO_TCHAR(FunctionName);
+	}
+	else
+	{
+		// No symbol found for this address.
+		LastError = GetLastError();
+	}
+
+	// Get filename and line number.
+	ANSICHAR Filename[FProgramCounterSymbolInfo::MAX_NAME_LENGTH] = { 0 };
+	IMAGEHLP_LINE64	ImageHelpLine = { 0 };
+	ImageHelpLine.SizeOfStruct = sizeof(ImageHelpLine);
+	if (SymGetLineFromAddr64(ProcessHandle, ProgramCounter, (::DWORD*) & out_SymbolInfo.SymbolDisplacement, &ImageHelpLine))
+	{
+		FCStringAnsi::Strncpy(Filename, ImageHelpLine.FileName, FProgramCounterSymbolInfo::MAX_NAME_LENGTH);
+		out_SymbolInfo.Filename = ANSI_TO_TCHAR(Filename);
+		out_SymbolInfo.LineNumber = ImageHelpLine.LineNumber;
+	}
+	else
+	{
+		LastError = GetLastError();
+	}
+
+	// Get module name.
+	ANSICHAR ModuleName[FProgramCounterSymbolInfo::MAX_NAME_LENGTH] = { 0 };
+	IMAGEHLP_MODULE64 ImageHelpModule = { 0 };
+	ImageHelpModule.SizeOfStruct = sizeof(ImageHelpModule);
+	if (SymGetModuleInfo64(ProcessHandle, ProgramCounter, &ImageHelpModule))
+	{
+		// Write out module information.
+		FCStringAnsi::Strncpy(ModuleName, ImageHelpModule.ImageName, FProgramCounterSymbolInfo::MAX_NAME_LENGTH);
+		out_SymbolInfo.ModuleName = ANSI_TO_TCHAR(ModuleName);
 	}
 	else
 	{
@@ -738,12 +823,28 @@ void LoadSymbolsForProcessModules(const FString &RemoteStorage)
 	FMemory::Free(ModuleHandlePointer);
 }
 
-void LoadSymbolsForModuleByAddress(uint64 Address, const FString& RemoteStorage)
+void LoadSymbolsForModuleByAddress(uint64 Address, const FString& RemoteStorage, bool bShouldReloadModuleMissingDebugSymbols)
 {
 	HMODULE ModuleHandle = NULL;
 
 	if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCTSTR)Address, &ModuleHandle))
 	{
+		// Check if the module was already loaded, but failed to locate the the debug symbols.
+		if (bShouldReloadModuleMissingDebugSymbols)
+		{
+			IMAGEHLP_MODULE64 ImageHelpModule = {0};
+			ImageHelpModule.SizeOfStruct = sizeof( ImageHelpModule );
+			if (SymGetModuleInfo64(GProcessHandle, Address, &ImageHelpModule) && ImageHelpModule.SymType == SymNone)
+			{
+				MODULEINFO ModuleInfo = { 0 };
+				FGetModuleInformation(GProcessHandle, ModuleHandle, &ModuleInfo, sizeof(ModuleInfo));
+
+				// The module is already loaded but 'SymNone' means that we are missing debug symbols. The module was likely loaded implicitly while the symbol search path wasn't properly set, so the debug engine did not find the .pdb and
+				// now that 'bad' state is cached. Unloading the module will clear the entry in the debug engine cache and loading it again with the proper symbol search path should pick up the .pdb this time.
+				SymUnloadModule(GProcessHandle, (DWORD64)ModuleInfo.lpBaseOfDll);
+			}
+		}
+
 		LoadSymbolsForModule(ModuleHandle, RemoteStorage);
 	}
 }

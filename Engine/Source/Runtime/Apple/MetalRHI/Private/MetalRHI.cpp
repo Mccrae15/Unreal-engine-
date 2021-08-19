@@ -29,20 +29,12 @@ bool GIsMetalInitialized = false;
 
 FMetalBufferFormat GMetalBufferFormats[PF_MAX];
 
-static TAutoConsoleVariable<int32> CVarUseRHIThread(
+static bool GFormatSupportsTypedUAVLoad[PF_MAX] = { false };
+
+static TAutoConsoleVariable<int32> CVarUseIOSRHIThread(
 													TEXT("r.Metal.IOSRHIThread"),
 													0,
 													TEXT("Controls RHIThread usage for IOS:\n")
-													TEXT("\t0: No RHIThread.\n")
-													TEXT("\t1: Use RHIThread.\n")
-													TEXT("Default is 0."),
-													ECVF_Default | ECVF_RenderThreadSafe
-													);
-
-static TAutoConsoleVariable<int32> CVarIntelUseRHIThread(
-													TEXT("r.Metal.IntelRHIThread"),
-													0,
-													TEXT("Controls RHIThread usage for Mac Intel HW:\n")
 													TEXT("\t0: No RHIThread.\n")
 													TEXT("\t1: Use RHIThread.\n")
 													TEXT("Default is 0."),
@@ -187,7 +179,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 
 	bool const bRequestedFeatureLevel = (RequestedFeatureLevel != ERHIFeatureLevel::Num);
 	bool bSupportsPointLights = false;
-	bool bSupportsRHIThread = false;
 	
 	// get the device to ask about capabilities?
 	mtlpp::Device Device = ImmediateContext.Context->GetDevice();
@@ -198,12 +189,14 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	bool bCanUseWideMRTs = true;
 	bool bCanUseASTC = true;
 	GRHISupportsDrawIndirect = Device.SupportsFeatureSet(mtlpp::FeatureSet::tvOS_GPUFamily2_v1);
+	GRHISupportsPixelShaderUAVs = Device.SupportsFeatureSet(mtlpp::FeatureSet::tvOS_GPUFamily2_v1);
 #else
 	bool bCanUseWideMRTs = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily2_v1);
 	bool bCanUseASTC = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily2_v1) && !FParse::Param(FCommandLine::Get(),TEXT("noastc"));
 	
 	GRHISupportsRWTextureBuffers = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily4_v1);
 	GRHISupportsDrawIndirect = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily3_v1);
+	GRHISupportsPixelShaderUAVs = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily3_v1);
 
 	const mtlpp::FeatureSet FeatureSets[] = {
 		mtlpp::FeatureSet::iOS_GPUFamily1_v1,
@@ -236,7 +229,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
     GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsMetalMRT"), bProjectSupportsMRTs, GEngineIni);
 
 	bool const bRequestedMetalMRT = ((RequestedFeatureLevel >= ERHIFeatureLevel::SM5) || (!bRequestedFeatureLevel && FParse::Param(FCommandLine::Get(),TEXT("metalmrt"))));
-	bSupportsRHIThread = FParse::Param(FCommandLine::Get(),TEXT("rhithread"));
 
     // only allow GBuffers, etc on A8s (A7s are just not going to cut it)
     if (bProjectSupportsMRTs && bCanUseWideMRTs && bRequestedMetalMRT)
@@ -320,7 +312,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		GRHIVendorId = 0x10DE;
 		bSupportsTiledReflections = true;
 		bSupportsDistanceFields = (FPlatformMisc::MacOSXVersionCompare(10,11,4) >= 0);
-		bSupportsRHIThread = (FPlatformMisc::MacOSXVersionCompare(10,12,0) >= 0);
 	}
 	else if(GRHIAdapterName.Contains("ATi") || GRHIAdapterName.Contains("AMD"))
 	{
@@ -332,7 +323,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		}
 		bSupportsTiledReflections = true;
 		bSupportsDistanceFields = (FPlatformMisc::MacOSXVersionCompare(10,11,4) >= 0);
-		bSupportsRHIThread = true;
 		
 		// On AMD can also use completion handler time stamp if macOS < Catalina
 		GSupportsTimestampRenderQueries = true;
@@ -342,8 +332,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		bSupportsTiledReflections = false;
 		bSupportsPointLights = (FPlatformMisc::MacOSXVersionCompare(10,14,6) > 0);
 		GRHIVendorId = 0x8086;
-		// HACK: Meshes jump around in Infiltrator with RHI thread on. Needs further investigation and a real fix.
-		bSupportsRHIThread = false || CVarIntelUseRHIThread.GetValueOnAnyThread() > 0;
 		bSupportsDistanceFields = (FPlatformMisc::MacOSXVersionCompare(10,12,2) >= 0);
 		bIsIntelHaswell = (GRHIAdapterName == TEXT("Intel HD Graphics 5000") || GRHIAdapterName == TEXT("Intel Iris Graphics") || GRHIAdapterName == TEXT("Intel Iris Pro Graphics"));
 	}
@@ -353,7 +341,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		GRHIVendorId = 0x106B;
 		bSupportsTiledReflections = true;
 		bSupportsDistanceFields = true;
-		bSupportsRHIThread = true;
 		GSupportsTimestampRenderQueries = true;
 	}
 
@@ -492,12 +479,8 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GRHISupportsRHIThread = false;
 	if (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5)
 	{
+		GRHISupportsRHIThread = true;
 #if METAL_SUPPORTS_PARALLEL_RHI_EXECUTE
-#if WITH_EDITORONLY_DATA
-		GRHISupportsRHIThread = (!GIsEditor && bSupportsRHIThread);
-#else
-		GRHISupportsRHIThread = bSupportsRHIThread;
-#endif
 		GRHISupportsParallelRHIExecute = GRHISupportsRHIThread && ((!IsRHIDeviceIntel() && !IsRHIDeviceNVIDIA()) || FParse::Param(FCommandLine::Get(),TEXT("metalparallel")));
 #endif
 		GSupportsEfficientAsyncCompute = GRHISupportsParallelRHIExecute && (IsRHIDeviceAMD() || /*TODO: IsRHIDeviceApple()*/ (GRHIVendorId == 0x106B) || PLATFORM_IOS || FParse::Param(FCommandLine::Get(),TEXT("metalasynccompute"))); // Only AMD and Apple currently support async. compute and it requires parallel execution to be useful.
@@ -505,7 +488,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	}
 	else
 	{
-		GRHISupportsRHIThread = bSupportsRHIThread || (CVarUseRHIThread.GetValueOnAnyThread() > 0);
+		GRHISupportsRHIThread = FParse::Param(FCommandLine::Get(),TEXT("rhithread")) || (CVarUseIOSRHIThread.GetValueOnAnyThread() > 0);
 		GRHISupportsParallelRHIExecute = false;
 		GSupportsEfficientAsyncCompute = false;
 		GSupportsParallelOcclusionQueries = false;
@@ -574,6 +557,8 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GSupportsWideMRT = bCanUseWideMRTs;
 	// GSupportsTransientResourceAliasing = FMetalCommandQueue::SupportsFeature(EMetalFeaturesHeaps) && FMetalCommandQueue::SupportsFeature(EMetalFeaturesFences);
 	GSupportsSeparateRenderTargetBlendState = (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5);
+
+	GRHISupportsPipelineFileCache = true;
 
 #if PLATFORM_MAC
 	check(Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v1));
@@ -902,7 +887,34 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		checkf(GMetalBufferFormats[i].DataFormat != 255, TEXT("Metal data buffer format for pixel-format %s (%d) is not configured!"), GPixelFormats[i].Name, i);
 	}
 #endif
-		
+
+	switch (Device.GetReadWriteTextureSupport())
+	{
+		case mtlpp::ReadWriteTextureTier::Tier2:
+			GFormatSupportsTypedUAVLoad[PF_A32B32G32R32F]			= true;
+			GFormatSupportsTypedUAVLoad[PF_R32G32B32A32_UINT]		= true;
+			GFormatSupportsTypedUAVLoad[PF_FloatRGBA]				= true;
+			GFormatSupportsTypedUAVLoad[PF_R16G16B16A16_UINT]		= true;
+			GFormatSupportsTypedUAVLoad[PF_R16G16B16A16_SINT]		= true;
+			GFormatSupportsTypedUAVLoad[PF_R8G8B8A8]				= true;
+			GFormatSupportsTypedUAVLoad[PF_R8G8B8A8_UINT]			= true;
+			GFormatSupportsTypedUAVLoad[PF_R16F]					= true;
+			GFormatSupportsTypedUAVLoad[PF_R16_UINT]				= true;
+			GFormatSupportsTypedUAVLoad[PF_R16_SINT]				= true;
+			GFormatSupportsTypedUAVLoad[PF_R8]						= true;
+			GFormatSupportsTypedUAVLoad[PF_R8_UINT]					= true;
+			// Fall through
+
+		case mtlpp::ReadWriteTextureTier::Tier1:
+			GFormatSupportsTypedUAVLoad[PF_R32_FLOAT]				= true;
+			GFormatSupportsTypedUAVLoad[PF_R32_UINT]				= true;
+			GFormatSupportsTypedUAVLoad[PF_R32_SINT]				= true;
+			// Fall through
+
+		case mtlpp::ReadWriteTextureTier::None:
+			break;
+	};
+
 	// get driver version (todo: share with other RHIs)
 	{
 		FGPUDriverInfo GPUDriverInfo = FPlatformMisc::GetGPUDriverInfo(GRHIAdapterName);
@@ -1206,11 +1218,25 @@ void* FMetalDynamicRHI::RHIGetNativeDevice()
 	return (void*)ImmediateContext.Context->GetDevice().GetPtr();
 }
 
+void* FMetalDynamicRHI::RHIGetNativeGraphicsQueue()
+{
+	return ImmediateContext.GetInternalContext().GetCommandQueue().GetQueue();
+}
+
+void* FMetalDynamicRHI::RHIGetNativeComputeQueue()
+{
+	return ImmediateContext.GetInternalContext().GetCommandQueue().GetQueue();
+}
+
 void* FMetalDynamicRHI::RHIGetNativeInstance()
 {
 	return nullptr;
 }
 
+bool FMetalDynamicRHI::RHIIsTypedUAVLoadSupported(EPixelFormat PixelFormat)
+{
+	return GFormatSupportsTypedUAVLoad[PixelFormat];
+}
 
 uint16 FMetalDynamicRHI::RHIGetPlatformTextureMaxSampleCount()
 {

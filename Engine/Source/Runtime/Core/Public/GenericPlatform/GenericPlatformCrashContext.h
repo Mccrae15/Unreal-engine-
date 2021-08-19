@@ -5,10 +5,13 @@
 #include "CoreTypes.h"
 #include "HAL/PlatformMemory.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformStackWalk.h"
 #include "Misc/Optional.h"
 #include "Containers/UnrealString.h"
 
-struct FProgramCounterSymbolInfo;
+#ifndef WITH_ADDITIONAL_CRASH_CONTEXTS
+#define WITH_ADDITIONAL_CRASH_CONTEXTS 0
+#endif
 
 /** Defines special exit codes used to diagnose abnormal terminations. The code values are arbitrary, but easily recongnizable in decimal. They are meant to be
     used with the out-of-process monitoring/analytics in order to figure out unexpected cases. */
@@ -38,39 +41,6 @@ enum ECrashExitCodes : int32
 	/** The exception code used for ensure, in case a kernel driver callback happens at in a dispatch level where SEH (on windows) is disabled. */
 	UnhandledEnsure = 777008,
 };
-
-/**
- * Symbol information associated with a program counter. 
- * FString version.
- * To be used by external tools.
- */
-struct CORE_API FProgramCounterSymbolInfoEx
-{
-	/** Module name. */
-	FString	ModuleName;
-
-	/** Function name. */
-	FString	FunctionName;
-
-	/** Filename. */
-	FString	Filename;
-
-	/** Line number in file. */
-	uint32	LineNumber;
-
-	/** Symbol displacement of address.	*/
-	uint64	SymbolDisplacement;
-
-	/** Program counter offset into module. */
-	uint64	OffsetInModule;
-
-	/** Program counter. */
-	uint64	ProgramCounter;
-
-	/** Default constructor. */
-	FProgramCounterSymbolInfoEx( FString InModuleName, FString InFunctionName, FString InFilename, uint32 InLineNumber, uint64 InSymbolDisplacement, uint64 InOffsetInModule, uint64 InProgramCounter );
-};
-
 
 /** Enumerates crash description versions. */
 enum class ECrashDescVersions : int32
@@ -144,7 +114,7 @@ enum class ECrashTrigger
 #define CR_MAX_DIRECTORY_CHARS 256
 #define CR_MAX_STACK_FRAMES 256
 #define CR_MAX_THREAD_NAME_CHARS 64
-#define CR_MAX_THREADS 256
+#define CR_MAX_THREADS 512
 #define CR_MAX_GENERIC_FIELD_CHARS 64
 #define CR_MAX_COMMANDLINE_CHARS 1024
 #define CR_MAX_RICHTEXT_FIELD_CHARS 512
@@ -428,6 +398,9 @@ public:
 	/** Flushes the logs. In the case of in memory logs is used on this configuration, dumps them to file. */
 	static void DumpLog(const FString& CrashFolderAbsolute);
 
+	/** Collects additional crash context providers. See FAdditionalCrashContextStack. */
+	static void DumpAdditionalContext(const TCHAR* CrashFolderAbsolute);
+
 	/** Initializes a shared crash context from current state. Will not set all fields in Dst. */
 	static void CopySharedCrashContext(FSharedCrashContext& Dst);
 
@@ -581,3 +554,82 @@ namespace RecoveryService
 	/** Tokenize the session name into its components. */
 	CORE_API bool TokenizeSessionName(const FString& SessionName, FString* OutServerName, int32* SeqNum, FString* ProjName, FDateTime* DateTime);
 }
+
+#if WITH_ADDITIONAL_CRASH_CONTEXTS
+
+/**
+ * Interface for callbacks to add context to the crash report.
+ */
+struct FCrashContextExtendedWriter
+{
+	/** Adds a named buffer to the report. Intended for larger payloads. */
+	CORE_API virtual void AddBuffer(const TCHAR* Identifier, const uint8* Data, uint32 DataSize) = 0;
+		
+	/** Add a named buffer containing a string to the report. */
+	CORE_API virtual void AddString(const TCHAR* Identifier, const TCHAR* DataStr) = 0;
+};
+
+/**
+ * A thread local stack of callbacks that can be issued at time of the crash.
+ */
+struct FAdditionalCrashContextStack
+{
+	CORE_API static void PushProvider(struct FScopedAdditionalCrashContextProvider* Provider);
+	CORE_API static void PopProvider();
+
+	static void ExecuteProviders(FCrashContextExtendedWriter& Writer);
+
+private:
+	enum { MaxStackDepth = 16 };
+	static thread_local FAdditionalCrashContextStack ThreadContextProvider;
+	FAdditionalCrashContextStack* Next;
+	const FScopedAdditionalCrashContextProvider* Stack[MaxStackDepth];
+	uint32 StackIndex = 0;
+
+	FAdditionalCrashContextStack();
+	~FAdditionalCrashContextStack();
+	
+	inline void PushProviderInternal(const FScopedAdditionalCrashContextProvider* Provider) 
+	{
+		check(StackIndex < MaxStackDepth);
+		Stack[StackIndex++] = Provider;
+	}
+
+	inline void PopProviderInternal()
+	{
+		check(StackIndex > 0);
+		Stack[--StackIndex] = nullptr;
+	}
+};
+
+struct FScopedAdditionalCrashContextProvider
+{
+public:
+	FScopedAdditionalCrashContextProvider(TUniqueFunction<void(FCrashContextExtendedWriter&)> InFunc)
+		: Func(MoveTemp(InFunc))
+	{
+		FAdditionalCrashContextStack::PushProvider(this);
+	}
+
+	~FScopedAdditionalCrashContextProvider()
+	{
+		FAdditionalCrashContextStack::PopProvider();
+	}
+
+	void Execute(FCrashContextExtendedWriter& Writer) const
+	{
+		Func(Writer);
+	}
+
+private:
+	TUniqueFunction<void(FCrashContextExtendedWriter&)> Func;
+};
+
+#define UE_ADD_CRASH_CONTEXT_SCOPE(FuncExpr) FScopedAdditionalCrashContextProvider ANONYMOUS_VARIABLE(AddCrashCtx)(FuncExpr)
+
+#else
+
+#define UE_ADD_CRASH_CONTEXT_SCOPE(FuncExpr) 
+
+#endif // WITH_ADDITIONAL_CRASH_CONTEXTS
+

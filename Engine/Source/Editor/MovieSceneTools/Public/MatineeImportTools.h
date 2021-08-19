@@ -22,6 +22,7 @@ class UInterpTrackMove;
 class UInterpTrackSound;
 class UInterpTrackVectorProp;
 class UInterpTrackVisibility;
+class UInterpTrackSlomo;
 class UMovieScene3DTransformTrack;
 class UMovieSceneAudioTrack;
 class UMovieSceneBoolTrack;
@@ -35,10 +36,23 @@ class UMovieSceneParticleTrack;
 class UMovieSceneSkeletalAnimationTrack;
 class UMovieSceneVectorTrack;
 class UMovieSceneVisibilityTrack;
+class UMovieSceneSlomoTrack;
+
+/** Defines how converted Sequence sections are sized */
+enum class EMatineeImportSectionRangeMode
+{
+	/** Sections are made infinite */
+	All,
+	/** Sections are trimmed to encompass exactly their contained keyframes, if any */
+	KeysHull
+};
 
 class MOVIESCENETOOLS_API FMatineeImportTools
 {
 public:
+
+	/** Specifies how the converted sections ar sized. Defaults to 'All'. */
+	static EMatineeImportSectionRangeMode SectionRangeMode;
 
 	/** Converts a matinee interpolation mode to its equivalent rich curve interpolation mode. */
 	static ERichCurveInterpMode MatineeInterpolationToRichCurveInterpolation( EInterpCurveMode CurveMode );
@@ -97,4 +111,7 @@ public:
 
 	/** Copies keys from a matinee visibility track to a sequencer visibility track. */
 	static bool CopyInterpVisibilityTrack( UInterpTrackVisibility* MatineeVisibilityTrack, UMovieSceneVisibilityTrack* VisibilityTrack );
+
+	/** Copies keys from a matinee Slomo track to a sequencer Slomo track. */
+	static bool CopyInterpSlomoTrack(UInterpTrackSlomo* MatineeSlomoTrack, UMovieSceneSlomoTrack* SlomoTrack);
 };

@@ -4,8 +4,10 @@
 
 #include "Trace/Analyzer.h"
 #include "TraceServices/Model/AnalysisSession.h"
+#include "Containers/Map.h"
 
 class FNetworkPredictionProvider;
+
 namespace Trace { class IAnalysisSession; }
 
 // Analyzes events that are contained in a trace,
@@ -30,9 +32,12 @@ private:
 	enum : uint16
 	{
 		RouteId_SimulationScope,
+		RouteId_SimulationState,
 		RouteId_SimulationCreated,
 		RouteId_SimulationConfig,
 		RouteId_WorldFrameStart,
+		RouteId_Version,
+		RouteId_WorldPreInit,
 		RouteId_PieBegin,
 		RouteId_SystemFault,
 		RouteId_Tick,
@@ -43,46 +48,26 @@ private:
 		RouteId_PhysicsState,
 		RouteId_NetRecv,
 		RouteId_ShouldReconcile,
+		RouteId_Reconcile,
 		RouteId_RollbackInject,
 		RouteId_PushInputFrame,
+		RouteId_FixedTickOffset,
 		RouteId_ProduceInput,
+		RouteId_BufferedInput,
 		RouteId_OOBStateMod
-
-		/*
-		RouteId_GameInstanceRegister,
-		RouteId_WorldFrameStart,
-		RouteId_SimulationCreated,
-		RouteId_SimulationNetRole,
-		RouteId_SimulationNetGUID,
-		RouteId_SimulationTick,
-		RouteId_OOBStateMod,
-		RouteId_OOBStateModStrSync,
-		RouteId_OOBStateModStrAux,
-		RouteId_ProduceInput,
-		RouteId_SynthInput,
-		RouteId_SimulationEOF,
-		RouteId_NetSerializeRecv,
-		RouteId_NetSerializeCommit,
-		
-		RouteId_PieBegin,
-		RouteId_SystemFault
-		*/
 	};
 
 
 	Trace::IAnalysisSession& Session;
 	FNetworkPredictionProvider& NetworkPredictionProvider;
 
-	// Current values
-	uint64 EngineFrameNumber;
+	// WorldFrame, always from main thread
+	uint64 EngineFrameNumber=0;
 	float DeltaTimeSeconds;
-	uint32 GameInstanceID;
-	int32 TraceID=INDEX_NONE;
 
-	int32 TickStartMS;
-	int32 TickDeltaMS;
-	int32 TickOutputFrame;
-	int32 TickLocalOffsetFrame;
+	// As we are tracing from multiple threads and we have trace events that are stringed together we need to track some state per thread
+	struct FThreadState;
 
-	int32 PendingWriteFrame;
+	TMap<uint32, FThreadState*> ThreadStatesMap;
+	FThreadState& GetThreadState(uint32 ThreadId);
 };

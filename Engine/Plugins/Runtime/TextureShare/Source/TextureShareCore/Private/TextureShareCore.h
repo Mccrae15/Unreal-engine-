@@ -22,9 +22,12 @@ public:
 	virtual void ReleaseLib() override;
 
 	/** shared resource object api */
-	virtual bool CreateTextureShareItem(const FString& ShareName, ETextureShareProcess Process, FTextureShareSyncPolicy SyncMode, ETextureShareDevice DeviceType, TSharedPtr<ITextureShareItem>& OutShareObject) override;
+	virtual bool CreateTextureShareItem(const FString& ShareName, ETextureShareProcess Process, FTextureShareSyncPolicy SyncMode, ETextureShareDevice DeviceType, TSharedPtr<ITextureShareItem>& OutShareObject, float SyncWaitTime) override;
 	virtual bool ReleaseTextureShareItem(const FString& ShareName) override;
 	virtual bool GetTextureShareItem(const FString& ShareName, TSharedPtr<ITextureShareItem>& OutShareObject) const override;
+
+	virtual bool BeginSyncFrame() override;
+	virtual bool EndSyncFrame() override;
 
 protected:
 	void InitializeProcessMemory();

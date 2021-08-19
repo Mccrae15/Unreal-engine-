@@ -9,9 +9,23 @@
 #include "Chaos/Framework/PhysicsSolverBase.h"
 #include "Chaos/Framework/PhysicsProxyBase.h"
 #include "Chaos/CastingUtilities.h"
+#include "PBDRigidsSolver.h"
 
 namespace Chaos
 {
+	void SetObjectStateHelper(IPhysicsProxyBase& Proxy, FPBDRigidParticleHandle& Rigid, EObjectStateType InState, bool bAllowEvents, bool bInvalidate)
+	{
+		if (auto PhysicsSolver = Proxy.GetSolver<Chaos::FPBDRigidsSolver>())
+		{
+			PhysicsSolver->GetEvolution()->SetParticleObjectState(&Rigid, InState);
+		}
+		else
+		{
+			//not in solver so just set it directly (can this possibly happen?)
+			Rigid.SetObjectStateLowLevel(InState);
+		}
+	}
+
 	template <typename T, int d>
 	void Chaos::TGeometryParticle<T, d>::MapImplicitShapes()
 	{
@@ -82,9 +96,9 @@ namespace Chaos
 		{
 			return const_cast<TBox<FReal, 3>*>(Implicit0->template GetObject<TImplicitObjectInstanced<TBox<FReal, 3>>>()->GetInstancedObject());
 		}
-		else if (Implicit0OuterType == TImplicitObjectInstanced<TCapsule<FReal>>::StaticType())
+		else if (Implicit0OuterType == TImplicitObjectInstanced<FCapsule>::StaticType())
 		{
-			return const_cast<TCapsule<FReal>*>(Implicit0->template GetObject<TImplicitObjectInstanced<TCapsule<FReal>>>()->GetInstancedObject());
+			return const_cast<FCapsule*>(Implicit0->template GetObject<TImplicitObjectInstanced<FCapsule>>()->GetInstancedObject());
 		}
 		else if (Implicit0OuterType == TImplicitObjectInstanced<TSphere<FReal, 3>>::StaticType())
 		{
@@ -136,6 +150,7 @@ namespace Chaos
 		{
 			if (InShape == MShapesArray[Index].Get())
 			{
+				MShapesArray.RemoveAt(Index);
 				FoundIndex = Index;
 				break;
 			}
@@ -143,7 +158,7 @@ namespace Chaos
 
 		if (MNonFrequentData.Read().Geometry()->GetType() == FImplicitObjectUnion::StaticType())
 		{
-			// if we are currently a union then add the new geometry to this union
+			// if we are currently a union then remove geometry from this union
 			MNonFrequentData.Modify(true, MDirtyFlags, Proxy, [FoundIndex](auto& Data)
 				{
 					if (Data.AccessGeometry())
@@ -203,17 +218,14 @@ namespace Chaos
 		}
 	}
 
-	template class CHAOS_API TGeometryParticleData<float, 3>;
-	template class CHAOS_API TGeometryParticle<float, 3>;
+	template class CHAOS_API TGeometryParticle<FReal, 3>;
 
-	template class CHAOS_API TKinematicGeometryParticleData<float, 3>;
-	template class CHAOS_API TKinematicGeometryParticle<float, 3>;
+	template class CHAOS_API TKinematicGeometryParticle<FReal, 3>;
 
-	template class CHAOS_API TPBDRigidParticleData<float, 3>;
-	template class CHAOS_API TPBDRigidParticle<float, 3>;
+	template class CHAOS_API TPBDRigidParticle<FReal, 3>;
 
 	template <>
-	void Chaos::TGeometryParticle<float, 3>::MarkDirty(const EParticleFlags DirtyBits, bool bInvalidate )
+	void Chaos::TGeometryParticle<FReal, 3>::MarkDirty(const EParticleFlags DirtyBits, bool bInvalidate )
 	{
 		if (bInvalidate)
 		{
@@ -229,16 +241,21 @@ namespace Chaos
 		}
 	}
 
+	const FVec3 FGenericParticleHandleHandleImp::ZeroVector = FVec3(0);
+	const FRotation3 FGenericParticleHandleHandleImp::IdentityRotation = FRotation3(FQuat::Identity);
+	const FMatrix33 FGenericParticleHandleHandleImp::ZeroMatrix = FMatrix33(0);
+	const TUniquePtr<FBVHParticles> FGenericParticleHandleHandleImp::NullBVHParticles = TUniquePtr<FBVHParticles>();
+
 	template <>
 	template <>
-	int32 TGeometryParticleHandleImp<float, 3, true>::GetPayload<int32>(int32 Idx)
+	int32 TGeometryParticleHandleImp<FReal, 3, true>::GetPayload<int32>(int32 Idx)
 	{
 		return Idx;
 	}
 
 	template <>
 	template <>
-	int32 TGeometryParticleHandleImp<float, 3, false>::GetPayload<int32>(int32 Idx)
+	int32 TGeometryParticleHandleImp<FReal, 3, false>::GetPayload<int32>(int32 Idx)
 	{
 		return Idx;
 	}

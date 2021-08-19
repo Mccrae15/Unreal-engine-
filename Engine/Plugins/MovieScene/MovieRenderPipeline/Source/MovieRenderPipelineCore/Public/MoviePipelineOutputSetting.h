@@ -22,6 +22,7 @@ public:
 	virtual bool IsValidOnShots() const override { return false; }
 	virtual bool IsValidOnMaster() const override { return true; }
 	virtual void GetFormatArguments(FMoviePipelineFormatArgs& InOutFormatArgs) const override;
+	virtual void SetupForPipelineImpl(UMoviePipeline* InPipeline) override;
 
 	// UObject Interface
 	virtual void PostLoad() override;
@@ -67,7 +68,7 @@ public:
 	int32 HandleFrameCount;
 
 	/** Render every Nth frame. ie: Setting this value to 2 renders every other frame. Game Thread is still evaluated on 'skipped' frames for accuracy between renders of different OutputFrameSteps. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (UIMin = "1", MinValue = "1"), Category = "Frames")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (UIMin = "1", ClampMin = "1"), Category = "Frames")
 	int32 OutputFrameStep;
 
 	/** If true, override the Playback Range start/end bounds with the bounds specified below.*/
@@ -84,7 +85,7 @@ public:
 
 public:
 	/** The value to use for the version token if versions are not automatically incremented. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "!bAutoVersion", UIMin = 1, UIMax = 10), Category = "Versioning")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "!bAutoVersion", UIMin = 1, UIMax = 10, ClampMin = 1), Category = "Versioning")
 	int32 VersionNumber;
 
 	/** If true, version tokens will automatically be incremented with each local render. If false, the custom version number below will be used. */
@@ -93,7 +94,7 @@ public:
 
 public:
 	/** How many digits should all output frame numbers be padded to? MySequence_1.png -> MySequence_0001.png. Useful for software that struggles to recognize frame ranges when non-padded. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (UIMin = "1", MinValue = "1", UIMax = "5"), AdvancedDisplay, Category = "File Output")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (UIMin = "1", UIMax = "5", ClampMin = "1"), AdvancedDisplay, Category = "File Output")
 	int32 ZeroPadFrameNumbers;
 
 	/** 
@@ -102,4 +103,12 @@ public:
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "File Output")
 	int32 FrameNumberOffset;
+
+	/**
+	* If true, the game thread will stall at the end of each shot to flush the rendering queue, and then flush any outstanding writes to disk, finalizing any
+	* outstanding videos and generally completing the work. This is intentionally not exposed to the user interface as it is only relevant for scripting where
+	* scripts may do post-shot callback work.
+	*/
+	UPROPERTY(BlueprintReadWrite, Category = "File Output")
+	bool bFlushDiskWritesPerShot;
 };

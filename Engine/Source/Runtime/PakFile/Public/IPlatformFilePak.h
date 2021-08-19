@@ -15,6 +15,7 @@
 #include "Misc/SecureHash.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
 #include "Serialization/MemoryImage.h"
+#include "Templates/RefCounting.h"
 
 class FChunkCacheWorker;
 class IAsyncReadFileHandle;
@@ -636,7 +637,7 @@ struct FPakEntryPair
 /**
  * Pak file.
  */
-class PAKFILE_API FPakFile : FNoncopyable, public IPakFile
+class PAKFILE_API FPakFile : FNoncopyable, public FRefCountBase, public IPakFile
 {
 public:
 	/** Index data that provides a map from the hash of a Filename to an FPakEntryLocation */
@@ -749,6 +750,8 @@ private:
 	int32		CacheIndex;
 	/** Allow the cache of a pak file to never shrink, should be used with caution, it will burn memory */
 	bool UnderlyingCacheTrimDisabled;
+	/** Record of whether the pak file is still mounted, so PakPrecacher can reject requests to register it. */
+	bool bIsMounted;
 
 	static inline int32 CDECL CompareFilenameHashes(const void* Left, const void* Right)
 	{
@@ -808,6 +811,8 @@ public:
 	ECacheType GetCacheType(void) { return CacheType; }
 	void SetCacheIndex(int32 InCacheIndex) { CacheIndex = InCacheIndex; }
 	int32 GetCacheIndex(void) { return CacheIndex; }
+	void SetIsMounted(bool bInIsMounted) { bIsMounted = bInIsMounted; }
+	bool GetIsMounted() const { return bIsMounted; }
 #if IS_PROGRAM
 	/**
 	* Opens a pak file given its filename.
@@ -836,7 +841,12 @@ public:
 	FPakFile(FArchive* Archive);
 #endif
 
+private:
+	/** Private destructor, use AddRef/Release instead */
 	virtual ~FPakFile();
+	friend class FRefCountBase;
+
+public:
 
 	/**
 	 * Checks if the pak file is valid.
@@ -1023,6 +1033,7 @@ public:
 
 	const FPakDirectory* FindPrunedDirectory(const TCHAR* InPath) const
 	{
+		// Caller holds FScopedPakDirectoryIndexAccess
 		FString RelativePathFromMount;
 		if (!NormalizeDirectoryQuery(InPath, RelativePathFromMount))
 		{
@@ -1797,8 +1808,16 @@ class PAKFILE_API FPakFileHandle : public IFileHandle
 	int64 ReadPos;
 	/** Class that controls reading from pak file */
 	ReaderPolicy Reader;
+	/** Reference to keep the PakFile referenced until we are destroyed */
+	TRefCountPtr<const FPakFile> PakFile;
 
 public:
+
+	UE_DEPRECATED(4.27, "Use constructor that takes a TRefCountPtr<FPakFile> instead")
+	FPakFileHandle(const FPakFile& InPakFile, const FPakEntry& InPakEntry, TAcquirePakReaderFunction& InAcquirePakReaderFunction, bool bIsSharedReader)
+		: FPakFileHandle(TRefCountPtr<const FPakFile>(&InPakFile), InPakEntry, InAcquirePakReaderFunction, bIsSharedReader)
+	{
+	}
 
 	/**
 	 * Constructs pak file handle to read from pak.
@@ -1807,12 +1826,19 @@ public:
 	 * @param InPakEntry Entry in the pak file.
 	 * @param InAcquirePakReaderFunction Function that returns the archive to use for serialization. The result of this should not be cached, but reacquired on each serialization operation
 	 */
-	FPakFileHandle(const FPakFile& InPakFile, const FPakEntry& InPakEntry, TAcquirePakReaderFunction& InAcquirePakReaderFunction, bool bIsSharedReader)
+	FPakFileHandle(const TRefCountPtr<const FPakFile>& InPakFile, const FPakEntry& InPakEntry, TAcquirePakReaderFunction& InAcquirePakReaderFunction, bool bIsSharedReader)
 		: bSharedReader(bIsSharedReader)
 		, ReadPos(0)
-		, Reader(InPakFile, InPakEntry, InAcquirePakReaderFunction)
+		, Reader(*InPakFile, InPakEntry, InAcquirePakReaderFunction)
+		, PakFile(InPakFile)
 	{
 		INC_DWORD_STAT(STAT_PakFile_NumOpenHandles);
+	}
+
+	UE_DEPRECATED(4.27, "Use constructor that takes a TRefCountPtr<FPakFile> instead")
+	FPakFileHandle(const FPakFile& InPakFile, const FPakEntry& InPakEntry, FArchive* InPakReader, bool bIsSharedReader)
+		: FPakFileHandle(TRefCountPtr<const FPakFile>(&InPakFile), InPakEntry, InPakReader, bIsSharedReader)
+	{
 	}
 
 	/**
@@ -1822,10 +1848,11 @@ public:
 	 * @param InPakEntry Entry in the pak file.
 	 * @param InPakFile Pak file.
 	 */
-	FPakFileHandle(const FPakFile& InPakFile, const FPakEntry& InPakEntry, FArchive* InPakReader, bool bIsSharedReader)
+	FPakFileHandle(const TRefCountPtr<const FPakFile>& InPakFile, const FPakEntry& InPakEntry, FArchive* InPakReader, bool bIsSharedReader)
 		: bSharedReader(bIsSharedReader)
 		, ReadPos(0)
-		, Reader(InPakFile, InPakEntry, [InPakReader]() { return InPakReader; })
+		, Reader(*InPakFile, InPakEntry, [InPakReader]() { return InPakReader; })
+		, PakFile(InPakFile)
 	{
 		INC_DWORD_STAT(STAT_PakFile_NumOpenHandles);
 	}
@@ -1929,8 +1956,8 @@ class PAKFILE_API FPakPlatformFile : public IPlatformFile
 			, PakFile(nullptr)
 		{}
 
-		uint32		ReadOrder;
-		FPakFile*	PakFile;
+		uint32					ReadOrder;
+		TRefCountPtr<FPakFile>	PakFile;
 
 		FORCEINLINE bool operator < (const FPakListEntry& RHS) const
 		{
@@ -2024,7 +2051,7 @@ class PAKFILE_API FPakPlatformFile : public IPlatformFile
 	 * @param FileEntry File entry to create the handle for.
 	 * @return Pointer to the new handle.
 	 */
-	IFileHandle* CreatePakFileHandle(const TCHAR* Filename, FPakFile* PakFile, const FPakEntry* FileEntry);
+	IFileHandle* CreatePakFileHandle(const TCHAR* Filename, const TRefCountPtr<FPakFile>& PakFile, const FPakEntry* FileEntry);
 
 	/**
 	* Hardcode default load ordering of game main pak -> game content -> engine content -> saved dir
@@ -2213,6 +2240,24 @@ public:
 	virtual void MakeUniquePakFilesForTheseFiles(const TArray<TArray<FString>>& InFiles);
 
 
+	/** Overload needed for deprecation; remove this when removing the version with a FPakFile** OutPakFile */
+	static bool FindFileInPakFiles(TArray<FPakListEntry>& Paks, const TCHAR* Filename, nullptr_t OutPakFile, FPakEntry* OutEntry = nullptr)
+	{
+		return FindFileInPakFiles(Paks, Filename, (TRefCountPtr<FPakFile>*) nullptr, OutEntry);
+	}
+
+	UE_DEPRECATED(4.27, "Use version with OutPakFile is a TRefCountPtr<FPakFile> instead")
+	static bool FindFileInPakFiles(TArray<FPakListEntry>& Paks, const TCHAR* Filename, FPakFile** OutPakFile, FPakEntry* OutEntry = nullptr)
+	{
+		TRefCountPtr<FPakFile> PakFile;
+		bool bResult = FindFileInPakFiles(Paks, Filename, &PakFile, OutEntry);
+		if (OutPakFile)
+		{
+			*OutPakFile = PakFile.GetReference();
+		}
+		return bResult;
+	}
+
 	/**
 	 * Finds a file in the specified pak files.
 	 *
@@ -2221,7 +2266,7 @@ public:
 	 * @param OutPakFile Optional pointer to a pak file where the filename was found.
 	 * @return Pointer to pak entry if the file was found, NULL otherwise.
 	 */
-	static bool FindFileInPakFiles(TArray<FPakListEntry>& Paks,const TCHAR* Filename,FPakFile** OutPakFile,FPakEntry* OutEntry = nullptr)
+	static bool FindFileInPakFiles(TArray<FPakListEntry>& Paks,const TCHAR* Filename,TRefCountPtr<FPakFile>* OutPakFile,FPakEntry* OutEntry = nullptr)
 	{
 		FString StandardFilename(Filename);
 		FPaths::MakeStandardFilename(StandardFilename);
@@ -2259,6 +2304,24 @@ public:
 		return false;
 	}
 
+	/** Overload needed for deprecation; remove this when removing the version with a FPakFile** OutPakFile */
+	bool FindFileInPakFiles(const TCHAR* Filename, nullptr_t OutPakFile, FPakEntry* OutEntry = nullptr)
+	{
+		return FindFileInPakFiles(Filename, (TRefCountPtr<FPakFile>*)nullptr, OutEntry);
+	}
+
+	UE_DEPRECATED(4.27, "Use version with OutPakFile is a TRefCountPtr<FPakFile> instead")
+	bool FindFileInPakFiles(const TCHAR* Filename, FPakFile** OutPakFile, FPakEntry* OutEntry = nullptr)
+	{
+		TRefCountPtr<FPakFile> PakFile;
+		bool bResult = FindFileInPakFiles(Filename, &PakFile, OutEntry);
+		if (OutPakFile)
+		{
+			*OutPakFile = PakFile.GetReference();
+		}
+		return bResult;
+	}
+
 	/**
 	 * Finds a file in all available pak files.
 	 *
@@ -2266,7 +2329,7 @@ public:
 	 * @param OutPakFile Optional pointer to a pak file where the filename was found.
 	 * @return Pointer to pak entry if the file was found, NULL otherwise.
 	 */
-	bool FindFileInPakFiles(const TCHAR* Filename, FPakFile** OutPakFile = nullptr, FPakEntry* OutEntry = nullptr)
+	bool FindFileInPakFiles(const TCHAR* Filename, TRefCountPtr<FPakFile>* OutPakFile = nullptr, FPakEntry* OutEntry = nullptr)
 	{
 		TArray<FPakListEntry> Paks;
 		GetMountedPaks(Paks);
@@ -2376,7 +2439,7 @@ public:
 	virtual FDateTime GetTimeStamp(const TCHAR* Filename) override
 	{
 		// Check pak files first.
-		FPakFile* PakFile = NULL;
+		TRefCountPtr<FPakFile> PakFile = NULL;
 		if (FindFileInPakFiles(Filename, &PakFile))
 		{
 			return PakFile->GetTimestamp();
@@ -2394,8 +2457,8 @@ public:
 
 	virtual void GetTimeStampPair(const TCHAR* FilenameA, const TCHAR* FilenameB, FDateTime& OutTimeStampA, FDateTime& OutTimeStampB) override
 	{
-		FPakFile* PakFileA = nullptr;
-		FPakFile* PakFileB = nullptr;
+		TRefCountPtr<FPakFile> PakFileA;
+		TRefCountPtr<FPakFile> PakFileB;
 		FindFileInPakFiles(FilenameA, &PakFileA);
 		FindFileInPakFiles(FilenameB, &PakFileB);
 
@@ -2436,7 +2499,7 @@ public:
 	virtual FDateTime GetAccessTimeStamp(const TCHAR* Filename) override
 	{
 		// AccessTimestamp not yet supported in pak files (although it is possible).
-		FPakFile* PakFile = NULL;
+		TRefCountPtr<FPakFile> PakFile;
 		if (FindFileInPakFiles(Filename, &PakFile))
 		{
 			return PakFile->GetTimestamp();
@@ -2453,7 +2516,7 @@ public:
 	virtual FString GetFilenameOnDisk(const TCHAR* Filename) override
 	{
 		FPakEntry FileEntry;
-		FPakFile* PakFile = NULL;
+		TRefCountPtr<FPakFile> PakFile;
 		if (FindFileInPakFiles(Filename, &PakFile, &FileEntry))
 		{
 			const FString Path(FPaths::GetPath(Filename));
@@ -2546,7 +2609,7 @@ public:
 	{
 		// Check pak files first.
 		FPakEntry FileEntry;
-		FPakFile* PakFile = nullptr;
+		TRefCountPtr<FPakFile> PakFile;
 		if (FindFileInPakFiles(FilenameOrDirectory, &PakFile, &FileEntry))
 		{
 			return FFileStatData(
@@ -2562,10 +2625,11 @@ public:
 		// Then check pak directories
 		if (DirectoryExistsInPrunedPakFiles(FilenameOrDirectory))
 		{
+			FDateTime DirectoryTimeStamp = FDateTime::MinValue();
 			return FFileStatData(
-				PakFile->GetTimestamp(),
-				PakFile->GetTimestamp(),
-				PakFile->GetTimestamp(),
+				DirectoryTimeStamp,
+				DirectoryTimeStamp,
+				DirectoryTimeStamp,
 				-1,		// FileSize
 				true,	// IsDirectory
 				true	// IsReadOnly
@@ -2904,7 +2968,7 @@ public:
 	FString ConvertToAbsolutePathForExternalAppForRead(const TCHAR* Filename) override
 	{
 		// Check in Pak file first
-		FPakFile* Pak = NULL;
+		TRefCountPtr<FPakFile> Pak;
 		if (FindFileInPakFiles(Filename, &Pak))
 		{
 			return FString::Printf(TEXT("Pak: %s/%s"), *Pak->GetFilename(), *ConvertToPakRelativePath(Filename, Pak));
@@ -2918,7 +2982,7 @@ public:
 	FString ConvertToAbsolutePathForExternalAppForWrite(const TCHAR* Filename) override
 	{
 		// Check in Pak file first
-		FPakFile* Pak = NULL;
+		TRefCountPtr<FPakFile> Pak;
 		if (FindFileInPakFiles(Filename, &Pak))
 		{
 			return FString::Printf(TEXT("Pak: %s/%s"), *Pak->GetFilename(), *ConvertToPakRelativePath(Filename, Pak));
@@ -2980,6 +3044,12 @@ public:
 	/** Gets a list of FullPaths (includes Mount directory) for every File in the given Pak's Pruned DirectoryIndex */
 	void GetPrunedFilenamesInPakFile(const FString& InPakFilename, TArray<FString>& OutFileList);
 
+	/** Returns the RelativePathFromMount Filename for every file found in the given Iostore Container */
+	static void GetFilenamesFromIostoreContainer(const FString& InContainerName, TArray<FString>& OutFileList);
+
+	/** Returns the RelativePathFromMount Filename for every Filename found in the Iostore Container that relates to the provided block indexes */
+	static void GetFilenamesFromIostoreByBlockIndex(const FString& InContainerName, const TArray<int32>& InBlockIndex, TArray<FString>& OutFileList);
+
 	// BEGIN Console commands
 #if !UE_BUILD_SHIPPING
 	void HandlePakListCommand(const TCHAR* Cmd, FOutputDevice& Ar);
@@ -3027,17 +3097,25 @@ struct FPakSignatureFile
 	// SHA1 hash of the chunk CRC data. Only valid after calling DecryptSignatureAndValidate
 	FSHAHash DecryptedHash;
 
+	// The actual array of data that was encrypted in the RSA block. Contains the chunk table hash and also other custom data related to the pak file
+	TArray<uint8> SignatureData;
+
 	// CRCs of each contiguous 64kb block of the pak file
 	TArray<TPakChunkHash> ChunkHashes;
 	
 	/**
 	 * Initialize and hash the CRC list then use the provided private key to encrypt the hash
 	 */
-	void SetChunkHashesAndSign(const TArray<TPakChunkHash>& InChunkHashes, const FRSAKeyHandle InKey)
+	void SetChunkHashesAndSign(const TArray<TPakChunkHash>& InChunkHashes, const TArrayView<uint8>& InSignatureData, const FRSAKeyHandle InKey)
 	{
 		ChunkHashes = InChunkHashes;
+		SignatureData = InSignatureData;
 		DecryptedHash = ComputeCurrentMasterHash();
-		FRSA::EncryptPrivate(TArrayView<const uint8>(DecryptedHash.Hash, UE_ARRAY_COUNT(FSHAHash::Hash)), EncryptedHash, InKey);
+
+		TArray<uint8> NewSignatureData;
+		NewSignatureData.Append(SignatureData);
+		NewSignatureData.Append(DecryptedHash.Hash, UE_ARRAY_COUNT(FSHAHash::Hash));
+		FRSA::EncryptPrivate(NewSignatureData, EncryptedHash, InKey);
 	}
 
 	/**
@@ -3072,11 +3150,11 @@ struct FPakSignatureFile
 		}
 		else
 		{
-			TArray<uint8> Decrypted;
-			int32 BytesDecrypted = FRSA::DecryptPublic(EncryptedHash, Decrypted, InKey);
-			if (BytesDecrypted == UE_ARRAY_COUNT(FSHAHash::Hash))
+			int32 BytesDecrypted = FRSA::DecryptPublic(EncryptedHash, SignatureData, InKey);
+			if (BytesDecrypted > (int32)UE_ARRAY_COUNT(FSHAHash::Hash))
 			{
-				FMemory::Memcpy(DecryptedHash.Hash, Decrypted.GetData(), Decrypted.Num());
+				FMemory::Memcpy(DecryptedHash.Hash, SignatureData.GetData() + SignatureData.Num() - UE_ARRAY_COUNT(FSHAHash::Hash), UE_ARRAY_COUNT(FSHAHash::Hash));
+				SignatureData.SetNum(SignatureData.Num() - UE_ARRAY_COUNT(FSHAHash::Hash));
 				FSHAHash CurrentHash = ComputeCurrentMasterHash();
 				if (DecryptedHash == CurrentHash)
 				{

@@ -126,6 +126,12 @@ struct FObjectDuplicationParameters
 	 * The associated package should come from the DuplicationSeed.
 	 */
 	bool bAssignExternalPackages = true;
+
+	/**
+	 * if this option is true, then PostLoad won't be called on the new duplicated objects. 
+	 * It will be the responsability of the caller in that case to eventually call post load on those objects. a `CreatedObjects` map should be provided.
+	 */
+	bool bSkipPostLoad = false;
 	
 	/**
 	 * Optional class to specify for the destination object.
@@ -452,6 +458,13 @@ COREUOBJECT_API bool IsEventDrivenLoaderEnabledInCookedBuilds();
 */
 COREUOBJECT_API bool IsEventDrivenLoaderEnabled();
 
+#if WITH_IOSTORE_IN_EDITOR
+/**
+ * Returns true if the specified package is cooked and stored in I/O store
+*/
+bool DoesPackageExistInIoStore(FName InPackageName);
+#endif
+
 /**
  * Returns the async load percentage for a package in flight with the passed in name or -1 if there isn't one.
  * @warning THIS IS SLOW. MAY BLOCK ASYNC LOADING.
@@ -584,6 +597,13 @@ COREUOBJECT_API int32 GetNumAsyncPackages();
 COREUOBJECT_API bool IsLoading();
 
 /**
+ * Allows or disallows async loading (for example async loading is not allowed after the final flush on exit)
+ *
+ * @param bAllowAsyncLoading true if async loading should be allowed, false otherwise
+ */
+COREUOBJECT_API void SetAsyncLoadingAllowed(bool bAllowAsyncLoading);
+
+/**
  * State of the async package after the last tick.
  */
 namespace EAsyncPackageState
@@ -675,6 +695,21 @@ COREUOBJECT_API bool SaveToTransactionBuffer(UObject* Object, bool bMarkDirty);
  */
 COREUOBJECT_API void SnapshotTransactionBuffer(UObject* Object);
 COREUOBJECT_API void SnapshotTransactionBuffer(UObject* Object, TArrayView<const FProperty*> Properties);
+
+
+/**
+ * Utility struct that allows abstract classes to be allocated for non-CDOs while in scope.
+ * Abstract objects are generally unsafe and should only be allocated in very unusual circumstances.
+ */
+struct FScopedAllowAbstractClassAllocation : public FNoncopyable
+{
+	COREUOBJECT_API FScopedAllowAbstractClassAllocation();
+	COREUOBJECT_API ~FScopedAllowAbstractClassAllocation();
+	static bool IsDisallowedAbstractClass(const UClass* InClass, EObjectFlags InFlags);
+
+private:
+	static int32 AllowAbstractCount;
+};
 
 /**
  * Check for StaticAllocateObject error; only for use with the editor, make or other commandlets.
@@ -2018,11 +2053,15 @@ struct COREUOBJECT_API FCoreUObjectDelegates
 	DECLARE_MULTICAST_DELEGATE(FReinstanceHotReloadedClassesDelegate);
 	static FReinstanceHotReloadedClassesDelegate ReinstanceHotReloadedClassesDelegate;
 
+	/** Delegate for catching when UClasses/UStructs/UEnums would be available via FindObject<>(), but before their CDOs would be constructed. */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FCompiledInUObjectsRegisteredDelegate, FName /*Package*/);
+	static FCompiledInUObjectsRegisteredDelegate CompiledInUObjectsRegisteredDelegate;
+
 	/** Sent at the very beginning of LoadMap */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FPreLoadMapDelegate, const FString& /* MapName */);
 	static FPreLoadMapDelegate PreLoadMap;
 
-	/** Sent at the _successful_ end of LoadMap */
+	/** Sent at the end of LoadMap */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FPostLoadMapDelegate, UWorld* /* LoadedWorld */);
 	static FPostLoadMapDelegate PostLoadMapWithWorld;
 

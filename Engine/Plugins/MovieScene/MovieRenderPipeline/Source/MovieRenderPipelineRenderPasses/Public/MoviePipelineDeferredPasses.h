@@ -20,7 +20,7 @@ struct MOVIERENDERPIPELINERENDERPASSES_API FMoviePipelinePostProcessPass
 public:
 	/** Additional passes add a significant amount of render time. May produce multiple output files if using Screen Percentage. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings")
-	bool bEnabled;
+	bool bEnabled = false;
 
 	/** 
 	* Material should be set to Post Process domain, and Blendable Location = After Tonemapping. 
@@ -84,6 +84,12 @@ public:
 	bool bDisableMultisampleEffects;
 
 	/**
+	* Should the additional post-process materials write out to a 32-bit render target instead of 16-bit?
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deferred Renderer Data")
+	bool bUse32BitPostProcessMaterials;
+
+	/**
 	* An array of additional post-processing materials to run after the frame is rendered. Using this feature may add a notable amount of render time.
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deferred Renderer Data")
@@ -128,6 +134,16 @@ protected:
 
 	// Cache the custom stencil value. Only has meaning if they have stencil layers.
 	TOptional<int32> PreviousCustomDepthValue;
+	
+	/** Cache the previous dump frames as HDR value. Only used if using 32-bit post processing. */
+	TOptional<int32> PreviousDumpFramesValue;
+	/** Cache the previous color format value. Only used if using 32-bit post processing. */
+	TOptional<int32> PreviousColorFormatValue;
+
+public:
+	static FString StencilLayerMaterialAsset;
+	static FString DefaultDepthAsset;
+	static FString DefaultMotionVectorsAsset;
 };
 
 
@@ -234,7 +250,8 @@ public:
 		PassIdentifier = FMoviePipelinePassIdentifier("PathTracer");
 	}
 #if WITH_EDITOR
-	virtual FText GetDisplayText() const override { return NSLOCTEXT("MovieRenderPipeline", "DeferredBasePassSetting_DisplayName_PathTracer", "Deferred Rendering (Path Tracer)"); }
+	virtual FText GetDisplayText() const override { return NSLOCTEXT("MovieRenderPipeline", "DeferredBasePassSetting_DisplayName_PathTracer", "Path Tracer"); }
+	virtual FText GetFooterText(UMoviePipelineExecutorJob* InJob) const override;
 #endif
 	virtual void GetViewShowFlags(FEngineShowFlags& OutShowFlag, EViewModeIndex& OutViewModeIndex) const override
 	{
@@ -243,6 +260,8 @@ public:
 		OutViewModeIndex = EViewModeIndex::VMI_PathTracing;
 	}
 	virtual int32 GetOutputFileSortingOrder() const override { return 2; }
+
+	virtual bool IsAntiAliasingSupported() const { return false; }
 };
 
 struct MOVIERENDERPIPELINERENDERPASSES_API FAccumulatorPool : public TSharedFromThis<FAccumulatorPool>

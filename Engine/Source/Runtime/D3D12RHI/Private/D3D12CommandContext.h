@@ -48,6 +48,7 @@ public:
 	FRHIGPUMask GetGPUMask() const { return GPUMask; }
 
 	bool IsDefaultContext() const { return bIsDefaultContext; }
+	bool IsAsyncComputeContext() const { return bIsAsyncComputeContext; }
 
 	virtual void RHISetAsyncComputeBudget(EAsyncComputeBudget Budget) {}
 
@@ -64,6 +65,7 @@ protected:
 	const bool bIsAsyncComputeContext;
 };
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 class FD3D12CommandContext : public FD3D12CommandContextBase, public FD3D12DeviceChild
 {
 public:
@@ -190,12 +192,13 @@ public:
 	uint32 numDispatches;
 	uint32 numClears;
 	uint32 numBarriers;
+	uint32 numPendingBarriers;
 	uint32 numCopies;
 	uint32 otherWorkCounter;
 
 	bool HasDoneWork() const
 	{
-		return (numDraws + numDispatches + numClears + numBarriers + numCopies + otherWorkCounter) > 0;
+		return (numDraws + numDispatches + numClears + numBarriers + numPendingBarriers + numCopies + otherWorkCounter) > 0;
 	}
 
 	/** Constant buffers for Set*ShaderParameter calls. */
@@ -303,7 +306,7 @@ public:
 	virtual void RHIBackBufferWaitTrackingBeginFrame(uint64 FrameToken, bool bDeferred) final override;
 #endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 
-	virtual void RHIClearMRTImpl(bool bClearColor, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil);
+	virtual void RHIClearMRTImpl(bool* bClearColorArray, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil);
 
 
 	virtual void RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, const TCHAR* InName)
@@ -357,6 +360,7 @@ public:
 
 	// This should be called right after the effect generates the resources which will be used in subsequent frame(s).
 	virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures) final AFR_API_OVERRIDE;
+	virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHIVertexBuffer*> InBuffers) final AFR_API_OVERRIDE;
 
 #if D3D12_RHI_RAYTRACING
 	virtual void RHICopyBufferRegion(FRHIVertexBuffer* DestBuffer, uint64 DstOffset, FRHIVertexBuffer* SourceBuffer, uint64 SrcOffset, uint64 NumBytes) final override;
@@ -439,7 +443,11 @@ protected:
 	void WriteGPUEventStackToBreadCrumbData(bool bBeginEvent);
 
 private:
-	void RHIClearMRT(bool bClearColor, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil);
+
+	template <typename TD3D12Resource, typename TCopyFunction>
+	void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<TD3D12Resource*> InResources, const TCopyFunction& InCopyFunction);
+
+	void RHIClearMRT(bool* bClearColorArray, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil);
 
 	static void ClearUAV(TRHICommandList_RecursiveHazardous<FD3D12CommandContext>& RHICmdList, FD3D12UnorderedAccessView* UAV, const void* ClearValues, bool bFloat);
 
@@ -454,12 +462,14 @@ private:
 
 	TArray<FRHIUniformBuffer*> GlobalUniformBuffers;
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 // This class is a shim to get AFR working. Currently the upper engine only queries for the 'Immediate Context'
 // once. However when in AFR we need to switch which context is active every frame so we return an instance of this class
 // as the default context so that we can control when to swap which device we talk to.
 // Because IRHICommandContext is pure virtual we can return the normal FD3D12CommandContext when not using mGPU thus there
 // is no additional overhead for the common case i.e. 1 GPU.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 class FD3D12CommandContextRedirector final : public FD3D12CommandContextBase
 {
 public:
@@ -488,6 +498,8 @@ public:
 	// Special implementation that only signal the fence once.
 	virtual void RHIBeginTransitions(TArrayView<const FRHITransition*> Transitions) final override;
 	virtual void RHIEndTransitions(TArrayView<const FRHITransition*> Transitions) final override;
+
+	virtual void RHITransferTextures(const TArrayView<const FTransferTextureParams> Params) final override;
 
 	FORCEINLINE virtual void RHICopyToStagingBuffer(FRHIVertexBuffer* SourceBuffer, FRHIStagingBuffer* DestinationStagingBuffer, uint32 Offset, uint32 NumBytes) final override
 	{
@@ -672,16 +684,16 @@ public:
 
 	FORCEINLINE virtual void RHISetShadingRateImage(FRHITexture* RateImageTexture, EVRSRateCombiner Combiner) final override
 	{
-		ContextRedirect(RHISetShadingRateImage(RateImageTexture, Combiner));
+		checkf(false, TEXT("RHISetShadingRateImage API is deprecated. Use the ShadingRateImage attachment in the RHISetRenderTargetsInfo struct instead."));
 	}
 
 	FORCEINLINE virtual void RHIUpdateTextureReference(FRHITextureReference* TextureRef, FRHITexture* NewTexture) final override
 	{
 		ContextRedirect(RHIUpdateTextureReference(TextureRef, NewTexture));
 	}
-	FORCEINLINE virtual void RHIClearMRTImpl(bool bClearColor, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil)
+	FORCEINLINE virtual void RHIClearMRTImpl(bool* bClearColorArray, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil)
 	{
-		ContextRedirect(RHIClearMRTImpl(bClearColor, NumClearColors, ColorArray, bClearDepth, Depth, bClearStencil, Stencil));
+		ContextRedirect(RHIClearMRTImpl(bClearColorArray, NumClearColors, ColorArray, bClearDepth, Depth, bClearStencil, Stencil));
 	}
 
 	FORCEINLINE virtual void RHIWaitForTemporalEffect(const FName& InEffectName) final AFR_API_OVERRIDE
@@ -692,6 +704,11 @@ public:
 	FORCEINLINE virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures) final AFR_API_OVERRIDE
 	{
 		ContextRedirect(RHIBroadcastTemporalEffect(InEffectName, InTextures));
+	}
+
+	FORCEINLINE virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHIVertexBuffer*> InBuffers) final AFR_API_OVERRIDE
+	{
+		ContextRedirect(RHIBroadcastTemporalEffect(InEffectName, InBuffers));
 	}
 
 	virtual void RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, const TCHAR* InName) final override
@@ -811,9 +828,14 @@ public:
 
 private:
 
+	// Make every GPU in the provided mask to wait on one another.
+	void RHIMultiGPULockstep(FRHIGPUMask InGPUMask);
+
 	FRHIGPUMask PhysicalGPUMask;
 	FD3D12CommandContext* PhysicalContexts[MAX_NUM_GPUS];
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 
 class FD3D12TemporalEffect : public FD3D12AdapterChild
 {

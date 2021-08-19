@@ -142,7 +142,14 @@ protected:
 	// Transitions to Ongoing on actuation. Never triggers.
 	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime) override;
 
+	// Calculates the new held duration given the current player input and delta time
+	float CalculateHeldDuration(const UEnhancedPlayerInput* const PlayerInput, const float DeltaTime) const;
+
 public:
+
+	// Should global time dilation be applied to the held duration?
+	UPROPERTY(BlueprintReadWrite, Category = "Trigger Settings")
+	bool bAffectedByTimeDilation = false;
 
 	virtual FString GetDebugState() const override { return HeldDuration ? FString::Printf(TEXT("Held:%.2f"), HeldDuration) : FString(); }
 };
@@ -180,6 +187,7 @@ class UInputTriggerPressed final : public UInputTrigger
 protected:
 
 	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime) override;
+	virtual FString GetDebugState() const { return IsActuated(LastValue) ? FString(TEXT("Pressed:Held")) : FString(); }
 };
 
 
@@ -195,6 +203,7 @@ class UInputTriggerReleased final : public UInputTrigger
 protected:
 
 	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime) override;
+	virtual FString GetDebugState() const { return IsActuated(LastValue) ? FString(TEXT("Released:Held")) : FString(); }
 };
 
 
@@ -216,7 +225,7 @@ protected:
 
 public:
 	// How long does the input have to be held to cause trigger?
-	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings")
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings", meta = (ClampMin = "0"))
 	float HoldTimeThreshold = 1.0f;
 
 	// Should this trigger fire only once, or fire every frame once the hold time threshold is met?
@@ -240,7 +249,7 @@ protected:
 
 public:
 	// How long does the input have to be held to cause trigger?
-	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings")
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings", meta = (ClampMin = "0"))
 	float HoldTimeThreshold = 0.5f;
 };
 
@@ -259,10 +268,43 @@ protected:
 public:
 
 	// Release within this time-frame to trigger a tap
-	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings")
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings", meta = (ClampMin = "0"))
 	float TapReleaseTimeThreshold = 0.2f;
 };
 
+/** UInputTriggerPulse
+	Trigger that fires at an Interval, in seconds, while input is actuated. 
+	Note:	Completed only fires when the repeat limit is reached or when input is released immediately after being triggered.
+			Otherwise, Canceled is fired when input is released.
+	*/
+UCLASS(NotBlueprintable, MinimalAPI, meta = (DisplayName = "Pulse"))
+class UInputTriggerPulse final : public UInputTriggerTimedBase
+{
+	GENERATED_BODY()
+
+private:
+
+	int32 TriggerCount = 0;
+
+protected:
+
+	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime) override;
+
+public:
+	// Whether to trigger when the input first exceeds the actuation threshold or wait for the first interval?
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings")
+	bool bTriggerOnStart = true;
+
+	// How long between each trigger fire while input is held, in seconds?
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings", meta = (ClampMin = "0"))
+	float Interval = 1.0f;
+
+	// How many times can the trigger fire while input is held? (0 = no limit)
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings", meta = (ClampMin = "0"))
+	int32 TriggerLimit = 0;
+
+	virtual FString GetDebugState() const override { return HeldDuration ? FString::Printf(TEXT("Triggers:%d/%d, Interval:%.2f/%.2f"), TriggerCount, TriggerLimit, (HeldDuration/(Interval*(TriggerCount+1))), Interval) : FString(); }
+};
 
 
 // Chorded actions
@@ -297,7 +339,6 @@ class UInputTriggerChordBlocker final : public UInputTriggerChordAction
 
 protected:
 	virtual ETriggerType GetTriggerType_Implementation() const override { return ETriggerType::Blocker; }
-
 };
 
 

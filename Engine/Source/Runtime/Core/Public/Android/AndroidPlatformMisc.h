@@ -14,13 +14,8 @@
 template <typename FuncType>
 class TFunction;
 
-#if PLATFORM_ANDROID_ARM64
-	#define PLATFORM_BREAK()	__asm__(".inst 0xd4200000")
-#elif PLATFORM_ANDROID_ARM
-	#define PLATFORM_BREAK()	__asm__("trap")
-#else
-	#define PLATFORM_BREAK()	__asm__("int $3")
-#endif
+
+#define PLATFORM_BREAK()	raise(SIGTRAP)
 
 #define UE_DEBUG_BREAK_IMPL()	PLATFORM_BREAK()
 
@@ -42,6 +37,7 @@ struct CORE_API FAndroidMisc : public FGenericPlatformMisc
 	static void PlatformTearDown();
 	static void PlatformHandleSplashScreen(bool ShowSplashScreen);
     static EDeviceScreenOrientation GetDeviceOrientation() { return DeviceOrientation; }
+	static void SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrentation);
     
 	FORCEINLINE static int32 GetMaxPathLength()
 	{
@@ -96,12 +92,12 @@ public:
 	static int32 NumberOfCores();
 	static int32 NumberOfCoresIncludingHyperthreads();
 	static bool SupportsLocalCaching();
+	static void CreateGuid(struct FGuid& Result);
 	static void SetCrashHandler(void (* CrashHandler)(const FGenericCrashContext& Context));
 	// NOTE: THIS FUNCTION IS DEFINED IN ANDROIDOPENGL.CPP
 	static void GetValidTargetPlatforms(class TArray<class FString>& TargetPlatformNames);
 	static bool GetUseVirtualJoysticks();
 	static bool SupportsTouchInput();
-	static bool IsStandaloneStereoOnlyDevice();
 	static const TCHAR* GetDefaultDeviceProfileName() { return TEXT("Android_Default"); }
 	static bool GetVolumeButtonsHandledBySystem();
 	static void SetVolumeButtonsHandledBySystem(bool enabled);
@@ -169,6 +165,12 @@ public:
 	static bool FileExistsInPlatformPackage(const FString& RelativePath);
 
 	// ANDROID ONLY:
+
+	// called when OS (via JNI) reports memory trouble, triggers MemoryWarningHandler callback on game thread if set.
+	enum class EOSMemoryStatusCategory { OSTrim };
+	static void UpdateOSMemoryStatus(EOSMemoryStatusCategory OSMemoryStatusCategory, int value);
+	static void UpdateMemoryAdvisorState(int State, int EstimateAvailableMB, int OOMScore);
+
 	static void SetVersionInfo(FString AndroidVersion, int32 InTargetSDKVersion, FString DeviceMake, FString DeviceModel, FString DeviceBuildNumber, FString OSLanguage);
 	static const FString GetAndroidVersion();
 	static int32 GetAndroidMajorVersion();
@@ -188,6 +190,7 @@ public:
 	static int GetAndroidBuildVersion();
 #endif
 	static bool IsSupportedAndroidDevice();
+	static void SetForceUnsupported(bool bInOverride);
 	static TMap<FString, FString> GetConfigRulesTMap();
 	static FString* GetConfigRulesVariable(const FString& Key);
 
@@ -283,8 +286,8 @@ public:
 	// Returns CPU temperature read from one of the configurable CPU sensors via android.CPUThermalSensorFilePath CVar or AndroidEngine.ini, [ThermalSensors] section.
 	// Doesn't guarantee to work on all devices. Some devices require root access rights to read sensors information, in that case 0.0 will be returned
 	static float GetCPUTemperature();
-    
-    static void SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrentation) { DeviceOrientation = NewDeviceOrentation; }
+
+	static void SaveDeviceOrientation(EDeviceScreenOrientation NewDeviceOrentation) { DeviceOrientation = NewDeviceOrentation; }
 
 	// Window access is locked by the game thread before preinit and unlocked here after RHIInit (PlatformCreateDynamicRHI). 
 	static void UnlockAndroidWindow();
@@ -301,9 +304,38 @@ public:
 	static bool Expand16BitIndicesTo32BitOnLoad();
 
 	static bool SupportsBackbufferSampling();
+
+	static void SetMemoryWarningHandler(void (*Handler)(const FGenericMemoryWarningContext& Context));
+	static bool HasMemoryWarningHandler();
+
+	// Android specific requesting of exit, *ONLY* use this function in signal handling code. Otherwise normal RequestExit functions
+	static void NonReentrantRequestExit();
+
 private:
 	static const ANSICHAR* CodeToString(int Signal, int si_code);
 	static EDeviceScreenOrientation DeviceOrientation;
+
+#if USE_ANDROID_JNI
+	enum class EAndroidScreenOrientation
+	{
+		SCREEN_ORIENTATION_UNSPECIFIED = -1,
+		SCREEN_ORIENTATION_LANDSCAPE = 0,
+		SCREEN_ORIENTATION_PORTRAIT = 1,
+		SCREEN_ORIENTATION_USER = 2,
+		SCREEN_ORIENTATION_BEHIND = 3,
+		SCREEN_ORIENTATION_SENSOR = 4,
+		SCREEN_ORIENTATION_NOSENSOR = 5,
+		SCREEN_ORIENTATION_SENSOR_LANDSCAPE = 6,
+		SCREEN_ORIENTATION_SENSOR_PORTRAIT = 7,
+		SCREEN_ORIENTATION_REVERSE_LANDSCAPE = 8,
+		SCREEN_ORIENTATION_REVERSE_PORTRAIT = 9,
+		SCREEN_ORIENTATION_FULL_SENSOR = 10,
+		SCREEN_ORIENTATION_USER_LANDSCAPE = 11,
+		SCREEN_ORIENTATION_USER_PORTRAIT = 12,
+	};
+	
+	static int32 GetAndroidScreenOrientation(EDeviceScreenOrientation ScreenOrientation);
+#endif // USE_ANDROID_JNI
 };
 
 #if !PLATFORM_LUMIN

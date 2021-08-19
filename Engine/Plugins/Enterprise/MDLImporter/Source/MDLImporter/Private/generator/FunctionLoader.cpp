@@ -3,6 +3,7 @@
 #include "FunctionLoader.h"
 
 #include "FunctionGenerator.h"
+#include "common/Logging.h"
 #include "common/Utility.h"
 
 #include "AssetRegistryModule.h"
@@ -63,6 +64,7 @@ namespace Generator
 	FFunctionLoader::FFunctionLoader()
 	    : FunctionFactory(NewObject<UMaterialFunctionFactoryNew>())
 	    , FunctionGenerator(new FFunctionGenerator(this))
+		, ObjectFlags(RF_Public | RF_Standalone)
 	{
 		FunctionFactory->AddToRoot();  // prevent garbage collection of this object
 
@@ -86,7 +88,7 @@ namespace Generator
 		FunctionGenerateMap.Add(TEXT("mdl_base_rotation_translation_scale"), {&FFunctionGenerator::BaseRotationTranslationScale, 1});
 		FunctionGenerateMap.Add(TEXT("mdl_base_sellmeier_coefficients_ior"), {&FFunctionGenerator::BaseSellmeierCoefficientsIOR, 1});
 		FunctionGenerateMap.Add(TEXT("mdl_base_tangent_space_normal_texture"), {&FFunctionGenerator::BaseTangentSpaceNormalTexture, 4});
-		FunctionGenerateMap.Add(TEXT("mdl_base_texture_coordinate_info"), {&FFunctionGenerator::BaseTextureCoordinateInfo, 3});
+		FunctionGenerateMap.Add(TEXT("mdl_base_texture_coordinate_info"), {&FFunctionGenerator::BaseTextureCoordinateInfo, 4});
 		FunctionGenerateMap.Add(TEXT("mdl_base_tile_bump_texture"), {&FFunctionGenerator::BaseTileBumpTexture, 1});
 		FunctionGenerateMap.Add(TEXT("mdl_base_transform_coordinate"), {&FFunctionGenerator::BaseTransformCoordinate, 2});
 		FunctionGenerateMap.Add(TEXT("mdl_base_volume_coefficient"), {&FFunctionGenerator::BaseVolumeCoefficient, 1});
@@ -242,6 +244,33 @@ namespace Generator
 		CommonFunctions[(int)ECommonFunction::VolumeAbsorptionColor]   = GetFunction(PluginMaterialsPath, TEXT("VolumeAbsorptionColor"));
 		CommonFunctions[(int)ECommonFunction::TranslucentOpacity]      = GetFunction(PluginMaterialsPath, TEXT("TranslucentOpacity"));
 		check(CommonFunctions.FindByPredicate([](const auto Fct) { return Fct == nullptr; }) == nullptr);
+
+		// OmniPBR noinline functions. These are annotated as noinline and require UE specific implementations.
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Function_unpack_normal_map"), { &FFunctionGenerator::UnrealTextureLookup, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Function_greyscale_texture_lookup"), { &FFunctionGenerator::UnrealTextureLookup, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Function_pixel_normal_world_space"), { &FFunctionGenerator::UnrealPixelNormalWS, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Function_vertex_normal_world_space"), { &FFunctionGenerator::UnrealVertexNormalWS, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Function_fresnel"), { &FFunctionGenerator::UnrealFresnel, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Function_camera_vector"), { &FFunctionGenerator::UnrealCameraVector, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Function_transform_vector_from_tangent_to_world"), { &FFunctionGenerator::UnrealTransformTangentToWorld, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Function_transform_vector_from_world_to_tangent"), { &FFunctionGenerator::UnrealTransformWorldToTangent, 1 });
+
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Base_tangent_space_normal"), { &FFunctionGenerator::UnrealTangentSpaceNormal, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Base_emissive_multiplier"), { &FFunctionGenerator::UnrealEmissiveMultiplier, 1 });
+
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Translucent_tangent_space_normal"), { &FFunctionGenerator::UnrealTangentSpaceNormal, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Translucent_emissive_multiplier"), { &FFunctionGenerator::UnrealEmissiveMultiplier, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Translucent_get_translucent_tint"), { &FFunctionGenerator::UnrealTranslucentGetTint, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Translucent_get_emissive_intensity"), { &FFunctionGenerator::UnrealTranslucentGetTint, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Translucent_get_translucent_opacity"), { &FFunctionGenerator::UnrealOpacityWeight, 1 });
+
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Subsurface_tangent_space_normal"), { &FFunctionGenerator::UnrealTangentSpaceNormal, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Subsurface_emissive_multiplier"), { &FFunctionGenerator::UnrealEmissiveMultiplier, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Subsurface_get_subsurface_weight"), { &FFunctionGenerator::UnrealSubsurfaceWeight, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Subsurface_get_subsurface_color"), { &FFunctionGenerator::UnrealSubsurfaceColor, 1 });
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Subsurface_get_subsurface_opacity"), { &FFunctionGenerator::UnrealSubsurfaceOpacity, 1 });
+
+		NoInlineFunctionGenerateMap.Add(TEXT("OmniUe4Unlit_emissive_multiplier"), { &FFunctionGenerator::UnrealEmissiveMultiplier, 1 });
 	}
 
 	FFunctionLoader::~FFunctionLoader() {}
@@ -250,7 +279,22 @@ namespace Generator
 	{
 		FGenerationData* GenerationData = FunctionGenerateMap.Find(AssetName);
 		if (!GenerationData)
-			return nullptr;
+		{
+			for ( TMap< FString, FGenerationData >::TIterator It = NoInlineFunctionGenerateMap.CreateIterator(); It; ++It )
+			{
+				if ( AssetName.EndsWith( It.Key() ) )
+				{
+					GenerationData = &It.Value();
+					break;
+				}
+			}
+
+			if (!GenerationData)
+			{
+				UE_LOG(LogMDLImporter, Warning, TEXT("Unknown function: %s"), *AssetName);
+				return nullptr;
+			}
+		}
 
 		FString FunctionName = AssetName;
 		if (0 < ArraySize)
@@ -261,8 +305,8 @@ namespace Generator
 		FString   FunctionPackageName = UPackageTools::SanitizePackageName(*(AssetPath / FunctionName));
 		UPackage* Package             = CreatePackage(*FunctionPackageName);
 
-		UMaterialFunction* Function = Function = dynamic_cast<UMaterialFunction*>(
-		    FunctionFactory->FactoryCreateNew(UMaterialFunction::StaticClass(), Package, *FunctionName, RF_Public | RF_Standalone, nullptr, GWarn));
+		UMaterialFunction* Function = Cast<UMaterialFunction>(
+		    FunctionFactory->FactoryCreateNew(UMaterialFunction::StaticClass(), Package, *FunctionName, ObjectFlags, nullptr, GWarn));
 
 		check(Function);
 		Function->StateId = FGuid::NewGuid();
@@ -322,4 +366,11 @@ namespace Generator
 
 		return Function;
 	}
+
+	void FFunctionLoader::AddReferencedObjects(FReferenceCollector& Collector)
+	{
+		Collector.AddReferencedObjects(LoadedFunctions);
+		Collector.AddReferencedObjects(CommonFunctions);
+	}
+
 }  // namespace Generator

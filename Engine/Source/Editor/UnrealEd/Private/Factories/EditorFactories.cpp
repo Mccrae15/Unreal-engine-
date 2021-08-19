@@ -1488,7 +1488,7 @@ UObject* UPackageFactory::FactoryCreateText( UClass* Class, UObject* InParent, F
 		}
 	}
 
-	for (FObjectIterator ObjIt; ObjIt; ++ObjIt)
+	for (FThreadSafeObjectIterator ObjIt; ObjIt; ++ObjIt)
 	{
 		UObject* LoadObject = *ObjIt;
 
@@ -2695,26 +2695,32 @@ static void psd_GetPSDHeader( const uint8* Buffer, FPSDFileHeader& Info )
 		((int32)Buffer[25] <<  0);
 }
 
-
-void DecompressTGA_RLE_32bpp( const FTGAFileHeader* TGA, uint32* TextureData )
+bool DecompressTGA_RLE_32bpp( const FTGAFileHeader* TGA, const uint32 TGABufferLenght, uint32* TextureData )
 {
-	uint8*	IdData		= (uint8*)TGA + sizeof(FTGAFileHeader); 
-	uint8*	ColorMap	= IdData + TGA->IdFieldLength;
-	uint8*	ImageData	= (uint8*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);				
-	uint32	Pixel		= 0;
-	int32     RLERun		= 0;
-	int32     RAWRun		= 0;
+	const uint8* const IdData = (uint8*)TGA + sizeof(FTGAFileHeader); 
+	const uint8* const  ColorMap = IdData + TGA->IdFieldLength;
+	const uint8* ImageData = (uint8*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
+
+	const uint8* TGAEnd = (uint8*)TGA + TGABufferLenght;
+
+	uint32 Pixel = 0;
+	int32 RLERun = 0;
+	int32 RAWRun = 0;
 
 	for(int32 Y = TGA->Height-1; Y >=0; Y--) // Y-flipped.
-	{					
+	{
 		for(int32 X = 0;X < TGA->Width;X++)
-		{						
+		{
 			if( RLERun > 0 )
 			{
 				RLERun--;  // reuse current Pixel data.
 			}
 			else if( RAWRun == 0 ) // new raw pixel or RLE-run.
 			{
+				if ( TGAEnd < ImageData )
+				{
+					return false;
+				}
 				uint8 RLEChunk = *(ImageData++);							
 				if( RLEChunk & 0x80 )
 				{
@@ -2725,7 +2731,12 @@ void DecompressTGA_RLE_32bpp( const FTGAFileHeader* TGA, uint32* TextureData )
 				{
 					RAWRun = ( RLEChunk & 0x7F ) + 1;
 				}
-			}							
+
+				if ( TGAEnd < ImageData + RAWRun * 4 )
+				{
+					return false;
+				}
+			}
 			// Retrieve new pixel data - raw run or single pixel for RLE stretch.
 			if( RAWRun > 0 )
 			{
@@ -2738,25 +2749,36 @@ void DecompressTGA_RLE_32bpp( const FTGAFileHeader* TGA, uint32* TextureData )
 			*( (TextureData + Y*TGA->Width)+X ) = Pixel;
 		}
 	}
+
+	return true;
 }
 
-void DecompressTGA_RLE_24bpp( const FTGAFileHeader* TGA, uint32* TextureData )
+bool DecompressTGA_RLE_24bpp( const FTGAFileHeader* TGA, const uint32 TGABufferLenght, uint32* TextureData )
 {
-	uint8*	IdData = (uint8*)TGA + sizeof(FTGAFileHeader); 
-	uint8*	ColorMap = IdData + TGA->IdFieldLength;
-	uint8*	ImageData = (uint8*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
-	uint8    Pixel[4] = {};
-	int32     RLERun = 0;
-	int32     RAWRun = 0;
+	const uint8* const IdData = (uint8*)TGA + sizeof(FTGAFileHeader); 
+	const uint8* const ColorMap = IdData + TGA->IdFieldLength;
+	const uint8* ImageData = (uint8*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
+
+	const uint8* TGAEnd = (uint8*)TGA + TGABufferLenght;
+
+	uint8 Pixel[4] = {};
+	int32 RLERun = 0;
+	int32 RAWRun = 0;
 
 	for(int32 Y = TGA->Height-1; Y >=0; Y--) // Y-flipped.
-	{					
+	{
 		for(int32 X = 0;X < TGA->Width;X++)
-		{						
+		{
 			if( RLERun > 0 )
-				RLERun--;  // reuse current Pixel data.
+			{
+				RLERun--; // reuse current Pixel data.
+			}
 			else if( RAWRun == 0 ) // new raw pixel or RLE-run.
 			{
+				if ( TGAEnd < ImageData )
+				{
+					return false;
+				}
 				uint8 RLEChunk = *(ImageData++);
 				if( RLEChunk & 0x80 )
 				{
@@ -2767,7 +2789,12 @@ void DecompressTGA_RLE_24bpp( const FTGAFileHeader* TGA, uint32* TextureData )
 				{
 					RAWRun = ( RLEChunk & 0x7F ) + 1;
 				}
-			}							
+
+				if ( TGAEnd < ImageData + RAWRun * 3 )
+				{
+					return false;
+				}
+			}
 			// Retrieve new pixel data - raw run or single pixel for RLE stretch.
 			if( RAWRun > 0 )
 			{
@@ -2782,26 +2809,35 @@ void DecompressTGA_RLE_24bpp( const FTGAFileHeader* TGA, uint32* TextureData )
 			*( (TextureData + Y*TGA->Width)+X ) = *(uint32*)&Pixel;
 		}
 	}
+	return true;
 }
 
-void DecompressTGA_RLE_16bpp( const FTGAFileHeader* TGA, uint32* TextureData )
+bool DecompressTGA_RLE_16bpp( const FTGAFileHeader* TGA, const uint32 TGABufferLenght, uint32* TextureData )
 {
-	uint8*	IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
-	uint8*	ColorMap = IdData + TGA->IdFieldLength;				
-	uint16*	ImageData = (uint16*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
-	uint16  FilePixel = 0;
-	uint32	TexturePixel = 0;
-	int32     RLERun = 0;
-	int32     RAWRun = 0;
+	const uint8* const IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
+	const uint8* const ColorMap = IdData + TGA->IdFieldLength;				
+	const uint16* ImageData = (uint16*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
+
+	const uint16* TGAEnd = (uint16*)TGA + TGABufferLenght / 2;
+
+	uint32 TexturePixel = 0;
+	int32 RLERun = 0;
+	int32 RAWRun = 0;
 
 	for(int32 Y = TGA->Height-1; Y >=0; Y--) // Y-flipped.
 	{					
 		for( int32 X=0;X<TGA->Width;X++ )
 		{						
 			if( RLERun > 0 )
+			{
 				RLERun--;  // reuse current Pixel data.
+			}
 			else if( RAWRun == 0 ) // new raw pixel or RLE-run.
 			{
+				if ( TGAEnd < ImageData )
+				{
+					return false;
+				}
 				uint8 RLEChunk =  *((uint8*)ImageData);
 				ImageData = (uint16*)(((uint8*)ImageData)+1);
 				if( RLEChunk & 0x80 )
@@ -2813,49 +2849,69 @@ void DecompressTGA_RLE_16bpp( const FTGAFileHeader* TGA, uint32* TextureData )
 				{
 					RAWRun = ( RLEChunk & 0x7F ) + 1;
 				}
-			}							
+
+				if ( TGAEnd < ImageData + RAWRun )
+				{
+					return false;
+				}
+			}
 			// Retrieve new pixel data - raw run or single pixel for RLE stretch.
 			if( RAWRun > 0 )
 			{ 
-				FilePixel = *(ImageData++);
+				const uint16 FilePixel = *(ImageData++);
 				RAWRun--;
 				RLERun--;
+
+				// Convert file format A1R5G5B5 into pixel format B8G8R8B8
+				TexturePixel = (FilePixel & 0x001F) << 3;
+				TexturePixel |= (FilePixel & 0x03E0) << 6;
+				TexturePixel |= (FilePixel & 0x7C00) << 9;
+				TexturePixel |= (FilePixel & 0x8000) << 16;
 			}
-			// Convert file format A1R5G5B5 into pixel format B8G8R8B8
-			TexturePixel = (FilePixel & 0x001F) << 3;
-			TexturePixel |= (FilePixel & 0x03E0) << 6;
-			TexturePixel |= (FilePixel & 0x7C00) << 9;
-			TexturePixel |= (FilePixel & 0x8000) << 16;
 			// Store.
 			*( (TextureData + Y*TGA->Width)+X ) = TexturePixel;
 		}
 	}
+
+	return true;
 }
 
-void DecompressTGA_32bpp( const FTGAFileHeader* TGA, uint32* TextureData )
+bool DecompressTGA_32bpp( const FTGAFileHeader* TGA, const uint32 TGABufferLenght, uint32* TextureData )
 {
 
-	uint8*	IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
-	uint8*	ColorMap = IdData + TGA->IdFieldLength;
-	uint32*	ImageData = (uint32*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
+	const uint8* const IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
+	const uint8* const ColorMap = IdData + TGA->IdFieldLength;
+	const uint32* const ImageData = (uint32*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
+
+	if ( (uint8*)TGA + TGABufferLenght < (uint8*)(ImageData + TGA->Width * TGA->Height) )
+	{
+		return false;
+	}
 
 	for(int32 Y = 0;Y < TGA->Height;Y++)
 	{
 		FMemory::Memcpy(TextureData + Y * TGA->Width,ImageData + (TGA->Height - Y - 1) * TGA->Width,TGA->Width * 4);
 	}
+
+	return true;
 }
 
-void DecompressTGA_16bpp( const FTGAFileHeader* TGA, uint32* TextureData )
+bool DecompressTGA_16bpp( const FTGAFileHeader* TGA, const uint32 TGABufferLenght, uint32* TextureData )
 {
-	uint8*	IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
-	uint8*	ColorMap = IdData + TGA->IdFieldLength;
-	uint16*	ImageData = (uint16*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
-	uint16    FilePixel = 0;
-	uint32	TexturePixel = 0;
+	const uint8* const IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
+	const uint8* const ColorMap = IdData + TGA->IdFieldLength;
+	const uint16* ImageData = (uint16*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
+	uint16 FilePixel = 0;
+	uint32 TexturePixel = 0;
+
+	if ( (uint16*)((uint8*)TGA + TGABufferLenght) < ImageData + TGA->Height * TGA->Width )
+	{
+		return false;
+	}
 
 	for (int32 Y = TGA->Height - 1; Y >= 0; Y--)
 	{					
-		for (int32 X = 0; X<TGA->Width; X++)
+		for (int32 X = 0; X < TGA->Width; X++)
 		{
 			FilePixel = *ImageData++;
 			// Convert file format A1R5G5B5 into pixel format B8G8R8A8
@@ -2867,18 +2923,25 @@ void DecompressTGA_16bpp( const FTGAFileHeader* TGA, uint32* TextureData )
 			*((TextureData + Y*TGA->Width) + X) = TexturePixel;						
 		}
 	}
+
+	return true;
 }
 
-void DecompressTGA_24bpp( const FTGAFileHeader* TGA, uint32* TextureData )
+bool DecompressTGA_24bpp( const FTGAFileHeader* TGA, const uint32 TGABufferLenght, uint32* TextureData )
 {
-	uint8*	IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
-	uint8*	ColorMap = IdData + TGA->IdFieldLength;
-	uint8*	ImageData = (uint8*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
-	uint8    Pixel[4];
+	const uint8* const IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
+	const uint8* const ColorMap = IdData + TGA->IdFieldLength;
+	const uint8* const ImageData = (uint8*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
+	uint8 Pixel[4];
 
-	for(int32 Y = 0;Y < TGA->Height;Y++)
+	if ( (uint8*)TGA + TGABufferLenght < ImageData + TGA->Width * TGA->Height * 3 )
 	{
-		for(int32 X = 0;X < TGA->Width;X++)
+		return false;
+	}
+
+	for(int32 Y = 0; Y < TGA->Height; Y++)
+	{
+		for(int32 X = 0; X < TGA->Width; X++)
 		{
 			Pixel[0] = *(( ImageData+( TGA->Height-Y-1 )*TGA->Width*3 )+X*3+0);
 			Pixel[1] = *(( ImageData+( TGA->Height-Y-1 )*TGA->Width*3 )+X*3+1);
@@ -2887,13 +2950,20 @@ void DecompressTGA_24bpp( const FTGAFileHeader* TGA, uint32* TextureData )
 			*((TextureData+Y*TGA->Width)+X) = *(uint32*)&Pixel;
 		}
 	}
+
+	return true;
 }
 
-void DecompressTGA_8bpp( const FTGAFileHeader* TGA, uint8* TextureData )
+bool DecompressTGA_8bpp( const FTGAFileHeader* TGA, const uint32 TGABufferLenght, uint8* TextureData )
 {
-	const uint8*  const IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
-	const uint8*  const ColorMap = IdData + TGA->IdFieldLength;
-	const uint8*  const ImageData = (uint8*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
+	const uint8* const IdData = (uint8*)TGA + sizeof(FTGAFileHeader);
+	const uint8* const  ColorMap = IdData + TGA->IdFieldLength;
+	const uint8* const  ImageData = (uint8*) (ColorMap + (TGA->ColorMapEntrySize + 4) / 8 * TGA->ColorMapLength);
+
+	if ( (uint8*)TGA + TGABufferLenght < ImageData + TGA->Width * TGA->Height )
+	{
+		return false;
+	}
 
 	int32 RevY = 0;
 	for (int32 Y = TGA->Height-1; Y >= 0; --Y)
@@ -2902,29 +2972,33 @@ void DecompressTGA_8bpp( const FTGAFileHeader* TGA, uint8* TextureData )
 		uint8* TextureCol = TextureData + (RevY++ * TGA->Width);
 		FMemory::Memcpy(TextureCol, ImageCol, TGA->Width);
 	}
+
+	return true;
 }
 
 bool DecompressTGA_helper(
 	const FTGAFileHeader* TGA,
+	const uint32 TGABufferLenght,
 	uint32*& TextureData,
 	const int32 TextureDataSize,
 	FFeedbackContext* Warn )
 {
+	bool bSuccess = false;
 	if(TGA->ImageTypeCode == 10) // 10 = RLE compressed 
 	{
 		// RLE compression: CHUNKS: 1 -byte header, high bit 0 = raw, 1 = compressed
-		// bits 0-6 are a 7-bit count; count+1 = number of raw pixels following, or rle pixels to be expanded. 
+		// bits 0-6 are a 7-bit count; count+1 = number of raw pixels following, or rle pixels to be expanded.
 		if(TGA->BitsPerPixel == 32)
 		{
-			DecompressTGA_RLE_32bpp(TGA, TextureData);
+			bSuccess = DecompressTGA_RLE_32bpp(TGA, TGABufferLenght, TextureData);
 		}
 		else if( TGA->BitsPerPixel == 24 )
-		{	
-			DecompressTGA_RLE_24bpp(TGA, TextureData);
+		{
+			bSuccess = DecompressTGA_RLE_24bpp(TGA, TGABufferLenght, TextureData);
 		}
 		else if( TGA->BitsPerPixel == 16 )
 		{
-			DecompressTGA_RLE_16bpp(TGA, TextureData);
+			bSuccess = DecompressTGA_RLE_16bpp(TGA, TGABufferLenght, TextureData);
 		}
 		else
 		{
@@ -2936,15 +3010,15 @@ bool DecompressTGA_helper(
 	{
 		if(TGA->BitsPerPixel == 32)
 		{
-			DecompressTGA_32bpp(TGA, TextureData);
+			bSuccess = DecompressTGA_32bpp(TGA, TGABufferLenght, TextureData);
 		}
 		else if(TGA->BitsPerPixel == 16)
 		{
-			DecompressTGA_16bpp(TGA, TextureData);
+			bSuccess = DecompressTGA_16bpp(TGA, TGABufferLenght, TextureData);
 		}            
 		else if(TGA->BitsPerPixel == 24)
 		{
-			DecompressTGA_24bpp(TGA, TextureData);
+			bSuccess = DecompressTGA_24bpp(TGA, TGABufferLenght, TextureData);
 		}
 		else
 		{
@@ -2955,16 +3029,22 @@ bool DecompressTGA_helper(
 	// Support for alpha stored as pseudo-color 8-bit TGA
 	else if(TGA->ColorMapType == 1 && TGA->ImageTypeCode == 1 && TGA->BitsPerPixel == 8)
 	{
-		DecompressTGA_8bpp(TGA, (uint8*)TextureData);
+		bSuccess = DecompressTGA_8bpp(TGA, TGABufferLenght, (uint8*)TextureData);
 	}
 	// standard grayscale
 	else if(TGA->ColorMapType == 0 && TGA->ImageTypeCode == 3 && TGA->BitsPerPixel == 8)
 	{
-		DecompressTGA_8bpp(TGA, (uint8*)TextureData);
+		bSuccess = DecompressTGA_8bpp(TGA, TGABufferLenght, (uint8*)TextureData);
 	}
 	else
 	{
 		Warn->Logf(ELogVerbosity::Error, TEXT("TGA is an unsupported type: %u"),TGA->ImageTypeCode);
+		return false;
+	}
+
+	if (!bSuccess)
+	{
+		Warn->Logf(ELogVerbosity::Error, TEXT("The TGA file is invalid or corrupted"));
 		return false;
 	}
 
@@ -3002,9 +3082,10 @@ bool DecompressTGA_helper(
 }
 
 bool DecompressTGA(
-	const FTGAFileHeader*	TGA,
-	FImportImage&			OutImage,
-	FFeedbackContext*		Warn)
+	const FTGAFileHeader* TGA,
+	const uint32 TGABufferLenght,
+	FImportImage& OutImage,
+	FFeedbackContext* Warn)
 {
 	if (TGA->ColorMapType == 1 && TGA->ImageTypeCode == 1 && TGA->BitsPerPixel == 8)
 	{
@@ -3060,7 +3141,7 @@ bool DecompressTGA(
 	int32 TextureDataSize = OutImage.RawData.Num();
 	uint32* TextureData = (uint32*)OutImage.RawData.GetData();
 
-	return DecompressTGA_helper(TGA, TextureData, TextureDataSize, Warn);
+	return DecompressTGA_helper(TGA, TGABufferLenght, TextureData, TextureDataSize, Warn);
 }
 
 bool UTextureFactory::bSuppressImportOverwriteDialog = false;
@@ -3089,6 +3170,8 @@ UTextureFactory::UTextureFactory(const FObjectInitializer& ObjectInitializer)
 	bEditorImport = true;
 
 	UdimRegexPattern = TEXT(R"((.+?)[._](\d{4})$)");
+
+	ColorSpaceMode = ETextureSourceColorSpace::Auto;
 }
 
 bool UTextureFactory::FactoryCanImport(const FString& Filename)
@@ -3397,9 +3480,8 @@ bool UTextureFactory::ImportImage(const uint8* Buffer, uint32 Length, FFeedbackC
 			}
 			else if (BitDepth == 16)
 			{
-				// TODO: TSF_G16?
-				TextureFormat = TSF_RGBA16;
-				Format = ERGBFormat::RGBA;
+				TextureFormat = TSF_G16;
+				Format = ERGBFormat::Gray;
 				BitDepth = 16;
 			}
 		}
@@ -3712,7 +3794,7 @@ bool UTextureFactory::ImportImage(const uint8* Buffer, uint32 Length, FFeedbackC
 			return false;
 		}
 
-		const bool bResult = DecompressTGA(TGA, OutImage, Warn);
+		const bool bResult = DecompressTGA(TGA, Length, OutImage, Warn);
 		if (bResult && OutImage.CompressionSettings == TC_Grayscale && TGA->ImageTypeCode == 3)
 		{
 			// default grayscales to linear as they wont get compression otherwise and are commonly used as masks
@@ -3920,7 +4002,19 @@ UTexture* UTextureFactory::ImportTextureUDIM(UClass* Class, UObject* InParent, F
 	UTexture2D* Texture = CreateTexture2D(InParent, Name, Flags);
 	Texture->Source.InitBlocked(&Format, SourceBlocks.GetData(), 1, SourceBlocks.Num(), SourceImageData.GetData());
 	Texture->CompressionSettings = TCSettings;
-	Texture->SRGB = bSRGB;
+
+	if (ColorSpaceMode == ETextureSourceColorSpace::Auto)
+	{
+		Texture->SRGB = bSRGB;
+	}
+	else if (ColorSpaceMode == ETextureSourceColorSpace::Linear)
+	{
+		Texture->SRGB = false;
+	}
+	else if (ColorSpaceMode == ETextureSourceColorSpace::SRGB)
+	{
+		Texture->SRGB = true;
+	}
 
 	for (int32 FileIndex = 0; FileIndex < SourceFileNames.Num(); ++FileIndex)
 	{
@@ -3956,7 +4050,19 @@ UTexture* UTextureFactory::ImportTexture(UClass* Class, UObject* InParent, FName
 				Image.RawData.GetData()
 			);
 			Texture->CompressionSettings = Image.CompressionSettings;
-			Texture->SRGB = Image.SRGB;
+
+			if (ColorSpaceMode == ETextureSourceColorSpace::Auto)
+			{
+				Texture->SRGB = Image.SRGB;
+			}
+			else if (ColorSpaceMode == ETextureSourceColorSpace::Linear)
+			{
+				Texture->SRGB = false;
+			}
+			else if (ColorSpaceMode == ETextureSourceColorSpace::SRGB)
+			{
+				Texture->SRGB = true;
+			}
 		}
 		return Texture;
 	}
@@ -4126,6 +4232,7 @@ UTexture* UTextureFactory::ImportTexture(UClass* Class, UObject* InParent, FName
 				);
 			// the loader can suggest a compression setting
 			TextureCube->CompressionSettings = TC_HDR;
+			TextureCube->SRGB = false;
 		}
 
 		return TextureCube;
@@ -4268,10 +4375,9 @@ UObject* UTextureFactory::FactoryCreateBinary
 				// Found multiple UDIM pages, so import as UDIM texture
 				// Exclude UDIM number from the name of the UE4 texture asset we create
 				const FString ShortPackageName = ObjectTools::SanitizeInvalidChars(BaseUDIMName, INVALID_LONGPACKAGE_CHARACTERS);
-				TextureName = *ShortPackageName;
 
 				// Don't try to rename the package if its the transient package
-				if ( InParent != GetTransientPackage() )
+				if ( InParent != GetTransientPackage() && InParent->IsA<UPackage>() )
 				{
 					// Need to rename the package to match the new texture name, since package was already created
 					// Package name will be the same as the object name, except will contain additional path information,
@@ -4282,28 +4388,25 @@ UObject* UTextureFactory::FactoryCreateBinary
 					const int32 PackageUDIMIndex = ParseUDIMName(PackageName, UdimRegexPattern, PreUDIMName, PostUDIMName);
 					const FString PackageUDIMName = PreUDIMName + PostUDIMName;
 
-					if (PackageUDIMIndex == -1)
+					// Only rename the package if has the name generated from the file name
+					if (PackageUDIMIndex == BaseUDIMIndex)
 					{
-						// If we're re-importing UDIM texture, the package will already be correctly named after the UDIM base name
-						// In this case we'll fail to parse the UDIM name, but the package should already have the proper name
-						check(PackageName.EndsWith(ShortPackageName, ESearchCase::CaseSensitive));
-					}
-					else
-					{
-						check(PackageUDIMIndex == BaseUDIMIndex);
-						check(PackageUDIMName.EndsWith(ShortPackageName, ESearchCase::CaseSensitive));
+						if (PackageUDIMName.EndsWith(ShortPackageName, ESearchCase::CaseSensitive))
+						{
+							// In normal case, higher level code would have already checked for duplicate package name
+							// But since we're changing package name here, check to see if package with the new name already exists...
+							// If it does, code later in this method will prompt user to overwrite the existing asset
+							UPackage* ExistingPackage = FindPackage(InParent->GetOuter(), *PackageUDIMName);
+							if (ExistingPackage)
+							{
+								InParent = ExistingPackage;
+							}
+							else
+							{
+								verify(InParent->Rename(*PackageUDIMName, nullptr, REN_DontCreateRedirectors));
+							}
 
-						// In normal case, higher level code would have already checked for duplicate package name
-						// But since we're changing package name here, check to see if package with the new name already exists...
-						// If it does, code later in this method will prompt user to overwrite the existing asset
-						UPackage* ExistingPackage = FindPackage(InParent->GetOuter(), *PackageUDIMName);
-						if (ExistingPackage)
-						{
-							InParent = ExistingPackage;
-						}
-						else
-						{
-							verify(InParent->Rename(*PackageUDIMName, nullptr, REN_DontCreateRedirectors));
+							TextureName = *ShortPackageName;
 						}
 					}
 				}
@@ -4555,6 +4658,35 @@ UObject* UTextureFactory::FactoryCreateBinary
 
 	UTexture2D* Texture2D = Cast<UTexture2D>(Texture);
 
+	if (Texture2D)
+	{
+		// If the texture is larger than a certain threshold make it VT.
+		// Note that previously for re-imports we still checked size and potentially changed the VT status.
+		// But that was unintuitive for many users so now for re-imports we will end up ignoring this and respecting the existing setting below.
+		static const auto CVarVirtualTexturesEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextures")); 
+		check(CVarVirtualTexturesEnabled);
+		static const auto CVarVirtualTexturesAutoImportEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VT.EnableAutoImport"));
+		check(CVarVirtualTexturesAutoImportEnabled);
+
+		if (CVarVirtualTexturesEnabled->GetValueOnAnyThread() && CVarVirtualTexturesAutoImportEnabled->GetValueOnAnyThread())
+		{
+			const int32 VirtualTextureAutoEnableThreshold = GetDefault<UTextureImportSettings>()->AutoVTSize;
+			const int32 VirtualTextureAutoEnableThresholdPixels = VirtualTextureAutoEnableThreshold * VirtualTextureAutoEnableThreshold;
+
+			// We do this in pixels so a 8192 x 128 texture won't get VT enabled 
+			// We use the Source size instead of simple Texture2D->GetSizeX() as this uses the size of the platform data
+			// however for a new texture platform data may not be generated yet, and for an reimport of a texture this is the size of the
+			// old texture. 
+			// Using source size gives one small caveat. It looks at the size before mipmap power of two padding adjustment.
+			// Textures with more than 1 block (UDIM textures) must be imported as VT
+			if (Texture->Source.GetNumBlocks() > 1 ||
+				Texture2D->Source.GetSizeX() * Texture2D->Source.GetSizeY() >= VirtualTextureAutoEnableThresholdPixels)
+			{
+				Texture2D->VirtualTextureStreaming = true;
+			}
+		}
+	}
+
 	// Restore user set options
 	if (ExistingTexture && bUsingExistingSettings)
 	{
@@ -4600,29 +4732,6 @@ UObject* UTextureFactory::FactoryCreateBinary
 	{
 		// The texture has been imported and has no editor specific changes applied so we clear the painted flag.
 		Texture2D->bHasBeenPaintedInEditor = false;
-
-		// If the texture is larger than a certain threshold make it VT. This is explicitly done after the
-		// application of the existing settings above, so if a texture gets reimported at a larger size it will
-		// still be properly flagged as a VT (note: What about reimporting at a lower resolution?)
-		static const auto CVarVirtualTexturesEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextures")); check(CVarVirtualTexturesEnabled);
-		
-		if (CVarVirtualTexturesEnabled->GetValueOnAnyThread())
-		{
-			int virtualTextureAutoEnableThreshold = GetDefault<UTextureImportSettings>()->AutoVTSize;
-			int virtualTextureAutoEnableThresholdPixels = virtualTextureAutoEnableThreshold * virtualTextureAutoEnableThreshold;
-
-			// We do this in pixels so a 8192 x 128 texture won't get VT enabled 
-			// We use the Source size instead of simple Texture2D->GetSizeX() as this uses the size of the platform data
-			// however for a new texture platform data may not be generated yet, and for an reimport of a texture this is the size of the
-			// old texture. 
-			// Using source size gives one small caveat. It looks at the size before mipmap power of two padding adjustment.
-			// Textures with more than 1 block (UDIM textures) must be imported as VT
-			if (Texture->Source.GetNumBlocks() > 1 ||
-				Texture2D->Source.GetSizeX()*Texture2D->Source.GetSizeY() >= virtualTextureAutoEnableThresholdPixels)
-			{
-				Texture2D->VirtualTextureStreaming = true;
-			}
-		}
 	}
 
 	// Automatically detect if the texture is a normal map and configure its properties accordingly
@@ -4820,7 +4929,17 @@ bool UTextureFactory::IsImportResolutionValid(int32 Width, int32 Height, bool bA
 	// Check if the texture is above the supported resolution and prompt the user if they wish to continue if it is
 	if ( Width > MaximumSupportedResolution || Height > MaximumSupportedResolution )
 	{
-		if ((Width * Height) > FMath::Square(MaximumSupportedVirtualTextureResolution))
+		if (Width * Height < 0)
+		{
+			Warn->Log(ELogVerbosity::Error, *FText::Format(
+				NSLOCTEXT("UnrealEd", "Warning_TextureSizeTooLargeOrInvalid", "Texture is too large to import or it has an invalid resolution. The current maximun is {0} pixels"),
+				FText::AsNumber(FMath::Square(MaximumSupportedVirtualTextureResolution))
+				).ToString());
+
+			bValid = false;
+		}
+
+		if ( bValid && (Width * Height) > FMath::Square(MaximumSupportedVirtualTextureResolution))
 		{
 			Warn->Log(ELogVerbosity::Error, *FText::Format(
 				NSLOCTEXT("UnrealEd", "Warning_TextureSizeTooLarge", "Texture is too large to import. The current maximun is {0} pixels"),
@@ -6174,8 +6293,8 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 			}
 
 			// preserve settings in navcollision subobject
-			UNavCollisionBase* NavCollision = Mesh->NavCollision ? 
-				(UNavCollisionBase*)StaticDuplicateObject(Mesh->NavCollision, GetTransientPackage()) :
+			UNavCollisionBase* NavCollision = Mesh->GetNavCollision() ? 
+				(UNavCollisionBase*)StaticDuplicateObject(Mesh->GetNavCollision(), GetTransientPackage()) :
 				nullptr;
 
 			bool bAddedNavCollisionDupToRoot = false;
@@ -6186,8 +6305,8 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 			}
 
 			// preserve extended bound settings
-			const FVector PositiveBoundsExtension = Mesh->PositiveBoundsExtension;
-			const FVector NegativeBoundsExtension = Mesh->NegativeBoundsExtension;
+			const FVector PositiveBoundsExtension = Mesh->GetPositiveBoundsExtension();
+			const FVector NegativeBoundsExtension = Mesh->GetNegativeBoundsExtension();
 
 			if (FFbxImporter->ReimportStaticMesh(Mesh, ImportData))
 			{
@@ -6213,13 +6332,13 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 						//if the duplicated temporary UObject was add to root, we must remove it from the root
 						NavCollision->RemoveFromRoot();
 					}
-					Mesh->NavCollision = NavCollision;
+					Mesh->SetNavCollision(NavCollision);
 					NavCollision->Rename(NULL, Mesh, REN_DontCreateRedirectors | REN_DoNotDirty);
 				}
 
 				// Restore bounds extension settings
-				Mesh->PositiveBoundsExtension = PositiveBoundsExtension;
-				Mesh->NegativeBoundsExtension = NegativeBoundsExtension;
+				Mesh->SetPositiveBoundsExtension(PositiveBoundsExtension);
+				Mesh->SetNegativeBoundsExtension(NegativeBoundsExtension);
 
 				Mesh->AssetImportData->Update(Filename);
 
@@ -6295,19 +6414,19 @@ bool UReimportFbxSkeletalMeshFactory::CanReimport( UObject* Obj, TArray<FString>
 	USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Obj);
 	if (SkeletalMesh && !SkeletalMesh->HasCustomActorReimportFactory())
 	{
-		if (SkeletalMesh->AssetImportData)
+		if (SkeletalMesh->GetAssetImportData())
 		{
-			UFbxAssetImportData *FbxAssetImportData = Cast<UFbxAssetImportData>(SkeletalMesh->AssetImportData);
+			UFbxAssetImportData *FbxAssetImportData = Cast<UFbxAssetImportData>(SkeletalMesh->GetAssetImportData());
 			if (FbxAssetImportData != nullptr && FbxAssetImportData->bImportAsScene)
 			{
 				//This skeletal mesh was import with a scene import, we cannot reimport it here
 				return false;
 			}
-			else if (FPaths::GetExtension(SkeletalMesh->AssetImportData->GetFirstFilename()) == TEXT("abc"))
+			else if (FPaths::GetExtension(SkeletalMesh->GetAssetImportData()->GetFirstFilename()) == TEXT("abc"))
 			{
 				return false;
 			}
-			SkeletalMesh->AssetImportData->ExtractFilenames(OutFilenames);
+			SkeletalMesh->GetAssetImportData()->ExtractFilenames(OutFilenames);
 		}
 		else
 		{
@@ -6363,7 +6482,7 @@ EReimportResult::Type UReimportFbxSkeletalMeshFactory::Reimport( UObject* Obj, i
 	//Clean up the options
 	UnFbx::FBXImportOptions::ResetOptions(ImportOptions);
 
-	UFbxSkeletalMeshImportData* ImportData = Cast<UFbxSkeletalMeshImportData>(SkeletalMesh->AssetImportData);
+	UFbxSkeletalMeshImportData* ImportData = Cast<UFbxSkeletalMeshImportData>(SkeletalMesh->GetAssetImportData());
 	
 	// Prepare the import options
 	UFbxImportUI* ReimportUI;
@@ -6382,9 +6501,9 @@ EReimportResult::Type UReimportFbxSkeletalMeshFactory::Reimport( UObject* Obj, i
 	}
 
 	ReimportUI->MeshTypeToImport = FBXIT_SkeletalMesh;
-	ReimportUI->Skeleton = SkeletalMesh->Skeleton;
+	ReimportUI->Skeleton = SkeletalMesh->GetSkeleton();
 	ReimportUI->bCreatePhysicsAsset = false;
-	ReimportUI->PhysicsAsset = SkeletalMesh->PhysicsAsset;
+	ReimportUI->PhysicsAsset = SkeletalMesh->GetPhysicsAsset();
 	ReimportUI->bImportAnimations = false;
 	ReimportUI->OverrideAnimationName = TEXT("");
 	ReimportUI->bImportRigidMesh = false;
@@ -6403,7 +6522,7 @@ EReimportResult::Type UReimportFbxSkeletalMeshFactory::Reimport( UObject* Obj, i
 	{
 		// An existing import data object was not found, make one here and show the options dialog
 		ImportData = UFbxSkeletalMeshImportData::GetImportDataForSkeletalMesh(SkeletalMesh, ImportUI->SkeletalMeshImportData);
-		SkeletalMesh->AssetImportData = ImportData;
+		SkeletalMesh->SetAssetImportData(ImportData);
 	}
 	check(ImportData != nullptr);
 
@@ -6559,9 +6678,9 @@ EReimportResult::Type UReimportFbxSkeletalMeshFactory::Reimport( UObject* Obj, i
 		bool bIsObjFormat = false;
 		bool bIsAutomated = false;
 		// @hack to make sure skeleton is set before opening the dialog
-		ImportOptions->SkeletonForAnimation = SkeletalMesh->Skeleton;
+		ImportOptions->SkeletonForAnimation = SkeletalMesh->GetSkeleton();
 		ImportOptions->bCreatePhysicsAsset = false;
-		ImportOptions->PhysicsAsset = SkeletalMesh->PhysicsAsset;
+		ImportOptions->PhysicsAsset = SkeletalMesh->GetPhysicsAsset();
 		
 		EFBXImportContentType BeforeUIContentType = ReimportUI->SkeletalMeshImportData->ImportContentType;
 		ImportOptions = GetImportOptions( FFbxImporter, ReimportUI, bShowOptionDialog, bIsAutomated, Obj->GetPathName(), bOperationCanceled, bOutImportAll, bIsObjFormat, Filename, bForceImportType, FBXIT_SkeletalMesh);
@@ -6570,15 +6689,15 @@ EReimportResult::Type UReimportFbxSkeletalMeshFactory::Reimport( UObject* Obj, i
 		if (bShowOptionDialog && ReimportUI->SkeletalMeshImportData->ImportContentType != BeforeUIContentType && ReimportUI->SkeletalMeshImportData->ImportContentType != EFBXImportContentType::FBXICT_All)
 		{
 			TArray<FString> ExtractedFilenames;
-			SkeletalMesh->AssetImportData->ExtractFilenames(ExtractedFilenames);
+			SkeletalMesh->GetAssetImportData()->ExtractFilenames(ExtractedFilenames);
 			//By default add the original file
 			if (!ExtractedFilenames.IsValidIndex(1))
 			{
-				SkeletalMesh->AssetImportData->AddFileName(ExtractedFilenames[0], 1, NSSkeletalMeshSourceFileLabels::GeometryText().ToString());
+				SkeletalMesh->GetAssetImportData()->AddFileName(ExtractedFilenames[0], 1, NSSkeletalMeshSourceFileLabels::GeometryText().ToString());
 			}
 			if (!ExtractedFilenames.IsValidIndex(2))
 			{
-				SkeletalMesh->AssetImportData->AddFileName(ExtractedFilenames[0], 2, NSSkeletalMeshSourceFileLabels::SkinningText().ToString());
+				SkeletalMesh->GetAssetImportData()->AddFileName(ExtractedFilenames[0], 2, NSSkeletalMeshSourceFileLabels::SkinningText().ToString());
 			}
 		}
 

@@ -10,6 +10,7 @@
 #include "USDStageModule.h"
 #include "USDTypesConversion.h"
 
+#include "UsdWrappers/SdfChangeBlock.h"
 #include "UsdWrappers/SdfLayer.h"
 #include "UsdWrappers/UsdPrim.h"
 #include "UsdWrappers/UsdStage.h"
@@ -69,7 +70,7 @@ public:
 			.OnVerifyTextChanged( this, &FUsdStageNameColumn::OnTextUpdated, TreeItem )
 			.IsReadOnly_Lambda( [ TreeItem ]()
 			{
-				return !TreeItem || TreeItem->UsdPrim;
+				return !TreeItem->bIsRenamingExistingPrim && (!TreeItem || TreeItem->UsdPrim);
 			} );
 
 		TreeItem->RenameRequestEvent.BindSP( &Item.Get(), &SInlineEditableTextBlock::EnterEditingMode );
@@ -226,17 +227,17 @@ public:
 		}
 
 		TSharedRef< SWidget > Item = SNew( SButton )
-										.ContentPadding(0)
-										.ButtonStyle( FEditorStyle::Get(), "ToggleButton" )
-										.OnClicked( this, &FUsdStageVisibilityColumn::OnToggleVisibility, TreeItem )
-										.ToolTip( SNew( SToolTip ).Text( LOCTEXT( "GeomImageable", "Toggle the visibility of this prim" ) ) )
-										.HAlign( HAlign_Center )
-										.VAlign( VAlign_Center )
-										.Content()
-										[
-											SNew( SImage )
-											.Image( this, &FUsdStageVisibilityColumn::GetBrush, TreeItem )
-										];
+			.ContentPadding( 0 )
+			.ButtonStyle( FEditorStyle::Get(), "ToggleButton" )
+			.OnClicked( this, &FUsdStageVisibilityColumn::OnToggleVisibility, TreeItem )
+			.ToolTip( SNew( SToolTip ).Text( LOCTEXT( "GeomImageable", "Toggle the visibility of this prim" ) ) )
+			.HAlign( HAlign_Center )
+			.VAlign( VAlign_Center )
+			.Content()
+			[
+				SNew( SImage )
+				.Image( this, &FUsdStageVisibilityColumn::GetBrush, TreeItem )
+			];
 
 		return Item;
 	}
@@ -275,7 +276,8 @@ void SUsdStageTreeView::Construct( const FArguments& InArgs, AUsdStageActor* InU
 			SelectedPrimPath = UsdToUnreal::ConvertPath( UsdStageTreeItem->UsdPrim.GetPrimPath() );
 		}
 
-		this->OnPrimSelected.ExecuteIfBound( SelectedPrimPath );
+		TArray<FString> SelectedPrimPaths = GetSelectedPrims();
+		this->OnPrimSelectionChanged.ExecuteIfBound( SelectedPrimPaths );
 	} );
 
 	OnExpansionChanged = FOnExpansionChanged::CreateLambda([this]( const FUsdPrimViewModelPtr& UsdPrimViewModel, bool bIsExpanded)
@@ -294,7 +296,7 @@ void SUsdStageTreeView::Construct( const FArguments& InArgs, AUsdStageActor* InU
 		TreeItemExpansionStates.Add( Prim.GetPrimPath().GetString(), bIsExpanded );
 	});
 
-	OnPrimSelected = InArgs._OnPrimSelected;
+	OnPrimSelectionChanged = InArgs._OnPrimSelectionChanged;
 
 	Refresh( InUsdStageActor );
 }
@@ -314,38 +316,79 @@ void SUsdStageTreeView::OnGetChildren( FUsdPrimViewModelRef InParent, TArray< FU
 
 void SUsdStageTreeView::Refresh( AUsdStageActor* InUsdStageActor )
 {
-	RootItems.Empty();
+	UE::FUsdStage OldStage = RootItems.Num() > 0 ? RootItems[0]->UsdStage : UE::FUsdStage();
+	UE::FUsdStage NewStage = InUsdStageActor ? static_cast< const AUsdStageActor* >( InUsdStageActor )->GetUsdStage() : UE::FUsdStage();
 
-	if (UsdStageActor.Get() != InUsdStageActor)
+	RootItems.Empty();
+	if ( UsdStageActor.Get() != InUsdStageActor || NewStage != OldStage )
 	{
+		// This is very important: Internally the tree will store FUsdPrimViewModelRef in its SparseItemInfos member if we have
+		// any member manually expanded/collapsed. These can prevent the FUsdPrimViewModels from being collected, and prevent the
+		// stage from being fully closed, so we must do this whenever the stage changes
+		ClearExpandedItems();
 		TreeItemExpansionStates.Reset();
+
+		// Clear other things that may hold FUsdPrimViewModelRefs
+		LinearizedItems.Empty();
+		SelectorItem = SUsdStageTreeView::NullableItemType(nullptr);
+		RangeSelectionStart = SUsdStageTreeView::NullableItemType(nullptr);
+		ItemToScrollIntoView = SUsdStageTreeView::NullableItemType(nullptr);
+		ItemToNotifyWhenInView = SUsdStageTreeView::NullableItemType(nullptr);
 	}
 
 	UsdStageActor = InUsdStageActor;
-
 	if ( !UsdStageActor.IsValid() )
 	{
 		return;
 	}
 
-	UE::FUsdStage UsdStage = UsdStageActor->GetUsdStage();
-
-	if ( UsdStage )
+	if ( NewStage )
 	{
-		if ( UE::FUsdPrim RootPrim = UsdStage.GetPseudoRoot() )
+		if ( UE::FUsdPrim RootPrim = NewStage.GetPseudoRoot() )
 		{
-			const bool bTraverseInsanceProxies = true;
-			for ( const UE::FUsdPrim& Child : RootPrim.GetFilteredChildren( bTraverseInsanceProxies ) )
-			{
-				RootItems.Add( MakeShared< FUsdPrimViewModel >( nullptr, UsdStage, Child ) );
-			}
+			RootItems.Add( MakeShared< FUsdPrimViewModel >( nullptr, NewStage, RootPrim ) );
 		}
-	}
 
-	RestoreExpansionStates();
+		RestoreExpansionStates();
+	}
 }
 
 void SUsdStageTreeView::RefreshPrim( const FString& PrimPath, bool bResync )
+{
+	FScopedUnrealAllocs UnrealAllocs; // RefreshPrim can be called by a delegate for which we don't know the active allocator
+
+	FUsdPrimViewModelPtr FoundItem = GetItemFromPrimPath(PrimPath);
+
+	if ( FoundItem.IsValid() )
+	{
+		FoundItem->RefreshData( true );
+
+		// Item doesn't match any prim, needs to be removed
+		if ( !FoundItem->UsdPrim )
+		{
+			if ( FoundItem->ParentItem )
+			{
+				FoundItem->ParentItem->RefreshData( true );
+			}
+			else
+			{
+				RootItems.Remove( FoundItem.ToSharedRef() );
+			}
+		}
+	}
+	// We couldn't find the target prim, do a full refresh instead
+	else
+	{
+		Refresh( UsdStageActor.Get() );
+	}
+
+	if ( bResync )
+	{
+		RequestTreeRefresh();
+	}
+}
+
+FUsdPrimViewModelPtr SUsdStageTreeView::GetItemFromPrimPath( const FString& PrimPath )
 {
 	FScopedUnrealAllocs UnrealAllocs; // RefreshPrim can be called by a delegate for which we don't know the active allocator
 
@@ -398,33 +441,43 @@ void SUsdStageTreeView::RefreshPrim( const FString& PrimPath, bool bResync )
 		}
 	}
 
-	if ( FoundItem.IsValid() )
-	{
-		FoundItem->RefreshData( true );
+	return FoundItem;
+}
 
-		// Item doesn't match any prim, needs to be removed
-		if ( !FoundItem->UsdPrim )
+void SUsdStageTreeView::SelectPrims( const TArray<FString>& PrimPaths )
+{
+	ClearSelection();
+
+	TArray< FUsdPrimViewModelRef > ItemsToSelect;
+	ItemsToSelect.Reserve( PrimPaths.Num() );
+
+	for ( const FString& PrimPath : PrimPaths )
+	{
+		if ( FUsdPrimViewModelPtr FoundItem = GetItemFromPrimPath( PrimPath ) )
 		{
-			if ( FoundItem->ParentItem )
-			{
-				FoundItem->ParentItem->RefreshData( true );
-			}
-			else
-			{
-				RootItems.Remove( FoundItem.ToSharedRef() );
-			}
+			ItemsToSelect.Add( FoundItem.ToSharedRef() );
 		}
 	}
-	// We couldn't find the target prim, do a full refresh instead
-	else
+
+	if ( ItemsToSelect.Num() > 0 )
 	{
-		Refresh( UsdStageActor.Get() );
+		const bool bSelected = true;
+		SetItemSelection( ItemsToSelect, bSelected );
+		ScrollItemIntoView( ItemsToSelect.Last() );
+	}
+}
+
+TArray<FString> SUsdStageTreeView::GetSelectedPrims()
+{
+	TArray<FString> SelectedPrimPaths;
+	SelectedPrimPaths.Reserve( GetNumItemsSelected() );
+
+	for ( FUsdPrimViewModelRef SelectedItem : GetSelectedItems() )
+	{
+		SelectedPrimPaths.Add( SelectedItem->UsdPrim.GetPrimPath().GetString() );
 	}
 
-	if ( bResync )
-	{
-		RequestTreeRefresh();
-	}
+	return SelectedPrimPaths;
 }
 
 void SUsdStageTreeView::SetupColumns()
@@ -478,8 +531,20 @@ TSharedPtr< SWidget > SUsdStageTreeView::ConstructPrimContextMenu()
 		);
 
 		PrimOptions.AddMenuEntry(
+			LOCTEXT( "RenamePrim", "Rename Prim" ),
+			LOCTEXT( "RenamePrim_ToolTip", "Renames the prim on all layers" ),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateSP( this, &SUsdStageTreeView::OnRenamePrim ),
+				FCanExecuteAction::CreateSP( this, &SUsdStageTreeView::CanExecutePrimAction )
+			),
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
+
+		PrimOptions.AddMenuEntry(
 			LOCTEXT("RemovePrim", "Remove Prim"),
-			LOCTEXT("RemovePrim_ToolTip", "Removes the prim and its children"),
+			LOCTEXT("RemovePrim_ToolTip", "Removes the prim and its children from the current edit target"),
 			FSlateIcon(),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &SUsdStageTreeView::OnRemovePrim ),
@@ -588,7 +653,7 @@ void SUsdStageTreeView::OnAddPrim()
 	// Add a new top-level prim (direct child of the pseudo-root prim)
 	else
 	{
-		FUsdPrimViewModelRef TreeItem = MakeShared< FUsdPrimViewModel >( nullptr, UsdStageActor->GetUsdStage() );
+		FUsdPrimViewModelRef TreeItem = MakeShared< FUsdPrimViewModel >( nullptr, UsdStageActor->GetOrLoadUsdStage() );
 		RootItems.Add( TreeItem );
 
 		PendingRenameItem = TreeItem;
@@ -598,7 +663,7 @@ void SUsdStageTreeView::OnAddPrim()
 	RequestTreeRefresh();
 }
 
-void SUsdStageTreeView::OnRemovePrim()
+void SUsdStageTreeView::OnRenamePrim()
 {
 	if ( !UsdStageActor.IsValid() )
 	{
@@ -607,15 +672,39 @@ void SUsdStageTreeView::OnRemovePrim()
 
 	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
 
+	if ( MySelectedItems.Num() > 0 )
+	{
+		FUsdPrimViewModelRef TreeItem = MySelectedItems[ 0 ];
+
+		TreeItem->bIsRenamingExistingPrim = true;
+		PendingRenameItem = TreeItem;
+		RequestScrollIntoView( TreeItem );
+	}
+}
+
+void SUsdStageTreeView::OnRemovePrim()
+{
+	if ( !UsdStageActor.IsValid() )
+	{
+		return;
+	}
+
+	FScopedTransaction Transaction( LOCTEXT( "RemovePrimTransaction", "Remove prims'" ) );
+
+	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
+
 	for ( FUsdPrimViewModelRef SelectedItem : MySelectedItems )
 	{
-		UsdStageActor->GetUsdStage().RemovePrim( SelectedItem->UsdPrim.GetPrimPath() );
+		UE::FUsdStage Stage = UsdStageActor->GetOrLoadUsdStage();
+
+		UsdUtils::RemoveAllPrimSpecs( SelectedItem->UsdPrim, Stage.GetEditTarget() );
 	}
 }
 
 void SUsdStageTreeView::OnAddReference()
 {
-	if ( !UsdStageActor.IsValid() || !UsdStageActor->GetUsdStage() || !UsdStageActor->GetUsdStage().IsEditTargetValid() )
+	UE::FUsdStage& Stage = UsdStageActor->GetOrLoadUsdStage();
+	if ( !UsdStageActor.IsValid() || !Stage || !Stage.IsEditTargetValid() )
 	{
 		return;
 	}
@@ -626,6 +715,13 @@ void SUsdStageTreeView::OnAddReference()
 	{
 		return;
 	}
+
+	// This transaction is important as adding a reference may trigger the creation of new unreal assets, which need to be
+	// destroyed if we spam undo afterwards. Undoing won't remove the actual reference from the stage yet though, sadly...
+	FScopedTransaction Transaction( FText::Format(
+		LOCTEXT( "AddReferenceTransaction", "Add reference to file '{0}'" ),
+		FText::FromString( PickedFile.GetValue() )
+	) );
 
 	const FString AbsoluteFilePath = FPaths::ConvertRelativePathToFull( PickedFile.GetValue() );
 
@@ -644,6 +740,8 @@ void SUsdStageTreeView::OnClearReferences()
 		return;
 	}
 
+	FScopedTransaction Transaction( LOCTEXT( "ClearReferenceTransaction", "Clear references to USD layers" ) );
+
 	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
 
 	for ( FUsdPrimViewModelRef SelectedItem : MySelectedItems )
@@ -659,8 +757,7 @@ bool SUsdStageTreeView::CanAddPrim() const
 		return false;
 	}
 
-	UE::FUsdStage UsdStage =  UsdStageActor->GetUsdStage();
-
+	UE::FUsdStage UsdStage =  UsdStageActor->GetOrLoadUsdStage();
 	if ( !UsdStage )
 	{
 		return false;
@@ -676,8 +773,7 @@ bool SUsdStageTreeView::CanExecutePrimAction() const
 		return false;
 	}
 
-	UE::FUsdStage UsdStage =  UsdStageActor->GetUsdStage();
-
+	UE::FUsdStage UsdStage =  UsdStageActor->GetOrLoadUsdStage();
 	if ( !UsdStage || !UsdStage.IsEditTargetValid() )
 	{
 		return false;
@@ -715,6 +811,12 @@ void SUsdStageTreeView::RestoreExpansionStates()
 			if (bool* bFoundExpansionState = TreeItemExpansionStates.Find( Prim.GetPrimPath().GetString() ) )
 			{
 				SetItemExpansion( Item, *bFoundExpansionState );
+			}
+			// Default to showing the root level expanded
+			else if ( Prim.GetStage().GetPseudoRoot() == Prim )
+			{
+				const bool bShouldExpand = true;
+				SetItemExpansion( Item, bShouldExpand );
 			}
 		}
 
@@ -795,6 +897,10 @@ void SUsdStageTreeView::OnTreeItemScrolledIntoView( FUsdPrimViewModelRef TreeIte
 
 void SUsdStageTreeView::OnPrimNameCommitted( const FUsdPrimViewModelRef& ViewModel, const FText& InPrimName )
 {
+	// Reset this regardless of how we exit this function
+	const bool bRenamingExistingPrim = ViewModel->bIsRenamingExistingPrim;
+	ViewModel->bIsRenamingExistingPrim = false;
+
 	if ( InPrimName.IsEmptyOrWhitespace() )
 	{
 		// Escaped out of initially setting a prim name
@@ -814,7 +920,42 @@ void SUsdStageTreeView::OnPrimNameCommitted( const FUsdPrimViewModelRef& ViewMod
 		return;
 	}
 
+	if ( bRenamingExistingPrim )
 	{
+		FScopedTransaction Transaction( LOCTEXT( "RenamePrimTransaction", "Rename a prim" ) );
+
+		// e.g. "/Root/OldPrim/"
+		FString OldPath = ViewModel->UsdPrim.GetPrimPath().GetString();
+
+		// e.g. "NewPrim"
+		FString NewNameStr = InPrimName.ToString();
+
+		// Preemptively preserve the prim's expansion state because RenamePrim will trigger notices from within itself
+		// that will trigger refreshes of the tree view
+		{
+			// e.g. "/Root/NewPrim"
+			FString NewPath = FString::Printf( TEXT( "%s/%s" ), *FPaths::GetPath( OldPath ), *NewNameStr );
+			TMap<FString, bool> PairsToAdd;
+			for ( TMap<FString, bool>::TIterator It( TreeItemExpansionStates ); It; ++It )
+			{
+				// e.g. "/Root/OldPrim/SomeChild"
+				FString SomePrimPath = It->Key;
+				if ( SomePrimPath.RemoveFromStart( OldPath ) )  // e.g. "/SomeChild"
+				{
+					// e.g. "/Root/NewPrim/SomeChild"
+					SomePrimPath = NewPath + SomePrimPath;
+					PairsToAdd.Add( SomePrimPath, It->Value );
+				}
+			}
+			TreeItemExpansionStates.Append( PairsToAdd );
+		}
+
+		UsdUtils::RenamePrim( ViewModel->UsdPrim, *NewNameStr );
+	}
+	else
+	{
+		FScopedTransaction Transaction( LOCTEXT( "AddPrimTransaction", "Add a new prim" ) );
+
 		ViewModel->DefinePrim( *InPrimName.ToString() );
 
 		const bool bResync = true;
@@ -862,7 +1003,7 @@ void SUsdStageTreeView::OnPrimNameUpdated(const FUsdPrimViewModelRef& TreeItem, 
 
 		UE::FSdfPath NewPrimPath = ParentPrimPath.AppendChild( *NameStr );
 		const UE::FUsdPrim& Prim = Stage.GetPrimAtPath( NewPrimPath );
-		if ( Prim )
+		if ( Prim && Prim != TreeItem->UsdPrim )
 		{
 			ErrorMessage = LOCTEXT("DuplicatePrimName", "A Prim with this name already exists!");
 			return;

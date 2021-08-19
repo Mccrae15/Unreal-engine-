@@ -5,6 +5,7 @@
 #include "EntitySystem/MovieSceneEntityIDs.h"
 #include "EntitySystem/MovieSceneEntityInstantiatorSystem.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
+#include "EntitySystem/MovieSceneEntitySystemTypes.h"
 #include "EntitySystem/MovieScenePropertyComponentHandler.h"
 #include "EntitySystem/MovieSceneOverlappingEntityTracker.h"
 
@@ -28,7 +29,6 @@ public:
 
 	/**
 	 * Recompose a value from the constituent parts specified in InQuery, taking into accounts the wieghtings of the specific channel defined by ChannelCompositeIndex.
-	 * This is basically a single-channel version of RecomposeBlendFinal below.
 	 *
 	 * @param PropertyDefinition  The property that this float channel is bound to
 	 * @param ChannelCompositeIndex  The index of the composite that this float channel represents, if it is part of a composite value (for instance when keying/recomposing Translation.Z)
@@ -41,20 +41,37 @@ public:
 	/**
 	 * Recompose a value from the constituent parts specified in InQuery, taking into account the weightings of each channel.
 	 * For instance, if a property comprises 3 additive values (a:1, b:2, c:3), and we recompose 'a' with an InCurrentValue of 10, the result for a would be 5.
+	 * @note: ValueType must be either copy assignable to/from the storage type of the property, or must have a ConvertOperationalProperty overload
 	 *
 	 * @param InComponents   The components that define the property to decompose
 	 * @param InQuery        The query defining the entities and object to recompose
 	 * @param InCurrentValue The value of the property to recompose
-	 * @return A result matching the property type of the components, containing recomposed values for each of the entities specified in InQuery
+	 * @return A result matching the storage type of the components, containing recomposed values for each of the entities specified in InQuery
 	 */
-	template<typename PropertyType, typename OperationalType>
-	UE::MovieScene::TRecompositionResult<PropertyType> RecomposeBlendFinal(const UE::MovieScene::TPropertyComponents<PropertyType, OperationalType>& InComponents, const UE::MovieScene::FDecompositionQuery& InQuery, const PropertyType& InCurrentValue);
+	template<typename PropertyTraits, typename ValueType>
+	UE::MovieScene::TRecompositionResult<ValueType> RecomposeBlend(const UE::MovieScene::TPropertyComponents<PropertyTraits>& InComponents, const UE::MovieScene::FDecompositionQuery& InQuery, const ValueType& InCurrentValue)
+	{
+		typename PropertyTraits::StorageType WorkingValue{};
+		ConvertOperationalProperty(InCurrentValue, WorkingValue);
+
+		WorkingValue = RecomposeBlendOperational(InComponents, InQuery, WorkingValue);
+
+		ValueType Result{};
+		ConvertOperationalProperty(WorkingValue, Result);
+		return Result;
+	}
 
 	/**
-	 * Variant of RecomposeBlendFinal that returns the operational value type instead of the actual property type
+	 * Recompose a value from the constituent parts specified in InQuery, taking into account the weightings of each channel.
+	 * For instance, if a property comprises 3 additive values (a:1, b:2, c:3), and we recompose 'a' with an InCurrentValue of 10, the result for a would be 5.
+	 *
+	 * @param InComponents   The components that define the property to decompose
+	 * @param InQuery        The query defining the entities and object to recompose
+	 * @param InCurrentValue The value of the property to recompose
+	 * @return A result matching the storage type of the components, containing recomposed values for each of the entities specified in InQuery
 	 */
-	template<typename PropertyType, typename OperationalType>
-	UE::MovieScene::TRecompositionResult<OperationalType> RecomposeBlendOperational(const UE::MovieScene::TPropertyComponents<PropertyType, OperationalType>& InComponents, const UE::MovieScene::FDecompositionQuery& InQuery, const OperationalType& InCurrentValue);
+	template<typename PropertyTraits>
+	UE::MovieScene::TRecompositionResult<typename PropertyTraits::StorageType> RecomposeBlendOperational(const UE::MovieScene::TPropertyComponents<PropertyTraits>& InComponents, const UE::MovieScene::FDecompositionQuery& InQuery, const typename PropertyTraits::StorageType& InCurrentValue);
 
 public:
 
@@ -77,6 +94,16 @@ public:
 	void UpdateOutput(UE::MovieScene::FInterrogationKey Key, TArrayView<const FMovieSceneEntityID> Inputs, FPropertyInfo* Output, UE::MovieScene::FEntityOutputAggregate Aggregate);
 	void DestroyOutput(UE::MovieScene::FInterrogationKey Key, FPropertyInfo* Output, UE::MovieScene::FEntityOutputAggregate Aggregate);
 
+	const FPropertyInfo* FindPropertyInfo(UE::MovieScene::FInterrogationKey Key) const
+	{
+		return PropertyTracker.FindOutput(Key);
+	}
+
+	void FindEntityIDs(UE::MovieScene::FInterrogationKey Key, TArray<FMovieSceneEntityID>& OutEntityIDs) const
+	{
+		PropertyTracker.FindEntityIDs(Key, OutEntityIDs);
+	}
+
 private:
 
 	virtual void OnRun(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents) override;
@@ -96,14 +123,8 @@ private:
 	UE::MovieScene::FPropertyRecomposerImpl RecomposerImpl;
 };
 
-template<typename PropertyType, typename OperationalType>
-UE::MovieScene::TRecompositionResult<PropertyType> UMovieSceneInterrogatedPropertyInstantiatorSystem::RecomposeBlendFinal(const UE::MovieScene::TPropertyComponents<PropertyType, OperationalType>& Components, const UE::MovieScene::FDecompositionQuery& InQuery, const PropertyType& InCurrentValue)
+template<typename PropertyTraits>
+UE::MovieScene::TRecompositionResult<typename PropertyTraits::StorageType> UMovieSceneInterrogatedPropertyInstantiatorSystem::RecomposeBlendOperational(const UE::MovieScene::TPropertyComponents<PropertyTraits>& Components, const UE::MovieScene::FDecompositionQuery& InQuery, const typename PropertyTraits::StorageType& InCurrentValue)
 {
-	return RecomposerImpl.RecomposeBlendFinal<PropertyType, OperationalType>(Components, InQuery, InCurrentValue);
-}
-
-template<typename PropertyType, typename OperationalType>
-UE::MovieScene::TRecompositionResult<OperationalType> UMovieSceneInterrogatedPropertyInstantiatorSystem::RecomposeBlendOperational(const UE::MovieScene::TPropertyComponents<PropertyType, OperationalType>& Components, const UE::MovieScene::FDecompositionQuery& InQuery, const OperationalType& InCurrentValue)
-{
-	return RecomposerImpl.RecomposeBlendOperational<PropertyType, OperationalType>(Components, InQuery, InCurrentValue);
+	return RecomposerImpl.RecomposeBlendOperational<PropertyTraits>(Components, InQuery, InCurrentValue);
 }

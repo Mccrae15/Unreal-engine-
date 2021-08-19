@@ -10,6 +10,9 @@ struct FBlockDelimiters
 {
 	int64 BlockStart = -1;
 	int64 BlockEnd = -1;
+
+	/** Get the size of current block */
+	int64 GetBlockSize() const { return BlockEnd - BlockStart; }
 };
 
 /**
@@ -432,6 +435,37 @@ struct FSetPresetMetadataRequest : public FRCRequest
 	FString Value;
 };
 
+/**
+ * Holds a request to set a metadata field.
+ */
+USTRUCT()
+struct FSetEntityMetadataRequest : public FRCRequest
+{
+	GENERATED_BODY()
+
+	FSetEntityMetadataRequest() = default;
+
+	/**
+	 * The new value for the metadata field.
+	 */
+	UPROPERTY()
+	FString Value;
+};
+
+/**
+ * Holds a request to set an entity's label.
+ */
+USTRUCT()
+struct FSetEntityLabelRequest : public FRCRequest
+{
+	GENERATED_BODY()
+
+	/**
+	 * The new label to assign.
+	 */
+	UPROPERTY()
+	FString NewLabel;
+};
 
 /**
  * Holds a request to get an asset's thumbnail.
@@ -504,5 +538,9 @@ struct FRCWebSocketPresetRegisterBody : public FRCRequest
 	 */
 	UPROPERTY()
 	FString PresetName;
+
+	/** Whether changes to properties triggered remotely should fire an event. */
+	UPROPERTY()
+	bool IgnoreRemoteChanges = false;
 };
 

@@ -21,7 +21,7 @@ FGoogleARCoreXRCamera::FGoogleARCoreXRCamera(const FAutoRegister& AutoRegister, 
 
 void FGoogleARCoreXRCamera::SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView)
 {
-	TrackingSystem->GetCurrentPose(DeviceId, InView.BaseHmdOrientation, InView.BaseHmdLocation);
+	FDefaultXRCamera::SetupView(InViewFamily, InView);
 }
 
 void FGoogleARCoreXRCamera::SetupViewProjectionMatrix(FSceneViewProjectionData& InOutProjectionData)
@@ -101,7 +101,7 @@ bool FGoogleARCoreXRCamera::GetPassthroughCameraUVs_RenderThread(TArray<FVector2
 	}
 }
 
-bool FGoogleARCoreXRCamera::IsActiveThisFrame(class FViewport* InViewport) const
+bool FGoogleARCoreXRCamera::IsActiveThisFrame_Internal(const FSceneViewExtensionContext&) const
 {
 	return GoogleARCoreTrackingSystem.IsHeadTrackingAllowed();
 }

@@ -162,25 +162,6 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FNV12ConvertUB, "NV12ConvertUB");
 IMPLEMENT_SHADER_TYPE(, FNV12ConvertPS, TEXT("/Engine/Private/MediaShaders.usf"), TEXT("NV12ConvertPS"), SF_Pixel);
 
-
-void FNV12ConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRHITexture2D> NV12Texture, const FIntPoint& OutputDimensions, const FMatrix& ColorTransform, const FVector& YUVOffset, bool SrgbToLinear)
-{
-	FNV12ConvertUB UB;
-	{
-		UB.ColorTransform = MediaShaders::CombineColorTransformAndOffset(ColorTransform, YUVOffset);
-		UB.OutputWidth = OutputDimensions.X;
-		UB.SamplerB = TStaticSamplerState<SF_Bilinear>::GetRHI();
-		UB.SamplerP = TStaticSamplerState<SF_Point>::GetRHI();
-		UB.SrgbToLinear = SrgbToLinear;
-		UB.SRV_Y = RHICreateShaderResourceView(NV12Texture, 0, 1, PF_G8);
-		UB.SRV_UV = RHICreateShaderResourceView(NV12Texture, 0, 1, PF_R8G8);
-		UB.UVScale = FVector2D((float)OutputDimensions.X / (float)NV12Texture->GetSizeX(), (float)OutputDimensions.Y / (float)NV12Texture->GetSizeY());
-	}
-
-	TUniformBufferRef<FNV12ConvertUB> Data = TUniformBufferRef<FNV12ConvertUB>::CreateUniformBufferImmediate(UB, UniformBuffer_SingleFrame);
-	SetUniformBufferParameter(CommandList, CommandList.GetBoundPixelShader(), GetUniformBufferParameter<FNV12ConvertUB>(), Data);
-}
-
 void FNV12ConvertPS::SetParameters(FRHICommandList& CommandList, const FIntPoint & TexDim, FShaderResourceViewRHIRef SRV_Y, FShaderResourceViewRHIRef SRV_UV, const FIntPoint& OutputDimensions, const FMatrix& ColorTransform, const FVector& YUVOffset, bool SrgbToLinear)
 {
 	FNV12ConvertUB UB;
@@ -573,53 +554,32 @@ void FRGB10toYUVv210ConvertPS::SetParameters(FRHICommandList& CommandList, TRefC
 }
 
 
-/* FInvertAlphaPS shader
+/* FRGB8toY8ConvertPS shader
  *****************************************************************************/
 
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FInvertAlphaUB, )
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FRGB8toY8ConvertUB, )
+SHADER_PARAMETER(FVector4, ColorTransform)
+SHADER_PARAMETER(uint32, LinearToSrgb)
 SHADER_PARAMETER_TEXTURE(Texture2D, Texture)
 SHADER_PARAMETER_SAMPLER(SamplerState, SamplerP)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
-IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FInvertAlphaUB, "InvertAlphaUB");
-IMPLEMENT_SHADER_TYPE(, FInvertAlphaPS, TEXT("/Engine/Private/MediaShaders.usf"), TEXT("InvertAlphaPS"), SF_Pixel);
+IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FRGB8toY8ConvertUB, "RGB8toY8ConvertUB");
+IMPLEMENT_SHADER_TYPE(, FRGB8toY8ConvertPS, TEXT("/Engine/Private/MediaShaders.usf"), TEXT("RGB8toY8ConvertPS"), SF_Pixel);
 
 
-void FInvertAlphaPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRHITexture2D> RGBATexture)
+void FRGB8toY8ConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRHITexture2D> RGBATexture, const FVector4& ColorTransform, bool LinearToSrgb)
 {
-	FInvertAlphaUB UB;
+	FRGB8toY8ConvertUB UB;
 	{
+		UB.ColorTransform = ColorTransform;
 		UB.SamplerP = TStaticSamplerState<SF_Point>::GetRHI();
+		UB.LinearToSrgb = LinearToSrgb;
 		UB.Texture = RGBATexture;
 	}
 
-	TUniformBufferRef<FInvertAlphaUB> Data = TUniformBufferRef<FInvertAlphaUB>::CreateUniformBufferImmediate(UB, UniformBuffer_SingleFrame);
-	SetUniformBufferParameter(CommandList, CommandList.GetBoundPixelShader(), GetUniformBufferParameter<FInvertAlphaUB>(), Data);
-}
-
-
-/* FSetAlphaOnePS shader
- *****************************************************************************/
-
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FSetAlphaOneUB, )
-SHADER_PARAMETER_TEXTURE(Texture2D, Texture)
-SHADER_PARAMETER_SAMPLER(SamplerState, SamplerP)
-END_GLOBAL_SHADER_PARAMETER_STRUCT()
-
-IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FSetAlphaOneUB, "SetAlphaOneUB");
-IMPLEMENT_SHADER_TYPE(, FSetAlphaOnePS, TEXT("/Engine/Private/MediaShaders.usf"), TEXT("SetAlphaOnePS"), SF_Pixel);
-
-
-void FSetAlphaOnePS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRHITexture2D> RGBATexture)
-{
-	FSetAlphaOneUB UB;
-	{
-		UB.SamplerP = TStaticSamplerState<SF_Point>::GetRHI();
-		UB.Texture = RGBATexture;
-	}
-
-	TUniformBufferRef<FSetAlphaOneUB> Data = TUniformBufferRef<FSetAlphaOneUB>::CreateUniformBufferImmediate(UB, UniformBuffer_SingleFrame);
-	SetUniformBufferParameter(CommandList, CommandList.GetBoundPixelShader(), GetUniformBufferParameter<FSetAlphaOneUB>(), Data);
+	TUniformBufferRef<FRGB8toY8ConvertUB> Data = TUniformBufferRef<FRGB8toY8ConvertUB>::CreateUniformBufferImmediate(UB, UniformBuffer_SingleFrame);
+	SetUniformBufferParameter(CommandList, CommandList.GetBoundPixelShader(), GetUniformBufferParameter<FRGB8toY8ConvertUB>(), Data);
 }
 
 
@@ -649,4 +609,29 @@ void FReadTextureExternalPS::SetParameters(FRHICommandList& CommandList, FTextur
 
 	TUniformBufferRef<FReadTextureExternalUB> Data = TUniformBufferRef<FReadTextureExternalUB>::CreateUniformBufferImmediate(UB, UniformBuffer_SingleFrame);
 	SetUniformBufferParameter(CommandList, CommandList.GetBoundPixelShader(), GetUniformBufferParameter<FReadTextureExternalUB>(), Data);
+}
+
+
+/* FModifyAlphaSwizzleRgbaUB shader
+ *****************************************************************************/
+
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FModifyAlphaSwizzleRgbaUB, )
+SHADER_PARAMETER_TEXTURE(Texture2D, Texture)
+SHADER_PARAMETER_SAMPLER(SamplerState, SamplerP)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FModifyAlphaSwizzleRgbaUB, "SwizzleRgbUB");
+IMPLEMENT_SHADER_TYPE(, FModifyAlphaSwizzleRgbaPS, TEXT("/Engine/Private/MediaShaders.usf"), TEXT("SwizzleRgbPS"), SF_Pixel);
+
+
+void FModifyAlphaSwizzleRgbaPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRHITexture2D> TextureExt)
+{
+	FModifyAlphaSwizzleRgbaUB UniformBuffer;
+	{
+		UniformBuffer.SamplerP = TStaticSamplerState<SF_Point>::GetRHI();
+		UniformBuffer.Texture = TextureExt;
+	}
+
+	TUniformBufferRef<FModifyAlphaSwizzleRgbaUB> Data = TUniformBufferRef<FModifyAlphaSwizzleRgbaUB>::CreateUniformBufferImmediate(UniformBuffer, UniformBuffer_SingleFrame);
+	SetUniformBufferParameter(CommandList, CommandList.GetBoundPixelShader(), GetUniformBufferParameter<FModifyAlphaSwizzleRgbaUB>(), Data);
 }

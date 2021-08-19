@@ -10,6 +10,8 @@
 #include "EngineUtils.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "UObject/ReleaseObjectVersion.h"
 
 UTextureCube::UTextureCube(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -21,6 +23,8 @@ void UTextureCube::Serialize(FArchive& Ar)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UTextureCube::Serialize"), STAT_TextureCube_Serialize, STATGROUP_LoadTime);
 
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+
 	Super::Serialize(Ar);
 
 	FStripDataFlags StripFlags(Ar);
@@ -31,6 +35,16 @@ void UTextureCube::Serialize(FArchive& Ar)
 	{
 		SerializeCookedPlatformData(Ar);
 	}
+
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsLoading() && Source.GetNumSlices() == 1 && MaxTextureSize == 0 && Ar.CustomVer(FReleaseObjectVersion::GUID) < FReleaseObjectVersion::LonglatTextureCubeDefaultMaxResolution)
+	{
+		// Previously default maximum resolution for cubemaps generated from long-lat sources was set to 512 pixels in the texture building code.
+		// This value is now explicitly set for cubemaps loaded from earlier versions of the stream in order to avoid texture rebuild.
+		MaxTextureSize = 512;
+		UE_LOG(LogTexture, Log, TEXT("Default maximum texture size for cubemaps generated from long-lat sources has been changed from 512 to unlimited. In order to preserve old behaiour for '%s', its maximum texture size has been explicitly set to 512."), *GetPathName());
+	}
+#endif // #if WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
 	if (Ar.IsLoading() && !Ar.IsTransacting() && !bCooked)
@@ -366,6 +380,21 @@ void UTextureCube::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 		// Use all possible mips
 		CumulativeResourceSize.AddDedicatedVideoMemoryBytes(CalcTextureMemorySizeEnum(TMC_AllMipsBiased));
 	}
+}
+
+bool UTextureCube::NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const
+{
+	// TC_EncodedReflectionCapture is used only for EncodedCapture for Mobile and is hidden for the user.
+	if (CompressionSettings == TC_EncodedReflectionCapture)
+	{
+		const static FName EncodedHDR(TEXT("EncodedHDR"));
+		TArray<FName> Formats;
+
+		TargetPlatform->GetReflectionCaptureFormats(Formats);
+
+		return Formats.Contains(EncodedHDR);
+	}
+	return true;
 }
 
 #if WITH_EDITOR

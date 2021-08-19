@@ -6,6 +6,7 @@
 #include "PluginDescriptor.h"
 
 struct FProjectDescriptor;
+class FJsonObject;
 
 /**
  * Enum for where a plugin is loaded from
@@ -169,6 +170,15 @@ public:
 	 * @return True if the descriptor was updated, false otherwise. 
 	 */ 
 	virtual bool UpdateDescriptor(const FPluginDescriptor& NewDescriptor, FText& OutFailReason) = 0;
+
+#if WITH_EDITOR
+	/**
+	 * Gets the cached plugin descriptor json
+	 *
+	 * @return Reference to the cached plugin descriptor json
+	 */
+	virtual const TSharedPtr<FJsonObject>& GetDescriptorJson() = 0;
+#endif // WITH_EDITOR
 };
 
 /**
@@ -199,6 +209,9 @@ public:
 	 */
 	virtual bool LoadModulesForEnabledPlugins( const ELoadingPhase::Type LoadingPhase ) = 0;
 
+	/** Returns the highest loading phase that has so far completed */
+	virtual ELoadingPhase::Type GetLastCompletedLoadingPhase() const = 0;
+
 	/**
 	 * Callback for when modules for when LoadModulesForEnabledPlugins() completes loading for a specific phase.
 	 */
@@ -222,6 +235,14 @@ public:
 	 * @param	Delegate	The delegate to that will be called when plug-in manager needs to register a mount point
 	 */
 	virtual void SetRegisterMountPointDelegate( const FRegisterMountPointDelegate& Delegate ) = 0;
+
+	/**
+	 * Sets the delegate to call to unregister a new content mount point.  This is used internally by the plug-in manager system
+	 * and should not be called by you.  This is registered at application startup by FPackageName code in CoreUObject.
+	 *
+	 * @param	Delegate	The delegate to that will be called when plug-in manager needs to unregister a mount point
+	 */
+	virtual void SetUnRegisterMountPointDelegate( const FRegisterMountPointDelegate& Delegate ) = 0;
 
 	/** Delegate type for updating the package localization cache.  Used internally by FPackageLocalizationManager code. */
 	DECLARE_DELEGATE( FUpdatePackageLocalizationCacheDelegate );
@@ -334,6 +355,11 @@ public:
 	virtual void MountExplicitlyLoadedPlugin(const FString& PluginName) = 0;
 
 	/**
+	 * Marks an explicitly loaded plugin as disabled, unmounts its content (does not work on plugins with compiled modules).
+	 */
+	virtual bool UnmountExplicitlyLoadedPlugin(const FString& PluginName, FText* OutReason) = 0;
+
+	/**
 	* Does a reverse lookup to try to figure out what the UObject package name is for a plugin
 	*/
 	virtual FName PackageNameFromModuleName(FName ModuleName) = 0;
@@ -349,6 +375,17 @@ public:
 	 * @return True if the project requires a temp target to be generated
 	 */
 	virtual bool RequiresTempTargetForCodePlugin(const FProjectDescriptor* ProjectDescriptor, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, FText& OutReason) = 0;
+
+	/**
+	 * Scans a set of given plugins and adds them to the passed in ConfigSystem so that the runtime can 
+	 * load faster without needing to scan all plugins looking for config/paks
+	 *
+	 * @param ConfigSystem The config system to insert settings into
+	 * @param EngineIniName The name of the engine ini file in ConfigSystem
+	 * @param PlatformName The name of the platform this config is made for
+	 * @param StagedPluginsFile A path to a file that contains all plugins that have been staged, and should be evaluated
+	 */
+	virtual bool IntegratePluginsIntoConfig(FConfigCacheIni& ConfigSystem, const TCHAR* EngineIniName, const TCHAR* PlatformName, const TCHAR* StagedPluginsFile) = 0;
 
 public:
 

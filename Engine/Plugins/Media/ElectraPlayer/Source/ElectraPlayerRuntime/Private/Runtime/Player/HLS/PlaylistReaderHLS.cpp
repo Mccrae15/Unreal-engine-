@@ -15,6 +15,7 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "ElectraPlayerPrivate.h"
 #include "Player/AdaptiveStreamingPlayerResourceRequest.h"
+#include "Player/AdaptivePlayerOptionKeynames.h"
 
 #define ERRCODE_HLS_PARSER_ERROR							1
 #define ERRCODE_HLS_NO_MASTER_PLAYLIST						2
@@ -23,14 +24,13 @@
 #define ERRCODE_HLS_VARIANT_PLAYLIST_DOWNLOAD_FAILED		5
 #define ERRCODE_HLS_VARIANT_PLAYLIST_PARSING_FAILED			6
 
+DECLARE_CYCLE_STAT(TEXT("FPlaylistReaderHLS_WorkerThread"), STAT_ElectraPlayer_HLS_PlaylistWorker, STATGROUP_ElectraPlayer);
 
 
 namespace Electra
 {
 
-const FString IPlaylistReaderHLS::OptionKeyInitialBitrate(TEXT("initial_bitrate"));														//!< (int64) value indicating the bitrate to start with.
 const FString IPlaylistReaderHLS::OptionKeyLiveSeekableStartOffset(TEXT("seekable_range_live_start_offset"));							//!< (FTimeValue) value specifying how many seconds away from the Live media timeline the seekable range should start.
-const FString IPlaylistReaderHLS::OptionKeyLiveSeekableEndOffset(TEXT("seekable_range_live_end_offset"));								//!< (FTimeValue) value specifying how many seconds away from the Live media timeline the seekable range should end.
 const FString IPlaylistReaderHLS::OptionKeyLiveSeekableEndOffsetAudioOnly(TEXT("seekable_range_live_end_offset_audioonly"));			//!< (FTimeValue) value specifying how many seconds away from the Live media timeline the seekable range should end for audio-only playlists.
 const FString IPlaylistReaderHLS::OptionKeyLiveSeekableEndOffsetBeConservative(TEXT("seekable_range_live_end_offset_conservative"));	//!< (bool) true to use a larger Live edge distance, false to go with the smaller absolute difference
 
@@ -53,6 +53,7 @@ public:
 	void Initialize(IPlayerSessionServices* PlayerSessionServices);
 
 	virtual ~FPlaylistReaderHLS();
+	virtual void Close() override;
 
 	/**
 	 * Returns the type of playlist format.
@@ -70,11 +71,8 @@ public:
 	 * Loads and parses the playlist.
 	 *
 	 * @param URL     URL of the playlist to load
-	 * @param Preferences
-	 *                User preferences for initial stream selection.
-	 * @param Options Options for the reader and parser
 	 */
-	virtual void LoadAndParse(const FString& URL, const FStreamPreferences& Preferences, const FParamDict& Options) override;
+	virtual void LoadAndParse(const FString& URL) override;
 
 	/**
 	 * Returns the URL from which the playlist was loaded (or supposed to be loaded).
@@ -103,9 +101,8 @@ private:
 	class FPlaylistRequest : public TSharedFromThis<FPlaylistRequest, ESPMode::ThreadSafe>
 	{
 	public:
-		FPlaylistRequest(const FPlaylistLoadRequestHLS& InPlaylistLoadRequest, const FParamDict& InOptions)
+		FPlaylistRequest(const FPlaylistLoadRequestHLS& InPlaylistLoadRequest)
 			: PlaylistLoadRequest(InPlaylistLoadRequest)
-			, Options(InOptions)
 			, bIsMasterPlaylist(false)
 		{
 		}
@@ -214,7 +211,6 @@ private:
 		};
 
 		FPlaylistLoadRequestHLS									PlaylistLoadRequest;
-		FParamDict												Options;
 		FTimeValue												ExecuteAtUTC;
 		TSharedPtrTS<IElectraHttpManager::FReceiveBuffer>		ReceiveBuffer;
 		TSharedPtrTS<IElectraHttpManager::FRequest>				HTTPRequest;
@@ -225,12 +221,10 @@ private:
 		HTTP::FConnectionInfo									StaticRequestConnectionInfo;
 	};
 	using FPlaylistRequestPtr = TSharedPtr<FPlaylistRequest, ESPMode::ThreadSafe>;
-	//using FPlaylistRequestRef = TSharedRef<FPlaylistRequest, ESPMode::ThreadSafe>;
 
-	void Close();
 	void StartWorkerThread();
 	void StopWorkerThread();
-	void WorkerThread(void);
+	void WorkerThread();
 	void HandleEnqueuedPlaylistDownloads(const FTimeValue& TimeNow);
 	void HandleCompletedPlaylistDownloads(const FTimeValue& TimeNow);
 	void HandleStaticRequestCompletions(const FTimeValue& TimeNow);
@@ -251,8 +245,6 @@ private:
 
 
 	IPlayerSessionServices*									PlayerSessionServices;
-	FStreamPreferences										StreamPreferences;
-	FParamDict												Options;
 	FString													MasterPlaylistURL;
 	TSharedPtr<FMediaSemaphore, ESPMode::ThreadSafe>		WorkerThreadSignal;
 	bool													bIsWorkerThreadStarted;
@@ -278,9 +270,9 @@ private:
 /***************************************************************************************************************************************************/
 /***************************************************************************************************************************************************/
 
-IPlaylistReader* IPlaylistReaderHLS::Create(IPlayerSessionServices* PlayerSessionServices)
+TSharedPtrTS<IPlaylistReader> IPlaylistReaderHLS::Create(IPlayerSessionServices* PlayerSessionServices)
 {
-	FPlaylistReaderHLS* PlaylistReader = new FPlaylistReaderHLS;
+	TSharedPtrTS<FPlaylistReaderHLS> PlaylistReader = MakeSharedTS<FPlaylistReaderHLS>();
 	if (PlaylistReader)
 	{
 		PlaylistReader->Initialize(PlayerSessionServices);
@@ -392,10 +384,8 @@ void FPlaylistReaderHLS::LogMessage(IInfoLog::ELevel Level, const FString& Messa
 	}
 }
 
-void FPlaylistReaderHLS::LoadAndParse(const FString& URL, const FStreamPreferences& Preferences, const FParamDict& InOptions)
+void FPlaylistReaderHLS::LoadAndParse(const FString& URL)
 {
-	StreamPreferences = Preferences;
-	Options 		  = InOptions;
 	MasterPlaylistURL = URL;
 	StartWorkerThread();
 }
@@ -407,7 +397,7 @@ void FPlaylistReaderHLS::RequestPlaylistLoad(const FPlaylistLoadRequestHLS& Load
 
 void FPlaylistReaderHLS::EnqueueLoadPlaylist(const FPlaylistLoadRequestHLS& InPlaylistLoadRequest, bool bIsMasterPlaylist)
 {
-	FPlaylistRequestPtr Request = MakeShared<FPlaylistRequest, ESPMode::ThreadSafe>(InPlaylistLoadRequest, Options);
+	FPlaylistRequestPtr Request = MakeShared<FPlaylistRequest, ESPMode::ThreadSafe>(InPlaylistLoadRequest);
 	Request->SetIsMasterPlaylist(bIsMasterPlaylist);
 	EnqueuedPlaylistRequests.Push(Request);
 	WorkerThreadSignal->Release();
@@ -465,10 +455,9 @@ void FPlaylistReaderHLS::CheckForPlaylistUpdate(const FTimeValue& TimeNow)
 	}
 }
 
-void FPlaylistReaderHLS::WorkerThread(void)
+void FPlaylistReaderHLS::WorkerThread()
 {
 	LLM_SCOPE(ELLMTag::ElectraPlayer);
-	CSV_SCOPED_TIMING_STAT(ElectraPlayer, PlaylistReaderHLS_Worker);
 
 	Builder = IManifestBuilderHLS::Create(PlayerSessionServices);
 
@@ -486,21 +475,27 @@ void FPlaylistReaderHLS::WorkerThread(void)
 		{
 			break;
 		}
-		FTimeValue Now = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
 
-		// Check for completed static resource requests.
-		// NOTE: This needs to be done first in order to move the completed ones being moved onto the completed list to be
-		//       handled immediately in the following HandleCompletedPlaylistDownloads() call!!
-		HandleStaticRequestCompletions(Now);
+		{
+			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_HLS_PlaylistWorker);
+			CSV_SCOPED_TIMING_STAT(ElectraPlayer, HLS_PlaylistWorker);
 
-		// Check completed playlist downloads
-		HandleCompletedPlaylistDownloads(Now);
+			FTimeValue Now = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
 
-		// Execute enqueued playlist download requests.
-		HandleEnqueuedPlaylistDownloads(Now);
+			// Check for completed static resource requests.
+			// NOTE: This needs to be done first in order to move the completed ones being moved onto the completed list to be
+			//       handled immediately in the following HandleCompletedPlaylistDownloads() call!!
+			HandleStaticRequestCompletions(Now);
 
-		// Check which playlists need to be reloaded.
-		CheckForPlaylistUpdate(Now);
+			// Check completed playlist downloads
+			HandleCompletedPlaylistDownloads(Now);
+
+			// Execute enqueued playlist download requests.
+			HandleEnqueuedPlaylistDownloads(Now);
+
+			// Check which playlists need to be reloaded.
+			CheckForPlaylistUpdate(Now);
+		}
 	}
 
 
@@ -623,6 +618,7 @@ void FPlaylistReaderHLS::FPlaylistRequest::Execute(TSharedPtrTS<IElectraHttpMana
 	HTTPRequest->ConnectionInfo.RetryInfo = RetryInfo;
 
 	// Set connection timeouts for master and variant playlist retrieval.
+	const FParamDict& Options =	InPlayerSessionServices->GetOptions();
 	if (bIsMasterPlaylist)
 	{
 		HTTPRequest->Parameters.ConnectTimeout = Options.GetValue(IPlaylistReaderHLS::OptionKeyMasterPlaylistLoadConnectTimeout).SafeGetTimeValue(FTimeValue().SetFromMilliseconds(1000 * 8));
@@ -645,7 +641,7 @@ void FPlaylistReaderHLS::FPlaylistRequest::Execute(TSharedPtrTS<IElectraHttpMana
 	HTTPRequest->ReceiveBuffer    = ReceiveBuffer;
 	HTTPRequest->ProgressListener = InProgressListener;
 	// Add the request.
-	InPlayerSessionServices->GetHTTPManager()->AddRequest(HTTPRequest);
+	InPlayerSessionServices->GetHTTPManager()->AddRequest(HTTPRequest, false);
 }
 
 void FPlaylistReaderHLS::FPlaylistRequest::Cancel(IPlayerSessionServices* InPlayerSessionServices)
@@ -657,7 +653,7 @@ void FPlaylistReaderHLS::FPlaylistRequest::Cancel(IPlayerSessionServices* InPlay
 	}
 	if (HTTPRequest.IsValid())
 	{
-		InPlayerSessionServices->GetHTTPManager()->RemoveRequest(HTTPRequest);
+		InPlayerSessionServices->GetHTTPManager()->RemoveRequest(HTTPRequest, false);
 		HTTPRequest.Reset();
 	}
 }
@@ -851,7 +847,7 @@ void FPlaylistReaderHLS::HandleCompletedPlaylistDownloads(const FTimeValue& Time
 						RetryInfo->PreviousFailureStates.Push(ConnInfo->StatusInfo);
 						FTimeValue RetryDelay;
 						RetryDelay.SetFromMilliseconds(1000 * 10);
-						if (Builder->UpdateFailedInitialPlaylistLoadRequest(Request->GetPlaylistLoadRequest(), ConnInfo, RetryInfo, TimeNow + RetryDelay, Manifest, StreamPreferences, Options) == UEMEDIA_ERROR_OK)
+						if (Builder->UpdateFailedInitialPlaylistLoadRequest(Request->GetPlaylistLoadRequest(), ConnInfo, RetryInfo, TimeNow + RetryDelay, Manifest) == UEMEDIA_ERROR_OK)
 						{
 							// Retry with this initial playlist
 							LogMessage(IInfoLog::ELevel::Warning, FString::Printf(TEXT("Failed %s initial playlist \"%s\" (%s), trying alternative variant"), ParseError.IsSet() ? TEXT("parsing") : TEXT("downloading"), *ConnInfo->EffectiveURL, ParseError.IsSet() ? *ParseError.GetPrintable() : *ConnInfo->StatusInfo.ErrorDetail.GetMessage()));
@@ -882,7 +878,7 @@ void FPlaylistReaderHLS::HandleCompletedPlaylistDownloads(const FTimeValue& Time
 					else if (InitiallyRequiredPlaylistLoadRequests.Num() == 0)
 					{
 						// Create a wrapper manifest for use with the player.
-						PlayerManifest = FManifestHLS::Create(PlayerSessionServices, Options, this, Manifest);
+						PlayerManifest = FManifestHLS::Create(PlayerSessionServices, this, Manifest);
 
 						// Yes. We can now create the media timeline and report availability of metadata to the player.
 						PlayerSessionServices->SendMessageToPlayer(IPlaylistReader::PlaylistLoadedMessage::Create(LastErrorDetail, Request->GetConnectionInfo(), Playlist::EListType::Variant, Playlist::ELoadType::Initial));
@@ -1034,7 +1030,7 @@ FErrorDetail FPlaylistReaderHLS::ParsePlaylist(FPlaylistRequestPtr FromRequest)
 
 
 			TSharedPtrTS<FManifestHLSInternal> NewManifest;
-			Error = Builder->BuildFromMasterPlaylist(NewManifest, Playlist, FromRequest->GetPlaylistLoadRequest(), FromRequest->GetConnectionInfo(), StreamPreferences, Options);
+			Error = Builder->BuildFromMasterPlaylist(NewManifest, Playlist, FromRequest->GetPlaylistLoadRequest(), FromRequest->GetConnectionInfo());
 			if (Error.IsOK())
 			{
 				Manifest = NewManifest;
@@ -1045,7 +1041,7 @@ FErrorDetail FPlaylistReaderHLS::ParsePlaylist(FPlaylistRequestPtr FromRequest)
 
 				// Get the playlists we need to eventually start playback with.
 				TArray<FPlaylistLoadRequestHLS> PlaylistRequests;
-				Error = Builder->GetInitialPlaylistLoadRequests(PlaylistRequests, Manifest, StreamPreferences, Options);
+				Error = Builder->GetInitialPlaylistLoadRequests(PlaylistRequests, Manifest);
 				if (Error.IsOK())
 				{
 					// Enqueue those for loading.
@@ -1067,7 +1063,7 @@ FErrorDetail FPlaylistReaderHLS::ParsePlaylist(FPlaylistRequestPtr FromRequest)
 			// For our purposes there needs to be a master playlist.
 			if (Manifest.IsValid())
 			{
-				Error = Builder->UpdateFromVariantPlaylist(Manifest, Playlist, FromRequest->GetPlaylistLoadRequest(), FromRequest->GetConnectionInfo(), crc, StreamPreferences, Options);
+				Error = Builder->UpdateFromVariantPlaylist(Manifest, Playlist, FromRequest->GetPlaylistLoadRequest(), FromRequest->GetConnectionInfo(), crc);
 			}
 			else
 			{

@@ -996,9 +996,6 @@ bool UDemoNetDriver::InitListen(FNetworkNotify* InNotify, FURL& ListenURL, bool 
 		return false;
 	}
 
-	//@todo: this shouldn't be necessary at record time, investigate further
-	//GuidCache->SetNetworkChecksumMode(FNetGUIDCache::ENetworkChecksumMode::SaveButIgnore);
-
 	check(World != nullptr);
 
 	AWorldSettings* WorldSettings = World->GetWorldSettings(); 
@@ -1019,7 +1016,7 @@ bool UDemoNetDriver::InitListen(FNetworkNotify* InNotify, FURL& ListenURL, bool 
 	// However, it's only used for logging and DemoNetDriver's are typically given a special name.
 	BudgetLogHelper = MakeUnique<FDemoBudgetLogHelper>(NetDriverName.ToString());
 
-	ReplayHelper.StartRecording(World);
+	ReplayHelper.StartRecording(Connection);
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bRecordMapChanges = ReplayHelper.bRecordMapChanges;
@@ -2575,7 +2572,7 @@ void UDemoNetDriver::TickDemoPlayback(float DeltaSeconds)
 		// We're busy processing tasks, return
 		return;
 	}
-	
+
 	// If the ExitAfterReplay option is set, automatically shut down at the end of the replay.
 	// Use AtEnd() of the archive instead of checking DemoCurrentTime/DemoTotalTime, because the DemoCurrentTime may never catch up to DemoTotalTime.
 	if (FArchive* const StreamingArchive = ReplayHelper.ReplayStreamer->GetStreamingArchive())
@@ -3021,7 +3018,7 @@ void UDemoNetDriver::ReplayStreamingReady(const FStartStreamingResult& Result)
 		{
 			FString HeaderFlags;
 
-			for (int32 i = 0; i < sizeof(EReplayHeaderFlags) * 8; ++i)
+			for (uint32 i = 0; i < sizeof(EReplayHeaderFlags) * 8; ++i)
 			{
 				EReplayHeaderFlags Flag = (EReplayHeaderFlags)(1 << i);
 
@@ -3100,7 +3097,7 @@ void UDemoNetDriver::RespawnNecessaryNetStartupActors(TArray<AActor*>& SpawnedAc
 		AActor* ExistingActor = FindObjectFast<AActor>(RollbackActor.Level, RollbackActor.Name);
 		if (ExistingActor)
 		{
-			check(ExistingActor->IsPendingKillOrUnreachable());
+			ensureMsgf(ExistingActor->IsPendingKillOrUnreachable(), TEXT("RespawnNecessaryNetStartupActors: Renaming rollback actor that wasn't destroyed: %s"), *GetFullNameSafe(ExistingActor));
 			ExistingActor->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 		}
 
@@ -3571,6 +3568,7 @@ bool UDemoNetDriver::FastForwardLevels(const FGotoResult& GotoResult)
 
 	{
 		TGuardValue<bool> FastForward(bIsFastForwarding, true);
+		FScopedAllowExistingChannelIndex ScopedAllowExistingChannelIndex(ServerConnection);
 
 		if (bDeltaCheckpoint)
 		{
@@ -3586,24 +3584,28 @@ bool UDemoNetDriver::FastForwardLevels(const FGotoResult& GotoResult)
 					{
 						if (UActorChannel* ActorChannel = DemoConnection->GetOpenChannelMap().FindRef(ChannelPair.Key))
 						{
-							ActorChannel->ConditionalCleanUp(true, ChannelPair.Value);
+							if (AActor* Actor = ActorChannel->GetActor())
+							{
+								if (LocalLevels.Contains(Actor->GetLevel()))
+								{
+									ActorChannel->ConditionalCleanUp(true, ChannelPair.Value);
+								}
+							}
 						}
 					}
 				}
 
 				check(DeltaCheckpointPacketIntervals[i].IsValid());
+				check(ReadPacketsHelper.Packets.IsValidIndex(DeltaCheckpointPacketIntervals[i].Min));
+				check(ReadPacketsHelper.Packets.IsValidIndex(DeltaCheckpointPacketIntervals[i].Min + DeltaCheckpointPacketIntervals[i].Size()));
 
-				{
-					FScopedAllowExistingChannelIndex ScopedAllowExistingChannelIndex(ServerConnection);
-					ProcessFastForwardPackets(MakeArrayView<FPlaybackPacket>(&ReadPacketsHelper.Packets[DeltaCheckpointPacketIntervals[i].Min], DeltaCheckpointPacketIntervals[i].Size()), LevelIndices);
-				}
+				ProcessFastForwardPackets(MakeArrayView<FPlaybackPacket>(&ReadPacketsHelper.Packets[DeltaCheckpointPacketIntervals[i].Min], DeltaCheckpointPacketIntervals[i].Size() + 1), LevelIndices);
 			}
 
 			DemoConnection->GetOpenChannelMap().Empty();
 		}
 		else
 		{
-			FScopedAllowExistingChannelIndex ScopedAllowExistingChannelIndex(ServerConnection);
 			ProcessFastForwardPackets(ReadPacketsHelper.Packets, LevelIndices);
 		}
 	}
@@ -4041,6 +4043,7 @@ bool UDemoNetDriver::LoadCheckpoint(const FGotoResult& GotoResult)
 	PlaybackDeltaCheckpointData.Empty();
 
 	TArray<TInterval<int32>> DeltaCheckpointPacketIntervals;
+	TArray<FName> PathNameTable;
 
 	do
 	{
@@ -4112,16 +4115,52 @@ bool UDemoNetDriver::LoadCheckpoint(const FGotoResult& GotoResult)
 
 			FNetGuidCacheObject CacheObject;
 
+			*GotoCheckpointArchive << CacheObject.OuterGUID;
+
 			FString PathName;
 
-			*GotoCheckpointArchive << CacheObject.OuterGUID;
-			*GotoCheckpointArchive << PathName;
-			*GotoCheckpointArchive << CacheObject.NetworkChecksum;
+			if (PlaybackVersion < HISTORY_GUID_NAMETABLE)
+			{
+				*GotoCheckpointArchive << PathName;
+			}
+			else
+			{
+				uint8 bExported = 0;
+				*GotoCheckpointArchive << bExported;
+
+				if (bExported == 1)
+				{
+					*GotoCheckpointArchive << PathName;
+
+					PathNameTable.Add(FName(*PathName));
+				}
+				else
+				{
+					uint32 PathNameIndex = 0;
+					GotoCheckpointArchive->SerializeIntPacked(PathNameIndex);
+
+					if (PathNameTable.IsValidIndex(PathNameIndex))
+					{
+						PathName = PathNameTable[PathNameIndex].ToString();
+					}
+					else
+					{
+						GotoCheckpointArchive->SetError();
+						UE_LOG(LogDemo, Error, TEXT("Invalid guid path table index while serializing checkpoint."));
+						break;
+					}
+				}
+			}
 
 			// Remap the pathname to handle client-recorded replays
 			GEngine->NetworkRemapPath(ServerConnection, PathName, true);
 
 			CacheObject.PathName = FName(*PathName);
+
+			if (PlaybackVersion < HISTORY_GUIDCACHE_CHECKSUMS)
+			{
+				*GotoCheckpointArchive << CacheObject.NetworkChecksum;
+			}
 
 			uint8 Flags = 0;
 			*GotoCheckpointArchive << Flags;
@@ -4134,7 +4173,7 @@ bool UDemoNetDriver::LoadCheckpoint(const FGotoResult& GotoResult)
 			if (GotoCheckpointArchive->IsError())
 			{
 				UE_LOG(LogDemo, Error, TEXT("Guid cache serialization error while loading checkpoint."));
-				break;
+				return true;
 			}
 		}
 
@@ -4765,7 +4804,10 @@ void UDemoNetDriver::PendingNetGameLoadMapCompleted()
 
 void UDemoNetDriver::OnSeamlessTravelStartDuringRecording(const FString& LevelName)
 {
-	ReplayHelper.OnSeamlessTravelStart(World, LevelName);
+	if (ClientConnections.Num() > 0)
+	{
+		ReplayHelper.OnSeamlessTravelStart(World, LevelName, ClientConnections[0]);
+	}
 }
 
 void UDemoNetDriver::InitDestroyedStartupActors()
@@ -4789,6 +4831,7 @@ void UDemoNetDriver::InitDestroyedStartupActors()
 					PRAGMA_DISABLE_DEPRECATION_WARNINGS
 					DeletedNetStartupActors.Add(Info.FullName);
 					PRAGMA_ENABLE_DEPRECATION_WARNINGS
+					ReplayHelper.DeletedNetStartupActors.Add(Info.FullName);
 					ReplayHelper.RecordingDeltaCheckpointData.DestroyedNetStartupActors.Add(Info.FullName);
 				}
 			}
@@ -4876,7 +4919,6 @@ void UDemoNetDriver::NotifyActorDestroyed(AActor* Actor, bool IsSeamlessTravel)
 				PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				DeletedNetStartupActorGUIDs.Add(NetGUID);
 				PRAGMA_ENABLE_DEPRECATION_WARNINGS
-				ReplayHelper.DeletedNetStartupActorGUIDs.Add(NetGUID);
 			}
 		}
 	}
@@ -4947,9 +4989,10 @@ void UDemoNetDriver::NotifyActorChannelOpen(UActorChannel* Channel, AActor* Acto
 
 void UDemoNetDriver::NotifyActorChannelCleanedUp(UActorChannel* Channel, EChannelCloseReason CloseReason)
 {
-	if (IsRecording() && HasDeltaCheckpoints() && Channel)
+	// channels can be cleaned up during the checkpoint record (dormancy), make sure to skip those
+	if (IsRecording() && HasDeltaCheckpoints() && (ReplayHelper.GetCheckpointSaveState() == FReplayHelper::ECheckpointSaveState::Idle))
 	{
-		if (Channel->bOpenedForCheckpoint)
+		if (Channel && Channel->bOpenedForCheckpoint)
 		{
 			ReplayHelper.RecordingDeltaCheckpointData.ChannelsToClose.Add(Channel->ActorNetGUID, CloseReason);
 		}
@@ -5350,4 +5393,10 @@ void UDemoNetDriver::SetWorld(UWorld* InWorld)
 	Super::SetWorld(InWorld);
 
 	ReplayHelper.World = InWorld;
+}
+
+bool UDemoNetDriver::ShouldForwardFunction(AActor* Actor, UFunction* Function, void* Parms) const
+{
+	// currently no need to forward replay playback RPCs on to other drivers
+	return false;
 }

@@ -40,7 +40,7 @@ public:
 	TIoStatusOr<uint64> GetSizeForChunk(const FIoChunkId& ChunkId) const;
 	const FIoOffsetAndLength* Resolve(const FIoChunkId& ChunkId) const;
 	const FFileIoStoreContainerFile& GetContainerFile() const { return ContainerFile; }
-	IMappedFileHandle* GetMappedContainerFileHandle();
+	IMappedFileHandle* GetMappedContainerFileHandle(uint64 TocOffset);
 	const FIoContainerId& GetContainerId() const { return ContainerId; }
 	int32 GetOrder() const { return Order; }
 	bool IsEncrypted() const { return EnumHasAnyFlags(ContainerFile.ContainerFlags, EIoContainerFlags::Encrypted); }
@@ -57,6 +57,31 @@ private:
 	FIoContainerId ContainerId;
 	uint32 Index;
 	int32 Order;
+
+	static TAtomic<uint32> GlobalPartitionIndex;
+};
+
+class FFileIoStoreRequestTracker
+{
+public:
+	FFileIoStoreRequestTracker(FFileIoStoreRequestAllocator& RequestAllocator, FFileIoStoreRequestQueue& RequestQueue);
+	~FFileIoStoreRequestTracker();
+
+	FFileIoStoreCompressedBlock* FindOrAddCompressedBlock(FFileIoStoreBlockKey Key, bool& bOutWasAdded);
+	void RemoveCompressedBlock(const FFileIoStoreCompressedBlock* CompressedBlock);
+	FFileIoStoreReadRequest* FindOrAddRawBlock(FFileIoStoreBlockKey Key, bool& bOutWasAdded);
+	void RemoveRawBlock(const FFileIoStoreReadRequest* RawBlock);
+	void AddReadRequestsToResolvedRequest(FFileIoStoreCompressedBlock* CompressedBlock, FFileIoStoreResolvedRequest& ResolvedRequest);
+	void AddReadRequestsToResolvedRequest(const FFileIoStoreReadRequestList& Requests, FFileIoStoreResolvedRequest& ResolvedRequest);
+	void CancelIoRequest(FFileIoStoreResolvedRequest& ResolvedRequest);
+	void UpdatePriorityForIoRequest(FFileIoStoreResolvedRequest& ResolvedRequest);
+	void ReleaseIoRequestReferences(FFileIoStoreResolvedRequest& ResolvedRequest);
+
+private:
+	FFileIoStoreRequestAllocator& RequestAllocator;
+	FFileIoStoreRequestQueue& RequestQueue;
+	TMap<FFileIoStoreBlockKey, FFileIoStoreCompressedBlock*> CompressedBlocksMap;
+	TMap<FFileIoStoreBlockKey, FFileIoStoreReadRequest*> RawBlocksMap;
 };
 
 class FFileIoStore
@@ -68,6 +93,8 @@ public:
 	void Initialize();
 	TIoStatusOr<FIoContainerId> Mount(const FIoStoreEnvironment& Environment, const FGuid& EncryptionKeyGuid, const FAES::FAESKey& EncryptionKey);
 	EIoStoreResolveResult Resolve(FIoRequestImpl* Request);
+	void CancelIoRequest(FIoRequestImpl* Request);
+	void UpdatePriorityForIoRequest(FIoRequestImpl* Request);
 	bool DoesChunkExist(const FIoChunkId& ChunkId) const;
 	TIoStatusOr<uint64> GetSizeForChunk(const FIoChunkId& ChunkId) const;
 	FIoRequestImpl* GetCompletedRequests();
@@ -113,12 +140,12 @@ private:
 	};
 
 	void OnNewPendingRequestsAdded();
-	void ReadBlocks(const FFileIoStoreReader& Reader, const FFileIoStoreResolvedRequest& ResolvedRequest);
+	void ReadBlocks(FFileIoStoreResolvedRequest& ResolvedRequest);
 	void FreeBuffer(FFileIoStoreBuffer& Buffer);
 	FFileIoStoreCompressionContext* AllocCompressionContext();
 	void FreeCompressionContext(FFileIoStoreCompressionContext* CompressionContext);
 	void ScatterBlock(FFileIoStoreCompressedBlock* CompressedBlock, bool bIsAsync);
-	void CompleteDispatcherRequest(FIoRequestImpl* Request);
+	void CompleteDispatcherRequest(FFileIoStoreResolvedRequest* ResolvedRequest);
 	void FinalizeCompressedBlock(FFileIoStoreCompressedBlock* CompressedBlock);
 	void UpdateAsyncIOMinimumPriority();
 
@@ -127,7 +154,9 @@ private:
 	FIoSignatureErrorEvent& SignatureErrorEvent;
 	FFileIoStoreBlockCache BlockCache;
 	FFileIoStoreBufferAllocator BufferAllocator;
+	FFileIoStoreRequestAllocator RequestAllocator;
 	FFileIoStoreRequestQueue RequestQueue;
+	FFileIoStoreRequestTracker RequestTracker;
 	FFileIoStoreImpl PlatformImpl;
 	FRunnableThread* Thread = nullptr;
 	bool bIsMultithreaded;
@@ -136,8 +165,6 @@ private:
 	TArray<FFileIoStoreReader*> UnorderedIoStoreReaders;
 	TArray<FFileIoStoreReader*> OrderedIoStoreReaders;
 	FFileIoStoreCompressionContext* FirstFreeCompressionContext = nullptr;
-	TMap<FFileIoStoreBlockKey, FFileIoStoreCompressedBlock*> CompressedBlocksMap;
-	TMap<FFileIoStoreBlockKey, FFileIoStoreReadRequest*> RawBlocksMap;
 	FFileIoStoreCompressedBlock* ReadyForDecompressionHead = nullptr;
 	FFileIoStoreCompressedBlock* ReadyForDecompressionTail = nullptr;
 	FCriticalSection DecompressedBlocksCritical;

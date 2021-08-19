@@ -17,10 +17,9 @@ namespace ChaosTest
 {
 	using namespace Chaos;
 
-	template <typename T>
-	void ValidFace(const TVec3<T>* Verts, const TArray<TEPAEntry<T>>& TetFaces, int32 Idx)
+	void ValidFace(const FVec3* Verts, const TArray<TEPAEntry<FReal>>& TetFaces, int32 Idx)
 	{
-		const TEPAEntry<T>& Entry = TetFaces[Idx];
+		const TEPAEntry<FReal>& Entry = TetFaces[Idx];
 
 		//does not contain vertex associated with face
 		EXPECT_NE(Entry.IdxBuffer[0], Idx);
@@ -44,7 +43,7 @@ namespace ChaosTest
 			const int32 FromFace0 = Entry.IdxBuffer[EdgeIdx];
 			const int32 ToFace0 = Entry.IdxBuffer[(EdgeIdx+1)%3];
 			const int32 Face1EdgeIdx = Entry.AdjEdges[EdgeIdx];
-			const TEPAEntry<T>& Face1 = TetFaces[Entry.AdjFaces[EdgeIdx]];
+			const TEPAEntry<FReal>& Face1 = TetFaces[Entry.AdjFaces[EdgeIdx]];
 			const int32 FromFace1 = Face1.IdxBuffer[Face1EdgeIdx];
 			const int32 ToFace1 = Face1.IdxBuffer[(Face1EdgeIdx+1)%3];
 			EXPECT_EQ(FromFace0, ToFace1);
@@ -74,7 +73,7 @@ namespace ChaosTest
 		default: break;
 		}
 
-		EXPECT_LT(TVec3<T>::DotProduct(Verts[Idx], Entry.PlaneNormal), 0);	//normal faces out
+		EXPECT_LT(FVec3::DotProduct(Verts[Idx], Entry.PlaneNormal), 0);	//normal faces out
 
 		EXPECT_GE(Entry.Distance, 0);	//positive distance since origin is inside tet
 
@@ -83,24 +82,22 @@ namespace ChaosTest
 		EXPECT_NEAR(Entry.DistanceToPlane(Verts[Entry.IdxBuffer[2]]), 0, 1e-6);
 	}
 
-	template <typename T>
-	TVec3<T> ErrorSupport(const TVec3<T>& V)
+	FVec3 ErrorSupport(const FVec3& V)
 	{
 		check(false);
-		return TVec3<T>(0);
+		return FVec3(0);
 	}
 
-	template <typename T>
 	void EPAInitTest()
 	{
 
 		//make sure faces are properly oriented
 		{
-			TArray<TVec3<T>> VertsA = { {-1,-1,1}, {-1,-1,-1}, {-1,1,-1}, {1,1,-1} };
-			TArray<TVec3<T>> VertsB = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
-			TArray<TEPAEntry<T>> TetFaces;
-			TVec3<T> TouchingNormal;
-			EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ErrorSupport<T>,ErrorSupport<T>,TetFaces,TouchingNormal));
+			TArray<FVec3> VertsA = { {-1,-1,1}, {-1,-1,-1}, {-1,1,-1}, {1,1,-1} };
+			TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
+			TArray<TEPAEntry<FReal>> TetFaces;
+			FVec3 TouchingNormal;
+			EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ErrorSupport,ErrorSupport,TetFaces,TouchingNormal));
 
 			EXPECT_EQ(TetFaces.Num(), 4);
 			for (int i = 0; i < TetFaces.Num(); ++i)
@@ -110,12 +107,12 @@ namespace ChaosTest
 		}
 
 		{
-			TArray<TVec3<T>> VertsA = { {-1,-1,-1}, {-1,-1,1}, {-1,1,-1}, {1,1,-1} };
-			TArray<TVec3<T>> VertsB = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
-			TArray<TEPAEntry<T>> TetFaces;
-			TVec3<T> TouchingNormal;
+			TArray<FVec3> VertsA = { {-1,-1,-1}, {-1,-1,1}, {-1,1,-1}, {1,1,-1} };
+			TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
+			TArray<TEPAEntry<FReal>> TetFaces;
+			FVec3 TouchingNormal;
 
-			EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ErrorSupport<T>,ErrorSupport<T>,TetFaces,TouchingNormal));
+			EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ErrorSupport,ErrorSupport,TetFaces,TouchingNormal));
 
 			EXPECT_EQ(TetFaces.Num(), 4);
 			for (int i = 0; i < TetFaces.Num(); ++i)
@@ -124,18 +121,18 @@ namespace ChaosTest
 			}
 		}
 
-		auto EmptySupport = [](const TVec3<T>& V) { return TVec3<T>(0); };
+		auto EmptySupport = [](const FVec3& V) { return FVec3(0); };
 
 		//triangle
 		{
-			TVec3<T> AllVerts[] = { {0,-1,1 + 1 / (T)3}, {0,-1,-1 + 1 / (T)3}, {0,1,-1 + 1 / (T)3},{-1,0,0}, {0.5,0,0} };
+			FVec3 AllVerts[] = { {0,-1,1 + 1 / (FReal)3}, {0,-1,-1 + 1 / (FReal)3}, {0,1,-1 + 1 / (FReal)3},{-1,0,0}, {0.5,0,0} };
 
-			auto ASupport = [&](const TVec3<T>& V)
+			auto ASupport = [&](const FVec3& V)
 			{
-				TVec3<T> Best = AllVerts[0];
-				for (const TVec3<T>& Vert : AllVerts)
+				FVec3 Best = AllVerts[0];
+				for (const FVec3& Vert : AllVerts)
 				{
-					if (TVec3<T>::DotProduct(Vert, V) > TVec3<T>::DotProduct(Best, V))
+					if (FVec3::DotProduct(Vert, V) > FVec3::DotProduct(Best, V))
 					{
 						Best = Vert;
 					}
@@ -143,16 +140,16 @@ namespace ChaosTest
 				return Best;
 			};
 
-			auto ASupportNoPositiveX = [&](const TVec3<T>& V)
+			auto ASupportNoPositiveX = [&](const FVec3& V)
 			{
-				TVec3<T> Best = AllVerts[0];
-				for (const TVec3<T>& Vert : AllVerts)
+				FVec3 Best = AllVerts[0];
+				for (const FVec3& Vert : AllVerts)
 				{
 					if (Vert.X > 0)
 					{
 						continue;
 					}
-					if (TVec3<T>::DotProduct(Vert, V) > TVec3<T>::DotProduct(Best, V))
+					if (FVec3::DotProduct(Vert, V) > FVec3::DotProduct(Best, V))
 					{
 						Best = Vert;
 					}
@@ -160,16 +157,16 @@ namespace ChaosTest
 				return Best;
 			};
 
-			auto ASupportNoX = [&](const TVec3<T>& V)
+			auto ASupportNoX = [&](const FVec3& V)
 			{
-				TVec3<T> Best = AllVerts[0];
-				for (const TVec3<T>& Vert : AllVerts)
+				FVec3 Best = AllVerts[0];
+				for (const FVec3& Vert : AllVerts)
 				{
 					if (Vert.X > 0 || Vert.X < 0)
 					{
 						continue;
 					}
-					if (TVec3<T>::DotProduct(Vert, V) > TVec3<T>::DotProduct(Best, V))
+					if (FVec3::DotProduct(Vert, V) > FVec3::DotProduct(Best, V))
 					{
 						Best = Vert;
 					}
@@ -179,14 +176,14 @@ namespace ChaosTest
 
 			//first winding
 			{
-				TArray<TVec3<T>> VertsA = { AllVerts[0], AllVerts[1], AllVerts[2] };
-				TArray<TVec3<T>> VertsB = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+				TArray<FVec3> VertsA = { AllVerts[0], AllVerts[1], AllVerts[2] };
+				TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<T>> TetFaces;
-				TVec3<T> TouchingNormal;
+				TArray<TEPAEntry<FReal>> TetFaces;
+				FVec3 TouchingNormal;
 				EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ASupport,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_VECTOR_NEAR(VertsA[3], AllVerts[3], 1e-4);
-				EXPECT_VECTOR_NEAR(VertsB[3], TVec3<T>(0), 1e-4);
+				EXPECT_VECTOR_NEAR(VertsB[3], FVec3(0), 1e-4);
 
 				EXPECT_EQ(TetFaces.Num(), 4);
 				for (int i = 0; i < TetFaces.Num(); ++i)
@@ -194,27 +191,27 @@ namespace ChaosTest
 					ValidFace(VertsA.GetData(), TetFaces, i);
 				}
 
-				T Penetration;
-				TVec3<T> Dir, WitnessA, WitnessB;
+				FReal Penetration;
+				FVec3 Dir, WitnessA, WitnessB;
 
 				//Try EPA. Note that we are IGNORING the positive x vert to ensure a triangle right on the origin boundary works
 				EPA(VertsA, VertsB, ASupportNoPositiveX, EmptySupport, Penetration, Dir, WitnessA, WitnessB);
 				EXPECT_NEAR(Penetration, 0, 1e-4);
-				EXPECT_VECTOR_NEAR(Dir, TVec3<T>(1,0,0), 1e-4);
-				EXPECT_VECTOR_NEAR(WitnessA, TVec3<T>(0), 1e-4);
-				EXPECT_VECTOR_NEAR(WitnessB, TVec3<T>(0), 1e-4);
+				EXPECT_VECTOR_NEAR(Dir, FVec3(1,0,0), 1e-4);
+				EXPECT_VECTOR_NEAR(WitnessA, FVec3(0), 1e-4);
+				EXPECT_VECTOR_NEAR(WitnessB, FVec3(0), 1e-4);
 			}
 
 			//other winding
 			{
-				TArray<TVec3<T>> VertsA = { AllVerts[1], AllVerts[0], AllVerts[2] };
-				TArray<TVec3<T>> VertsB = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+				TArray<FVec3> VertsA = { AllVerts[1], AllVerts[0], AllVerts[2] };
+				TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<T>> TetFaces;
-				TVec3<T> TouchingNormal;
+				TArray<TEPAEntry<FReal>> TetFaces;
+				FVec3 TouchingNormal;
 				EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ASupport,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_VECTOR_NEAR(VertsA[3], AllVerts[3], 1e-4);
-				EXPECT_VECTOR_NEAR(VertsB[3], TVec3<T>(0), 1e-4);
+				EXPECT_VECTOR_NEAR(VertsB[3], FVec3(0), 1e-4);
 
 				EXPECT_EQ(TetFaces.Num(), 4);
 				for (int i = 0; i < TetFaces.Num(); ++i)
@@ -222,53 +219,53 @@ namespace ChaosTest
 					ValidFace(VertsA.GetData(), TetFaces, i);
 				}
 
-				T Penetration;
-				TVec3<T> Dir, WitnessA, WitnessB;
+				FReal Penetration;
+				FVec3 Dir, WitnessA, WitnessB;
 
 				//Try EPA. Note that we are IGNORING the positive x vert to ensure a triangle right on the origin boundary works
 				EPA(VertsA, VertsB, ASupportNoPositiveX, EmptySupport, Penetration, Dir, WitnessA, WitnessB);
 				EXPECT_NEAR(Penetration, 0, 1e-4);
-				EXPECT_VECTOR_NEAR(Dir, TVec3<T>(1, 0, 0), 1e-4);
-				EXPECT_VECTOR_NEAR(WitnessA, TVec3<T>(0), 1e-4);
-				EXPECT_VECTOR_NEAR(WitnessB, TVec3<T>(0), 1e-4);
+				EXPECT_VECTOR_NEAR(Dir, FVec3(1, 0, 0), 1e-4);
+				EXPECT_VECTOR_NEAR(WitnessA, FVec3(0), 1e-4);
+				EXPECT_VECTOR_NEAR(WitnessB, FVec3(0), 1e-4);
 			}
 
 			//touching triangle
 			{
-				TArray<TVec3<T>> VertsA = { AllVerts[1], AllVerts[0], AllVerts[2] };
-				TArray<TVec3<T>> VertsB = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+				TArray<FVec3> VertsA = { AllVerts[1], AllVerts[0], AllVerts[2] };
+				TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<T>> TetFaces;
-				TVec3<T> TouchingNormal;
+				TArray<TEPAEntry<FReal>> TetFaces;
+				FVec3 TouchingNormal;
 				EXPECT_FALSE(InitializeEPA(VertsA,VertsB,ASupportNoX,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_EQ(TouchingNormal.Z,0);
 				EXPECT_EQ(TouchingNormal.Y,0);
 
 				//make sure EPA handles this bad case properly
 				VertsA = { AllVerts[1], AllVerts[0], AllVerts[2] };
-				VertsB = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+				VertsB = { FVec3(0), FVec3(0), FVec3(0) };
 
 				//touching so penetration 0, normal is 0,0,1
-				T Penetration;
-				TVec3<T> Dir, WitnessA, WitnessB;
-				EXPECT_EQ(EPA(VertsA, VertsB, ASupportNoX, EmptySupport, Penetration, Dir, WitnessA, WitnessB), EPAResult::BadInitialSimplex);
+				FReal Penetration;
+				FVec3 Dir, WitnessA, WitnessB;
+				EXPECT_EQ(EPA(VertsA, VertsB, ASupportNoX, EmptySupport, Penetration, Dir, WitnessA, WitnessB), EEPAResult::BadInitialSimplex);
 				EXPECT_EQ(Penetration, 0);
-				//EXPECT_VECTOR_NEAR(Dir, TVec3<T>(0, 0, 1), 1e-7);
-				EXPECT_VECTOR_NEAR(WitnessA, TVec3<T>(0), 1e-7);
-				EXPECT_VECTOR_NEAR(WitnessB, TVec3<T>(0), 1e-7);
+				//EXPECT_VECTOR_NEAR(Dir, FVec3(0, 0, 1), 1e-7);
+				EXPECT_VECTOR_NEAR(WitnessA, FVec3(0), 1e-7);
+				EXPECT_VECTOR_NEAR(WitnessB, FVec3(0), 1e-7);
 			}
 		}
 
 		//line
 		{
-			TVec3<T> AllVerts[] = { {0,-1,1 + 1 / (T)3}, {0,-1,-1 + 1 / (T)3}, {0,1,-1 + 1 / (T)3},{-1,0,0}, {0.5,0,0} };
+			FVec3 AllVerts[] = { {0,-1,1 + 1 / (FReal)3}, {0,-1,-1 + 1 / (FReal)3}, {0,1,-1 + 1 / (FReal)3},{-1,0,0}, {0.5,0,0} };
 
-			auto ASupport = [&](const TVec3<T>& V)
+			auto ASupport = [&](const FVec3& V)
 			{
-				TVec3<T> Best = AllVerts[0];
-				for (const TVec3<T>& Vert : AllVerts)
+				FVec3 Best = AllVerts[0];
+				for (const FVec3& Vert : AllVerts)
 				{
-					if (TVec3<T>::DotProduct(Vert, V) > TVec3<T>::DotProduct(Best, V))
+					if (FVec3::DotProduct(Vert, V) > FVec3::DotProduct(Best, V))
 					{
 						Best = Vert;
 					}
@@ -278,17 +275,17 @@ namespace ChaosTest
 
 			//first winding
 			{
-				TArray<TVec3<T>> VertsA = { AllVerts[0], AllVerts[2] };
-				TArray<TVec3<T>> VertsB = { TVec3<T>(0), TVec3<T>(0) };
+				TArray<FVec3> VertsA = { AllVerts[0], AllVerts[2] };
+				TArray<FVec3> VertsB = { FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<T>> TetFaces;
-				TVec3<T> TouchingNormal;
+				TArray<TEPAEntry<FReal>> TetFaces;
+				FVec3 TouchingNormal;
 				EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ASupport,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_VECTOR_NEAR(VertsA[2], AllVerts[1], 1e-4);
-				EXPECT_VECTOR_NEAR(VertsB[2], TVec3<T>(0), 1e-4);
+				EXPECT_VECTOR_NEAR(VertsB[2], FVec3(0), 1e-4);
 
 				EXPECT_VECTOR_NEAR(VertsA[3], AllVerts[3], 1e-4);
-				EXPECT_VECTOR_NEAR(VertsB[3], TVec3<T>(0), 1e-4);
+				EXPECT_VECTOR_NEAR(VertsB[3], FVec3(0), 1e-4);
 
 				EXPECT_EQ(TetFaces.Num(), 4);
 				for (int i = 0; i < TetFaces.Num(); ++i)
@@ -299,17 +296,17 @@ namespace ChaosTest
 
 			//other winding
 			{
-				TArray<TVec3<T>> VertsA = { AllVerts[2], AllVerts[0] };
-				TArray<TVec3<T>> VertsB = { TVec3<T>(0), TVec3<T>(0) };
+				TArray<FVec3> VertsA = { AllVerts[2], AllVerts[0] };
+				TArray<FVec3> VertsB = { FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<T>> TetFaces;
-				TVec3<T> TouchingNormal;
+				TArray<TEPAEntry<FReal>> TetFaces;
+				FVec3 TouchingNormal;
 				EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ASupport,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_VECTOR_NEAR(VertsA[2], AllVerts[1], 1e-4);
-				EXPECT_VECTOR_NEAR(VertsB[2], TVec3<T>(0), 1e-4);
+				EXPECT_VECTOR_NEAR(VertsB[2], FVec3(0), 1e-4);
 
 				EXPECT_VECTOR_NEAR(VertsA[3], AllVerts[3], 1e-4);
-				EXPECT_VECTOR_NEAR(VertsB[3], TVec3<T>(0), 1e-4);
+				EXPECT_VECTOR_NEAR(VertsB[3], FVec3(0), 1e-4);
 
 				EXPECT_EQ(TetFaces.Num(), 4);
 				for (int i = 0; i < TetFaces.Num(); ++i)
@@ -320,16 +317,16 @@ namespace ChaosTest
 
 			//touching triangle
 			{
-				auto ASupportNoX = [&](const TVec3<T>& V)
+				auto ASupportNoX = [&](const FVec3& V)
 				{
-					TVec3<T> Best = AllVerts[0];
-					for (const TVec3<T>& Vert : AllVerts)
+					FVec3 Best = AllVerts[0];
+					for (const FVec3& Vert : AllVerts)
 					{
 						if (Vert.X > 0 || Vert.X < 0)
 						{
 							continue;
 						}
-						if (TVec3<T>::DotProduct(Vert, V) > TVec3<T>::DotProduct(Best, V))
+						if (FVec3::DotProduct(Vert, V) > FVec3::DotProduct(Best, V))
 						{
 							Best = Vert;
 						}
@@ -337,11 +334,11 @@ namespace ChaosTest
 					return Best;
 				};
 
-				TArray<TVec3<T>> VertsA = { AllVerts[2], AllVerts[0] };
-				TArray<TVec3<T>> VertsB = { TVec3<T>(0), TVec3<T>(0) };
+				TArray<FVec3> VertsA = { AllVerts[2], AllVerts[0] };
+				TArray<FVec3> VertsB = { FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<T>> TetFaces;
-				TVec3<T> TouchingNormal;
+				TArray<TEPAEntry<FReal>> TetFaces;
+				FVec3 TouchingNormal;
 				EXPECT_FALSE(InitializeEPA(VertsA,VertsB,ASupportNoX,EmptySupport, TetFaces, TouchingNormal));
 				EXPECT_EQ(TouchingNormal.X,0);
 			}
@@ -349,16 +346,16 @@ namespace ChaosTest
 			//touching line
 			{
 
-				auto ASupportNoXOrZ = [&](const TVec3<T>& V)
+				auto ASupportNoXOrZ = [&](const FVec3& V)
 				{
-					TVec3<T> Best = AllVerts[0];
-					for (const TVec3<T>& Vert : AllVerts)
+					FVec3 Best = AllVerts[0];
+					for (const FVec3& Vert : AllVerts)
 					{
 						if (Vert.X > 0 || Vert.X < 0 || Vert.Z > 0)
 						{
 							continue;
 						}
-						if (TVec3<T>::DotProduct(Vert, V) > TVec3<T>::DotProduct(Best, V))
+						if (FVec3::DotProduct(Vert, V) > FVec3::DotProduct(Best, V))
 						{
 							Best = Vert;
 						}
@@ -366,37 +363,34 @@ namespace ChaosTest
 					return Best;
 				};
 
-				TArray<TVec3<T>> VertsA = { AllVerts[2], AllVerts[0] };
-				TArray<TVec3<T>> VertsB = { TVec3<T>(0), TVec3<T>(0) };
+				TArray<FVec3> VertsA = { AllVerts[2], AllVerts[0] };
+				TArray<FVec3> VertsB = { FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<T>> TetFaces;
-				TVec3<T> TouchingNormal;
+				TArray<TEPAEntry<FReal>> TetFaces;
+				FVec3 TouchingNormal;
 				EXPECT_FALSE(InitializeEPA(VertsA,VertsB,ASupportNoXOrZ,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_EQ(TouchingNormal.X,0);
 			}
 		}
 	}
 
-	template void EPAInitTest<float>();
-	
-	template <typename T>
 	void EPASimpleTest()
 	{
-		auto ZeroSupport = [](const auto& V) { return TVec3<T>(0); };
+		auto ZeroSupport = [](const auto& V) { return FVec3(0); };
 
 		{
 
 			//simple box hull. 0.5 depth on x, 1 depth on y, 1 depth on z. Made z non symmetric to avoid v on tet close to 0 for this case
-			TVec3<T> HullVerts[8] = { {-0.5, -1, -1}, {2, -1, -1}, {-0.5, 1, -1}, {2, 1, -1},
+			FVec3 HullVerts[8] = { {-0.5, -1, -1}, {2, -1, -1}, {-0.5, 1, -1}, {2, 1, -1},
 									  {-0.5, -1, 2}, {2, -1, 2}, {-0.5, 1, 2}, {2, 1, 2} };
 
 			auto SupportA = [&HullVerts](const auto& V)
 			{
-				auto MaxDist = TNumericLimits<T>::Lowest();
+				auto MaxDist = TNumericLimits<FReal>::Lowest();
 				auto BestVert = HullVerts[0];
 				for (const auto& Vert : HullVerts)
 				{
-					const auto Dist = TVec3<T>::DotProduct(V, Vert);
+					const auto Dist = FVec3::DotProduct(V, Vert);
 					if (Dist > MaxDist)
 					{
 						MaxDist = Dist;
@@ -406,12 +400,12 @@ namespace ChaosTest
 				return BestVert;
 			};
 
-			TArray <TVec3<T>> Tetrahedron = { HullVerts[0], HullVerts[2], HullVerts[3], HullVerts[4] };
-			TArray <TVec3<T>> Zeros = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+			TArray<FVec3> Tetrahedron = { HullVerts[0], HullVerts[2], HullVerts[3], HullVerts[4] };
+			TArray<FVec3> Zeros = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
 
-			T Penetration;
-			TVec3<T> Dir, WitnessA, WitnessB;
-			EXPECT_EQ(EPA(Tetrahedron, Zeros, SupportA, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EPAResult::Ok);
+			FReal Penetration;
+			FVec3 Dir, WitnessA, WitnessB;
+			EXPECT_EQ(EPA(Tetrahedron, Zeros, SupportA, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EEPAResult::Ok);
 			EXPECT_NEAR(Penetration, 0.5, 1e-4);
 			EXPECT_NEAR(Dir[0], -1, 1e-4);
 			EXPECT_NEAR(Dir[1], 0, 1e-4);
@@ -426,19 +420,21 @@ namespace ChaosTest
 
 		{
 			//sphere with deep penetration to make sure we have max iterations
-			TSphere<T,3> Sphere(TVec3<T>(0), 10);
+			TSphere<FReal,3> Sphere(FVec3(0), 10);
 			auto Support = [&Sphere](const auto& V)
 			{
 				return Sphere.Support(V, 0);
 			};
 
-			TArray <TVec3<T>> Tetrahedron = { Support(FVec3(-1,0,0)), Support(FVec3(1,0,0)),
-				Support(FVec3(0,1,0)), Support(FVec3(0,0,1))};
-			TArray <TVec3<T>> Zeros = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+			TArray<FVec3> Tetrahedron = { 
+				Support(FVec3(-1,0,0)), Support(FVec3(1,0,0)),
+				Support(FVec3(0,1,0)), Support(FVec3(0,0,1))
+			};
+			TArray <FVec3> Zeros = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
 
-			T Penetration;
-			TVec3<T> Dir, WitnessA, WitnessB;
-			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EPAResult::MaxIterations);
+			FReal Penetration;
+			FVec3 Dir, WitnessA, WitnessB;
+			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EEPAResult::MaxIterations);
 			EXPECT_GT(Penetration, 9);
 			EXPECT_LE(Penetration, 10);
 			EXPECT_GT(WitnessA.Size(), 9);	//don't know exact point, but should be 9 away from origin
@@ -447,39 +443,42 @@ namespace ChaosTest
 
 		{
 			//capsule with origin in middle
-			TCapsule<T> Capsule(TVec3<T>(0, 0, 10), TVec3<T>(0, 0, -10), 3);
+			FCapsule Capsule(FVec3(0, 0, 10), FVec3(0, 0, -10), 3);
 			auto Support = [&Capsule](const auto& V)
 			{
 				return Capsule.Support(V, 0);
 			};
 
-			TArray <TVec3<T>> Tetrahedron = { Support(FVec3(-1,0,0)), Support(FVec3(1,0,0)),
-				Support(FVec3(0,1,0)), Support(FVec3(0,0,1)) };
-			TArray <TVec3<T>> Zeros = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+			TArray<FVec3> Tetrahedron = { 
+				Support(FVec3(-1,0,0)), Support(FVec3(1,0,0)),
+				Support(FVec3(0,1,0)), Support(FVec3(0,0,1)) 
+			};
+			TArray<FVec3> Zeros = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
 
-			T Penetration;
-			TVec3<T> Dir, WitnessA, WitnessB;
-			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EPAResult::Ok);
+			FReal Penetration;
+			FVec3 Dir, WitnessA, WitnessB;
+			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EEPAResult::Ok);
 			EXPECT_NEAR(Penetration, 3, 1e-1);
 			EXPECT_NEAR(Dir[2], 0, 1e-1);	//don't know direction, but it should be in xy plane
 			EXPECT_NEAR(WitnessA.Size(), 3, 1e-1);	//don't know exact point, but should be 3 away from origin
 		}
 		{
 			//capsule with origin near top
-			TCapsule<T> Capsule(TVec3<T>(0, 0, -2), TVec3<T>(0, 0, -12), 3);
+			FCapsule Capsule(FVec3(0, 0, -2), FVec3(0, 0, -12), 3);
 			auto Support = [&Capsule](const auto& V)
 			{
 				return Capsule.Support(V, 0);
 			};
 
-			TArray <TVec3<T>> Tetrahedron = { Support(FVec3(-1,0,0)), Support(FVec3(1,0,0)),
-				Support(FVec3(0,1,0)), Support(FVec3(0,0,1)) };
+			TArray<FVec3> Tetrahedron = { 
+				Support(FVec3(-1,0,0)), Support(FVec3(1,0,0)),
+				Support(FVec3(0,1,0)), Support(FVec3(0,0,1)) 
+			};
+			TArray<FVec3> Zeros = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
 
-			TArray <TVec3<T>> Zeros = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
-
-			T Penetration;
-			TVec3<T> Dir, WitnessA, WitnessB;
-			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EPAResult::Ok);
+			FReal Penetration;
+			FVec3 Dir, WitnessA, WitnessB;
+			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EEPAResult::Ok);
 			EXPECT_NEAR(Penetration, 1, 1e-1);
 			EXPECT_NEAR(Dir[0], 0, 1e-1);
 			EXPECT_NEAR(Dir[1], 0, 1e-1);
@@ -494,16 +493,16 @@ namespace ChaosTest
 
 		{
 			//box is 1,1,1 with origin in the middle to handle cases when origin is right on tetrahedron
-			TVec3<T> HullVerts[8] = { {-1, -1, -1}, {1, -1, -1}, {-1, 1, -1}, {1, 1, -1},
-									  {-1, -1, 1}, {1, -1, 2}, {-1, 1, 1}, {1, 1, 1} };
+			FVec3 HullVerts[8] = { {-1, -1, -1}, {1, -1, -1}, {-1, 1, -1}, {1, 1, -1},
+								   {-1, -1, 1}, {1, -1, 2}, {-1, 1, 1}, {1, 1, 1} };
 
 			auto Support = [&HullVerts](const auto& V)
 			{
-				auto MaxDist = TNumericLimits<T>::Lowest();
+				auto MaxDist = TNumericLimits<FReal>::Lowest();
 				auto BestVert = HullVerts[0];
 				for (const auto& Vert : HullVerts)
 				{
-					const auto Dist = TVec3<T>::DotProduct(V, Vert);
+					const auto Dist = FVec3::DotProduct(V, Vert);
 					if (Dist > MaxDist)
 					{
 						MaxDist = Dist;
@@ -513,28 +512,28 @@ namespace ChaosTest
 				return BestVert;
 			};
 
-			TArray<TVec3<T>> Tetrahedron = { HullVerts[0], HullVerts[2], HullVerts[3], HullVerts[4] };
-			TArray <TVec3<T>> Zeros = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+			TArray<FVec3> Tetrahedron = { HullVerts[0], HullVerts[2], HullVerts[3], HullVerts[4] };
+			TArray<FVec3> Zeros = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
 
-			T Penetration;
-			TVec3<T> Dir, WitnessA, WitnessB;
-			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EPAResult::Ok);
+			FReal Penetration;
+			FVec3 Dir, WitnessA, WitnessB;
+			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EEPAResult::Ok);
 			EXPECT_FLOAT_EQ(Penetration, 1);
 			EXPECT_NEAR(WitnessA.Size(), 1, 1e-1);	//don't know exact point, but should be 1 away from origin
 		}
 
 		// Tetrahedron that does not quite contain the origin (so not in penetration)
 		{
-			T eps = 0.00001f;
-			TVec3<T> HullVerts[4] = { {-1, 0, 0}, {0 - eps, 1, -1}, {0 - eps, 0, 1}, {0 - eps, -1, -1}};
+			FReal eps = 0.00001f;
+			FVec3 HullVerts[4] = { {-1, 0, 0}, {0 - eps, 1, -1}, {0 - eps, 0, 1}, {0 - eps, -1, -1}};
 
 			auto Support = [&HullVerts](const auto& V)
 			{
-				auto MaxDist = TNumericLimits<T>::Lowest();
+				auto MaxDist = TNumericLimits<FReal>::Lowest();
 				auto BestVert = HullVerts[0];
 				for (const auto& Vert : HullVerts)
 				{
-					const auto Dist = TVec3<T>::DotProduct(V, Vert);
+					const auto Dist = FVec3::DotProduct(V, Vert);
 					if (Dist > MaxDist)
 					{
 						MaxDist = Dist;
@@ -544,12 +543,12 @@ namespace ChaosTest
 				return BestVert;
 			};
 
-			TArray<TVec3<T>> Tetrahedron = { HullVerts[0], HullVerts[1], HullVerts[2], HullVerts[3] };
-			TArray <TVec3<T>> Zeros = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+			TArray<FVec3> Tetrahedron = { HullVerts[0], HullVerts[1], HullVerts[2], HullVerts[3] };
+			TArray <FVec3> Zeros = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
 
-			T Penetration;
-			TVec3<T> Dir, WitnessA, WitnessB;
-			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EPAResult::Ok);
+			FReal Penetration;
+			FVec3 Dir, WitnessA, WitnessB;
+			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EEPAResult::Ok);
 			EXPECT_LT(Penetration, 0); // Negative penetration
 			EXPECT_NEAR(Dir.X, 1.0f, 0.001f);
 		}
@@ -557,16 +556,16 @@ namespace ChaosTest
 		// Tetrahedron that is quite a bit away from the origin (so not in penetration)
 		// This takes a slightly different code path as compared to the previous test
 		{
-			T eps = 0.1f;
-			TVec3<T> HullVerts[4] = { {-1, 0, 0}, {0 - eps, 1, -1}, {0 - eps, 0, 1}, {0 - eps, -1, -1} };
+			FReal eps = 0.1f;
+			FVec3 HullVerts[4] = { {-1, 0, 0}, {0 - eps, 1, -1}, {0 - eps, 0, 1}, {0 - eps, -1, -1} };
 
 			auto Support = [&HullVerts](const auto& V)
 			{
-				auto MaxDist = TNumericLimits<T>::Lowest();
+				auto MaxDist = TNumericLimits<FReal>::Lowest();
 				auto BestVert = HullVerts[0];
 				for (const auto& Vert : HullVerts)
 				{
-					const auto Dist = TVec3<T>::DotProduct(V, Vert);
+					const auto Dist = FVec3::DotProduct(V, Vert);
 					if (Dist > MaxDist)
 					{
 						MaxDist = Dist;
@@ -576,18 +575,16 @@ namespace ChaosTest
 				return BestVert;
 			};
 
-			TArray<TVec3<T>> Tetrahedron = { HullVerts[0], HullVerts[1], HullVerts[2], HullVerts[3] };
-			TArray <TVec3<T>> Zeros = { TVec3<T>(0), TVec3<T>(0), TVec3<T>(0), TVec3<T>(0) };
+			TArray<FVec3> Tetrahedron = { HullVerts[0], HullVerts[1], HullVerts[2], HullVerts[3] };
+			TArray<FVec3> Zeros = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
 
-			T Penetration;
-			TVec3<T> Dir, WitnessA, WitnessB;
-			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EPAResult::Ok);
+			FReal Penetration;
+			FVec3 Dir, WitnessA, WitnessB;
+			EXPECT_EQ(EPA(Tetrahedron, Zeros, Support, ZeroSupport, Penetration, Dir, WitnessA, WitnessB), EEPAResult::Ok);
 			EXPECT_LT(Penetration, 0); // Negative penetration
 			EXPECT_NEAR(Dir.X, 1.0f, 0.001f);
 		}
 	}
-
-	template void EPASimpleTest<float>();
 
 	// Previously failing test cases that we would like to keep testing to prevent regression.
 	GTEST_TEST(EPATests, EPARealFailures_Fixed)
@@ -595,7 +592,7 @@ namespace ChaosTest
 		{
 			//get to EPA from GJKPenetration
 			// Boxes that are very close to each other (Almost penetrating).
-			TAABB<float, 3> Box({ -50, -50, -50 }, { 50, 50, 50 });
+			FAABB3 Box({ -50, -50, -50 }, { 50, 50, 50 });
 
 			const FRigidTransform3 BToATM({ -8.74146843, 4.58291769, -100.029655 }, FRotation3::FromElements(6.63562241e-05, -0.000235952888, 0.00664712908, 0.999977887));
 			FVec3 ClosestA, ClosestB, Normal;
@@ -663,7 +660,7 @@ namespace ChaosTest
 					{{768.000000, -448.000000, 3.81469727e-06}, {6.62273836e-09, 6.62273836e-09, -1.00000000}}
 				});
 
-			TParticles<FReal, 3> SurfaceParticles(
+			TArray<FVec3> SurfaceParticles(
 				{
 					{0.000000000, -1024.00000, 2.84217094e-14},
 					{768.000000, -1024.00000, 2.84217094e-14},
@@ -677,7 +674,8 @@ namespace ChaosTest
 					{576.000000, -256.000000, 8.00000000}
 				});
 
-			TUniquePtr<FConvex> Convex = MakeUnique<FConvex>(MoveTemp(ConvexPlanes), MoveTemp(SurfaceParticles));
+			// Test used to pass the planes to FConvex, but this is not supported any more. Planes are derived from points.
+			TUniquePtr<FConvex> Convex = MakeUnique<FConvex>(SurfaceParticles, 0.0f);
 			TImplicitObjectScaled<FConvex> ScaledConvex(MakeSerializable(Convex), FVec3(1.0f), 0.0f);
 
 			TSphere<FReal, 3> Sphere(FVec3(0.0f), 34.2120171);
@@ -700,7 +698,7 @@ namespace ChaosTest
 		
 		// Sphere sweep against triangle, fails when it should hit. Raycast added as well for verification purposes.
 		{
-			const TTriangle<FReal> Triangle({ 0.000000000, 0.000000000, 0.000000000 }, { 128.000000, 0.000000000, -114.064575 }, { 128.000000, 128.000000, 2.35327148 });
+			const FTriangle Triangle({ 0.000000000, 0.000000000, 0.000000000 }, { 128.000000, 0.000000000, -114.064575 }, { 128.000000, 128.000000, 2.35327148 });
 			const TSphere<FReal, 3> Sphere({ 0.0, 0.0, 0.0 }, 4);
 			const TRigidTransform<FReal, 3> Transform({ 174.592773, -161.781250, -68.0469971 }, FQuat::Identity);
 			const FVec3 Dir(-0.406315684, 0.913382649, -0.0252906363);
@@ -758,7 +756,7 @@ namespace ChaosTest
 					{{0.000000000,0.000000000,0.000000000},{-0.000000000,0.000000000,1.00000000}}
 					});
 
-				TParticles<FReal,3> SurfaceParticles(
+				TArray<FVec3> SurfaceParticles(
 					{
 						{0.000000000,-512.000000,-32.0000000},
 					{512.000000,0.000000000,-32.0000000},
@@ -770,8 +768,10 @@ namespace ChaosTest
 					{512.000000,0.000000000,0.000000000}
 					});
 
+				// Test used to pass planes and verts to FConvex but this is not suported an more. 
+				// Planes will derived from the points now, and also faces are merged (not triangles any more)
 				FVec3 ConvexScale ={25,25,1};
-				TUniquePtr<FConvex> Convex = MakeUnique<FConvex>(MoveTemp(ConvexPlanes),MoveTemp(SurfaceParticles));
+				TUniquePtr<FConvex> Convex = MakeUnique<FConvex>(SurfaceParticles, 0.0f);
 				TImplicitObjectScaled<FConvex> ScaledConvex(MakeSerializable(Convex),ConvexScale,0.0f);
 
 				TBox<FReal,3> Box({-50.0000000,-60.0000000,-30.0000000},{50.0000000,60.0000000,30.0000000});
@@ -793,7 +793,7 @@ namespace ChaosTest
 			// InGJKPreDist2 is barely over 1e-6, fall back on EPA
 			// Triangle v Box
 			{
-				TTriangle<FReal> Triangle(FVec3(0.000000000,0.000000000,0.000000000),FVec3(128.000000,0.000000000,35.9375000),FVec3(128.000000,128.000000,134.381042));
+				FTriangle Triangle(FVec3(0.000000000,0.000000000,0.000000000),FVec3(128.000000,0.000000000,35.9375000),FVec3(128.000000,128.000000,134.381042));
 				TBox<FReal,3> Box(FVec3(-50.0000000,-60.0000000,-30.0000000),FVec3 (50.0000000,60.0000000,30.0000000));
 
 				const TRigidTransform<FReal,3> Transform({127.898438,35.0742188,109.781067},FQuat(0.374886870,-0.0289460570,0.313643545,0.871922970),FVec3(1.0));
@@ -811,7 +811,7 @@ namespace ChaosTest
 		}
 
 		// Defining boat geom data outside of single test scope as it's used in multiple.
-		const TArray<TVector<FReal, 3>> BoatSurfaceParticles(
+		const TArray<Chaos::FVec3> BoatSurfaceVertices(
 			{
 				{-118.965088, -100.379936, 105.818298},
 				{-128.562881, 80.0933762, 107.703270},
@@ -1021,7 +1021,7 @@ namespace ChaosTest
 					{{0.000000000,0.000000000,0.000000000},{-0.000000000,0.000000000,1.00000000}}
 				});
 
-			TParticles<FReal, 3> GroundSurfaceParticles(
+			TArray<FVec3> GroundSurfaceParticles(
 				{
 					{0.000000000,-512.000000,-32.0000000},
 					{512.000000,0.000000000,-32.0000000},
@@ -1035,15 +1035,16 @@ namespace ChaosTest
 
 
 
+			// Test used to pass planes and verts to FConvex but this is not suported an more. 
+			// Planes will derived from the points now, and also faces are merged (not triangles any more)
 			FVec3 GroundConvexScale = { 25,25,1 };
-			TUniquePtr<FConvex> GroundConvex = MakeUnique<FConvex>(MoveTemp(GroundConvexPlanes), MoveTemp(GroundSurfaceParticles));
+			TUniquePtr<FConvex> GroundConvex = MakeUnique<FConvex>(GroundSurfaceParticles, 0.0f);
 			TImplicitObjectScaled<FConvex> ScaledGroundConvex(MakeSerializable(GroundConvex), GroundConvexScale, 0.0f);
 
 
-
-			auto BoatConvexPlanesCopy = BoatConvexPlanes;
-			auto BoatSurfaceParticlesCopy = TParticles<FReal, 3>(CopyTemp(BoatSurfaceParticles));
-			FConvex BoatConvex = FConvex(MoveTemp(BoatConvexPlanesCopy), MoveTemp(BoatSurfaceParticlesCopy));
+			// Test used to pass planes and verts to FConvex but this is not suported an more. 
+			// Planes will derived from the points now, and also faces are merged (not triangles any more)
+			FConvex BoatConvex = FConvex(BoatSurfaceVertices, 0.0f);
 
 
 			TRigidTransform<FReal, 3> BoatTransform(FVec3(-5421.507324, 2335.360840, 6.972876), FQuat(-0.016646, -0.008459, 0.915564, -0.401738), FVec3(1.0f));
@@ -1055,7 +1056,7 @@ namespace ChaosTest
 			FVec3 ClosestA, ClosestB, Normal;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
 
-			auto result = GJKPenetration<true>(BoatConvex, ScaledGroundConvex, BToATM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, FVec3(1, 0, 0), 0.0f);
+			auto result = GJKPenetration<true>(BoatConvex, ScaledGroundConvex, BToATM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, 0.0f, FVec3(1, 0, 0));
 
 			FVec3 WorldLocation = BoatTransform.TransformPosition(ClosestA);
 			FVec3 WorldNormal = BoatTransform.TransformVectorNoScale(Normal);
@@ -1069,13 +1070,13 @@ namespace ChaosTest
 			const FVec3 A = { -10934.1797, -11431.4863, -5661.06982 };
 			const FVec3 B = { -10025.8525, -11155.4160, -6213.55322 };
 			const FVec3 C = { -10938.6836, -11213.3320, -6213.55322 };
-			const TTriangle<FReal> Triangle(A, B, C);
+			const FTriangle Triangle(A, B, C);
 			FVec3 ExpectedNormal = FVec3::CrossProduct(Triangle[1] - Triangle[0], Triangle[2] - Triangle[0]);
 			ExpectedNormal.Normalize();
 
-			auto BoatConvexPlanesCopy = BoatConvexPlanes;
-			auto BoatSurfaceParticlesCopy = TParticles<FReal, 3>(CopyTemp(BoatSurfaceParticles));
-			FConvex BoatConvex = FConvex(MoveTemp(BoatConvexPlanesCopy), MoveTemp(BoatSurfaceParticlesCopy));
+			// Test used to pass planes and verts to FConvex but this is not suported an more. 
+			// Planes will derived from the points now, and also faces are merged (not triangles any more)
+			FConvex BoatConvex = FConvex(BoatSurfaceVertices, 0.0f);
 
 			TRigidTransform<FReal, 3> QueryTM(FVec3(-10831.1875, -11206.3750, -6140.38135), FQuat(-0.524916053, -0.0370868668, -0.126528814, 0.840879321), FVec3(1.0f));
 
@@ -1083,7 +1084,7 @@ namespace ChaosTest
 			FVec3 ClosestA, ClosestB, Normal;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
 
-			auto result = GJKPenetration<true, float>(Triangle, BoatConvex, QueryTM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f);
+			auto result = GJKPenetration<true, float>(Triangle, BoatConvex, QueryTM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB);
 
 			// Confirm normal is valid and close to expected normal.
 			float dot = FVec3::DotProduct(ExpectedNormal, Normal);
@@ -1118,7 +1119,7 @@ namespace ChaosTest
 		FReal Penetration;
 		FVec3 ClosestA, ClosestB, NormalA;
 		int32 ClosestVertexIndexA, ClosestVertexIndexB;
-		GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, InitialDir, 0.0f);
+		GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, 0.0f, InitialDir);
 
 		FVec3 Location = ATM.TransformPosition(ClosestA);
 		FVec3 Normal = -ATM.TransformVectorNoScale(NormalA);
@@ -1141,7 +1142,7 @@ namespace ChaosTest
 			FReal Penetration;
 			FVec3 ClosestA, ClosestB, NormalA;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
-			GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, InitialDir, 0.0f);
+			GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, 0.0f, InitialDir);
 
 			FVec3 Location = ATM.TransformPosition(ClosestA);  // These transforms are not really necessary since they are identity
 			FVec3 Normal = ATM.TransformVectorNoScale(NormalA);
@@ -1165,7 +1166,7 @@ namespace ChaosTest
 			FReal Penetration;
 			FVec3 ClosestA, ClosestB, NormalA;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
-			GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, InitialDir, 0.0f);
+			GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, 0.0f, InitialDir);
 
 			FVec3 Location = ATM.TransformPosition(ClosestA);  // These transforms are not really necessary since they are identity
 			FVec3 Normal = ATM.TransformVectorNoScale(NormalA);
@@ -1186,7 +1187,7 @@ namespace ChaosTest
 		GTEST_TEST(EPATests, EPARealFailures_ConvexTrimeshRotationalDifferencesBreakNormal)
 		{
 			using namespace Chaos;
-			TParticles<FReal, 3> ConvexBoxSurfaceParticles(
+			TArray<FVec3> ConvexBoxSurfaceParticles(
 				{
 				{50.0999985, -50.1124992, -50.1250000},
 				{-50.0999985, 50.1250000, -50.1250000},
@@ -1200,7 +1201,7 @@ namespace ChaosTest
 
 			FConvex ConvexBox(MoveTemp(ConvexBoxSurfaceParticles), 0.0f);
 
-			TParticles<FReal, 3> TrimeshParticles(
+			FParticles TrimeshParticles(
 				{
 					{50.0000000, 50.0000000, -8.04061356e-15},
 					{50.0000000, -50.0000000, 8.04061356e-15},
@@ -1208,7 +1209,7 @@ namespace ChaosTest
 					{-50.0000000, -50.0000000, 8.04061356e-15}
 				});
 
-			TArray<TVector<int32, 3>> Indices;
+			TArray<TVec3<int32>> Indices;
 			Indices.Emplace(1, 0, 2);
 			Indices.Emplace(1, 2, 3);
 
@@ -1250,7 +1251,7 @@ namespace ChaosTest
 		{
 			using namespace Chaos;
 			// Triangle w/ world scale
-			TTriangle<FReal> Triangle({
+			FTriangle Triangle({
 				{-306.119476, 1674.38647, 117.138489},
 				{-491.015747, 1526.35803, 116.067123},
 				{-91.0660172, 839.028320, 118.413063}
@@ -1263,8 +1264,8 @@ namespace ChaosTest
 			TRigidTransform<FReal, 3> StartTM(FVec3(-344.031799, 1210.37158, 134.252747), FQuat(-0.255716801, -0.714108050, 0.0788889676, -0.646866322), FVec3(1));
 
 			// Wrapping in 1,1,1 scale is unnecessary, but this is technically what is happening when sweeping against scaled trimesh.
-			TUniquePtr<TCapsule<FReal>> Capsule = MakeUnique<TCapsule<FReal>>(TVec3<FReal>(0, 0, -33), TVec3<FReal>(0, 0, 33), 42);
-			TImplicitObjectScaled<TCapsule<FReal>> ScaledCapsule = TImplicitObjectScaled<TCapsule<FReal>>(MakeSerializable(Capsule), FVec3(1));
+			TUniquePtr<FCapsule> Capsule = MakeUnique<FCapsule>(FVec3(0, 0, -33), FVec3(0, 0, 33), 42);
+			TImplicitObjectScaled<FCapsule> ScaledCapsule = TImplicitObjectScaled<FCapsule>(MakeSerializable(Capsule), FVec3(1));
 
 
 			const FVec3 Dir(-0.102473199, 0.130887285, -0.986087084);

@@ -11,6 +11,7 @@
 #include "Physics/ImmediatePhysics/ImmediatePhysicsActorHandle.h"
 #include "Physics/ImmediatePhysics/ImmediatePhysicsSimulation.h"
 #include "Physics/ImmediatePhysics/ImmediatePhysicsStats.h"
+#include "PhysicsField/PhysicsFieldComponent.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "Logging/MessageLog.h"
 #include "Logging/LogMacros.h"
@@ -63,6 +64,22 @@ FAutoConsoleVariableRef CVarRigidBodyNodeSpaceExternalLinearVelocityX(TEXT("p.Ri
 FAutoConsoleVariableRef CVarRigidBodyNodeSpaceExternalLinearVelocityY(TEXT("p.RigidBodyNode.Space.ExternalLinearVelocity.Y"), RBAN_SimSpaceOverride.ExternalLinearVelocity.Y, TEXT("RBAN SimSpaceSettings overrides"), ECVF_Default);
 FAutoConsoleVariableRef CVarRigidBodyNodeSpaceExternalLinearVelocityZ(TEXT("p.RigidBodyNode.Space.ExternalLinearVelocity.Z"), RBAN_SimSpaceOverride.ExternalLinearVelocity.Z, TEXT("RBAN SimSpaceSettings overrides"), ECVF_Default);
 
+#if ENABLE_RBAN_PERF_LOGGING
+static float RBAN_PerfWarningThreshold = 0.f;
+static FAutoConsoleVariableRef CVarRigidBodyNodePerfWarningThreshold(
+	TEXT("p.RigidBodyNode.PerfWarningThreshold"),
+	RBAN_PerfWarningThreshold,
+	TEXT("0: disabled\n")
+	TEXT(">0: Threshold (in ms) before printing RBAN performance warnings to log."),
+	ECVF_Default);
+
+static float RBAN_PerfWarningInterval = 5.f;
+static FAutoConsoleVariableRef CVarRigidBodyNodePerfWarningInterval(
+	TEXT("p.RigidBodyNode.PerfWarningInterval"),
+	RBAN_PerfWarningInterval,
+	TEXT("Time (in seconds) between warnings to prevent log spam."),
+	ECVF_Default);
+#endif
 
 FSimSpaceSettings::FSimSpaceSettings()
 	: MasterAlpha(0)
@@ -309,12 +326,12 @@ void FAnimNode_RigidBody::InitSimulationSpace(
 	const FTransform& ComponentToWorld,
 	const FTransform& BoneToComponent)
 {
-	PreviousComponentToWorld = ComponentToWorld;
-	PreviousBoneToComponent = BoneToComponent;
-	PreviousComponentLinearVelocity = FVector::ZeroVector;
-	PreviousComponentAngularVelocity = FVector::ZeroVector;
-	PreviousBoneLinearVelocity = FVector::ZeroVector;
-	PreviousBoneAngularVelocity = FVector::ZeroVector;
+	SimSpacePreviousComponentToWorld = ComponentToWorld;
+	SimSpacePreviousBoneToComponent = BoneToComponent;
+	SimSpacePreviousComponentLinearVelocity = FVector::ZeroVector;
+	SimSpacePreviousComponentAngularVelocity = FVector::ZeroVector;
+	SimSpacePreviousBoneLinearVelocity = FVector::ZeroVector;
+	SimSpacePreviousBoneAngularVelocity = FVector::ZeroVector;
 }
 
 void FAnimNode_RigidBody::CalculateSimulationSpace(
@@ -350,13 +367,13 @@ void FAnimNode_RigidBody::CalculateSimulationSpace(
 	}
 
 	// World-space component velocity and acceleration
-	FVector CompLinVel = Chaos::FVec3::CalculateVelocity(PreviousComponentToWorld.GetTranslation(), ComponentToWorld.GetTranslation(), Dt);
-	FVector CompAngVel = Chaos::FRotation3::CalculateAngularVelocity(PreviousComponentToWorld.GetRotation(), ComponentToWorld.GetRotation(), Dt);
-	FVector CompLinAcc = (CompLinVel - PreviousComponentLinearVelocity) / Dt;
-	FVector CompAngAcc = (CompAngVel - PreviousComponentAngularVelocity) / Dt;
-	PreviousComponentToWorld = ComponentToWorld;
-	PreviousComponentLinearVelocity = CompLinVel;
-	PreviousComponentAngularVelocity = CompAngVel;
+	FVector CompLinVel = Chaos::FVec3::CalculateVelocity(SimSpacePreviousComponentToWorld.GetTranslation(), ComponentToWorld.GetTranslation(), Dt);
+	FVector CompAngVel = Chaos::FRotation3::CalculateAngularVelocity(SimSpacePreviousComponentToWorld.GetRotation(), ComponentToWorld.GetRotation(), Dt);
+	FVector CompLinAcc = (CompLinVel - SimSpacePreviousComponentLinearVelocity) / Dt;
+	FVector CompAngAcc = (CompAngVel - SimSpacePreviousComponentAngularVelocity) / Dt;
+	SimSpacePreviousComponentToWorld = ComponentToWorld;
+	SimSpacePreviousComponentLinearVelocity = CompLinVel;
+	SimSpacePreviousComponentAngularVelocity = CompAngVel;
 
 	if (Space == ESimulationSpace::ComponentSpace)
 	{
@@ -373,15 +390,15 @@ void FAnimNode_RigidBody::CalculateSimulationSpace(
 	if (Space == ESimulationSpace::BaseBoneSpace)
 	{
 		// World-space component-relative bone velocity and acceleration
-		FVector BoneLinVel = Chaos::FVec3::CalculateVelocity(PreviousBoneToComponent.GetTranslation(), BoneToComponent.GetTranslation(), Dt);
-		FVector BoneAngVel = Chaos::FRotation3::CalculateAngularVelocity(PreviousBoneToComponent.GetRotation(), BoneToComponent.GetRotation(), Dt);
+		FVector BoneLinVel = Chaos::FVec3::CalculateVelocity(SimSpacePreviousBoneToComponent.GetTranslation(), BoneToComponent.GetTranslation(), Dt);
+		FVector BoneAngVel = Chaos::FRotation3::CalculateAngularVelocity(SimSpacePreviousBoneToComponent.GetRotation(), BoneToComponent.GetRotation(), Dt);
 		BoneLinVel = ComponentToWorld.TransformVector(BoneLinVel);
 		BoneAngVel = ComponentToWorld.TransformVector(BoneAngVel);
-		FVector BoneLinAcc = (BoneLinVel - PreviousBoneLinearVelocity) / Dt;
-		FVector BoneAngAcc = (BoneAngVel - PreviousBoneAngularVelocity) / Dt;
-		PreviousBoneToComponent = BoneToComponent;
-		PreviousBoneLinearVelocity = BoneLinVel;
-		PreviousBoneAngularVelocity = BoneAngVel;
+		FVector BoneLinAcc = (BoneLinVel - SimSpacePreviousBoneLinearVelocity) / Dt;
+		FVector BoneAngAcc = (BoneAngVel - SimSpacePreviousBoneAngularVelocity) / Dt;
+		SimSpacePreviousBoneToComponent = BoneToComponent;
+		SimSpacePreviousBoneLinearVelocity = BoneLinVel;
+		SimSpacePreviousBoneAngularVelocity = BoneAngVel;
 
 		// World-space bone velocity and acceleration
 		FVector NetAngVel = CompAngVel + BoneAngVel;
@@ -436,6 +453,13 @@ void FAnimNode_RigidBody::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseC
 
 	if (bEnabled && PhysicsSimulation)	
 	{
+#if ENABLE_RBAN_PERF_LOGGING
+		double StartTime = -1.f;
+		if (RBAN_PerfWarningThreshold > 0.f)
+		{
+			StartTime = FPlatformTime::Seconds();
+		}
+#endif
 
 		const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
 		const FTransform CompWorldSpaceTM = Output.AnimInstanceProxy->GetComponentTransform();
@@ -622,43 +646,46 @@ void FAnimNode_RigidBody::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseC
 			}
 			else if ((SimulationSpace != ESimulationSpace::WorldSpace) && bRBAN_EnableComponentAcceleration)
 			{
-				// Calc linear velocity
-				const FVector ComponentDeltaLocation = CurrentTransform.GetTranslation() - PreviousTransform.GetTranslation();
-				const FVector ComponentLinearVelocity = ComponentDeltaLocation / DeltaSeconds;
-				// Apply acceleration that opposed velocity (basically 'drag')
-				FVector ApplyLinearAcc = WorldVectorToSpaceNoScale(SimulationSpace, -ComponentLinearVelocity, CompWorldSpaceTM, BaseBoneTM) * ComponentLinearVelScale;
-
-				// Calc linear acceleration
-				const FVector ComponentLinearAcceleration = (ComponentLinearVelocity - PreviousComponentLinearVelocity) / DeltaSeconds;
-				PreviousComponentLinearVelocity = ComponentLinearVelocity;
-				// Apply opposite acceleration to bodies
-				ApplyLinearAcc += WorldVectorToSpaceNoScale(SimulationSpace, -ComponentLinearAcceleration, CompWorldSpaceTM, BaseBoneTM) * ComponentLinearAccScale;
-
-				// Iterate over bodies
-				for (const FOutputBoneData& OutputData : OutputBoneData)
+				if (!ComponentLinearVelScale.IsNearlyZero() || !ComponentLinearAccScale.IsNearlyZero())
 				{
-					const int32 BodyIndex = OutputData.BodyIndex;
-					const FBodyAnimData& BodyData = BodyAnimData[BodyIndex];
+					// Calc linear velocity
+					const FVector ComponentDeltaLocation = CurrentTransform.GetTranslation() - PreviousTransform.GetTranslation();
+					const FVector ComponentLinearVelocity = ComponentDeltaLocation / DeltaSeconds;
+					// Apply acceleration that opposed velocity (basically 'drag')
+					FVector ApplyLinearAcc = WorldVectorToSpaceNoScale(SimulationSpace, -ComponentLinearVelocity, CompWorldSpaceTM, BaseBoneTM) * ComponentLinearVelScale;
 
-					if (BodyData.bIsSimulated)
+					// Calc linear acceleration
+					const FVector ComponentLinearAcceleration = (ComponentLinearVelocity - PreviousComponentLinearVelocity) / DeltaSeconds;
+					PreviousComponentLinearVelocity = ComponentLinearVelocity;
+					// Apply opposite acceleration to bodies
+					ApplyLinearAcc += WorldVectorToSpaceNoScale(SimulationSpace, -ComponentLinearAcceleration, CompWorldSpaceTM, BaseBoneTM) * ComponentLinearAccScale;
+
+					// Iterate over bodies
+					for (const FOutputBoneData& OutputData : OutputBoneData)
 					{
-						ImmediatePhysics::FActorHandle* Body = Bodies[BodyIndex];
+						const int32 BodyIndex = OutputData.BodyIndex;
+						const FBodyAnimData& BodyData = BodyAnimData[BodyIndex];
 
-						// Apply 
-						const float BodyInvMass = Body->GetInverseMass();
-						if (BodyInvMass > 0.f)
+						if (BodyData.bIsSimulated)
 						{
-							// Final desired acceleration to apply to body
-							FVector FinalBodyLinearAcc = ApplyLinearAcc;
+							ImmediatePhysics::FActorHandle* Body = Bodies[BodyIndex];
 
-							// Clamp if desired
-							if (!ComponentAppliedLinearAccClamp.IsNearlyZero())
+							// Apply 
+							const float BodyInvMass = Body->GetInverseMass();
+							if (BodyInvMass > 0.f)
 							{
-								FinalBodyLinearAcc = FinalBodyLinearAcc.BoundToBox(-ComponentAppliedLinearAccClamp, ComponentAppliedLinearAccClamp);
-							}
+								// Final desired acceleration to apply to body
+								FVector FinalBodyLinearAcc = ApplyLinearAcc;
 
-							// Apply to body
-							Body->AddForce(FinalBodyLinearAcc / BodyInvMass);
+								// Clamp if desired
+								if (!ComponentAppliedLinearAccClamp.IsNearlyZero())
+								{
+									FinalBodyLinearAcc = FinalBodyLinearAcc.BoundToBox(-ComponentAppliedLinearAccClamp, ComponentAppliedLinearAccClamp);
+								}
+
+								// Apply to body
+								Body->AddForce(FinalBodyLinearAcc / BodyInvMass);
+							}
 						}
 					}
 				}
@@ -677,7 +704,7 @@ void FAnimNode_RigidBody::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseC
 				}
 			}
 			
-			UpdateWorldForces(CompWorldSpaceTM, BaseBoneTM);
+			UpdateWorldForces(CompWorldSpaceTM, BaseBoneTM, DeltaSeconds);
 			const FVector SimSpaceGravity = WorldVectorToSpaceNoScale(SimulationSpace, WorldSpaceGravity, CompWorldSpaceTM, BaseBoneTM);
 
 			// Run simulation at a minimum of 30 FPS to prevent system from exploding.
@@ -809,6 +836,20 @@ void FAnimNode_RigidBody::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseC
 		}
 
 		PreviousCompWorldSpaceTM = CompWorldSpaceTM;
+
+#if ENABLE_RBAN_PERF_LOGGING
+		if (RBAN_PerfWarningThreshold > 0.f)
+		{
+			const double EndTime = FPlatformTime::Seconds();
+			const double ElapsedTimeMS = (EndTime - StartTime) * 1000.0;
+			if (ElapsedTimeMS > RBAN_PerfWarningThreshold && (EndTime - LastPerfWarningTimeSeconds) > RBAN_PerfWarningInterval)
+			{
+				check(UsePhysicsAsset);
+				LastPerfWarningTimeSeconds = EndTime;
+				UE_LOG(LogRBAN, Warning, TEXT("Exceeded Performance Budget: %s took %.02fms"), *UsePhysicsAsset->GetName(), ElapsedTimeMS);
+			}
+		}
+#endif
 	}
 }
 
@@ -833,7 +874,7 @@ void ComputeBodyInsertionOrder(TArray<FBoneIndexType>& InsertionOrder, const USk
 		SKC.ComputeRequiredBones(RequiredBones0, ComponentSpaceTMs0, 0, /*bIgnorePhysicsAsset=*/ true);
 
 		TArray<bool> InSortedOrder;
-		InSortedOrder.AddZeroed(SKC.SkeletalMesh->RefSkeleton.GetNum());
+		InSortedOrder.AddZeroed(SKC.SkeletalMesh->GetRefSkeleton().GetNum());
 
 		auto MergeIndices = [&InsertionOrder, &InSortedOrder](const TArray<FBoneIndexType>& RequiredBones) -> void
 		{
@@ -870,12 +911,19 @@ void FAnimNode_RigidBody::InitPhysics(const UAnimInstance* InAnimInstance)
 
 	const USkeletalMeshComponent* SkeletalMeshComp = InAnimInstance->GetSkelMeshComponent();
 	const USkeletalMesh* SkeletalMeshAsset = SkeletalMeshComp->SkeletalMesh;
-
-	const FReferenceSkeleton& SkelMeshRefSkel = SkeletalMeshAsset->RefSkeleton;
-	UsePhysicsAsset = OverridePhysicsAsset ? OverridePhysicsAsset : InAnimInstance->GetSkelMeshComponent()->GetPhysicsAsset();
-		
 	USkeleton* SkeletonAsset = InAnimInstance->CurrentSkeleton;
-	ensure(SkeletonAsset == SkeletalMeshAsset->Skeleton);
+
+	if(!SkeletalMeshAsset || !SkeletonAsset)
+	{
+		// Without both the skeleton and the mesh we can't create a new simulation.
+		// The previous simulation has just been cleaned up above so we can return early here and not instantiate a new one
+		return;
+	}
+
+	const FReferenceSkeleton& SkelMeshRefSkel = SkeletalMeshAsset->GetRefSkeleton();
+	UsePhysicsAsset = OverridePhysicsAsset ? OverridePhysicsAsset : InAnimInstance->GetSkelMeshComponent()->GetPhysicsAsset();
+
+	ensure(SkeletonAsset == SkeletalMeshAsset->GetSkeleton());
 
 	const int32 SkelMeshLinkupIndex = SkeletonAsset->GetMeshLinkupIndex(SkeletalMeshAsset);
 	ensure(SkelMeshLinkupIndex != INDEX_NONE);
@@ -1177,7 +1225,7 @@ void FAnimNode_RigidBody::UpdateWorldGeometry(const UWorld& World, const USkelet
 
 DECLARE_CYCLE_STAT(TEXT("FAnimNode_RigidBody::UpdateWorldForces"), STAT_ImmediateUpdateWorldForces, STATGROUP_ImmediatePhysics);
 
-void FAnimNode_RigidBody::UpdateWorldForces(const FTransform& ComponentToWorld, const FTransform& BaseBoneTM)
+void FAnimNode_RigidBody::UpdateWorldForces(const FTransform& ComponentToWorld, const FTransform& BaseBoneTM, const float DeltaSeconds)
 {
 	SCOPE_CYCLE_COUNTER(STAT_ImmediateUpdateWorldForces);
 
@@ -1216,6 +1264,68 @@ void FAnimNode_RigidBody::UpdateWorldForces(const FTransform& ComponentToWorld, 
 				if (InvMass > 0.f)
 				{
 					Body->AddForce(ExternalForceInSimSpace);
+				}
+			}
+		}
+		if(DeltaSeconds != 0.0)
+		{
+			if(!PerSolverField.IsEmpty())
+			{
+				TArray<FVector>& SamplePositions = PerSolverField.GetSamplePositions();
+				TArray<FFieldContextIndex>& SampleIndices = PerSolverField.GetSampleIndices();
+
+				SamplePositions.SetNum(Bodies.Num(),false);
+				SampleIndices.SetNum(Bodies.Num(), false);
+
+				int32 Index = 0;
+				for (ImmediatePhysics::FActorHandle* Body : Bodies)
+				{
+					SamplePositions[Index] = (Body->GetWorldTransform() * SpaceToWorldTransform(SimulationSpace, ComponentToWorld, BaseBoneTM)).GetLocation();
+					SampleIndices[Index] = FFieldContextIndex(Index, Index);
+					++Index;
+				}
+				PerSolverField.ComputeFieldRigidImpulse(WorldTimeSeconds);
+
+				const TArray<FVector>& LinearVelocities = PerSolverField.GetVectorResults(EFieldVectorType::Vector_LinearVelocity);
+				const TArray<FVector>& LinearForces = PerSolverField.GetVectorResults(EFieldVectorType::Vector_LinearForce);
+				const TArray<FVector>& AngularVelocities = PerSolverField.GetVectorResults(EFieldVectorType::Vector_AngularVelocity);
+				const TArray<FVector>& AngularTorques = PerSolverField.GetVectorResults(EFieldVectorType::Vector_AngularTorque);
+
+				if (LinearVelocities.Num() == Bodies.Num())
+				{
+					Index = 0;
+					for (ImmediatePhysics::FActorHandle* Body : Bodies)
+					{
+						const FVector ExternalForceInSimSpace = WorldVectorToSpaceNoScale(SimulationSpace, LinearVelocities[Index++], ComponentToWorld, BaseBoneTM) * Body->GetMass() / DeltaSeconds;
+						Body->AddForce(ExternalForceInSimSpace);
+					}
+				}
+				if (LinearForces.Num() == Bodies.Num())
+				{
+					Index = 0;
+					for (ImmediatePhysics::FActorHandle* Body : Bodies)
+					{
+						const FVector ExternalForceInSimSpace = WorldVectorToSpaceNoScale(SimulationSpace, LinearForces[Index++], ComponentToWorld, BaseBoneTM);
+						Body->AddForce(ExternalForceInSimSpace);
+					}
+				}
+				if (AngularVelocities.Num() == Bodies.Num())
+				{
+					Index = 0;
+					for (ImmediatePhysics::FActorHandle* Body : Bodies)
+					{
+						const FVector ExternalTorqueInSimSpace = WorldVectorToSpaceNoScale(SimulationSpace, AngularVelocities[Index++], ComponentToWorld, BaseBoneTM) * Body->GetInertia() / DeltaSeconds;
+						Body->AddTorque(ExternalTorqueInSimSpace);
+					}
+				}
+				if (AngularTorques.Num() == Bodies.Num())
+				{
+					Index = 0;
+					for (ImmediatePhysics::FActorHandle* Body : Bodies)
+					{
+						const FVector ExternalTorqueInSimSpace = WorldVectorToSpaceNoScale(SimulationSpace, AngularTorques[Index++], ComponentToWorld, BaseBoneTM);
+						Body->AddTorque(ExternalTorqueInSimSpace);
+					}
 				}
 			}
 		}
@@ -1277,7 +1387,15 @@ void FAnimNode_RigidBody::PreUpdate(const UAnimInstance* InAnimInstance)
 
 			PreviousTransform = CurrentTransform;
 			CurrentTransform = SKC->GetComponentToWorld();
-		}	
+
+			if (World->PhysicsField)
+			{
+				const FBox BoundingBox = SKC->CalcBounds(SKC->GetComponentTransform()).GetBox();
+
+				World->PhysicsField->FillTransientCommands(false, BoundingBox, WorldTimeSeconds, PerSolverField.GetTransientCommands());
+				World->PhysicsField->FillPersistentCommands(false, BoundingBox, WorldTimeSeconds, PerSolverField.GetPersistentCommands());
+			}
+		}
 	}
 }
 

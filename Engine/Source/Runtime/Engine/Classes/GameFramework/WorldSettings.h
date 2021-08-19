@@ -614,10 +614,6 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Audio)
 	FInteriorSettings DefaultAmbientZoneSettings;
 
-	/** Distance from the player after which content will be rendered in mono if monoscopic far field rendering is activated */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=VR)
-	float MonoCullingDistance;
-
 	/** Default Base SoundMix.																			*/
 	UPROPERTY(EditAnywhere, Category=Audio)
 	class USoundMix* DefaultBaseSoundMix;
@@ -644,9 +640,13 @@ public:
 	UPROPERTY()
 	int32 NumHLODLevels;
 
-	/** if set to true, all eligible actors in this level will be added to a single cluster representing the entire level (used for small sublevels)*/
+	/** If set to true, all eligible actors in this level will be added to a single cluster representing the entire level (used for small sublevels) */
 	UPROPERTY(EditAnywhere, config, Category = LODSystem, AdvancedDisplay)
 	uint32 bGenerateSingleClusterForLevel : 1;
+
+	/** Specify the transform to apply to the source meshes when building HLODs. */
+	UPROPERTY(EditAnywhere, config, Category = LODSystem, AdvancedDisplay, meta=(DisplayName = "HLOD Baking Transform"))
+	FTransform HLODBakingTransform;
 
 	/************************************/
 	/** EDITOR ONLY SETTINGS **/

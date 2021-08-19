@@ -13,6 +13,7 @@ LandscapeEdit.cpp: Landscape editing
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "Landscape.h"
+#include "LandscapeEditReadback.h"
 #include "LandscapeStreamingProxy.h"
 #include "LandscapeInfo.h"
 #include "LandscapeComponent.h"
@@ -3717,38 +3718,65 @@ void ULandscapeInfo::GetUsedPaintLayers(const FGuid& InLayerGuid, TArray<ULandsc
 
 void ALandscapeProxy::EditorApplyScale(const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown)
 {
-	FVector ModifiedScale = DeltaScale;
-
-	// Lock X and Y scaling to the same value
-	ModifiedScale.X = ModifiedScale.Y = (FMath::Abs(DeltaScale.X) > FMath::Abs(DeltaScale.Y)) ? DeltaScale.X : DeltaScale.Y;
-
-	// Correct for attempts to scale to 0 on any axis
+	FVector ModifiedDeltaScale = DeltaScale;
 	FVector CurrentScale = GetRootComponent()->GetRelativeScale3D();
+	
+	// Lock X and Y scaling to the same value :
+	FVector2D XYDeltaScaleAbs(FMath::Abs(DeltaScale.X), FMath::Abs(DeltaScale.Y));
+	// Preserve the sign of the chosen delta :
+	bool bFavorX = (XYDeltaScaleAbs.X > XYDeltaScaleAbs.Y);
+
 	if (AActor::bUsePercentageBasedScaling)
 	{
-		if (ModifiedScale.X == -1)
+		// Correct for attempts to scale to 0 on any axis
+		float XYDeltaScale = bFavorX ? DeltaScale.X : DeltaScale.Y;
+		if (XYDeltaScale == -1.0f)
 		{
-			ModifiedScale.X = ModifiedScale.Y = -(CurrentScale.X - 1) / CurrentScale.X;
+			XYDeltaScale = -(CurrentScale.X - 1) / CurrentScale.X;
 		}
-		if (ModifiedScale.Z == -1)
+		if (ModifiedDeltaScale.Z == -1)
 		{
-			ModifiedScale.Z = -(CurrentScale.Z - 1) / CurrentScale.Z;
+			ModifiedDeltaScale.Z = -(CurrentScale.Z - 1) / CurrentScale.Z;
 		}
+
+		ModifiedDeltaScale.X = ModifiedDeltaScale.Y = XYDeltaScale;
 	}
 	else
 	{
-		if (ModifiedScale.X == -CurrentScale.X)
+		// The absolute value of X and Y must be preserved so make sure they are preserved in case they flip from positive to negative (e.g.: a (-X, X) scale is accepted) : 
+		float SignMultiplier = FMath::Sign(CurrentScale.X) * FMath::Sign(CurrentScale.Y);
+		FVector2D NewScale(FVector2D::ZeroVector);
+		if (bFavorX)
 		{
-			CurrentScale.X += 1;
-			CurrentScale.Y += 1;
+			NewScale.X = CurrentScale.X + DeltaScale.X;
+			if (NewScale.X == 0.0f)
+			{
+				// Correct for attempts to scale to 0 on this axis : doubly-increment the scale to avoid reaching 0 :
+				NewScale.X += DeltaScale.X;
+			}
+			NewScale.Y = SignMultiplier * NewScale.X;
 		}
-		if (ModifiedScale.Z == -CurrentScale.Z)
+		else
 		{
-			CurrentScale.Z += 1;
+			NewScale.Y = CurrentScale.Y + DeltaScale.Y;
+			if (NewScale.Y == 0.0f)
+			{
+				// Correct for attempts to scale to 0 on this axis : doubly-increment the scale to avoid reaching 0 :
+				NewScale.Y += DeltaScale.Y;
+			}
+			NewScale.X = SignMultiplier * NewScale.Y;
+		}
+
+		ModifiedDeltaScale.X = NewScale.X - CurrentScale.X;
+		ModifiedDeltaScale.Y = NewScale.Y - CurrentScale.Y;
+
+		if (ModifiedDeltaScale.Z == -CurrentScale.Z)
+		{
+			ModifiedDeltaScale.Z += 1;
 		}
 	}
 
-	Super::EditorApplyScale(ModifiedScale, PivotLocation, bAltDown, bShiftDown, bCtrlDown);
+	Super::EditorApplyScale(ModifiedDeltaScale, PivotLocation, bAltDown, bShiftDown, bCtrlDown);
 
 	// We need to regenerate collision objects, they depend on scale value 
 	for (ULandscapeHeightfieldCollisionComponent* Comp : CollisionComponents)
@@ -4436,9 +4464,8 @@ void ALandscape::SplitHeightmap(ULandscapeComponent* Comp, ALandscapeProxy* Targ
 	check(Comp->GetLandscapeProxy()->HasLayersContent() == DstProxy->CanHaveLayersContent());
 	if (Comp->GetLandscapeProxy()->HasLayersContent() && DstProxy->CanHaveLayersContent())
 	{
-		FLandscapeLayersTexture2DCPUReadBackResource* NewCPUReadBackResource = new FLandscapeLayersTexture2DCPUReadBackResource(NewHeightmapTexture->Source.GetSizeX(), NewHeightmapTexture->Source.GetSizeY(), NewHeightmapTexture->GetPixelFormat(), NewHeightmapTexture->Source.GetNumMips());
-		BeginInitResource(NewCPUReadBackResource);
-		DstProxy->HeightmapsCPUReadBack.Add(NewHeightmapTexture, NewCPUReadBackResource);
+		FLandscapeEditLayerReadback* NewCPUReadback = new FLandscapeEditLayerReadback();
+		DstProxy->HeightmapsCPUReadback.Add(NewHeightmapTexture, NewCPUReadback);
 
 		// Free OldHeightmapTexture's CPUReadBackResource if not used by any component
 		bool FreeCPUReadBack = true;
@@ -4452,14 +4479,13 @@ void ALandscape::SplitHeightmap(ULandscapeComponent* Comp, ALandscapeProxy* Targ
 		}
 		if (FreeCPUReadBack)
 		{
-			FLandscapeLayersTexture2DCPUReadBackResource** OldCPUReadBackResource = SrcProxy->HeightmapsCPUReadBack.Find(OldHeightmapTexture);
-			if (OldCPUReadBackResource)
+			FLandscapeEditLayerReadback** OldCPUReadback = SrcProxy->HeightmapsCPUReadback.Find(OldHeightmapTexture);
+			if (OldCPUReadback)
 			{
-				if (FLandscapeLayersTexture2DCPUReadBackResource* ResourceToDelete = *OldCPUReadBackResource)
+				if (FLandscapeEditLayerReadback* ResourceToDelete = *OldCPUReadback)
 				{
-					ReleaseResourceAndFlush(ResourceToDelete);
 					delete ResourceToDelete;
-					SrcProxy->HeightmapsCPUReadBack.Remove(OldHeightmapTexture);
+					SrcProxy->HeightmapsCPUReadback.Remove(OldHeightmapTexture);
 				}
 			}
 		}
@@ -4706,19 +4732,20 @@ void ALandscapeProxy::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	{
 		InvalidateLightingCache();
 	}
-	else if(
-		PropertyName == FName(TEXT("CastShadow")) ||
-		PropertyName == FName(TEXT("bCastDynamicShadow")) ||
-		PropertyName == FName(TEXT("bCastStaticShadow")) ||
-		PropertyName == FName(TEXT("bCastFarShadow")) ||
-		PropertyName == FName(TEXT("bCastHiddenShadow")) ||
-		PropertyName == FName(TEXT("bCastShadowAsTwoSided")) ||
-		PropertyName == FName(TEXT("bAffectDistanceFieldLighting")) ||
-		PropertyName == FName(TEXT("bRenderCustomDepth")) ||
-		PropertyName == FName(TEXT("CustomDepthStencilWriteMask")) ||
-		PropertyName == FName(TEXT("CustomDepthStencilValue")) ||
-		PropertyName == FName(TEXT("LightingChannels")) ||
-		PropertyName == FName(TEXT("LDMaxDrawDistance")))
+	else if ((PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, CastShadow))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bCastDynamicShadow))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bCastStaticShadow))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bCastFarShadow))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bCastHiddenShadow))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bCastShadowAsTwoSided))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bAffectDistanceFieldLighting))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bRenderCustomDepth))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, CustomDepthStencilWriteMask))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, CustomDepthStencilValue))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, LightingChannels))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, LDMaxDrawDistance))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bUsedForNavigation))
+		|| (PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bFillCollisionUnderLandscapeForNavmesh)))
 	{
 		// Replicate shared properties to all components.
 		for (int32 ComponentIndex = 0; ComponentIndex < LandscapeComponents.Num(); ComponentIndex++)
@@ -4885,8 +4912,6 @@ void ALandscape::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 	bool ChangedMaterial = false;
 	bool bNeedsRecalcBoundingBox = false;
 	bool bChangedLighting = false;
-	bool bChangedNavRelevance = false;
-	bool bChangeRejectNavmeshUnder = false;
 	bool bPropagateToProxies = false;
 
 	ULandscapeInfo* Info = GetLandscapeInfo();
@@ -5035,14 +5060,6 @@ void ALandscape::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 	{
 		ExportLOD = FMath::Clamp<int32>(ExportLOD, 0, FMath::CeilLogTwo(SubsectionSizeQuads + 1) - 1);
 	}
-	else if (GIsEditor && PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bUsedForNavigation))
-	{
-		bChangedNavRelevance = true;
-	}
-	else if (GIsEditor && PropertyName == GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bFillCollisionUnderLandscapeForNavmesh))
-	{
-		bChangeRejectNavmeshUnder = true;
-	}
 
 	// Must do this *after* clamping values
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -5068,7 +5085,7 @@ void ALandscape::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 			LandscapeEdit.RecalculateNormals();
 		}
 
-		if (bNeedsRecalcBoundingBox || ChangedMaterial || bChangedLighting || bChangedNavRelevance || bChangeRejectNavmeshUnder)
+		if (bNeedsRecalcBoundingBox || ChangedMaterial || bChangedLighting)
 		{
 			// We cannot iterate the XYtoComponentMap directly because reregistering components modifies the array.
 			TArray<ULandscapeComponent*> AllComponents;
@@ -5088,16 +5105,6 @@ void ALandscape::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 					if (bChangedLighting)
 					{
 						Comp->InvalidateLightingCache();
-					}
-
-					if (bChangedNavRelevance)
-					{
-						Comp->UpdateNavigationRelevance();
-					}
-
-					if (bChangeRejectNavmeshUnder)
-					{
-						Comp->UpdateRejectNavmeshUnderneath();
 					}
 				}
 			}
@@ -5319,7 +5326,7 @@ void ULandscapeInfo::UpdateSelectedComponents(TSet<ULandscapeComponent*>& NewCom
 			ULandscapeComponent* Comp = *It;
 			if ((Comp->EditToolRenderData.SelectedType & InSelectType) == 0)
 			{
-				Comp->Modify();
+				Comp->Modify(false);
 				int32 SelectedType = Comp->EditToolRenderData.SelectedType;
 				SelectedType |= InSelectType;
 				Comp->EditToolRenderData.UpdateSelectionMaterial(SelectedType, Comp);
@@ -5332,7 +5339,7 @@ void ULandscapeInfo::UpdateSelectedComponents(TSet<ULandscapeComponent*>& NewCom
 		for (TSet<ULandscapeComponent*>::TIterator It(RemovedComponents); It; ++It)
 		{
 			ULandscapeComponent* Comp = *It;
-			Comp->Modify();
+			Comp->Modify(false);
 			int32 SelectedType = Comp->EditToolRenderData.SelectedType;
 			SelectedType &= ~InSelectType;
 			Comp->EditToolRenderData.UpdateSelectionMaterial(SelectedType, Comp);
@@ -5350,7 +5357,7 @@ void ULandscapeInfo::UpdateSelectedComponents(TSet<ULandscapeComponent*>& NewCom
 				ULandscapeComponent* Comp = *It;
 				if ((Comp->EditToolRenderData.SelectedType & InSelectType) == 0)
 				{
-					Comp->Modify();
+					Comp->Modify(false);
 					int32 SelectedType = Comp->EditToolRenderData.SelectedType;
 					SelectedType |= InSelectType;
 					Comp->EditToolRenderData.UpdateSelectionMaterial(SelectedType, Comp);
@@ -5366,7 +5373,7 @@ void ULandscapeInfo::UpdateSelectedComponents(TSet<ULandscapeComponent*>& NewCom
 			for (TSet<ULandscapeComponent*>::TIterator It(SelectedRegionComponents); It; ++It)
 			{
 				ULandscapeComponent* Comp = *It;
-				Comp->Modify();
+				Comp->Modify(false);
 				int32 SelectedType = Comp->EditToolRenderData.SelectedType;
 				SelectedType &= ~InSelectType;
 				Comp->EditToolRenderData.UpdateSelectionMaterial(SelectedType, Comp);
@@ -6249,18 +6256,26 @@ void ULandscapeComponent::GeneratePlatformPixelData()
 		UTexture2D* CurrentWeightmapTexture = MobileWeightNormalmapTexture;
 		MobileWeightmapTextures.Add(CurrentWeightmapTexture);
 		int32 CurrentChannel = 0;
-		int32 RemainingChannels = 2;
 
+		// We can potentially save a channel allocation if we have weight based blends.
+		const bool bAtLeastOneWeightBasedBlend = MobileWeightmapLayerAllocations.FindByPredicate([&](const FWeightmapLayerAllocationInfo& Allocation) -> bool { return !Allocation.LayerInfo->bNoWeightBlend; }) != nullptr;
+		const bool bUseWeightBasedChannelOptim =  bAtLeastOneWeightBasedBlend && MobileWeightmapLayerAllocations.Num() <= 3;
 		MobileBlendableLayerMask = 0;
 
-		bool bAtLeastOneWeightBasedBlend = MobileWeightmapLayerAllocations.FindByPredicate([&](const FWeightmapLayerAllocationInfo& Allocation) -> bool { return !Allocation.LayerInfo->bNoWeightBlend; }) != nullptr;
+		// Give normal map a full texture if this doesn't increase the overall allocation count.
+		// This then saves a texture slot because we don't need to sample a combined normalmap/weightmap texture with two different sampler settings.
+		// This optimization won't be useful or valid if we are already applying the weight based blending channel optimization.
+		const int32 NumTexturesCombinedNormal = FMath::DivideAndRoundUp(MobileWeightmapLayerAllocations.Num() + 2, 4);
+		const int32 NumTexturesIsolatedNormal = 1 + FMath::DivideAndRoundUp(MobileWeightmapLayerAllocations.Num(), 4);
+		const bool bIsolateNormalMap = !bUseWeightBasedChannelOptim && NumTexturesCombinedNormal == NumTexturesIsolatedNormal;
+		int32 RemainingChannels = bIsolateNormalMap ? 0 : 2;
 
 		for (auto& Allocation : MobileWeightmapLayerAllocations)
 		{
 			if (Allocation.LayerInfo)
 			{
 				// If we can pack into 2 channels with the 3rd implied, track the mask for the weight blendable layers
-				if (bAtLeastOneWeightBasedBlend && MobileWeightmapLayerAllocations.Num() <= 3)
+				if (bUseWeightBasedChannelOptim)
 				{
 					MobileBlendableLayerMask |= (!Allocation.LayerInfo->bNoWeightBlend ? (1 << CurrentChannel) : 0);
 
@@ -6793,8 +6808,11 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 	TArray<FLandscapeVertexRef> VertexOrder;
 	VertexOrder.Empty(NumVertices);
 
-	const bool bStreamLandscapeMeshLODs = TargetPlatform && TargetPlatform->SupportsFeature(ETargetPlatformFeatures::LandscapeMeshLODStreaming);
+	// Can't stream if the number of hole LODs is greater than the number of streaming LODs
 	const int32 MaxLODClamp = FMath::Min((uint32)GetLandscapeProxy()->MaxLODLevel, (uint32)MAX_MESH_LOD_COUNT - 1u);
+	const bool bStreamLandscapeMeshLODs = TargetPlatform
+		&& TargetPlatform->SupportsFeature(ETargetPlatformFeatures::LandscapeMeshLODStreaming)
+		&& NumHoleLods <= FMath::Min(MaxLOD, MaxLODClamp);
 	const int32 NumStreamingLODs = bStreamLandscapeMeshLODs ? FMath::Min(MaxLOD, MaxLODClamp) : 0;
 	TArray<int32> StreamingLODVertStartOffsets;
 	StreamingLODVertStartOffsets.AddUninitialized(NumStreamingLODs);
@@ -6880,7 +6898,7 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 	for (int32 Idx = 0; Idx < NumVertices; Idx++)
 	{
 		if (StreamingLODIdx >= 0
-			&& (StreamingLODIdx >= NumHoleLods - 1)
+			&& StreamingLODIdx >= NumHoleLods - 1
 			&& Idx >= StreamingLODVertStartOffsets[StreamingLODIdx])
 		{
 			const int32 EndIdx = StreamingLODIdx - 1 < 0 || StreamingLODIdx == NumHoleLods - 1 ?

@@ -12,13 +12,14 @@
 #include "Chaos/KinematicTargets.h"
 #include "UObject/ExternalPhysicsCustomObjectVersion.h"
 #include "UObject/ExternalPhysicsMaterialCustomObjectVersion.h"
+#include "UObject/PhysicsObjectVersion.h"
 
 class FName;
 
 namespace Chaos
 {
 
-using FKinematicTarget = TKinematicTarget<float, 3>;
+using FKinematicTarget = TKinematicTarget<FReal, 3>;
 
 enum class EResimType: uint8;
 
@@ -249,10 +250,23 @@ class FParticleDynamicMisc
 public:
 	void Serialize(FChaosArchive& Ar)
 	{
+		Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
 		Ar << MLinearEtherDrag;
 		Ar << MAngularEtherDrag;
 		Ar << MObjectState;
 		Ar << MGravityEnabled;
+		if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) >= FExternalPhysicsCustomObjectVersion::AddOneWayInteraction)
+		{
+			Ar << MOneWayInteraction;
+		}
+		else
+		{
+			MOneWayInteraction = false;
+		}
+		if (Ar.CustomVer(FPhysicsObjectVersion::GUID) >= FPhysicsObjectVersion::AddCCDEnableFlag)
+		{
+			Ar << bCCDEnabled;
+		}
 	}
 
 	template <typename TOther>
@@ -264,6 +278,9 @@ public:
 		SetGravityEnabled(Other.GravityEnabled());
 		SetCollisionGroup(Other.CollisionGroup());
 		SetResimType(Other.ResimType());
+		SetOneWayInteraction(Other.OneWayInteraction());
+		SetCollisionConstraintFlag(Other.CollisionConstraintFlag());
+		SetCCDEnabled(Other.CCDEnabled());
 	}
 
 	template <typename TOther>
@@ -274,7 +291,10 @@ public:
 			&& AngularEtherDrag() == Other.AngularEtherDrag()
 			&& GravityEnabled() == Other.GravityEnabled()
 			&& CollisionGroup() == Other.CollisionGroup()
-			&& ResimType() == Other.ResimType();
+			&& ResimType() == Other.ResimType()
+			&& OneWayInteraction() == Other.OneWayInteraction() 
+			&& CollisionConstraintFlag() == Other.CollisionConstraintFlag()
+			&& CCDEnabled() == Other.CCDEnabled();
 	}
 
 	bool operator==(const FParticleDynamicMisc& Other) const
@@ -294,13 +314,24 @@ public:
 	bool GravityEnabled() const { return MGravityEnabled; }
 	void SetGravityEnabled(bool InGravity){ MGravityEnabled = InGravity; }
 
+	bool CCDEnabled() const { return bCCDEnabled; }
+	void SetCCDEnabled(bool bInCCDEnabled) { bCCDEnabled = bInCCDEnabled; }
+
 	int32 CollisionGroup() const { return MCollisionGroup; }
 	void SetCollisionGroup(int32 InGroup){ MCollisionGroup = InGroup; }
 
 	EResimType ResimType() const { return MResimType; }
 	void SetResimType(EResimType Type) { MResimType = Type; }
 
+	uint32 CollisionConstraintFlag() const { return MCollisionConstraintFlag; }
+	void SetCollisionConstraintFlag(uint32 InCollisionConstraintFlag) { MCollisionConstraintFlag = InCollisionConstraintFlag; }
+	bool OneWayInteraction() const { return MOneWayInteraction; }
+	void SetOneWayInteraction(bool InOneWayInteraction) { MOneWayInteraction = InOneWayInteraction; }
+
 private:
+	//NOTE: MObjectState is the only sim-writable data in this struct
+	//If you add any more, make sure to update SyncSimWritablePropsFromSim
+	//Or consider breaking it (and object state) out of this struct entirely
 	FReal MLinearEtherDrag;
 	FReal MAngularEtherDrag;
 	int32 MCollisionGroup;
@@ -309,6 +340,10 @@ private:
 	EResimType MResimType;
 
 	bool MGravityEnabled;
+	bool MOneWayInteraction = false;
+	uint32 MCollisionConstraintFlag = 0;
+
+	bool bCCDEnabled;
 };
 
 inline FChaosArchive& operator<<(FChaosArchive& Ar,FParticleDynamicMisc& Data)
@@ -321,7 +356,6 @@ class FParticleNonFrequentData
 {
 public:
 	FParticleNonFrequentData()
-	: MUserData(nullptr)
 	{
 
 	}
@@ -335,7 +369,6 @@ public:
 	void CopyFrom(const TOther& Other)
 	{
 		SetGeometry(Other.SharedGeometryLowLevel());
-		SetUserData(Other.UserData());
 		SetUniqueIdx(Other.UniqueIdx());
 		SetSpatialIdx(Other.SpatialIdx());
 #if CHAOS_CHECKED
@@ -347,7 +380,6 @@ public:
 	bool IsEqual(const TOther& Other) const
 	{
 		return Geometry() == Other.SharedGeometryLowLevel()
-			&& UserData() == Other.UserData()
 			&& UniqueIdx() == Other.UniqueIdx()
 			&& SpatialIdx() == Other.SpatialIdx()
 #if CHAOS_CHECKED
@@ -366,9 +398,6 @@ public:
 	const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return MGeometry;}
 	void SetGeometry(const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& InGeometry) { MGeometry = InGeometry;}
 
-	void* UserData() const { return MUserData; }
-	void SetUserData(void* InData){ MUserData = InData;}
-
 	const FUniqueIdx& UniqueIdx() const { return MUniqueIdx; }
 	void SetUniqueIdx(FUniqueIdx InIdx){ MUniqueIdx = InIdx; }
 
@@ -381,7 +410,6 @@ public:
 #endif
 private:
 	TSharedPtr<FImplicitObject,ESPMode::ThreadSafe> MGeometry;
-	void* MUserData;
 	FUniqueIdx MUniqueIdx;
 	FSpatialAccelerationIdx MSpatialIdx;
 
@@ -412,6 +440,8 @@ struct FCollisionData
 	, bQueryCollision(true)
 	{
 	}
+
+	bool HasCollisionData() const { return bSimCollision || bQueryCollision; }
 
 	void Serialize(FChaosArchive& Ar)
 	{
@@ -1098,6 +1128,16 @@ class FParticleDirtyData
 {
 public:
 	
+	void SetParticleBufferType(EParticleType Type)
+	{
+		ParticleBufferType = Type;
+	}
+
+	EParticleType GetParticleBufferType() const
+	{
+		return ParticleBufferType;
+	}
+
 	void SetFlags(FParticleDirtyFlags InFlags)
 	{
 		Flags = InFlags;
@@ -1106,6 +1146,11 @@ public:
 	FParticleDirtyFlags GetFlags() const
 	{
 		return Flags;
+	}
+
+	void DirtyFlag(EParticleFlags Flag)
+	{
+		Flags.MarkDirty(Flag);
 	}
 
 	template <typename T, EParticleProperty PropName>
@@ -1140,6 +1185,7 @@ Type const * Find##PropName(const FDirtyPropertiesManager& Manager, int32 Idx) c
 
 private:
 	FParticleDirtyFlags Flags;
+	EParticleType ParticleBufferType;
 
 	template <typename T,EParticleProperty PropName>
 	const T& ReadImp(const FDirtyPropertiesManager& Manager, int32 Idx) const

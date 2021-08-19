@@ -151,18 +151,20 @@ UControlRigBlueprint* FControlRigBlueprintActions::CreateControlRigFromSkeletalM
 
 	if(SkeletalMesh)
 	{
-		Skeleton = SkeletalMesh->Skeleton;
-		RefSkeleton = &SkeletalMesh->RefSkeleton;
+		Skeleton = SkeletalMesh->GetSkeleton();
+		RefSkeleton = &SkeletalMesh->GetRefSkeleton();
 	}
-	else if (Skeleton == nullptr)
+	else if (Skeleton)
+	{
+		RefSkeleton = &Skeleton->GetReferenceSkeleton();
+	}
+	else
 	{
 		UE_LOG(LogControlRigEditor, Error, TEXT("CreateControlRigFromSkeletalMeshOrSkeleton: Provided object has to be a SkeletalMesh or Skeleton."));
 		return nullptr;
 	}
-	else
-	{
-		RefSkeleton = &Skeleton->GetReferenceSkeleton();
-	}
+
+	check(RefSkeleton);
 
 	FString PackagePath = InSelectedObject->GetPathName();
 	FString ControlRigName = FString::Printf(TEXT("%s_CtrlRig"), *InSelectedObject->GetName());
@@ -324,7 +326,7 @@ void FControlRigBlueprintActions::OnSpawnedSkeletalMeshActorChanged(UObject* InO
 			if (Track)
 			{
 				USkeletalMesh* SkeletalMesh = MeshActor->GetSkeletalMeshComponent()->SkeletalMesh;
-				USkeleton* Skeleton = SkeletalMesh->Skeleton;
+				USkeleton* Skeleton = SkeletalMesh->GetSkeleton();
 				
 				FString ObjectName = (ControlRigClass->GetName());
 				ObjectName.RemoveFromEnd(TEXT("_C"));

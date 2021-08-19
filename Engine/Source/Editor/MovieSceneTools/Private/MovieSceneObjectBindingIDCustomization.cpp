@@ -56,22 +56,34 @@ void FMovieSceneObjectBindingIDCustomization::CustomizeHeader(TSharedRef<IProper
 	]
 	.ValueContent()
 	[
-		SNew(SDropTarget)
-		.OnDrop(this, &FMovieSceneObjectBindingIDCustomization::OnDrop)
-		.OnAllowDrop_Static(IsAcceptable)
-		.OnIsRecognized_Static(IsAcceptable)
+		SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot()
 		[
-			SNew(SComboButton)
-			.ToolTipText(this, &FMovieSceneObjectBindingIDCustomization::GetToolTipText)
-			.OnGetMenuContent(this, &FMovieSceneObjectBindingIDCustomization::GetPickerMenu)
-			.ContentPadding(FMargin(4.0, 2.0))
-			.ButtonContent()
+			SNew(SDropTarget)
+			.OnDrop(this, &FMovieSceneObjectBindingIDCustomization::OnDrop)
+			.OnAllowDrop_Static(IsAcceptable)
+			.OnIsRecognized_Static(IsAcceptable)
 			[
-				GetCurrentItemWidget(
-					SNew(STextBlock)
-					.Font(CustomizationUtils.GetRegularFont())
-				)
+				SNew(SComboButton)
+				.ToolTipText(this, &FMovieSceneObjectBindingIDCustomization::GetToolTipText)
+				.OnGetMenuContent(this, &FMovieSceneObjectBindingIDCustomization::GetPickerMenu)
+				.ContentPadding(FMargin(4.0, 2.0))
+				.ButtonContent()
+				[
+					GetCurrentItemWidget(
+						SNew(STextBlock)
+						.Font(CustomizationUtils.GetRegularFont())
+					)
+				]
 			]
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+		[
+			GetWarningWidget()
 		]
 	];
 }
@@ -81,7 +93,7 @@ FReply FMovieSceneObjectBindingIDCustomization::OnDrop(TSharedPtr<FDragDropOpera
 	FSequencerObjectBindingDragDropOp* SequencerOp = InOperation->IsOfType<FSequencerObjectBindingDragDropOp>() ? static_cast<FSequencerObjectBindingDragDropOp*>(InOperation.Get()) : nullptr;
 	if (SequencerOp)
 	{
-		TArray<FMovieSceneObjectBindingID> Bindings = SequencerOp->GetDraggedBindings();
+		TArray<UE::MovieScene::FFixedObjectBindingID> Bindings = SequencerOp->GetDraggedBindings();
 		if (Bindings.Num() == 1)
 		{
 			SetBindingId(Bindings[0]);
@@ -111,13 +123,31 @@ UMovieSceneSequence* FMovieSceneObjectBindingIDCustomization::GetSequence() cons
 	return nullptr;
 }
 
+bool FMovieSceneObjectBindingIDCustomization::HasMultipleValues() const
+{
+	TArray<void*> Ptrs;
+	StructProperty->AccessRawData(Ptrs);
+
+	return Ptrs.Num() > 1;
+}
+
 FMovieSceneObjectBindingID FMovieSceneObjectBindingIDCustomization::GetCurrentValue() const
 {
 	TArray<void*> Ptrs;
 	StructProperty->AccessRawData(Ptrs);
 
-	// Per hotfix rules, the ensure has been removed here for 4.26.2 and fixed properly in 4.27 to allow for multiple values
-	return Ptrs.Num() == 1 ? *static_cast<FMovieSceneObjectBindingID*>(Ptrs[0]) : FMovieSceneObjectBindingID();
+	FMovieSceneObjectBindingID Value = Ptrs.Num() > 0 ? *static_cast<FMovieSceneObjectBindingID*>(Ptrs[0]) : FMovieSceneObjectBindingID();
+
+	// If more than one value and not all equal, return empty
+	for (int32 Index = 1; Index < Ptrs.Num(); ++Index)
+	{
+		if (*static_cast<FMovieSceneObjectBindingID*>(Ptrs[Index]) != Value)
+		{
+			return FMovieSceneObjectBindingID();
+		}
+	}
+
+	return Value;
 }
 
 void FMovieSceneObjectBindingIDCustomization::SetCurrentValue(const FMovieSceneObjectBindingID& InObjectBinding)
@@ -136,9 +166,9 @@ void FMovieSceneObjectBindingIDCustomization::SetCurrentValue(const FMovieSceneO
 	TArray<void*> Ptrs;
 	StructProperty->AccessRawData(Ptrs);
 
-	for (void* Ptr : Ptrs)
+	for (int32 Index = 0; Index < Ptrs.Num(); ++Index)
 	{
-		*static_cast<FMovieSceneObjectBindingID*>(Ptrs[0]) = InObjectBinding;
+		*static_cast<FMovieSceneObjectBindingID*>(Ptrs[Index]) = InObjectBinding;
 	}
 	
 	StructProperty->NotifyPostChange();

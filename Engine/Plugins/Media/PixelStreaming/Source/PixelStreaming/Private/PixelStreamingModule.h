@@ -13,6 +13,7 @@ class FSceneViewport;
 class FStreamer;
 class UPixelStreamerInputComponent;
 class SWindow;
+class FPixelStreamingAudioSink;
 
 /**
  * This plugin allows the back buffer to be sent as a compressed video across
@@ -27,8 +28,6 @@ private:
 
 	TSharedPtr<class IInputDevice> CreateInputDevice(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler) override;
 
-	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CreatePlayer(IMediaEventSink& EventSink) override;
-
 	/** IPixelStreamingModule implementation */
 	FInputDevice& GetInputDevice() override;
 	void AddPlayerConfig(TSharedRef<FJsonObject>& JsonObject) override;
@@ -41,9 +40,14 @@ private:
 	 * @return The shared pointer to the input device.
 	 */
 	TSharedPtr<FInputDevice> GetInputDevicePtr();
+	void AddInputComponent(UPixelStreamerInputComponent* InInputComponent) override;
+	void RemoveInputComponent(UPixelStreamerInputComponent* InInputComponent) override;
+	const TArray<UPixelStreamerInputComponent*> GetInputComponents() override;
 
 	void FreezeFrame(UTexture2D* Texture) override;
 	void UnfreezeFrame() override;
+	FPixelStreamingAudioSink* GetPeerAudioSink(FPlayerId PlayerId) override;
+	FPixelStreamingAudioSink* GetUnlistenedAudioSink() override;
 
 	// FTickableGameObject
 	bool IsTickableWhenPaused() const override;
@@ -59,12 +63,6 @@ private:
 	void SendJpeg(TArray<FColor> RawData, const FIntRect& Rect);
 
 	void InitStreamer();
-	void InitPlayer();
-
-	bool IsPlayerInitialized() const override
-	{
-		return bPlayerInitialized;
-	}
 
 private:
 	TUniquePtr<FStreamer> Streamer;
@@ -72,5 +70,5 @@ private:
 	TArray<UPixelStreamerInputComponent*> InputComponents;
 	bool bFrozen = false;
 	bool bCaptureNextBackBufferAndStream = false;
-	bool bPlayerInitialized = false;
+	double LastVideoEncoderQPReportTime = 0;
 };
