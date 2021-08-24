@@ -27,6 +27,7 @@
 #include "Modules/ModuleManager.h"
 #include "Chaos/PullPhysicsDataImp.h"
 #include "Chaos/PBDRigidsEvolution.h"
+#include "Chaos/ParticleHandleFwd.h"
 
 #ifndef TODO_REIMPLEMENT_INIT_COMMANDS
 #define TODO_REIMPLEMENT_INIT_COMMANDS 0
@@ -1368,28 +1369,52 @@ void FGeometryCollectionPhysicsProxy::InitializeRemoveOnFracture(FParticlesType&
 
 void FGeometryCollectionPhysicsProxy::OnRemoveFromSolver(Chaos::FPBDRigidsSolver *RBDSolver)
 {
-	const FGeometryDynamicCollection& DynamicCollection = PhysicsThreadCollection;
-
 	Chaos::FPBDRigidsEvolutionGBF* Evolution = RBDSolver->GetEvolution();
 
-	for (const FClusterHandle* Handle : SolverClusterHandles)
+	TSet< FClusterHandle* > ClustersToReuild;
+	for(int i = 0; i < SolverParticleHandles.Num(); i++)
 	{
-		RBDSolver->RemoveParticleToProxy(Handle);
+		if(FClusterHandle* Handle = SolverParticleHandles[i])
+		{
+			RBDSolver->RemoveParticleToProxy(Handle);
+			if(FClusterHandle* ParentCluster = Evolution->GetRigidClustering().DestroyClusterParticle(Handle))
+			{
+				if(ParentCluster->InternalCluster())
+				{
+					ClustersToReuild.Add(ParentCluster);
+				}
+			}
+		}
 	}
 
-	for (FClusterHandle* Handle : SolverParticleHandles)
-	{	
-		if (Handle)
+	for(int i = 0; i < SolverParticleHandles.Num(); i++)
+	{
+		if(FClusterHandle* Handle = SolverParticleHandles[i])
 		{
-			if (Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3>* Cluster = Handle->CastToClustered())
+			Evolution->DestroyParticle(Handle);
+		}
+	}
+
+	for(FClusterHandle* Cluster : ClustersToReuild)
+	{
+		ensure(Cluster->InternalCluster());
+		if(ensure(Evolution->GetRigidClustering().GetChildrenMap().Contains(Cluster)))
+		{
+			// copy cluster state for recreation
+			int32 ClusterGroupIndex = Cluster->ClusterGroupIndex();
+			TArray<FParticleHandle*> Children = Evolution->GetRigidClustering().GetChildrenMap()[Cluster];
+
+			// destroy the invalid cluster
+			FClusterHandle* NullHandle = Evolution->GetRigidClustering().DestroyClusterParticle(Cluster);
+			CHAOS_ENSURE(NullHandle == nullptr);
+
+			// create a new cluster if needed
+			if(Children.Num())
 			{
-				Evolution->GetRigidClustering().GetTopLevelClusterParents().Remove(Cluster);
-				Evolution->GetRigidClustering().GetChildrenMap().Remove(Cluster);
-				Evolution->DestroyParticle(Cluster);
-			}
-			else
-			{
-				Evolution->DestroyParticle(Handle);
+				if(FClusterHandle* NewParticle = Evolution->GetRigidClustering().CreateClusterParticle(ClusterGroupIndex, MoveTemp(Children)))
+				{
+					NewParticle->SetInternalCluster(true);
+				}
 			}
 		}
 	}
