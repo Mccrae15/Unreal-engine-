@@ -534,6 +534,20 @@ public:
 		UpdateViews();
 	}
 
+	void SetClusterParticleSOA(FPBDRigidClusteredParticleHandle* Particle)
+	{
+		if(Particle->ObjectState() != EObjectStateType::Dynamic)
+		{
+			RemoveFromMapAndArray(Particle, ActiveClusteredToIndex, ActiveClusteredArray);
+		}
+		else
+		{
+			InsertToMapAndArray(Particle, ActiveClusteredToIndex, ActiveClusteredArray);
+		}
+
+		UpdateViews();
+	}
+
 	void MarkMovingKinematic(FKinematicGeometryParticleHandle* Particle)
 	{
 		InsertToMapAndArray(Particle, MovingKinematicsToIndex, MovingKinematicsArray);

@@ -948,6 +948,11 @@ public:
 		return Serializable;
 	}
 
+	FPBDRigidClusteredParticleHandle* Parent()
+	{
+		return (ClusterIds().Id) ? ClusterIds().Id->CastToClustered() : nullptr;
+	}
+
 	void SetClusterId(const ClusterId& Id) { PBDRigidClusteredParticles->ClusterIds(ParticleIdx) = Id; }
 	const ClusterId& ClusterIds() const { return PBDRigidClusteredParticles->ClusterIds(ParticleIdx); }
 	ClusterId& ClusterIds() { return PBDRigidClusteredParticles->ClusterIds(ParticleIdx); }

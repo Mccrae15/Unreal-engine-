@@ -504,6 +504,77 @@ namespace Chaos
 		return NewParticle;
 	}
 
+	template<class T_FPBDRigidsEvolution, class T_FPBDCollisionConstraint>
+	FPBDRigidClusteredParticleHandle*
+		TPBDRigidClustering<T_FPBDRigidsEvolution, T_FPBDCollisionConstraint>::DestroyClusterParticle(
+		FPBDRigidClusteredParticleHandle* ClusteredParticle,
+		const FClusterDestoryParameters& Parameters)
+	{
+		FPBDRigidClusteredParticleHandle* ParentParticle = nullptr;
+
+		// detach connections to thie parent from the children
+		if(MChildren.Contains(ClusteredParticle))
+		{
+			for(auto& Child : MChildren[ClusteredParticle])
+			{
+				if(FPBDRigidClusteredParticleHandle* ClusteredChild = Child->CastToClustered())
+				{
+					ClusteredChild->ClusterIds() = ClusterId();
+					ClusteredChild->ClusterGroupIndex() = 0;
+				}
+			}
+
+			MChildren.Remove(ClusteredParticle);
+		}
+
+		// disable within the solver
+		if(!ClusteredParticle->Disabled())
+		{
+			MEvolution.DisableParticle(ClusteredParticle);
+			CHAOS_ENSURE(ClusteredParticle->ClusterIds().Id == nullptr);
+		}
+
+		// reset the structures
+		TopLevelClusterParents.Remove(ClusteredParticle);
+		MActiveRemovalIndices.Remove(ClusteredParticle);
+
+		// disconnect from the parents
+		if(ClusteredParticle->ClusterIds().Id)
+		{
+			ParentParticle = ClusteredParticle->Parent();
+
+			ClusteredParticle->ClusterIds() = ClusterId();
+			ClusteredParticle->ClusterGroupIndex() = 0;
+
+			if(MChildren.Contains(ParentParticle))
+			{
+				auto& Children = MChildren[ParentParticle];
+
+				// disconnect from your parents children list
+				Children.Remove(ClusteredParticle);
+
+				// disable internal parents that have lost all their children
+				if(!MChildren[ParentParticle].Num() && ParentParticle->InternalCluster())
+				{
+					DisableCluster(ClusteredParticle);
+				}
+			}
+		}
+
+		// remove internal parents that have no children. 
+		if(ClusteredParticle->InternalCluster())
+		{
+			MEvolution.DestroyParticle(ClusteredParticle);
+		}
+
+		if(Parameters.bReturnInternalOnly && ParentParticle && !ParentParticle->InternalCluster())
+		{
+			ParentParticle = nullptr;
+		}
+		return ParentParticle;
+
+	}
+
 	int32 UnionsHaveCollisionParticles = 0;
 	FAutoConsoleVariableRef CVarUnionsHaveCollisionParticles(TEXT("p.UnionsHaveCollisionParticles"), UnionsHaveCollisionParticles, TEXT(""));
 
@@ -1453,6 +1524,11 @@ namespace Chaos
 			}
 
 			Parent->SetObjectStateLowLevel(ObjectState);
+
+			if(FPBDRigidClusteredParticleHandle* AsCluster = Parent->CastToClustered())
+			{
+				MEvolution.GetParticles().SetClusterParticleSOA(AsCluster);
+			}
 		}
 	}
 

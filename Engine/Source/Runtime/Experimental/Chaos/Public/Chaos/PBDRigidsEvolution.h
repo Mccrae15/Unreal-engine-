@@ -453,7 +453,15 @@ public:
 		EObjectStateType InitialState = Particle->ObjectState();
 
 		Particle->SetObjectStateLowLevel(ObjectState);
-		Particles.SetDynamicParticleSOA(Particle);
+
+		if(auto* AsCluster = Particle->CastToClustered())
+		{
+			Particles.SetClusterParticleSOA(AsCluster);
+		}
+		else
+		{
+			Particles.SetDynamicParticleSOA(Particle);
+		}
 
 		if(InitialState != ObjectState)
 		{
