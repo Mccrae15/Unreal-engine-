@@ -2367,6 +2367,14 @@ void AActor::Reset()
 
 void AActor::FellOutOfWorld(const UDamageType& dmgType)
 {
+	FellOutOfWorld_BP(&dmgType);
+}
+
+void AActor::FellOutOfWorld_BP_Implementation(const class UDamageType* dmgType)
+{
+	/* This function body used to be a body of void AActor::FellOutOfWorld(const UDamageType& dmgType). It was moved here, so that FellOutOfWorld could be overriden in blueprints
+	indirectly by overriding FellOutOfWorld2
+	*/
 	// Only authority or non-networked actors should be destroyed, otherwise misprediction can destroy something the server is intending to keep alive.
 	if (HasAuthority() || GetLocalRole() == ROLE_None)
 	{
