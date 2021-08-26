@@ -3,11 +3,11 @@ setlocal
 pushd %~dp0
 
 rem Figure out if we should append the -prompt argument
-set PROMPT_ARGUMENT="--force"
+rem set PROMPT_ARGUMENT="--force"
 
 rem Sync the dependencies...
-.\Engine\Binaries\DotNET\GitDependencies.exe %PROMPT_ARGUMENT% %*
-if ERRORLEVEL 1 goto error
+rem .\Engine\Binaries\DotNET\GitDependencies.exe %PROMPT_ARGUMENT% %*
+rem if ERRORLEVEL 1 goto error
 
 rem Setup the git hooks...
 if not exist .git\hooks goto no_git_hooks_directory
