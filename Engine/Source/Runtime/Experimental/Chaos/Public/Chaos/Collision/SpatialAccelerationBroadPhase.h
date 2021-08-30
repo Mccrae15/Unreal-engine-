@@ -34,8 +34,9 @@ namespace Chaos
 	struct FSimOverlapVisitor
 	{
 		TArray<FAccelerationStructureHandle>& Intersections;
-		FSimOverlapVisitor(TArray<FAccelerationStructureHandle>& InIntersections)
+		FSimOverlapVisitor(const FCollisionFilterData& InSimFilterData, TArray<FAccelerationStructureHandle>& InIntersections)
 			: Intersections(InIntersections)
+			, SimFilterData(InSimFilterData)
 		{
 		}
 
@@ -58,6 +59,11 @@ namespace Chaos
 		}
 
 		const void* GetQueryData() const { return nullptr; }
+
+		const void* GetSimData() const { return &SimFilterData; }
+
+	private:
+		FCollisionFilterData SimFilterData;
 	};
 
 	/**
@@ -207,12 +213,15 @@ namespace Chaos
 					SCOPE_CYCLE_COUNTER(STAT_Collisions_SpatialBroadPhase);
 					if (bBody1Bounded)
 					{
+						FCollisionFilterData ParticleSimData;
+						FAccelerationStructureHandle::ComputeParticleSimFilterDataFromShapes(Particle1, ParticleSimData);
+
 						const FReal Box1Thickness = ComputeBoundsThickness(Particle1, Dt, BoundsThickness, BoundsThicknessVelocityInflation).Size();
 						const FAABB3 Box1 = ComputeWorldSpaceBoundingBox<FReal>(Particle1).ThickenSymmetrically(FVec3(Box1Thickness));
 
 						CHAOS_COLLISION_STAT(StatData.RecordBoundsData(Box1));
 
-						FSimOverlapVisitor OverlapVisitor(PotentialIntersections);
+						FSimOverlapVisitor OverlapVisitor(ParticleSimData, PotentialIntersections);
 						InSpatialAcceleration.Overlap(Box1, OverlapVisitor);
 					}
 					else

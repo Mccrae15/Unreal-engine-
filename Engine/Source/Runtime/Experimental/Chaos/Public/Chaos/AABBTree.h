@@ -191,9 +191,10 @@ struct TAABBTreeLeafArray : public TBoundsWrapperHelper<TPayloadType, bComputeBo
 	bool OverlapFast(const FAABB3& QueryBounds, TSQVisitor& Visitor) const
 	{
 		const void* QueryData = Visitor.GetQueryData();
+		const void* SimData = Visitor.GetSimData();
 		for (const auto& Elem : Elems)
 		{
-			if (PrePreFilterHelper(Elem.Payload, QueryData))
+			if (PrePreFilterHelper(Elem.Payload, QueryData, SimData))
 			{
 				continue;
 			}
@@ -216,9 +217,10 @@ struct TAABBTreeLeafArray : public TBoundsWrapperHelper<TPayloadType, bComputeBo
 		FVec3 TmpPosition;
 		FReal TOI;
 		const void* QueryData = Visitor.GetQueryData();
+		const void* SimData = Visitor.GetSimData();
 		for (const auto& Elem : Elems)
 		{
-			if (PrePreFilterHelper(Elem.Payload, QueryData))
+			if (PrePreFilterHelper(Elem.Payload, QueryData, SimData))
 			{
 				continue;
 			}
@@ -1052,12 +1054,13 @@ private:
 		FVec3 TmpPosition;
 		FReal TOI = 0;
 		const void* QueryData = Visitor.GetQueryData();
+		const void* SimData = Visitor.GetSimData();
 		{
 			//QUICK_SCOPE_CYCLE_COUNTER(QueryGlobal);
 
 			for(const auto& Elem : GlobalPayloads)
 			{
-				if (PrePreFilterHelper(Elem.Payload, QueryData))
+				if (PrePreFilterHelper(Elem.Payload, QueryData, SimData))
 				{
 					continue;
 				}
@@ -1088,7 +1091,7 @@ private:
 			auto IntersectAndVisit = [&](const FElement& Elem) -> bool
 			{
 				const auto& InstanceBounds = Elem.Bounds;
-				if (PrePreFilterHelper(Elem.Payload, QueryData))
+				if (PrePreFilterHelper(Elem.Payload, QueryData, SimData))
 				{
 					return true;
 				}
@@ -1643,7 +1646,7 @@ private:
 			}
 
 			const void* GetQueryData() const { return nullptr; }
-
+			const void* GetSimData() const { return nullptr; }
 			TArray<TPayloadType>& CollectedResults;
 		};
 
