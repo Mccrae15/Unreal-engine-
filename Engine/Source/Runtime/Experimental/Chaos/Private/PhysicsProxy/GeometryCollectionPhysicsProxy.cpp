@@ -1391,7 +1391,9 @@ void FGeometryCollectionPhysicsProxy::OnRemoveFromSolver(Chaos::FPBDRigidsSolver
 	{
 		if(FClusterHandle* Handle = SolverParticleHandles[i])
 		{
+			Chaos::FUniqueIdx UniqueIdx = Handle->UniqueIdx();
 			Evolution->DestroyParticle(Handle);
+			Evolution->ReleaseUniqueIdx(UniqueIdx);
 		}
 	}
 

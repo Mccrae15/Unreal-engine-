@@ -472,7 +472,7 @@ namespace Chaos
 		Proxy->GetParticle_LowLevel()->SetProxy(nullptr);	//todo: use TUniquePtr for better ownership
 
 		// Remove the proxy from the GT proxy map
-
+		FUniqueIdx UniqueIdx = Proxy->GetGameThreadAPI().UniqueIdx();
 
 		Chaos::FIgnoreCollisionManager& CollisionManager = GetEvolution()->GetBroadPhase().GetIgnoreCollisionManager();
 		{
@@ -480,13 +480,13 @@ namespace Chaos
 			Chaos::FIgnoreCollisionManager::FDeactivationArray& PendingMap = CollisionManager.GetPendingDeactivationsForGameThread(ExternalTimestamp);
 			if (!PendingMap.Contains(Proxy->GetGameThreadAPI().UniqueIdx()))
 			{
-				PendingMap.Add(Proxy->GetGameThreadAPI().UniqueIdx());
+				PendingMap.Add(UniqueIdx);
 			}
 		}
 
 
 		// Enqueue a command to remove the particle and delete the proxy
-		EnqueueCommandImmediate([Proxy, this]()
+		EnqueueCommandImmediate([Proxy, UniqueIdx, this]()
 		{
 			UE_LOG(LogPBDRigidsSolver, Verbose, TEXT("FPBDRigidsSolver::UnregisterObject() ~ Dequeue"));
 
@@ -543,6 +543,8 @@ namespace Chaos
 				GetEvolution()->DestroyParticle(Handle);
 			}
 
+			// finally let's release the unique index
+			GetEvolution()->ReleaseUniqueIdx(UniqueIdx);
 		});
 
 	}
