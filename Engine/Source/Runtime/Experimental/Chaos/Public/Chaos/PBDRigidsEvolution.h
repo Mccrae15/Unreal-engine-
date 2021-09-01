@@ -424,7 +424,6 @@ public:
 	CHAOS_API void DestroyParticle(FGeometryParticleHandle* Particle)
 	{
 		RemoveParticleFromAccelerationStructure(*Particle);
-		UniqueIndicesPendingRelease.Add(Particle->UniqueIdx());
 		DisconnectConstraints(TSet<FGeometryParticleHandle*>({ Particle }));
 		ConstraintGraph.RemoveParticle(Particle);
 		Particles.DestroyParticle(Particle);
@@ -828,6 +827,16 @@ public:
 	{
 		//NOTE: this should be thread safe since evolution has already been initialized on GT
 		return Particles.GetUniqueIndices().GenerateUniqueIdx();
+	}
+
+	void ReleaseUniqueIdx(FUniqueIdx UniqueIdx)
+	{
+		UniqueIndicesPendingRelease.Add(UniqueIdx);
+	}
+
+	bool IsUniqueIndexPendingRelease(FUniqueIdx UniqueIdx) const
+	{
+		return UniqueIndicesPendingRelease.Contains(UniqueIdx) || PendingReleaseIndices.Contains(UniqueIdx);
 	}
 
 	bool AreAnyTasksPending() const
