@@ -42,12 +42,14 @@ public class FractureEditor : ModuleRules
 				"Slate",
 				"SlateCore",
 				"InputCore",
+				"ToolMenus",
 				"UnrealEd",
 				"LevelEditor",
                 "GeometryCollectionEngine",
                 "GeometryCollectionEditor",
 				"PlanarCut",
-				"Chaos"
+				"Chaos",
+
 
 				// ... add private dependencies that you statically link with here ...	
 			}
