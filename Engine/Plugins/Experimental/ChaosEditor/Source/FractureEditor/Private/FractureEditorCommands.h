@@ -54,6 +54,9 @@ class FFractureEditorCommands : public TCommands<FFractureEditorCommands>
 
 		// Property Commands
 		TSharedPtr< FUICommandInfo > SetInitialDynamicState;
+
+		// Clenaup commands
+		TSharedPtr< FUICommandInfo > MakeConvex;
 		
 };
 
