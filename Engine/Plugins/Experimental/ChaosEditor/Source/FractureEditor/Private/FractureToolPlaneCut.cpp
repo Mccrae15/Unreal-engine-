@@ -133,7 +133,7 @@ int32 UFractureToolPlaneCut::ExecuteFracture(const FFractureToolContext& Fractur
 			NoiseSettings.PointSpacing = CutterSettings->SurfaceResolution;
 			InternalSurfaceMaterials.NoiseSettings = NoiseSettings;
 		}
-		return CutMultipleWithMultiplePlanes(CuttingPlanes, InternalSurfaceMaterials, *FractureContext.GetGeometryCollection(), FractureContext.GetSelection(), 0, 0, FractureContext.GetTransform());
+		return CutMultipleWithMultiplePlanes(CuttingPlanes, InternalSurfaceMaterials, *FractureContext.GetGeometryCollection(), FractureContext.GetSelection(), CutterSettings->Grout, 0, FractureContext.GetTransform());
 	}
 
 	return INDEX_NONE;
