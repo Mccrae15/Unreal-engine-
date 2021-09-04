@@ -189,11 +189,6 @@ void FFractureToolContext::ConvertSelectionToClusterNodes()
 	Sanitize();
 }
 
-void FFractureToolContext::TransformBoundsToWorld()
-{
-	Bounds = Bounds.TransformBy(Transform);
-}
-
 
 bool FFractureToolContext::HasSelectedAncestor(int32 Index) const
 {
