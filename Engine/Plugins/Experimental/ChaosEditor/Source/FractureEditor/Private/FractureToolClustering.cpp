@@ -36,6 +36,8 @@ void UFractureToolFlattenAll::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 {
 	if (InToolkit.IsValid())
 	{
+		FScopedTransaction Transaction(LOCTEXT("FlattenAll", "Flatten All"));
+
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
 		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
@@ -51,13 +53,12 @@ void UFractureToolFlattenAll::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 				TArray<int32> LeafBones;
 				FGeometryCollectionClusteringUtility::GetLeafBones(Context.GetGeometryCollection().Get(), ClusterIndex, true, LeafBones);
 				FGeometryCollectionClusteringUtility::ClusterBonesUnderExistingNode(Context.GetGeometryCollection().Get(), ClusterIndex, LeafBones);
-
-				// Cleanup: Remove any clusters remaining in the flattened branch.
-				FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
-
 			}
 
-			Refresh(Context, Toolkit);
+			// Cleanup: Remove any clusters remaining in the flattened branch.
+			FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
+
+			Refresh(Context, Toolkit, true);
 		}
 
 		SetOutlinerComponents(Contexts, Toolkit);
@@ -89,9 +90,11 @@ void UFractureToolCluster::RegisterUICommand(FFractureEditorCommands* BindingCon
 
 void UFractureToolCluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 {
-	
+
 	if (InToolkit.IsValid())
 	{
+		FScopedTransaction Transaction(LOCTEXT("Cluster", "Cluster"));
+
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
 		int32 CurrentLevelView = Toolkit->GetLevelViewValue();
@@ -100,6 +103,8 @@ void UFractureToolCluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolki
 
 		for (FFractureToolContext& Context : Contexts)
 		{
+			int32 StartTransformCount = Context.GetGeometryCollection()->Transform.Num();
+
 			Context.RemoveRootNodes();
 			Context.Sanitize();
 
@@ -129,7 +134,7 @@ void UFractureToolCluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolki
 		}
 
 		SetOutlinerComponents(Contexts, Toolkit);
-	}	
+	}
 }
 
 
@@ -158,6 +163,8 @@ void UFractureToolUncluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InTool
 {
 	if (InToolkit.IsValid())
 	{
+		FScopedTransaction Transaction(LOCTEXT("Uncluster", "Uncluster"));
+
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
 		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
@@ -170,17 +177,10 @@ void UFractureToolUncluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InTool
 			Context.ConvertSelectionToClusterNodes();
 			Context.RemoveRootNodes();
 
-			// Once the operation is complete, we'll select the children that were re-leveled
-			TArray<int32> NewSelection;
-			for (int32 Cluster : Context.GetSelection())
-			{
-				NewSelection.Append(Children[Cluster].Array());
-			}
-
 			FGeometryCollectionClusteringUtility::CollapseHierarchyOneLevel(Context.GetGeometryCollection().Get(), Context.GetSelection());
-			Context.SetSelection(NewSelection);
-			
-			Refresh(Context, Toolkit);
+
+			FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
+			Refresh(Context, Toolkit, true);
 		}
 
 		SetOutlinerComponents(Contexts, Toolkit);
@@ -214,17 +214,79 @@ void UFractureToolMoveUp::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit
 {
 	if (InToolkit.IsValid())
 	{
+		FScopedTransaction Transaction(LOCTEXT("MovelUp", "Level Up"));
+
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
 		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
 
-		for (FFractureToolContext& Context: Contexts)
+		for (FFractureToolContext& Context : Contexts)
 		{
 			Context.ConvertSelectionToRigidNodes();
 			FGeometryCollectionClusteringUtility::MoveUpOneHierarchyLevel(Context.GetGeometryCollection().Get(), Context.GetSelection());
+			FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
+			Refresh(Context, Toolkit, true);
+		}
+
+		SetOutlinerComponents(Contexts, Toolkit);
+	}
+}
+
+
+
+FText UFractureToolClusterMerge::GetDisplayText() const
+{
+	return FText(NSLOCTEXT("FractureToolClusteringOps", "FractureToolClusterMerge", "Cluster Merge"));
+}
+
+FText UFractureToolClusterMerge::GetTooltipText() const
+{
+	return FText(NSLOCTEXT("FractureToolClusteringOps", "FractureToolClusterMergeTooltip", "Merge selected clusters."));
+}
+
+FSlateIcon UFractureToolClusterMerge::GetToolIcon() const
+{
+	return FSlateIcon("FractureEditorStyle", "FractureEditor.Merge");
+}
+
+void UFractureToolClusterMerge::RegisterUICommand(FFractureEditorCommands* BindingContext)
+{
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "Merge", "Merge", "Merge selected clusters.", EUserInterfaceActionType::Button, FInputChord());
+	BindingContext->ClusterMerge = UICommandInfo;
+}
+
+void UFractureToolClusterMerge::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
+{
+	if (InToolkit.IsValid())
+	{
+		FScopedTransaction Transaction(LOCTEXT("ClusterMerge", "Cluster Merge"));
+
+		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
+
+		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
+
+		for (FFractureToolContext& Context : Contexts)
+		{
+			const TManagedArray<TSet<int32>>& Children = Context.GetGeometryCollection()->Children;
+
+			Context.ConvertSelectionToClusterNodes();
+
+			// Collect children of context clusters
+			TArray<int32> ChildBones;
+			ChildBones.Reserve(Context.GetGeometryCollection()->NumElements(FGeometryCollection::TransformGroup));
+			for (int32 Select : Context.GetSelection())
+			{
+				ChildBones.Append(Children[Select].Array());
+			}
+
+			int32 MergeNode = FGeometryCollectionClusteringUtility::PickBestNodeToMergeTo(Context.GetGeometryCollection().Get(), Context.GetSelection());
+			FGeometryCollectionClusteringUtility::ClusterBonesUnderExistingNode(Context.GetGeometryCollection().Get(), MergeNode, ChildBones);
+			FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
+
+			Context.SetSelection({ MergeNode });
 			Refresh(Context, Toolkit);
 		}
-		
+
 		SetOutlinerComponents(Contexts, Toolkit);
 	}
 }

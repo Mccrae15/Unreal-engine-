@@ -44,7 +44,9 @@ namespace GeometryCollection
 		InverseGeometry,
 		Siblings,
 		Neighbors,
-		AllInCluster
+		Parent,
+		Children,
+		Level
 	};
 }
 
@@ -197,7 +199,7 @@ public:
 	bool IsBoneSelected(int BoneIndex) const;
 	void SetSelectedBones(const TArray<int32>& SelectedBonesIn);
 	void AppendSelectedBones(const TArray<int32>& SelectedBonesIn);
-	void ToggleSelectedBones(const TArray<int32>& SelectedBonesIn);
+	void ToggleSelectedBones(const TArray<int32>& SelectedBonesIn, bool bAdd);
 	void AddSelectedBone(int32 BoneIndex);
 	void ClearSelectedBone(int32 BoneIndex);
 	const TArray<int32>& GetSelectedBones() const;

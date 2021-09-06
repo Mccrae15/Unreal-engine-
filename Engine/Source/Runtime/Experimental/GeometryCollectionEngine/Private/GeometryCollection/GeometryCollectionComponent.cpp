@@ -11,6 +11,7 @@
 #include "GeometryCollection/GeometryCollectionSQAccelerator.h"
 #include "GeometryCollection/GeometryCollectionUtility.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
+#include "GeometryCollection/GeometryCollectionProximityUtility.h"
 #include "GeometryCollection/GeometryCollectionCache.h"
 #include "GeometryCollection/GeometryCollectionActor.h"
 #include "GeometryCollection/GeometryCollectionDebugDrawComponent.h"
@@ -2161,18 +2162,34 @@ void FScopedColorEdit::AppendSelectedBones(const TArray<int32>& SelectedBonesIn)
 	Component->SelectedBones.Append(SelectedBonesIn);
 }
 
-void FScopedColorEdit::ToggleSelectedBones(const TArray<int32>& SelectedBonesIn)
+void FScopedColorEdit::ToggleSelectedBones(const TArray<int32>& SelectedBonesIn, bool bAdd)
 {
 	bUpdated = true;
-	for (int32 BoneIndex : SelectedBonesIn)
+
+	const UGeometryCollection* GeometryCollection = Component->GetRestCollection();
+	if (GeometryCollection)
 	{
-		if (Component->SelectedBones.Contains(BoneIndex))
+		TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = GeometryCollection->GetGeometryCollection();
+		for (int32 BoneIndex : SelectedBonesIn)
 		{
-			Component->SelectedBones.Remove(BoneIndex);
-		}
-		else
-		{
-			Component->SelectedBones.Add(BoneIndex);
+
+			int32 ContextBoneIndex = (GetViewLevel() > -1) ? FGeometryCollectionClusteringUtility::GetParentOfBoneAtSpecifiedLevel(GeometryCollectionPtr.Get(), BoneIndex, GetViewLevel()) : BoneIndex;
+
+			if (bAdd) // shift select
+			{
+				Component->SelectedBones.Add(BoneIndex);
+			}
+			else // ctrl select (toggle)
+			{
+				if (Component->SelectedBones.Contains(ContextBoneIndex))
+				{
+					Component->SelectedBones.Remove(ContextBoneIndex);
+				}
+				else
+				{
+					Component->SelectedBones.Add(ContextBoneIndex);
+				}
+			}
 		}
 	}
 }
@@ -2244,19 +2261,39 @@ void FScopedColorEdit::SelectBones(GeometryCollection::ESelectionMode SelectionM
 			TArray<int32> Roots;
 			FGeometryCollectionClusteringUtility::GetRootBones(GeometryCollectionPtr.Get(), Roots);
 			TArray<int32> NewSelection;
+
 			for (int32 RootElement : Roots)
 			{
-				TArray<int32> LeafBones;
-				FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollectionPtr.Get(), RootElement, true, LeafBones);
-
-				for (int32 Element : LeafBones)
+				if (GetViewLevel() == -1)
 				{
-					if (!IsBoneSelected(Element))
+					TArray<int32> LeafBones;
+					FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollectionPtr.Get(), RootElement, true, LeafBones);
+
+					for (int32 Element : LeafBones)
 					{
-						NewSelection.Push(Element);
+						if (!IsBoneSelected(Element))
+						{
+							NewSelection.Push(Element);
+						}
+					}
+				}
+				else
+				{
+					TArray<int32> ViewLevelBones;
+					FGeometryCollectionClusteringUtility::GetChildBonesAtLevel(GeometryCollectionPtr.Get(), RootElement, GetViewLevel(), ViewLevelBones);
+					for (int32 ViewLevelBone : ViewLevelBones)
+					{
+						if (!IsBoneSelected(ViewLevelBone))
+						{
+							NewSelection.Push(ViewLevelBone);
+							TArray<int32> ChildBones;
+							FGeometryCollectionClusteringUtility::GetChildBonesFromLevel(GeometryCollectionPtr.Get(), ViewLevelBone, GetViewLevel(), ChildBones);
+							NewSelection.Append(ChildBones);
+						}
 					}
 				}
 			}
+
 			ResetBoneSelection();
 			AppendSelectedBones(NewSelection);
 		}
@@ -2265,30 +2302,73 @@ void FScopedColorEdit::SelectBones(GeometryCollection::ESelectionMode SelectionM
 
 		case GeometryCollection::ESelectionMode::Neighbors:
 		{
-			if (ensureMsgf(GeometryCollectionPtr->HasAttribute("Proximity", FGeometryCollection::GeometryGroup),
-				TEXT("Must build breaking group for neighbor based selection")))
+			FGeometryCollectionProximityUtility ProximityUtility(GeometryCollectionPtr.Get());
+			ProximityUtility.UpdateProximity();
+
+			const TManagedArray<int32>& TransformIndex = GeometryCollectionPtr->TransformIndex;
+			const TManagedArray<int32>& TransformToGeometryIndex = GeometryCollectionPtr->TransformToGeometryIndex;
+			const TManagedArray<TSet<int32>>& Proximity = GeometryCollectionPtr->GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
+
+			const TArray<int32> SelectedBones = GetSelectedBones();
+
+			TArray<int32> NewSelection;
+			for (int32 Bone : SelectedBones)
 			{
-
-				const TManagedArray<int32>& TransformIndex = GeometryCollectionPtr->TransformIndex;
-				const TManagedArray<int32>& TransformToGeometryIndex = GeometryCollectionPtr->TransformToGeometryIndex;
-				const TManagedArray<TSet<int32>>& Proximity = GeometryCollectionPtr->GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
-
-				const TArray<int32> SelectedBones = GetSelectedBones();
-
-				TArray<int32> NewSelection;
-				for (int32 Bone : SelectedBones)
+				NewSelection.AddUnique(Bone);
+				int32 GeometryIdx = TransformToGeometryIndex[Bone];
+				if (GeometryIdx != INDEX_NONE)
 				{
-					NewSelection.AddUnique(Bone);
-					const TSet<int32> &Neighbors = Proximity[TransformToGeometryIndex[Bone]];
+					const TSet<int32>& Neighbors = Proximity[GeometryIdx];
 					for (int32 NeighborGeometryIndex : Neighbors)
 					{
 						NewSelection.AddUnique(TransformIndex[NeighborGeometryIndex]);
 					}
 				}
-
-				ResetBoneSelection();
-				AppendSelectedBones(NewSelection);
 			}
+
+			ResetBoneSelection();
+			AppendSelectedBones(NewSelection);
+		}
+		break;
+
+		case GeometryCollection::ESelectionMode::Parent:
+		{
+			const TManagedArray<int32>& Parents = GeometryCollectionPtr->Parent;
+
+			const TArray<int32> SelectedBones = GetSelectedBones();
+
+			TArray<int32> NewSelection;
+			for (int32 Bone : SelectedBones)
+			{
+				int32 ParentBone = Parents[Bone];
+				if (ParentBone != FGeometryCollection::Invalid)
+				{
+					NewSelection.AddUnique(ParentBone);
+				}
+			}
+
+			ResetBoneSelection();
+			AppendSelectedBones(NewSelection);
+		}
+		break;
+
+		case GeometryCollection::ESelectionMode::Children:
+		{
+			const TManagedArray<TSet<int32>>& Children = GeometryCollectionPtr->Children;
+
+			const TArray<int32> SelectedBones = GetSelectedBones();
+
+			TArray<int32> NewSelection;
+			for (int32 Bone : SelectedBones)
+			{
+				for (int32 Child : Children[Bone])
+				{
+					NewSelection.AddUnique(Child);
+				}
+			}
+
+			ResetBoneSelection();
+			AppendSelectedBones(NewSelection);
 		}
 		break;
 
@@ -2318,38 +2398,45 @@ void FScopedColorEdit::SelectBones(GeometryCollection::ESelectionMode SelectionM
 		}
 		break;
 
-		case GeometryCollection::ESelectionMode::AllInCluster:
+		case GeometryCollection::ESelectionMode::Level:
 		{
-			const TManagedArray<int32>& Parents = GeometryCollectionPtr->Parent;
-
-			const TArray<int32> SelectedBones = GetSelectedBones();
-
-			TArray<int32> NewSelection;
-			for (int32 Bone : SelectedBones)
+			if (GeometryCollectionPtr->HasAttribute("Level", FTransformCollection::TransformGroup))
 			{
-				int32 ParentBone = Parents[Bone];
-				TArray<int32> LeafBones;
-				FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollectionPtr.Get(), ParentBone, true, LeafBones);
+				const TManagedArray<int32>& Levels = GeometryCollectionPtr->GetAttribute<int32>("Level", FTransformCollection::TransformGroup);
 
-				for (int32 Element : LeafBones)
+				const TArray<int32> SelectedBones = GetSelectedBones();
+
+				TArray<int32> NewSelection;
+				for (int32 Bone : SelectedBones)
 				{
-					NewSelection.AddUnique(Element);
+					int32 Level = Levels[Bone];
+					for (int32 TransformIdx = 0; TransformIdx < GeometryCollectionPtr->NumElements(FTransformCollection::TransformGroup); ++TransformIdx)
+					{
+						if (Levels[TransformIdx] == Level)
+						{
+							NewSelection.AddUnique(TransformIdx);
+						}
+					}
 				}
 
+				ResetBoneSelection();
+				AppendSelectedBones(NewSelection);
 			}
-
-			ResetBoneSelection();
-			AppendSelectedBones(NewSelection);
 		}
 		break;
 
-		default: 
+		default:
 			check(false); // unexpected selection mode
-		break;
+			break;
 		}
 
 		const TArray<int32>& SelectedBones = GetSelectedBones();
-		SetHighlightedBones(SelectedBones);
+		TArray<int32> HighlightBones;
+		for (int32 SelectedBone : SelectedBones)
+		{
+			FGeometryCollectionClusteringUtility::RecursiveAddAllChildren(GeometryCollectionPtr->Children, SelectedBone, HighlightBones);
+		}
+		SetHighlightedBones(HighlightBones);
 	}
 }
 

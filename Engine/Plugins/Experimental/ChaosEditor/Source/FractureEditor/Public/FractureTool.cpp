@@ -128,20 +128,28 @@ void UFractureActionTool::GetSelectedGeometryCollectionComponents(TSet<UGeometry
 	}
 }
 
-void UFractureActionTool::Refresh(FFractureToolContext& Context, FFractureEditorModeToolkit* Toolkit)
+void UFractureActionTool::Refresh(FFractureToolContext& Context, FFractureEditorModeToolkit* Toolkit, bool bClearSelection)
 {
 	UGeometryCollectionComponent* GeometryCollectionComponent = Context.GetGeometryCollectionComponent();
 	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = Context.GetGeometryCollection();
-	
+
 	FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(GeometryCollectionPtr.Get(), -1);
 
 	Toolkit->RegenerateOutliner();
 	Toolkit->RegenerateHistogram();
 
 	FScopedColorEdit EditBoneColor(GeometryCollectionComponent, true);
-	EditBoneColor.SetSelectedBones(Context.GetSelection());
 
-	FFractureSelectionTools::ToggleSelectedBones(GeometryCollectionComponent, Context.GetSelection(), true);
+	if (bClearSelection)
+	{
+		EditBoneColor.ResetBoneSelection();
+		FFractureSelectionTools::ClearSelectedBones(GeometryCollectionComponent);
+	}
+	else
+	{
+		EditBoneColor.SetSelectedBones(Context.GetSelection());
+		FFractureSelectionTools::ToggleSelectedBones(GeometryCollectionComponent, Context.GetSelection(), true, false);
+	}
 
 	Toolkit->UpdateExplodedVectors(GeometryCollectionComponent);
 
@@ -172,7 +180,8 @@ void UFractureActionTool::GenerateProximityIfNecessary(FGeometryCollection* Geom
 {
 	if (!GeometryCollection->HasAttribute("Proximity", FGeometryCollection::GeometryGroup))
 	{
-		FGeometryCollectionProximityUtility::UpdateProximity(GeometryCollection);
+		FGeometryCollectionProximityUtility ProximityUtility(GeometryCollection);
+		ProximityUtility.UpdateProximity();
 	}
 }
 

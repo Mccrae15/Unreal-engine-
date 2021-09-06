@@ -100,7 +100,7 @@ FFractureViewSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder& Detai
 
 	ViewCategory.AddCustomRow(FText::GetEmpty())
 	.NameContent()
-	.HAlign(HAlign_Right)
+	.HAlign(HAlign_Left)
 	[
 		SNew(STextBlock)
 		.TextStyle( &FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>( "SmallText" ) )
@@ -118,7 +118,7 @@ FFractureViewSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder& Detai
 	ViewCategory.AddProperty(LevelProperty)
 	.CustomWidget()
 	.NameContent()
-	.HAlign(HAlign_Right)
+	.HAlign(HAlign_Left)
 	[
 		SNew(STextBlock)
 		.TextStyle( &FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>( "SmallText" ) )
@@ -473,8 +473,10 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 		ToolbarBuilder.AddToolBarButton(Commands.SelectAll);
 		ToolbarBuilder.AddToolBarButton(Commands.SelectNone);
 		ToolbarBuilder.AddToolBarButton(Commands.SelectNeighbors);
+		ToolbarBuilder.AddToolBarButton(Commands.SelectParent);
+		ToolbarBuilder.AddToolBarButton(Commands.SelectChildren);
 		ToolbarBuilder.AddToolBarButton(Commands.SelectSiblings);
-		ToolbarBuilder.AddToolBarButton(Commands.SelectAllInCluster);
+		ToolbarBuilder.AddToolBarButton(Commands.SelectAllInLevel);
 		ToolbarBuilder.AddToolBarButton(Commands.SelectInvert);
 	}
 	else if (PaletteIndex == TEXT("Fracture"))
@@ -495,6 +497,7 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 		ToolbarBuilder.AddToolBarButton(Commands.Cluster);
 		ToolbarBuilder.AddToolBarButton(Commands.Uncluster);
 		ToolbarBuilder.AddToolBarButton(Commands.MoveUp);
+		ToolbarBuilder.AddToolBarButton(Commands.ClusterMerge);
 	}
 	else if (PaletteIndex == TEXT("Embed"))
 	{
@@ -1321,7 +1324,7 @@ void FFractureEditorModeToolkit::OnOutlinerBoneSelectionChanged(UGeometryCollect
 		if (SelectedBones.Num())
 		{
 
-			FFractureSelectionTools::ToggleSelectedBones(RootComponent, SelectedBones, true);
+			FFractureSelectionTools::ToggleSelectedBones(RootComponent, SelectedBones, true, false);
 			OutlinerView->SetBoneSelection(RootComponent, SelectedBones, true);
 		}
 		else
@@ -1329,10 +1332,16 @@ void FFractureEditorModeToolkit::OnOutlinerBoneSelectionChanged(UGeometryCollect
 			FFractureSelectionTools::ClearSelectedBones(RootComponent);
 		}
 
-		if (ActiveTool != nullptr)
-		{
-			ActiveTool->FractureContextChanged();
-		}
+	if(SelectedBones.Num())
+	{
+			
+		FFractureSelectionTools::ToggleSelectedBones(RootComponent, SelectedBones, true, false);
+		OutlinerView->SetBoneSelection(RootComponent, SelectedBones, true);
+	}
+	else
+	{
+		FFractureSelectionTools::ClearSelectedBones(RootComponent);
+	}
 
 		RootComponent->MarkRenderStateDirty();
 		RootComponent->MarkRenderDynamicDataDirty();

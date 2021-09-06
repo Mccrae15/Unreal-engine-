@@ -44,15 +44,21 @@ FFractureEditorStyle::FFractureEditorStyle()
 	Set("FractureEditor.SelectNone.Small", new FSlateImageBrush(RootToContentDir(TEXT("DeselectAll_48x.png")), SmallIconSize));
 	Set("FractureEditor.SelectNeighbors", new FSlateImageBrush(RootToContentDir(TEXT("SelectNeighbor_48x.png")), IconSize));
 	Set("FractureEditor.SelectNeighbors.Small", new FSlateImageBrush(RootToContentDir(TEXT("SelectNeighbor_48x.png")), SmallIconSize));
+	Set("FractureEditor.SelectParent", new FSlateImageBrush(RootToContentDir(TEXT("SelectParent_48x.png")), IconSize));
+	Set("FractureEditor.SelectParent.Small", new FSlateImageBrush(RootToContentDir(TEXT("SelectParent_48x.png")), SmallIconSize));
+	Set("FractureEditor.SelectChildren", new FSlateImageBrush(RootToContentDir(TEXT("SelectChildren_48x.png")), IconSize));
+	Set("FractureEditor.SelectChildren.Small", new FSlateImageBrush(RootToContentDir(TEXT("SelectChildren_48x.png")), SmallIconSize));
 	Set("FractureEditor.SelectSiblings", new FSlateImageBrush(RootToContentDir(TEXT("SelectSiblings_48x.png")), IconSize));
 	Set("FractureEditor.SelectSiblings.Small", new FSlateImageBrush(RootToContentDir(TEXT("SelectSiblings_48x.png")), SmallIconSize));
-	Set("FractureEditor.SelectAllInCluster", new FSlateImageBrush(RootToContentDir(TEXT("SelectAllInCluster_48x.png")), IconSize));
-	Set("FractureEditor.SelectAllInCluster.Small", new FSlateImageBrush(RootToContentDir(TEXT("SelectAllInCluster_48x.png")), SmallIconSize));
+	Set("FractureEditor.SelectAllInLevel", new FSlateImageBrush(RootToContentDir(TEXT("SelectAllInLevel_48x.png")), IconSize));
+	Set("FractureEditor.SelectAllInLevel.Small", new FSlateImageBrush(RootToContentDir(TEXT("SelectAllInLevel_48x.png")), SmallIconSize));
 	Set("FractureEditor.SelectInvert", new FSlateImageBrush(RootToContentDir(TEXT("SelectInvert_48x.png")), IconSize));
 	Set("FractureEditor.SelectInvert.Small", new FSlateImageBrush(RootToContentDir(TEXT("SelectInvert_48x.png")), SmallIconSize));
 
 	Set("FractureEditor.AutoCluster", new FSlateImageBrush(RootToContentDir(TEXT("AutoCluster_48x.png")), IconSize));
 	Set("FractureEditor.AutoCluster.Small", new FSlateImageBrush(RootToContentDir(TEXT("AutoCluster_48x.png")), SmallIconSize));
+	Set("FractureEditor.ClusterMagnet", new FSlateImageBrush(RootToContentDir(TEXT("ClusterMagnet_48x.png")), IconSize));
+	Set("FractureEditor.ClusterMagnet.Small", new FSlateImageBrush(RootToContentDir(TEXT("ClusterMagnet_48x.png")), SmallIconSize));
 	Set("FractureEditor.Cluster", new FSlateImageBrush(RootToContentDir(TEXT("Cluster_48x.png")), IconSize));
 	Set("FractureEditor.Cluster.Small", new FSlateImageBrush(RootToContentDir(TEXT("Cluster_48x.png")), SmallIconSize));
 	Set("FractureEditor.Uncluster", new FSlateImageBrush(RootToContentDir(TEXT("Uncluster_48x.png")), IconSize));
