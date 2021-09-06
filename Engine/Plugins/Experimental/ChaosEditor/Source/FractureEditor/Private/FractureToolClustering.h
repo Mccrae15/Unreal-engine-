@@ -13,7 +13,7 @@ class UFractureToolFlattenAll : public UFractureActionTool
 public:
 	GENERATED_BODY()
 
-	UFractureToolFlattenAll(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
+		UFractureToolFlattenAll(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
 
 	// UFractureActionTool Interface
 	virtual FText GetDisplayText() const override;
@@ -30,7 +30,7 @@ class UFractureToolCluster : public UFractureActionTool
 public:
 	GENERATED_BODY()
 
-	UFractureToolCluster(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
+		UFractureToolCluster(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
 
 	// UFractureActionTool Interface
 	virtual FText GetDisplayText() const override;
@@ -47,7 +47,7 @@ class UFractureToolUncluster : public UFractureActionTool
 public:
 	GENERATED_BODY()
 
-	UFractureToolUncluster(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
+		UFractureToolUncluster(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
 
 	// UFractureActionTool Interface
 	virtual FText GetDisplayText() const override;
@@ -64,7 +64,24 @@ class UFractureToolMoveUp : public UFractureActionTool
 public:
 	GENERATED_BODY()
 
-	UFractureToolMoveUp(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
+		UFractureToolMoveUp(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
+
+	// UFractureActionTool Interface
+	virtual FText GetDisplayText() const override;
+	virtual FText GetTooltipText() const override;
+	virtual FSlateIcon GetToolIcon() const override;
+	virtual void RegisterUICommand(FFractureEditorCommands* BindingContext) override;
+	virtual void Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit) override;
+};
+
+
+UCLASS(DisplayName = "ClusterMerge", Category = "FractureTools")
+class UFractureToolClusterMerge : public UFractureActionTool
+{
+public:
+	GENERATED_BODY()
+
+		UFractureToolClusterMerge(const FObjectInitializer& ObjInit) : Super(ObjInit) {}
 
 	// UFractureActionTool Interface
 	virtual FText GetDisplayText() const override;

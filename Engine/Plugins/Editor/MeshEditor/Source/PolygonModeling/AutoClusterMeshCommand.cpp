@@ -171,7 +171,8 @@ void UAutoClusterMeshCommand::ClusterSelectedBones(int FractureLevel, int NumClu
 
 				if (2 <= GeometryCollection->NumElements(FGeometryCollection::GeometryGroup))
 				{
-					FGeometryCollectionProximityUtility::UpdateProximity(GeometryCollection);
+					FGeometryCollectionProximityUtility ProximityUtility(GeometryCollection);
+					ProximityUtility.UpdateProximity();
 				}
 
 				// bin elements by bconnectivity

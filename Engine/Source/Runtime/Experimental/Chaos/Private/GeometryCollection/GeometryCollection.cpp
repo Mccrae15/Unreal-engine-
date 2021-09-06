@@ -1543,7 +1543,8 @@ FGeometryCollection* FGeometryCollection::NewGeometryCollection(const TArray<flo
 	// Build the Geometry Group
 	GeometryCollection::AddGeometryProperties(RestCollection);
 
-	FGeometryCollectionProximityUtility::UpdateProximity(RestCollection);
+	FGeometryCollectionProximityUtility ProximityUtility(RestCollection);
+	ProximityUtility.UpdateProximity();
 
 	// add a material section
 	TManagedArray<FGeometryCollectionSection>&  Sections = RestCollection->Sections;
