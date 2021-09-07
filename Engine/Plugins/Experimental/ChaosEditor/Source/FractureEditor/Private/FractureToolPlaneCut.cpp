@@ -83,6 +83,7 @@ TArray<UObject*> UFractureToolPlaneCut::GetSettingsObjects() const
 
 void UFractureToolPlaneCut::FractureContextChanged()
 {
+	UpdateDefaultRandomSeed();
 	TArray<FFractureToolContext> FractureContexts = GetFractureToolContexts();
 
 	RenderCuttingPlanesTransforms.Empty();
