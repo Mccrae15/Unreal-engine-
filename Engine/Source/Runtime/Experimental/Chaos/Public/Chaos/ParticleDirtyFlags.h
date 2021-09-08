@@ -362,7 +362,7 @@ public:
 
 	void Serialize(FChaosArchive& Ar)
 	{
-		Ar << MGeometry;
+		Ar.SerializeConstPtr(MGeometry);
 	}
 
 	template <typename TOther>
@@ -379,7 +379,7 @@ public:
 	template <typename TOther>
 	bool IsEqual(const TOther& Other) const
 	{
-		return Geometry() == Other.SharedGeometryLowLevel()
+		return Geometry() == Other.Geometry()
 			&& UniqueIdx() == Other.UniqueIdx()
 			&& SpatialIdx() == Other.SpatialIdx()
 #if CHAOS_CHECKED
@@ -393,10 +393,13 @@ public:
 		return IsEqual(Other);
 	}
 
-	TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>& AccessGeometry() { return MGeometry; }
-	const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& Geometry() const { return MGeometry;}
-	const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return MGeometry;}
-	void SetGeometry(const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& InGeometry) { MGeometry = InGeometry;}
+	//This function should only be used when geometry is not used by physics thread. The owning particle should not have a solver yet
+	//Avoid using this function unless you know the threading model, see TGeometryParticle::ModifyGeometry
+	FImplicitObject* AccessGeometryDangerous() { return const_cast<FImplicitObject*>(MGeometry.Get()); }
+
+	TSerializablePtr<FImplicitObject> Geometry() const { return TSerializablePtr<const FImplicitObject>(MGeometry);}
+	const TSharedPtr<const FImplicitObject,ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return MGeometry;}
+	void SetGeometry(const TSharedPtr<const FImplicitObject,ESPMode::ThreadSafe>& InGeometry) { MGeometry = InGeometry;}
 
 	const FUniqueIdx& UniqueIdx() const { return MUniqueIdx; }
 	void SetUniqueIdx(FUniqueIdx InIdx){ MUniqueIdx = InIdx; }
@@ -409,7 +412,7 @@ public:
 	void SetDebugName(FName InName) { MDebugName = InName; }
 #endif
 private:
-	TSharedPtr<FImplicitObject,ESPMode::ThreadSafe> MGeometry;
+	TSharedPtr<const FImplicitObject,ESPMode::ThreadSafe> MGeometry;
 	FUniqueIdx MUniqueIdx;
 	FSpatialAccelerationIdx MSpatialIdx;
 
