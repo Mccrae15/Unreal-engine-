@@ -862,7 +862,18 @@ bool FFractureEditorModeToolkit::CanExecuteAction(UFractureActionTool* InActionT
 
 void FFractureEditorModeToolkit::SetActiveTool(UFractureModalTool* InActiveTool)
 {
+	if (ActiveTool)
+	{
+		ActiveTool->Shutdown();
+		ActiveTool->SetToolsContext(nullptr);
+	}
+
 	ActiveTool = InActiveTool;
+	if (ActiveTool)
+	{
+		FFractureEditorMode* EdMode = static_cast<FFractureEditorMode*>(GetEditorMode());
+		ActiveTool->SetToolsContext(EdMode->GetToolsContext());
+	}
 
 	UFractureToolSettings* ToolSettings = GetMutableDefault<UFractureToolSettings>();
 	ToolSettings->OwnerTool = ActiveTool;
@@ -872,12 +883,23 @@ void FFractureEditorModeToolkit::SetActiveTool(UFractureModalTool* InActiveTool)
 
 	if (ActiveTool != nullptr)
 	{
+		ActiveTool->Setup();
+
 		Settings.Append(ActiveTool->GetSettingsObjects());
 
+		ActiveTool->SelectedBonesChanged();
 		ActiveTool->FractureContextChanged();
 	}
 
 	DetailsView->SetObjects(Settings);
+}
+
+void FFractureEditorModeToolkit::Shutdown()
+{
+	if (ActiveTool)
+	{
+		ActiveTool->Shutdown();
+	}
 }
 
 
@@ -942,6 +964,7 @@ void FFractureEditorModeToolkit::SetOutlinerComponents(const TArray<UGeometryCol
 
 	if (ActiveTool != nullptr)
 	{
+		ActiveTool->SelectedBonesChanged();
 		ActiveTool->FractureContextChanged();
 	}
 }
@@ -952,6 +975,7 @@ void FFractureEditorModeToolkit::SetBoneSelection(UGeometryCollectionComponent* 
 	
 	if (ActiveTool != nullptr)
 	{
+		ActiveTool->SelectedBonesChanged();
 		ActiveTool->FractureContextChanged();
 	}
 }
@@ -1332,16 +1356,11 @@ void FFractureEditorModeToolkit::OnOutlinerBoneSelectionChanged(UGeometryCollect
 			FFractureSelectionTools::ClearSelectedBones(RootComponent);
 		}
 
-	if(SelectedBones.Num())
-	{
-			
-		FFractureSelectionTools::ToggleSelectedBones(RootComponent, SelectedBones, true, false);
-		OutlinerView->SetBoneSelection(RootComponent, SelectedBones, true);
-	}
-	else
-	{
-		FFractureSelectionTools::ClearSelectedBones(RootComponent);
-	}
+		if (ActiveTool != nullptr)
+		{
+			ActiveTool->SelectedBonesChanged();
+			ActiveTool->FractureContextChanged();
+		}
 
 		RootComponent->MarkRenderStateDirty();
 		RootComponent->MarkRenderDynamicDataDirty();

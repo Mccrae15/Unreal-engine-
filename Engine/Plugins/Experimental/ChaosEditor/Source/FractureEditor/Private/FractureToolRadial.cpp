@@ -13,6 +13,19 @@ UFractureToolRadial::UFractureToolRadial(const FObjectInitializer& ObjInit)
 {
 	RadialSettings = NewObject<UFractureRadialSettings>(GetTransientPackage(), UFractureRadialSettings::StaticClass());
 	RadialSettings->OwnerTool = this;
+	GizmoSettings = NewObject<UFractureTransformGizmoSettings>(GetTransientPackage(), UFractureTransformGizmoSettings::StaticClass());
+	GizmoSettings->OwnerTool = this;
+}
+
+void UFractureToolRadial::Setup()
+{
+	GizmoSettings->Setup(this);
+}
+
+
+void UFractureToolRadial::Shutdown()
+{
+	GizmoSettings->Shutdown();
 }
 
 FText UFractureToolRadial::GetDisplayText() const
@@ -40,6 +53,7 @@ TArray<UObject*> UFractureToolRadial::GetSettingsObjects() const
 { 
 	TArray<UObject*> Settings; 
 	Settings.Add(CutterSettings);
+	Settings.Add(GizmoSettings);
 	Settings.Add(CollisionSettings);
 	Settings.Add(RadialSettings);
 	return Settings;
@@ -47,29 +61,44 @@ TArray<UObject*> UFractureToolRadial::GetSettingsObjects() const
 
 void UFractureToolRadial::GenerateVoronoiSites(const FFractureToolContext& Context, TArray<FVector>& Sites)
 {
- 	float RadialStep = RadialSettings->Radius / RadialSettings->RadialSteps;
+ 	const float RadialStep = RadialSettings->Radius / RadialSettings->RadialSteps;
+	const float AngularStep = 2 * PI / RadialSettings->AngularSteps;
 
 	FBox Bounds = Context.GetWorldBounds();
-	const FVector Center(Bounds.GetCenter() + RadialSettings->Center);
+	FVector Center(Bounds.GetCenter() + RadialSettings->Center);
 
 	FRandomStream RandStream(Context.GetSeed());
 	FVector UpVector(RadialSettings->Normal);
 	UpVector.Normalize();
-	FVector PerpVector(UpVector[2], UpVector[0], UpVector[1]);
+	FVector BasisX, BasisY;
+	UpVector.FindBestAxisVectors(BasisX, BasisY);
 
-	for (int32 ii = 1; ii < RadialSettings->RadialSteps; ++ii)
+	if (GizmoSettings->IsGizmoEnabled())
 	{
-		FVector PositionVector(PerpVector * RadialStep * ii);
+		const FTransform& Transform = GizmoSettings->GetTransform();
+		UpVector = Transform.GetUnitAxis(EAxis::Z);
+		BasisX = Transform.GetUnitAxis(EAxis::X);
+		BasisY = Transform.GetUnitAxis(EAxis::Y);
+		Center = Transform.GetTranslation();
+	}
 
-		float AngularStep = 360.f / RadialSettings->AngularSteps;
-		PositionVector = PositionVector.RotateAngleAxis(RadialSettings->AngleOffset * ii, UpVector);
-
-		for (int32 kk = 0; kk < RadialSettings->AngularSteps; ++kk)
+	float Len = RadialStep * .5;
+	for (int32 ii = 0; ii < RadialSettings->RadialSteps; ++ii, Len += RadialStep)
+	{
+		float Angle = RadialSettings->AngleOffset;
+		for (int32 kk = 0; kk < RadialSettings->AngularSteps; ++kk, Angle += AngularStep)
 		{
-			PositionVector = PositionVector.RotateAngleAxis(AngularStep , UpVector);
-			Sites.Emplace(Center + PositionVector + (RandStream.VRand() * RandStream.FRand() * RadialSettings->Variability));
+			FVector RotatingOffset = Len * (FMath::Cos(Angle) * BasisX + FMath::Sin(Angle) * BasisY);
+			Sites.Emplace(Center + RotatingOffset + (RandStream.VRand() * RandStream.FRand() * RadialSettings->Variability));
 		}
 	}
 }
+
+void UFractureToolRadial::SelectedBonesChanged()
+{
+	GizmoSettings->ResetGizmo();
+	Super::SelectedBonesChanged();
+}
+
 
 #undef LOCTEXT_NAMESPACE
