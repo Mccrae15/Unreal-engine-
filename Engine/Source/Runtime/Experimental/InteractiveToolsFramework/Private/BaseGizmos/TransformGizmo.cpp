@@ -556,6 +556,10 @@ void UTransformGizmo::SetNewChildScale(const FVector& NewChildScale)
 
 void UTransformGizmo::SetVisibility(bool bVisible)
 {
+	if (!ensure(GizmoActor))
+	{
+		return;
+	}
 	GizmoActor->SetActorHiddenInGame(bVisible == false);
 #if WITH_EDITOR
 	GizmoActor->SetIsTemporarilyHiddenInEditor(bVisible == false);

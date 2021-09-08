@@ -23,6 +23,12 @@
 #include "EditorViewportClient.h"
 #include "ScopedTransaction.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
+#include "EdModeInteractiveToolsContext.h"
+#include "InteractiveGizmoManager.h"
+
+
+#include "UnrealEdGlobals.h"
+#include "EditorModeManager.h"
 
 #define LOCTEXT_NAMESPACE "FFractureEditorModeToolkit"
 
@@ -30,12 +36,31 @@ const FEditorModeID FFractureEditorMode::EM_FractureEditorModeId = TEXT("EM_Frac
 
 FFractureEditorMode::FFractureEditorMode()
 {
+	ToolsContext = nullptr;
 }
 
 FFractureEditorMode::~FFractureEditorMode()
 {
-
+	// this should have happend already in ::Exit()
+	if (ToolsContext != nullptr)
+	{
+		ToolsContext->ShutdownContext();
+		ToolsContext = nullptr;
+	}
 }
+
+void FFractureEditorMode::Tick(FEditorViewportClient* ViewportClient, float DeltaTime)
+{
+	FEdMode::Tick(ViewportClient, DeltaTime);
+
+	// give ToolsContext a chance to tick
+	if (ToolsContext != nullptr)
+	{
+		ToolsContext->Tick(ViewportClient, DeltaTime);
+	}
+}
+
+
 
 void FFractureEditorMode::Enter()
 {
@@ -54,6 +79,10 @@ void FFractureEditorMode::Enter()
 
 	FCoreUObjectDelegates::OnPackageReloaded.AddSP(this, &FFractureEditorMode::HandlePackageReloaded);
 	
+	// initialize the adapter that attaches the ToolsContext to this FEdMode
+	ToolsContext = NewObject<UEdModeInteractiveToolsContext>(GetTransientPackage(), TEXT("ToolsContext"), RF_Transient);
+	ToolsContext->InitializeContextFromEdMode(this);
+	
 	// Get initial geometry component selection from currently selected actors when we enter the mode
 	USelection* SelectedActors = GEditor->GetSelectedActors();
 
@@ -68,12 +97,21 @@ void FFractureEditorMode::Exit()
 {
 	GEditor->UnregisterForUndo(this);
 
+	// shutdown and clean up the ToolsContext
+	ToolsContext->ShutdownContext();
+	ToolsContext = nullptr;
+
+	// TODO: cannot deregister currently because if another mode is also registering, its Enter()
+	// will be called before our Exit(); add the below line back after this bug is fixed
+	//FractureGizmoHelper->DeregisterGizmosWithManager(ToolsContext->ToolManager);
+
 	// Empty the geometry component selection set
 	TArray<UObject*> SelectedObjects;
 	OnActorSelectionChanged(SelectedObjects, false);
 
 	if (Toolkit.IsValid())
 	{
+		static_cast<FFractureEditorModeToolkit*>(Toolkit.Get())->Shutdown();
 		FToolkitManager::Get().CloseToolkit(Toolkit.ToSharedRef());
 		Toolkit.Reset();
 	}
@@ -91,6 +129,7 @@ void FFractureEditorMode::Exit()
 
 void FFractureEditorMode::AddReferencedObjects(FReferenceCollector& Collector)
 {
+	Collector.AddReferencedObject(ToolsContext);
 	Collector.AddReferencedObjects(SelectedGeometryComponents);
 }
 
@@ -126,7 +165,11 @@ void FFractureEditorMode::Render(const FSceneView* View, FViewport* Viewport, FP
 		FractureTool->Render(View, Viewport, PDI);
 	}
 
-
+	// give ToolsContext a chance to render
+	if (ToolsContext != nullptr)
+	{
+		ToolsContext->Render(View, Viewport, PDI);
+	}
 }
 
 bool FFractureEditorMode::UsesToolkits() const
@@ -138,14 +181,57 @@ bool FFractureEditorMode::InputKey(FEditorViewportClient* ViewportClient, FViewp
 {
 
 	bool bHandled = false;
+	// Note: this is similar to what the super (FEdMode::InputKey(ViewportClient, Viewport, Key, Event))
+	//  would do, but without going up the actor hierarchy, and without allowing for key repeats
 	if( Event == IE_Pressed )
 	{
 		FModifierKeysState ModifierKeysState = FSlateApplication::Get().GetModifierKeys();
 		const TSharedRef<FUICommandList> CommandList = Toolkit.Get()->GetToolkitCommands();
 		bHandled = CommandList->ProcessCommandBindings( Key, ModifierKeysState, false );
 	}
+	bHandled |= ToolsContext->InputKey(ViewportClient, Viewport, Key, Event);
 	return bHandled;
 }
+
+bool FFractureEditorMode::MouseEnter(FEditorViewportClient* ViewportClient, FViewport* Viewport, int32 x, int32 y)
+{
+	bool bHandled = ToolsContext->MouseEnter(ViewportClient, Viewport, x, y);
+	return bHandled;
+}
+
+bool FFractureEditorMode::MouseMove(FEditorViewportClient* ViewportClient, FViewport* Viewport, int32 x, int32 y)
+{
+	bool bHandled = ToolsContext->MouseMove(ViewportClient, Viewport, x, y);
+	return bHandled;
+}
+
+bool FFractureEditorMode::MouseLeave(FEditorViewportClient* ViewportClient, FViewport* Viewport)
+{
+	bool bHandled = ToolsContext->MouseLeave(ViewportClient, Viewport);
+	return bHandled;
+}
+
+
+
+bool FFractureEditorMode::StartTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
+{
+	bool bHandled = FEdMode::StartTracking(InViewportClient, InViewport);
+	bHandled |= ToolsContext->StartTracking(InViewportClient, InViewport);
+	return bHandled;
+}
+
+bool FFractureEditorMode::CapturedMouseMove(FEditorViewportClient* InViewportClient, FViewport* InViewport, int32 InMouseX, int32 InMouseY)
+{
+	bool bHandled = ToolsContext->CapturedMouseMove(InViewportClient, InViewport, InMouseX, InMouseY);
+	return bHandled;
+}
+
+bool FFractureEditorMode::EndTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
+{
+	bool bHandled = ToolsContext->EndTracking(InViewportClient, InViewport);
+	return bHandled;
+}
+
 
 bool FFractureEditorMode::HandleClick(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy, const FViewportClick& Click)
 {
