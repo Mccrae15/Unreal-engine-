@@ -473,7 +473,7 @@ public:
 	
 	void SetNonFrequentData(const FParticleNonFrequentData& InData)
 	{
-		SetSharedGeometry(InData.Geometry());
+		SetSharedGeometry(InData.SharedGeometryLowLevel());
 		SetUniqueIdx(InData.UniqueIdx());
 		SetSpatialIdx(InData.SpatialIdx());
 
@@ -503,9 +503,9 @@ public:
 	void SetGeometry(TSerializablePtr<FImplicitObject> InGeometry) { GeometryParticles->SetGeometry(ParticleIdx, InGeometry); }
 
 	TSharedPtr<FImplicitObject, ESPMode::ThreadSafe> SharedGeometry() const { return GeometryParticles->SharedGeometry(ParticleIdx); }
-	void SetSharedGeometry(TSharedPtr<FImplicitObject, ESPMode::ThreadSafe> InGeometry) { GeometryParticles->SetSharedGeometry(ParticleIdx, InGeometry); }
+	void SetSharedGeometry(TSharedPtr<const FImplicitObject, ESPMode::ThreadSafe> InGeometry) { GeometryParticles->SetSharedGeometry(ParticleIdx, InGeometry); }
 
-	TSharedPtr<FImplicitObject, ESPMode::ThreadSafe> SharedGeometryLowLevel() const { return GeometryParticles->SharedGeometry(ParticleIdx); }
+	const TSharedPtr<const FImplicitObject, ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return GeometryParticles->SharedGeometry(ParticleIdx); }
 
 	const TUniquePtr<FImplicitObject>& DynamicGeometry() const { return GeometryParticles->DynamicGeometry(ParticleIdx); }
 	void SetDynamicGeometry(TUniquePtr<FImplicitObject>&& Unique) { GeometryParticles->SetDynamicGeometry(ParticleIdx, MoveTemp(Unique)); }
@@ -1715,7 +1715,7 @@ public:
 
 	virtual bool IsParticleValid() const
 	{
-		auto& Geometry = MNonFrequentData.Read().Geometry();
+		auto Geometry = MNonFrequentData.Read().Geometry();
 		return Geometry && Geometry->IsValidGeometry();	//todo: if we want support for sample particles without geometry we need to adjust this
 	}
 
@@ -1768,7 +1768,7 @@ public:
 
 	void RemoveShape(FPerShapeData* InShape, bool bWakeTouching);
 
-	const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return MNonFrequentData.Read().Geometry(); }
+	TSharedPtr<const FImplicitObject,ESPMode::ThreadSafe> SharedGeometryLowLevel() const { return MNonFrequentData.Read().SharedGeometryLowLevel(); }
 
 	void* UserData() const { return MUserData; }
 	void SetUserData(void* InUserData)
@@ -1783,8 +1783,8 @@ public:
 
 	void UpdateShapeBounds(const FTransform& Transform)
 	{
-		const TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>& GeomShared = MNonFrequentData.Read().Geometry();
-		if (GeomShared.IsValid() && GeomShared->HasBoundingBox())
+		auto GeomShared = MNonFrequentData.Read().Geometry();
+		if (GeomShared && GeomShared->HasBoundingBox())
 		{
 			for (auto& Shape : MShapesArray)
 			{
@@ -1857,13 +1857,7 @@ public:
 	}
 
 	void SetIgnoreAnalyticCollisionsImp(FImplicitObject* Implicit, bool bIgnoreAnalyticCollisions);
-	void SetIgnoreAnalyticCollisions(bool bIgnoreAnalyticCollisions)
-	{
-		if (MNonFrequentData.Read().Geometry())
-		{
-			SetIgnoreAnalyticCollisionsImp(MNonFrequentData.Read().Geometry().Get(), bIgnoreAnalyticCollisions);
-		}
-	}
+	void SetIgnoreAnalyticCollisions(bool bIgnoreAnalyticCollisions);
 
 	TSerializablePtr<FImplicitObject> Geometry() const { return MakeSerializable(MNonFrequentData.Read().Geometry()); }
 
@@ -1986,6 +1980,42 @@ protected:
 	// TODO: It's important to eventually hide this!
 	// Right now it's exposed to lubricate the creation of the whole proxy system.
 	class IPhysicsProxyBase* Proxy;
+
+	template <typename Lambda>
+	void ModifyGeometry(const Lambda& Func)
+	{
+		ensure(IsInGameThread());
+		FPhysicsSolverBase* Solver = Proxy ? Proxy->GetSolverBase() : nullptr;
+		MNonFrequentData.Modify(true, MDirtyFlags, Proxy, [this, Solver, &Func](auto& Data)
+		{
+			FImplicitObject* GeomToModify = nullptr;
+			bool bNewGeom = false;
+			if(Data.Geometry())
+			{
+				if (Solver == nullptr)
+				{
+					//not registered yet so we can still modify geometry
+					GeomToModify = Data.AccessGeometryDangerous();
+				}
+				else
+				{
+					//already registered and used by physics thread, so need to duplicate
+					GeomToModify = Data.Geometry()->Duplicate();
+					bNewGeom = true;
+				}
+
+				Func(*GeomToModify);
+				
+				if(bNewGeom)
+				{
+					//must set geometry after because shapes are rebuilt and we want them to know about anything Func did
+					Data.SetGeometry(TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(GeomToModify));
+				}
+				
+				UpdateShapesArray();
+			}
+		});
+	}
 private:
 
 	TParticleProperty<FParticlePositionRotation, EParticleProperty::XR> MXR;
@@ -2004,9 +2034,9 @@ public:
 	//friend class FGeometryCollectionPhysicsProxy;
 	// This is only for use by ParticleData. This should be called only in one place,
 	// when the geometry is being copied from GT to PT.
-	TSharedPtr<FImplicitObject, ESPMode::ThreadSafe> GeometrySharedLowLevel() const
+	const TSharedPtr<const FImplicitObject, ESPMode::ThreadSafe>& GeometrySharedLowLevel() const
 	{
-		return MNonFrequentData.Read().Geometry();
+		return MNonFrequentData.Read().SharedGeometryLowLevel();
 	}
 private:
 
