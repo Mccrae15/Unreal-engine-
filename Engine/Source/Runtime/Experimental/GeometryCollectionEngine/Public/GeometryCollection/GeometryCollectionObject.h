@@ -21,7 +21,7 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSource
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource", meta=(AllowedClasses="StaticMesh, SkeletalMesh"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource", meta=(AllowedClasses="StaticMesh, SkeletalMesh, GeometryCollection"))
 	FSoftObjectPath SourceGeometryObject;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
@@ -143,6 +143,7 @@ public:
 
 	/** appends the standard materials to this uobject */
 	void InitializeMaterials();
+
 
 	/** Returns true if there is anything to render */
 	bool HasVisibleGeometry() const;
@@ -288,6 +289,9 @@ public:
 	TArray<UMaterialInterface*> RemoveOnFractureMaterials;
 
 	FORCEINLINE const int32 GetBoneSelectedMaterialIndex() const { return BoneSelectedMaterialIndex; }
+
+	/** Returns the asset path for the automatically populated selected material. */
+	static const TCHAR* GetSelectedMaterialPath();
 
 #if WITH_EDITORONLY_DATA
 	/** Information for thumbnail rendering */
