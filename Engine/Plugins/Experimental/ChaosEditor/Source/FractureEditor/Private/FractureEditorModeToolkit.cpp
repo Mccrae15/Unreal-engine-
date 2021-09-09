@@ -511,6 +511,7 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 	else if (PaletteIndex == TEXT("Fix"))
 	{
 		ToolbarBuilder.AddToolBarButton(Commands.MakeConvex);
+		ToolbarBuilder.AddToolBarButton(Commands.FixTinyGeo);
 	}
 }
 
