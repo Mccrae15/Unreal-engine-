@@ -232,7 +232,7 @@ bool FMeshUtility::GenerateGeometryCollectionFromBlastChunk(Nv::Blast::FractureT
 	// Geometry Collection Accessors - Verts Group
 	TManagedArray<FVector>& Vertices = GeometryCollection->Vertex;
 	TManagedArray<FVector>& Normals = GeometryCollection->Normal;
-	TManagedArray<FVector2D>& UVs = GeometryCollection->UV;
+	TManagedArray<TArray<FVector2D>>& UVs = GeometryCollection->UVs;
 
 	// Geometry Collection Accessors - Geometry Group
 	TManagedArray<FIntVector>&  Indices = GeometryCollection->Indices;
@@ -305,7 +305,8 @@ bool FMeshUtility::GenerateGeometryCollectionFromBlastChunk(Nv::Blast::FractureT
 				}
 
 				const PxVec2& BlastUVCoord = BlastVertex.uv[0];
-				UVs[GCVerticesIndex] = FVector2D(BlastUVCoord.x, BlastUVCoord.y);
+				UVs[GCVerticesIndex].SetNum(1);
+				UVs[GCVerticesIndex][0] = FVector2D(BlastUVCoord.x, BlastUVCoord.y);
 			}
 
 		}

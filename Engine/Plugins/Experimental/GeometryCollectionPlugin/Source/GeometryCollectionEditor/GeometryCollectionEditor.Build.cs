@@ -28,7 +28,9 @@ namespace UnrealBuildTool.Rules
 				    "SceneOutliner",
 					"EditorStyle",
 					"ToolMenus",
-					"Chaos"
+					"Chaos",
+					"MeshDescription",
+					"StaticMeshDescription"
 				}
 			);
 

@@ -1139,7 +1139,7 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 	const TManagedArray<FVector>& TangentU = Collection->TangentU;
 	const TManagedArray<FVector>& TangentV = Collection->TangentV;
 	const TManagedArray<FVector>& Normal = Collection->Normal;
-	const TManagedArray<FVector2D>& UV = Collection->UV;
+	const TManagedArray<TArray<FVector2D>>& UVs = Collection->UVs;
 	const TManagedArray<FLinearColor>& Color = Collection->Color;
 	const TManagedArray<FLinearColor>& BoneColors = Collection->BoneColor;
 
@@ -1148,7 +1148,7 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 	ConstantData->TangentU = TArray<FVector>(TangentU.GetData(), TangentU.Num());
 	ConstantData->TangentV = TArray<FVector>(TangentV.GetData(), TangentV.Num());
 	ConstantData->Normals = TArray<FVector>(Normal.GetData(), Normal.Num());
-	ConstantData->UVs = TArray<FVector2D>(UV.GetData(), UV.Num());
+	ConstantData->UVs = TArray<TArray<FVector2D>>(UVs.GetData(), UVs.Num());
 	ConstantData->Colors = TArray<FLinearColor>(Color.GetData(), Color.Num());
 
 	ConstantData->BoneColors.AddUninitialized(NumPoints);
@@ -1162,7 +1162,7 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 	int32 NumIndices = 0;
 	const TManagedArray<FIntVector>& Indices = Collection->Indices;
 	const TManagedArray<int32>& MaterialID = Collection->MaterialID;
-	
+
 	const TManagedArray<bool>& Visible = GetVisibleArray();  // Use copy on write attribute. The rest collection visible array can be overriden for the convenience of debug drawing the collision volumes
 	const TManagedArray<int32>& MaterialIndex = Collection->MaterialIndex;
 
@@ -1176,9 +1176,9 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 	ConstantData->Indices.AddUninitialized(NumIndices);
 	for (int IndexIdx = 0, cdx = 0; IndexIdx < NumFaceGroupEntries; ++IndexIdx)
 	{
-		if (Visible[ MaterialIndex[IndexIdx] ])
+		if (Visible[MaterialIndex[IndexIdx]])
 		{
-			ConstantData->Indices[cdx++] = Indices[ MaterialIndex[IndexIdx] ];
+			ConstantData->Indices[cdx++] = Indices[MaterialIndex[IndexIdx]];
 		}
 	}
 
@@ -1192,7 +1192,7 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 
 		for (int32 TriangleIndex = 0; TriangleIndex < Sections[SectionIndex].FirstIndex / 3; TriangleIndex++)
 		{
-			if(!Visible[MaterialIndex[TriangleIndex]])
+			if (!Visible[MaterialIndex[TriangleIndex]])
 			{
 				Section.FirstIndex -= 3;
 			}
@@ -1200,7 +1200,7 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 
 		for (int32 TriangleIndex = 0; TriangleIndex < Sections[SectionIndex].NumTriangles; TriangleIndex++)
 		{
-			if(!Visible[MaterialIndex[Sections[SectionIndex].FirstIndex / 3 + TriangleIndex]])
+			if (!Visible[MaterialIndex[Sections[SectionIndex].FirstIndex / 3 + TriangleIndex]])
 			{
 				Section.NumTriangles--;
 			}
@@ -1213,12 +1213,12 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 
 	// store the index buffer and render sections for the base unfractured mesh
 	const TManagedArray<int32>& TransformToGeometryIndex = Collection->TransformToGeometryIndex;
-	const TManagedArray<int32>&	FaceStart = Collection->FaceStart;
-	const TManagedArray<int32>&	FaceCount = Collection->FaceCount;
-	
+	const TManagedArray<int32>& FaceStart = Collection->FaceStart;
+	const TManagedArray<int32>& FaceCount = Collection->FaceCount;
+
 	const int32 NumFaces = Collection->NumElements(FGeometryCollection::FacesGroup);
 	TArray<FIntVector> BaseMeshIndices;
-	TArray<int32> BaseMeshOriginalFaceIndices;	
+	TArray<int32> BaseMeshOriginalFaceIndices;
 
 	BaseMeshIndices.Reserve(NumFaces);
 	BaseMeshOriginalFaceIndices.Reserve(NumFaces);
@@ -1232,67 +1232,11 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 		{
 			BaseMeshIndices.Add(Indices[FaceIndex]);
 			BaseMeshOriginalFaceIndices.Add(FaceIndex);
-		}				
+		}
 	}
 
 	// We should always have external faces of a geometry collection
 	ensure(BaseMeshIndices.Num() > 0);
-
-	// #todo(dmp): we should eventually get this working where we use geometry nodes
-	// that signify original unfractured geometry.  For now, this system is broken.
-	/*
-	for (int i = 0; i < Collection->NumElements(FGeometryCollection::TransformGroup); ++i)
-	{
-		const FGeometryCollectionBoneNode &CurrBone = BoneHierarchy[i];
-
-		// root node could be parent geo
-		if (CurrBone.Parent == INDEX_NONE)
-		{
-			int32 GeometryIndex = TransformToGeometryIndex[i];
-
-			// found geometry associated with base mesh root node
-			if (GeometryIndex != INDEX_NONE)
-			{				
-				int32 CurrFaceStart = FaceStart[GeometryIndex];
-				int32 CurrFaceCount = FaceCount[GeometryIndex];
-			
-				// add all the faces to the original geometry face array
-				for (int face = CurrFaceStart; face < CurrFaceStart + CurrFaceCount; ++face)
-				{
-					BaseMeshIndices.Add(Indices[face]);
-					BaseMeshOriginalFaceIndices.Add(face);
-				}
-
-				// build an array of mesh sections
-				ConstantData->HasOriginalMesh = true;				
-			}
-			else
-			{
-				// all the direct decedents of the root node with no geometry are original geometry
-				for (int32 CurrChild : CurrBone.Children)
-				{					
-					int32 GeometryIndex = TransformToGeometryIndex[CurrChild];
-					if (GeometryIndex != INDEX_NONE)
-					{
-						// original geo static mesh					
-						int32 CurrFaceStart = FaceStart[GeometryIndex];
-						int32 CurrFaceCount = FaceCount[GeometryIndex];
-
-						// add all the faces to the original geometry face array
-						for (int face = CurrFaceStart; face < CurrFaceStart + CurrFaceCount; ++face)
-						{
-							BaseMeshIndices.Add(Indices[face]);
-							BaseMeshOriginalFaceIndices.Add(face);
-						}
-
-						ConstantData->HasOriginalMesh = true;
-					}					
-				}
-			}
-		}
-	}
-	*/
-
 
 	ConstantData->OriginalMeshSections = Collection->BuildMeshSections(BaseMeshIndices, BaseMeshOriginalFaceIndices, ConstantData->OriginalMeshIndices);
 

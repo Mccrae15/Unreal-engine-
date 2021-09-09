@@ -60,7 +60,7 @@ void UEditableGeometryCollectionAdapter::InitEditableGeometryCollection( UEditab
 				TManagedArray<FVector>& GCVertices = GeometryCollectionSource->Vertex;
 				TManagedArray<FVector>& GCNormals = GeometryCollectionSource->Normal;
 				TManagedArray<FVector>& GCTangents = GeometryCollectionSource->TangentU;
-				TManagedArray<FVector2D>& GCUVs = GeometryCollectionSource->UV;
+				TManagedArray<TArray<FVector2D>>& GCUVs = GeometryCollectionSource->UVs;
 				TManagedArray<FLinearColor>& GCColors = GeometryCollectionSource->Color;
 				TManagedArray<int32>& GCBoneMap = GeometryCollectionSource->BoneMap;
 				TManagedArray<FIntVector>&  GCIndices = GeometryCollectionSource->Indices;
@@ -116,7 +116,6 @@ void UEditableGeometryCollectionAdapter::InitEditableGeometryCollection( UEditab
 					{
 						const FVector Normal = GCNormals[RenderingVertexIndex];
 						const FVector Tangent = GCTangents[RenderingVertexIndex];
-						const FVector2D UV = GCUVs[RenderingVertexIndex];
 						const FLinearColor Color = bHasColor ? FLinearColor(GCColors[RenderingVertexIndex]) : FLinearColor::White;
 
 						VertexInstanceNormals[VertexInstanceID] = Normal;
@@ -124,7 +123,7 @@ void UEditableGeometryCollectionAdapter::InitEditableGeometryCollection( UEditab
 						VertexInstanceColors[VertexInstanceID] = Color;
 						for (int32 UVIndex = 0; UVIndex < 1; ++UVIndex)
 						{
-							VertexInstanceUVs.Set(VertexInstanceID, UVIndex, GCUVs[RenderingVertexIndex]);
+							VertexInstanceUVs.Set(VertexInstanceID, UVIndex, GCUVs[RenderingVertexIndex][UVIndex]);
 						}
 					}
 
@@ -370,7 +369,7 @@ void UEditableGeometryCollectionAdapter::OnRebuildRenderMesh(const UEditableMesh
 			TManagedArray<FVector>& GCVertices = Collection->Vertex;
 			TManagedArray<FVector>& GCNormals = Collection->Normal;
 			TManagedArray<FVector>& GCTangents = Collection->TangentU;
-			TManagedArray<FVector2D>& GCUVs = Collection->UV;
+			TManagedArray<TArray<FVector2D>>& GCUVs = Collection->UVs;
 			TManagedArray<FLinearColor>& GCColors = Collection->Color;
 			TManagedArray<int32>& GCBoneMap = Collection->BoneMap;
 
@@ -391,11 +390,16 @@ void UEditableGeometryCollectionAdapter::OnRebuildRenderMesh(const UEditableMesh
 				GCVertices[VertexIDValue] = VertexPosition;
 			}
 
+			const int32 NumUVLayers = VertexInstanceUVs.GetNumIndices();
 			for (const FVertexInstanceID VertexInstanceID : MeshDescription->VertexInstances().GetElementIDs())
 			{
 				int32 VertexInstanceIDValue = VertexInstanceID.GetValue();
 				GCNormals[VertexInstanceIDValue] = VertexInstanceNormals[VertexInstanceID];
-				GCUVs[VertexInstanceIDValue] = VertexInstanceUVs.Get(VertexInstanceID, 0);
+				GCUVs[VertexInstanceIDValue].SetNum(NumUVLayers);
+				for (int32 LayerIdx = 0; LayerIdx < NumUVLayers; LayerIdx++)
+				{
+					GCUVs[VertexInstanceIDValue][LayerIdx] = VertexInstanceUVs.Get(VertexInstanceID, LayerIdx);
+				}
 				GCTangents[VertexInstanceIDValue] = VertexInstanceTangents[VertexInstanceID];
 				FVector4 Color = VertexInstanceColors[VertexInstanceID];
 				GCColors[VertexInstanceIDValue] = FLinearColor(Color[0], Color[1], Color[2], Color[3]);
@@ -705,7 +709,7 @@ void UEditableGeometryCollectionAdapter::OnSetVertexInstanceAttribute( const UEd
 
 	TManagedArray<FVector>& GCNormals = Collection->Normal;
 	TManagedArray<FVector>& GCTangents = Collection->TangentU;
-	TManagedArray<FVector2D>& GCUVs = Collection->UV;
+	TManagedArray<TArray<FVector2D>>& GCUVs = Collection->UVs;
 	TManagedArray<FLinearColor>& GCColors = Collection->Color;
 
 	const TAttributesSet<FVertexInstanceID>& VertexInstanceAttributes = EditableMesh->GetMeshDescription()->VertexInstanceAttributes();
@@ -739,7 +743,7 @@ void UEditableGeometryCollectionAdapter::OnSetVertexInstanceAttribute( const UEd
 		if( !EditableMesh->IsPreviewingSubdivisions() )
 		{
 			check( Attribute.AttributeIndex < EditableMesh->GetTextureCoordinateCount() );
-			GCUVs[VertexInstanceID.GetValue()] = Attribute.AttributeValue.GetValue<FVector2D>();
+			GCUVs[VertexInstanceID.GetValue()][0] = Attribute.AttributeValue.GetValue<FVector2D>();
 		}
 	}
 	else if( Attribute.AttributeName == MeshAttribute::VertexInstance::Color )
