@@ -29,7 +29,8 @@ enum class EInspectedAttributeEnum : uint8
 {
 	Volume = 0					UMETA(DisplayName = "Volume"),
 	Level = 1					UMETA(DisplayName = "Level"),
-	InitialDynamicState = 3		UMETA(DisplayName = "InitialDynamicState")
+	InitialDynamicState = 3		UMETA(DisplayName = "InitialDynamicState"),
+	Size = 4					UMETA(DisplayName = "RelativeSize")
 };
 
 /** Settings for Histogram configuration. **/
@@ -43,11 +44,23 @@ public:
 
 	/** What attribute are we inspecting? */
 	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Inspected Attribute"))
-		EInspectedAttributeEnum InspectedAttribute;
+	EInspectedAttributeEnum InspectedAttribute;
 
 	/** Sort the values? */
 	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Sort Values"))
-		bool bSorted;
+	bool bSorted;
+
+	/** Show clusters? */
+	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Show Clusters"))
+	bool bShowClusters = true;
+
+	/** Show rigids? */
+	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Show Rigids"))
+	bool bShowRigids = true;
+
+	/** Show embedded geometry? */
+	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Show Embedded Geometry"))
+	bool bShowEmbedded = true;
 
 };
 
@@ -62,7 +75,7 @@ public:
 	UGeometryCollectionComponent* GetComponent() const { return Component.IsValid() ? Component.Get() : nullptr; }
 
 	FGeometryCollectionHistogramItemPtr GetItemFromBoneIndex(int32 BoneIndex) const;
-	
+
 	FGeometryCollectionHistogramItemList RegenerateNodes(int32 LevelView);
 
 private:
@@ -87,7 +100,7 @@ public:
 	{}
 
 	TSharedRef<ITableRow> MakeHistogramRowWidget(const TSharedRef<STableViewBase>& InOwnerTable);
-	
+
 	UGeometryCollectionComponent* GetComponent() const { return ParentComponentItem->GetComponent(); }
 
 	float GetInspectedValue() const { return InspectedValue; }
@@ -103,9 +116,9 @@ private:
 	const FGuid Guid;
 	const int32 BoneIndex;
 	const TSharedPtr<FGeometryCollectionHistogramItemComponent> ParentComponentItem;
-	
+
 	int32 ListIndex;
-	FLinearColor NodeColor; 
+	FLinearColor NodeColor;
 	float NormalizedValue;
 	float InspectedValue;
 	FString HoverString;
@@ -122,7 +135,7 @@ class SGeometryCollectionHistogram : public SCompoundWidget
 
 	SLATE_EVENT(FOnBoneSelectionChanged, OnBoneSelectionChanged)
 
-	SLATE_END_ARGS()
+		SLATE_END_ARGS()
 
 public:
 	void Construct(const FArguments& InArgs);
@@ -146,7 +159,8 @@ private:
 	TSharedPtr<SListView<FGeometryCollectionHistogramItemPtr>> ListView;
 	TArray<TSharedPtr<FGeometryCollectionHistogramItemComponent>> RootNodes;
 	TArray<FGeometryCollectionHistogramItemPtr> LeafNodes;
-	
+
 	FOnBoneSelectionChanged BoneSelectionChangedDelegate;
 	bool bPerformingSelection;
 };
+

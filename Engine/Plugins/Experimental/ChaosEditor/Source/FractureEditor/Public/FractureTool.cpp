@@ -250,11 +250,6 @@ bool UFractureModalTool::CanExecute() const
 		return false;
 	}
 
-	if (IsStaticMeshSelected())
-	{
-		return false;
-	}
-
 	return true;
 }
 

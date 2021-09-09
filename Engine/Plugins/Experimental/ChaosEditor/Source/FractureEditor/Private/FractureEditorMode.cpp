@@ -256,6 +256,33 @@ bool FFractureEditorMode::HandleClick(FEditorViewportClient* InViewportClient, H
 			return true;
 		}
 	}
+	else if (HitProxy && HitProxy->IsA(HInstancedStaticMeshInstance::StaticGetType()))
+	{
+		HInstancedStaticMeshInstance* ISMProxy = ((HInstancedStaticMeshInstance*)HitProxy);
+		if (ISMProxy->Component)
+		{
+			// Get the hit ISMComp's GeometryCollection 
+			if (UGeometryCollectionComponent* OwningGC = Cast<UGeometryCollectionComponent>(ISMProxy->Component->GetAttachParent()))
+			{
+				int32 TransformIdx = OwningGC->EmbeddedIndexToTransformIndex(ISMProxy->Component, ISMProxy->InstanceIndex);
+				if (TransformIdx > INDEX_NONE)
+				{
+					TArray<int32> BoneIndices({ TransformIdx });
+
+					OwningGC->Modify();
+					FFractureSelectionTools::ToggleSelectedBones(OwningGC, BoneIndices, !(Click.IsControlDown() || Click.IsShiftDown()), Click.IsShiftDown());
+
+					if (Toolkit.IsValid())
+					{
+						FFractureEditorModeToolkit* FractureToolkit = (FFractureEditorModeToolkit*)Toolkit.Get();
+						FractureToolkit->SetBoneSelection(OwningGC, OwningGC->GetSelectedBones(), true);
+					}
+				}
+			}
+
+			return true;
+		}
+	}
 
 	return false;
 

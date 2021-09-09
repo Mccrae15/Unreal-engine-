@@ -27,6 +27,7 @@
 #include "Net/UnrealNetwork.h"
 #include "Net/Core/PushModel/PushModel.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "Engine/InstancedStaticMesh.h"
 
 #if WITH_EDITOR
 #include "AssetToolsModule.h"
@@ -684,6 +685,93 @@ UPhysicalMaterial* UGeometryCollectionComponent::GetPhysicalMaterial() const
 	check(PhysMatToUse);
 	return PhysMatToUse;
 }
+
+
+void UGeometryCollectionComponent::RefreshEmbeddedGeometry()
+{
+	const TManagedArray<int32>& ExemplarIndexArray = GetExemplarIndexArray();
+	const int32 TransformCount = GlobalMatrices.Num();
+
+#if WITH_EDITOR	
+	EmbeddedInstanceIndex.Init(INDEX_NONE, RestCollection->GetGeometryCollection()->NumElements(FGeometryCollection::TransformGroup));
+#endif
+
+	const int32 ExemplarCount = EmbeddedGeometryComponents.Num();
+	for (int32 ExemplarIndex = 0; ExemplarIndex < ExemplarCount; ++ExemplarIndex)
+	{
+#if WITH_EDITOR
+		EmbeddedBoneMaps[ExemplarIndex].Empty(TransformCount);
+		EmbeddedBoneMaps[ExemplarIndex].Reserve(TransformCount); // Allocate for worst case
+#endif
+
+		TArray<FTransform> InstanceTransforms;
+		InstanceTransforms.Reserve(TransformCount); // Allocate for worst case
+
+		// Construct instance transforms for this exemplar
+		for (int32 Idx = 0; Idx < TransformCount; ++Idx)
+		{
+			if (ExemplarIndexArray[Idx] == ExemplarIndex)
+			{
+				
+				InstanceTransforms.Add(FTransform(GlobalMatrices[Idx]));
+#if WITH_EDITOR
+				int32 InstanceIndex = EmbeddedBoneMaps[ExemplarIndex].Add(Idx);
+				EmbeddedInstanceIndex[Idx] = InstanceIndex;
+#endif
+			}
+		}
+
+		if (EmbeddedGeometryComponents[ExemplarIndex])
+		{
+			const int32 InstanceCount = EmbeddedGeometryComponents[ExemplarIndex]->GetInstanceCount();
+
+			// If the number of instances has changed, we rebuild the structure.
+			if (InstanceCount != InstanceTransforms.Num())
+			{
+				EmbeddedGeometryComponents[ExemplarIndex]->ClearInstances();
+				EmbeddedGeometryComponents[ExemplarIndex]->PreAllocateInstancesMemory(InstanceTransforms.Num());
+				for (const FTransform& InstanceTransform : InstanceTransforms)
+				{
+					EmbeddedGeometryComponents[ExemplarIndex]->AddInstance(InstanceTransform);
+				}
+				EmbeddedGeometryComponents[ExemplarIndex]->MarkRenderStateDirty();
+			}
+			else
+			{
+				// #todo (bmiller) When ISMC has been changed to be able to update transforms in place, we need to switch this function call over.
+
+				EmbeddedGeometryComponents[ExemplarIndex]->BatchUpdateInstancesTransforms(0, InstanceTransforms, false, true, false);
+
+				// EmbeddedGeometryComponents[ExemplarIndex]->UpdateKinematicTransforms(InstanceTransforms);
+			}
+		}
+	}
+}
+
+#if WITH_EDITOR
+void UGeometryCollectionComponent::SetEmbeddedGeometrySelectable(bool bSelectableIn)
+{
+	for (UInstancedStaticMeshComponent* EmbeddedGeometryComponent : EmbeddedGeometryComponents)
+	{
+		EmbeddedGeometryComponent->bSelectable = bSelectable;
+		EmbeddedGeometryComponent->bHasPerInstanceHitProxies = bSelectable;
+	}
+}
+
+int32 UGeometryCollectionComponent::EmbeddedIndexToTransformIndex(const UInstancedStaticMeshComponent* ISMComponent, int32 InstanceIndex) const
+{
+	for (int32 ISMIdx = 0; ISMIdx < EmbeddedGeometryComponents.Num(); ++ISMIdx)
+	{
+		if (EmbeddedGeometryComponents[ISMIdx] == ISMComponent)
+		{
+			return (EmbeddedBoneMaps[ISMIdx][InstanceIndex]);
+		}
+	}
+
+	return INDEX_NONE;
+}
+#endif
+
 
 void UGeometryCollectionComponent::InitializeComponent()
 {
@@ -1570,6 +1658,8 @@ void UGeometryCollectionComponent::TickComponent(float DeltaTime, enum ELevelTic
 		{
 			if(RestCollection->HasVisibleGeometry() || DynamicCollection->IsDirty())
 			{
+				RefreshEmbeddedGeometry();
+
 				MarkRenderTransformDirty();
 				MarkRenderDynamicDataDirty();
 				bRenderStateDirty = false;
@@ -1607,6 +1697,8 @@ void UGeometryCollectionComponent::OnRegister()
 #endif // WITH_CHAOS
 
 	SetIsReplicated(bEnableReplication);
+
+	InitializeEmbeddedGeometry();
 
 	Super::OnRegister();
 }
@@ -1813,7 +1905,7 @@ void UGeometryCollectionComponent::OnCreatePhysicsState()
 					IsObjectDynamic = Results.IsObjectDynamic;
 
 					NotifyGeometryCollectionPhysicsStateChange.Broadcast(this);
-					SwitchRenderModels(GetOwner());
+					//SwitchRenderModels(GetOwner());
 				}
 
 				if (IsObjectLoading && !Results.IsObjectLoading)
@@ -2047,6 +2139,11 @@ void UGeometryCollectionComponent::SetRestCollection(const UGeometryCollection* 
 		CalculateGlobalMatrices();
 		CalculateLocalBounds();
 
+		if (!IsEmbeddedGeometryValid())
+		{
+			InitializeEmbeddedGeometry();
+		}
+
 		//ResetDynamicCollection();
 	}
 }
@@ -2055,10 +2152,13 @@ FGeometryCollectionEdit::FGeometryCollectionEdit(UGeometryCollectionComponent* I
 	: Component(InComponent)
 	, EditUpdate(InEditUpdate)
 {
-	bHadPhysicsState = Component->HasValidPhysicsState();
-	if (EnumHasAnyFlags(EditUpdate, GeometryCollection::EEditUpdate::Physics) && bHadPhysicsState)
-	{
-		Component->DestroyPhysicsState();
+	if (InComponent)
+	{ 
+		bHadPhysicsState = Component->HasValidPhysicsState();
+		if (EnumHasAnyFlags(EditUpdate, GeometryCollection::EEditUpdate::Physics) && bHadPhysicsState)
+		{
+			Component->DestroyPhysicsState();
+		}
 	}
 }
 
@@ -2154,6 +2254,7 @@ void FScopedColorEdit::SetSelectedBones(const TArray<int32>& SelectedBonesIn)
 {
 	bUpdated = true;
 	Component->SelectedBones = SelectedBonesIn;
+	Component->SelectEmbeddedGeometry();
 }
 
 void FScopedColorEdit::AppendSelectedBones(const TArray<int32>& SelectedBonesIn)
@@ -2733,6 +2834,26 @@ UMaterialInterface* UGeometryCollectionComponent::GetMaterial(int32 MaterialInde
 	}
 }
 
+#if WITH_EDITOR
+void UGeometryCollectionComponent::SelectEmbeddedGeometry()
+{
+	// First reset the selections
+	for (UInstancedStaticMeshComponent* EmbeddedGeometryComponent : EmbeddedGeometryComponents)
+	{
+		EmbeddedGeometryComponent->ClearInstanceSelection();
+	}
+
+	const TManagedArray<int32>& ExemplarIndex = GetExemplarIndexArray();
+	for (int32 SelectedBone : SelectedBones)
+	{
+		if (ExemplarIndex[SelectedBone] > INDEX_NONE)
+		{
+			EmbeddedGeometryComponents[ExemplarIndex[SelectedBone]]->SelectInstance(true, EmbeddedInstanceIndex[SelectedBone], 1);
+		}
+	}
+}
+#endif
+
 // #temp HACK for demo, When fracture happens (physics state changes to dynamic) then switch the visible render meshes in a blueprint/actor from static meshes to geometry collections
 void UGeometryCollectionComponent::SwitchRenderModels(const AActor* Actor)
 {
@@ -2804,3 +2925,93 @@ void UGeometryCollectionComponent::EnableTransformSelectionMode(bool bEnable)
 	bIsTransformSelectionModeEnabled = bEnable;
 }
 #endif  // #if GEOMETRYCOLLECTION_EDITOR_SELECTION
+
+bool UGeometryCollectionComponent::IsEmbeddedGeometryValid() const
+{
+	// Check that the array of ISMCs that implement embedded geometry matches RestCollection Exemplar array.
+	if (!RestCollection)
+	{
+		return false;
+	}
+
+	if (RestCollection->EmbeddedGeometryExemplar.Num() != EmbeddedGeometryComponents.Num())
+	{
+		return false;
+	}
+
+	for (int32 Idx = 0; Idx < EmbeddedGeometryComponents.Num(); ++Idx)
+	{
+		UStaticMesh* ExemplarStaticMesh = Cast<UStaticMesh>(RestCollection->EmbeddedGeometryExemplar[Idx].StaticMeshExemplar.TryLoad());
+		if (!ExemplarStaticMesh)
+		{
+			return false;
+		}
+
+		if (ExemplarStaticMesh != EmbeddedGeometryComponents[Idx]->GetStaticMesh())
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void UGeometryCollectionComponent::ClearEmbeddedGeometry()
+{
+	AActor* OwningActor = GetOwner();
+	TArray<UActorComponent*> TargetComponents;
+	OwningActor->GetComponents(TargetComponents, false);
+
+	for (UActorComponent* TargetComponent : TargetComponents)
+	{
+		if ((TargetComponent->GetOuter() == this) || (TargetComponent->GetOuter()->IsPendingKill()))
+		{
+			if (UInstancedStaticMeshComponent* ISMComponent = Cast<UInstancedStaticMeshComponent>(TargetComponent))
+			{
+				ISMComponent->ClearInstances();
+				ISMComponent->DestroyComponent();
+			}
+		}
+	}
+
+	EmbeddedGeometryComponents.Empty();
+}
+
+void UGeometryCollectionComponent::InitializeEmbeddedGeometry()
+{
+	if (RestCollection)
+	{
+		ClearEmbeddedGeometry();
+
+		AActor* ActorOwner = GetOwner();
+		check(ActorOwner);
+
+		// Construct an InstancedStaticMeshComponent for each exemplar
+		for (const FGeometryCollectionEmbeddedExemplar& Exemplar : RestCollection->EmbeddedGeometryExemplar)
+		{
+			if (UStaticMesh* ExemplarStaticMesh = Cast<UStaticMesh>(Exemplar.StaticMeshExemplar.TryLoad()))
+			{
+				if (UInstancedStaticMeshComponent* ISMC = NewObject<UInstancedStaticMeshComponent>(this))
+				{
+					ISMC->SetStaticMesh(ExemplarStaticMesh);
+					ISMC->SetCullDistances(Exemplar.StartCullDistance, Exemplar.EndCullDistance);
+					ISMC->SetCanEverAffectNavigation(false);
+					ISMC->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+					ISMC->SetupAttachment(this);
+					ActorOwner->AddInstanceComponent(ISMC);
+					ISMC->RegisterComponent();
+
+					EmbeddedGeometryComponents.Add(ISMC);
+				}
+			}
+		}
+
+#if WITH_EDITOR
+		EmbeddedBoneMaps.SetNum(RestCollection->EmbeddedGeometryExemplar.Num());
+		EmbeddedInstanceIndex.Init(INDEX_NONE, RestCollection->GetGeometryCollection()->NumElements(FGeometryCollection::TransformGroup));
+#endif
+
+		CalculateGlobalMatrices();
+		RefreshEmbeddedGeometry();
+	}
+}

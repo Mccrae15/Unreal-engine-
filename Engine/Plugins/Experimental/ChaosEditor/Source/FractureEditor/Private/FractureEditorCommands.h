@@ -37,6 +37,9 @@ class FFractureEditorCommands : public TCommands<FFractureEditorCommands>
 		TSharedPtr< FUICommandInfo > Flatten;
 		TSharedPtr< FUICommandInfo > MoveUp;
 		TSharedPtr< FUICommandInfo > ClusterMerge;
+
+		// Edit Commands
+		TSharedPtr< FUICommandInfo > DeleteBranch;
 		
 		// Generate Commands
 		TSharedPtr< FUICommandInfo > GenerateAsset;
@@ -44,7 +47,8 @@ class FFractureEditorCommands : public TCommands<FFractureEditorCommands>
 
 		// Embed Commands
 		TSharedPtr< FUICommandInfo > AddEmbeddedGeometry;
-		TSharedPtr< FUICommandInfo > DeleteEmbeddedGeometry;
+		TSharedPtr< FUICommandInfo > AutoEmbedGeometry;
+		TSharedPtr< FUICommandInfo > FlushEmbeddedGeometry;
 		
 		// Fracture Commands
 		TSharedPtr< FUICommandInfo > Uniform;

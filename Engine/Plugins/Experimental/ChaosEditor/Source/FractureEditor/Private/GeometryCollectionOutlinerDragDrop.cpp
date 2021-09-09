@@ -4,6 +4,7 @@
 
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
+#include "ScopedTransaction.h"
 
 #define LOCTEXT_NAMESPACE "ChaosEditor"
 
@@ -13,7 +14,7 @@ bool FGeometryCollectionBoneDragDrop::ValidateDrop(const FGeometryCollection* Ot
 	{
 		return false;
 	}
-	
+
 	// We don't currently support transfer of geometry from one collection to another.
 	if (OtherGeometryCollection != GeometryCollection.Get())
 	{
@@ -27,9 +28,24 @@ bool FGeometryCollectionBoneDragDrop::ValidateDrop(const FGeometryCollection* Ot
 		return false;
 	}
 
+	const TManagedArray<int32>& ExemplarIndex = OtherGeometryCollection->ExemplarIndex;
 	const TManagedArray<int32>& SimulationType = OtherGeometryCollection->SimulationType;
 	if (OtherGeometryCollection->IsClustered(OtherBone))
 	{
+		if (ContainsInstance())
+		{
+			MessageText = NSLOCTEXT("GeometryCollectionOutliner", "Instances_GeometryCollectionOutliner",
+				"Cannot parent instanced embedded geometry directly to cluster.");
+			return false;
+		}
+
+		if (ContainsInstance())
+		{
+			MessageText = NSLOCTEXT("GeometryCollectionOutliner", "EmbeddedToCluster_GeometryCollectionOutliner",
+				"Cannot parent instanced embedded geometry to cluster.");
+			return false;
+		}
+
 		if (ContainsEmbedded())
 		{
 			MessageText = NSLOCTEXT("GeometryCollectionOutliner", "EmbeddedToCluster_GeometryCollectionOutliner",
@@ -79,6 +95,8 @@ bool FGeometryCollectionBoneDragDrop::ReparentBones(const FGeometryCollection* O
 	bool bValid = ValidateDrop(OtherGeometryCollection, OtherBone, HoverText);
 	if (bValid)
 	{
+		FScopedTransaction Transaction(LOCTEXT("ReparentBones", "Reparent Bones"));
+
 		// If we parent a rigid to another rigid, we convert the child rigid to embedded.
 		if (GeometryCollection->IsRigid(OtherBone))
 		{
@@ -94,10 +112,11 @@ bool FGeometryCollectionBoneDragDrop::ReparentBones(const FGeometryCollection* O
 		// If we parent an embedded geometry to a cluster, it becomes a rigid body.
 		else if (GeometryCollection->IsClustered(OtherBone))
 		{
+			const TManagedArray<int32>& ExemplarIndex = OtherGeometryCollection->ExemplarIndex;
 			TManagedArray<int32>& SimulationType = GeometryCollection->SimulationType;
 			for (int32 Bone : BonePayload)
 			{
-				if (SimulationType[Bone] == FGeometryCollection::ESimulationTypes::FST_None)
+				if ((SimulationType[Bone] == FGeometryCollection::ESimulationTypes::FST_None) && (ExemplarIndex[Bone] == INDEX_NONE))
 				{
 					SimulationType[Bone] = FGeometryCollection::ESimulationTypes::FST_Rigid;
 				}
@@ -105,6 +124,7 @@ bool FGeometryCollectionBoneDragDrop::ReparentBones(const FGeometryCollection* O
 		}
 
 		FGeometryCollectionClusteringUtility::ClusterBonesUnderExistingNode(GeometryCollection.Get(), OtherBone, BonePayload);
+		FGeometryCollectionClusteringUtility::RemoveDanglingClusters(GeometryCollection.Get());
 	}
 
 	return bValid;
@@ -144,6 +164,21 @@ bool FGeometryCollectionBoneDragDrop::ContainsEmbedded() const
 			return true;
 		}
 	}
+	return false;
+}
+
+bool FGeometryCollectionBoneDragDrop::ContainsInstance() const
+{
+	
+	const TManagedArray<int32>& ExemplarIndex = GeometryCollection->ExemplarIndex;
+	for (int32 Bone : BonePayload)
+	{
+		if (ExemplarIndex[Bone] > INDEX_NONE)
+		{
+			return true;
+		}
+	}
+	
 	return false;
 }
 
