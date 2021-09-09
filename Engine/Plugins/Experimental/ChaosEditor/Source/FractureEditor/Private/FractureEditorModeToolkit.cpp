@@ -246,6 +246,7 @@ void FFractureEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolki
 	.BodyBorderBackgroundColor(FLinearColor(1.0, 0.0, 0.0))
 	.AreaTitleFont(FEditorStyle::Get().GetFontStyle("HistogramDetailsView.CategoryFontStyle"))
 	.InitiallyCollapsed(true)
+	.Clipping(EWidgetClipping::ClipToBounds)
 	.BodyContent()
 	[
 		SNew(SVerticalBox)
@@ -253,18 +254,6 @@ void FFractureEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolki
 		.AutoHeight()
 		[
 			HistogramDetailsView.ToSharedRef()
-		]
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		[
-			SNew(SButton)
-			//.ButtonStyle(FAppStyle::Get(), "PrimaryButton")
-			//.TextStyle(FAppStyle::Get(), "ButtonText")
-			.HAlign(HAlign_Center)
-			.ContentPadding(FMargin(10.f, Padding))
-			.OnClicked(this, &FFractureEditorModeToolkit::ResetHistogramSelection)
-			.IsEnabled(this, &FFractureEditorModeToolkit::CanResetFilter)
-			.Text(LOCTEXT("ResetFilterButton", "Reset Filter"))
 		]
 		+ SVerticalBox::Slot()
 		[
@@ -425,11 +414,11 @@ void FFractureEditorModeToolkit::OnObjectPostEditChange( UObject* Object, FPrope
 {
 	if (PropertyChangedEvent.Property)
 	{
-		if ( PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFractureSettings, ExplodeAmount))
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFractureSettings, ExplodeAmount))
 		{
 			OnExplodedViewValueChanged();
-		} 
-		else if ( PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFractureSettings, FractureLevel))
+		}
+		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFractureSettings, FractureLevel))
 		{
 			OnLevelViewValueChanged();
 		}
@@ -443,6 +432,12 @@ void FFractureEditorModeToolkit::OnObjectPostEditChange( UObject* Object, FPrope
 			UHistogramSettings* HistogramSettings = GetMutableDefault<UHistogramSettings>();
 			HistogramView->InspectAttribute(HistogramSettings->InspectedAttribute);
 		}
+		else if ((PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UHistogramSettings, bShowRigids)) ||
+			(PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UHistogramSettings, bShowClusters)) ||
+			(PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UHistogramSettings, bShowEmbedded)))
+		{
+			HistogramView->RegenerateNodes(GetLevelViewValue());
+		}
 		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOutlinerSettings, ItemText))
 		{
 			UOutlinerSettings* OutlinerSettings = GetMutableDefault<UOutlinerSettings>();
@@ -452,7 +447,7 @@ void FFractureEditorModeToolkit::OnObjectPostEditChange( UObject* Object, FPrope
 	}
 }
 
-const TArray<FName> FFractureEditorModeToolkit::PaletteNames = { FName(TEXT("Generate")), FName(TEXT("Select")), FName(TEXT("Fracture")), FName(TEXT("Cluster")), FName(TEXT("Embed")), FName(TEXT("Properties")), FName(TEXT("Fix")) };
+const TArray<FName> FFractureEditorModeToolkit::PaletteNames = { FName(TEXT("Generate")), FName(TEXT("Select")), FName(TEXT("Fracture")), FName(TEXT("Cluster")), FName(TEXT("Edit")), FName(TEXT("Embed")), FName(TEXT("Properties")), FName(TEXT("Fix")) };
 
 FText FFractureEditorModeToolkit::GetToolPaletteDisplayName(FName Palette) const
 { 
@@ -499,10 +494,15 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 		ToolbarBuilder.AddToolBarButton(Commands.MoveUp);
 		ToolbarBuilder.AddToolBarButton(Commands.ClusterMerge);
 	}
+	else if (PaletteIndex == TEXT("Edit"))
+	{
+		ToolbarBuilder.AddToolBarButton(Commands.DeleteBranch);
+	}
 	else if (PaletteIndex == TEXT("Embed"))
 	{
 		ToolbarBuilder.AddToolBarButton(Commands.AddEmbeddedGeometry);
-		ToolbarBuilder.AddToolBarButton(Commands.DeleteEmbeddedGeometry);
+		ToolbarBuilder.AddToolBarButton(Commands.AutoEmbedGeometry);
+		ToolbarBuilder.AddToolBarButton(Commands.FlushEmbeddedGeometry);
 	}
 	else if (PaletteIndex == TEXT("Properties"))
 	{
@@ -1103,7 +1103,7 @@ void FFractureEditorModeToolkit::UpdateGeometryComponentAttributes(UGeometryColl
 
 			if (!GeometryCollection->HasAttribute("Volume", FTransformCollection::TransformGroup))
 			{
-				GeometryCollection->AddAttribute<Chaos::FReal>("Volume", FTransformCollection::TransformGroup);
+				GeometryCollection->AddAttribute<float>("Volume", FTransformCollection::TransformGroup);
 				UE_LOG(LogFractureTool, Warning, TEXT("Added Volume attribute to GeometryCollection."));
 			}
 
@@ -1113,7 +1113,7 @@ void FFractureEditorModeToolkit::UpdateGeometryComponentAttributes(UGeometryColl
 			const TManagedArray<FVector>& Vertex = GeometryCollection->Vertex;
 			const TManagedArray<int32>& BoneMap = GeometryCollection->BoneMap;
 
-			Chaos::TParticles<float, 3> MassSpaceParticles;
+			Chaos::TParticles<Chaos::FReal, 3> MassSpaceParticles;
 			MassSpaceParticles.AddParticles(Vertex.Num());
 			for (int32 Idx = 0; Idx < Vertex.Num(); ++Idx)
 			{
@@ -1129,12 +1129,36 @@ void FFractureEditorModeToolkit::UpdateGeometryComponentAttributes(UGeometryColl
 					UpdateVolumes(GeometryCollection, MassSpaceParticles, Idx);
 				}
 			}
+
+			// Normalize Size
+			if (!GeometryCollection->HasAttribute("Size", FTransformCollection::TransformGroup))
+			{
+				GeometryCollection->AddAttribute<float>("Size", FTransformCollection::TransformGroup);
+				UE_LOG(LogFractureTool, Warning, TEXT("Added Size attribute to GeometryCollection."));
+			}
+			TManagedArray<float>& Size = GeometryCollection->GetAttribute<float>("Size", FTransformCollection::TransformGroup);
+			const TManagedArray<int32>& SimulationType = GeometryCollection->SimulationType;
+			float MaxSize = 0.0f;
+			for (int32 Idx = 0; Idx < Size.Num(); ++Idx)
+			{
+				if (SimulationType[Idx] == FGeometryCollection::ESimulationTypes::FST_Rigid)
+				{
+					MaxSize = FMath::Max(Size[Idx], MaxSize);
+				}
+			}
+			if (MaxSize > 0.0)
+			{
+				for (int32 Idx = 0; Idx < Size.Num(); ++Idx)
+				{
+					Size[Idx] /= MaxSize;
+				}
+			}
 		}
 	}
-	
+
 }
 
-void FFractureEditorModeToolkit::UpdateVolumes(FGeometryCollectionPtr GeometryCollection, const Chaos::TParticles<float, 3>& MassSpaceParticles, int32 TransformIndex)
+void FFractureEditorModeToolkit::UpdateVolumes(FGeometryCollectionPtr GeometryCollection, const Chaos::TParticles<Chaos::FReal, 3>& MassSpaceParticles, int32 TransformIndex)
 {
 	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
 	const TManagedArray<int32>& SimulationType = GeometryCollection->SimulationType;
@@ -1144,6 +1168,12 @@ void FFractureEditorModeToolkit::UpdateVolumes(FGeometryCollectionPtr GeometryCo
 	const TManagedArray<int32>& TransformToGeometryIndex = GeometryCollection->TransformToGeometryIndex;
 	const TManagedArray<FIntVector>& Indices = GeometryCollection->Indices;
 	TManagedArray<float>& Volumes = GeometryCollection->GetAttribute<float>("Volume", FTransformCollection::TransformGroup);
+
+	if (!GeometryCollection->HasAttribute("Size", FTransformCollection::TransformGroup))
+	{
+		GeometryCollection->AddAttribute<float>("Size", FTransformCollection::TransformGroup);
+	}
+	TManagedArray<float>& Size = GeometryCollection->GetAttribute<float>("Size", FTransformCollection::TransformGroup);
 
 	if (SimulationType[TransformIndex] == FGeometryCollection::ESimulationTypes::FST_Rigid)
 	{
@@ -1159,25 +1189,29 @@ void FFractureEditorModeToolkit::UpdateVolumes(FGeometryCollectionPtr GeometryCo
 					Indices,
 					true));
 
-			float Volume = 0.0;
+			Chaos::FReal Volume = 0.0;
 			Chaos::FVec3 CenterOfMass;
 			Chaos::CalculateVolumeAndCenterOfMass(MassSpaceParticles, TriMesh->GetElements(), Volume, CenterOfMass);
 
 			// Since we're only interested in relative mass, we assume density = 1.0
-			Volumes[TransformIndex] = Volume;
-		}	
+			Volumes[TransformIndex] = Volume; // todo(lwc) potential conversion from double to float
+			Size[TransformIndex] = FGenericPlatformMath::Pow(static_cast<float>(Volume), (1.0f / 3.0f));
+		}
 	}
 	else if (SimulationType[TransformIndex] == FGeometryCollection::ESimulationTypes::FST_Clustered)
 	{
 		// Recurse to children and sum the volumes for this node
 		float LocalVolume = 0.0;
+		float LocalSize = 0.0;
 		for (int32 ChildIndex : Children[TransformIndex])
 		{
 			UpdateVolumes(GeometryCollection, MassSpaceParticles, ChildIndex);
 			LocalVolume += Volumes[ChildIndex];
+			LocalSize += Size[ChildIndex];
 		}
 
 		Volumes[TransformIndex] = LocalVolume;
+		Size[TransformIndex] = LocalSize;
 	}
 	else
 	{
@@ -1343,13 +1377,12 @@ void FFractureEditorModeToolkit::OnOutlinerBoneSelectionChanged(UGeometryCollect
 	const UGeometryCollection* RestCollection = RootComponent->GetRestCollection();
 	if (RestCollection && !RestCollection->IsPendingKill())
 	{
-		FScopedTransaction Transaction(FractureTransactionContexts::SelectBoneContext, LOCTEXT("SelectGeometryCollectionBoneTransaction", "Select Bone"), RootComponent);
-
 		if (SelectedBones.Num())
 		{
 
 			FFractureSelectionTools::ToggleSelectedBones(RootComponent, SelectedBones, true, false);
 			OutlinerView->SetBoneSelection(RootComponent, SelectedBones, true);
+			HistogramView->SetBoneSelection(RootComponent, SelectedBones, true);
 		}
 		else
 		{
@@ -1369,8 +1402,30 @@ void FFractureEditorModeToolkit::OnOutlinerBoneSelectionChanged(UGeometryCollect
 
 void FFractureEditorModeToolkit::OnHistogramBoneSelectionChanged(UGeometryCollectionComponent* RootComponent, TArray<int32>& SelectedBones)
 {
-	// If anything is selected in the Histogram, filter the appropriate Outliner component
-	OutlinerView->SetHistogramSelection(RootComponent, SelectedBones);
+	const UGeometryCollection* RestCollection = RootComponent->GetRestCollection();
+	if (RestCollection && !RestCollection->IsPendingKill())
+	{
+		if (SelectedBones.Num())
+		{
+
+			FFractureSelectionTools::ToggleSelectedBones(RootComponent, SelectedBones, true, false);
+			OutlinerView->SetBoneSelection(RootComponent, SelectedBones, true);
+			HistogramView->SetBoneSelection(RootComponent, SelectedBones, true);
+		}
+		else
+		{
+			FFractureSelectionTools::ClearSelectedBones(RootComponent);
+		}
+
+		if (ActiveTool != nullptr)
+		{
+			ActiveTool->FractureContextChanged();
+		}
+
+		RootComponent->MarkRenderStateDirty();
+		RootComponent->MarkRenderDynamicDataDirty();
+	}
+
 }
 
 FText FFractureEditorModeToolkit::GetStatisticsSummary() const

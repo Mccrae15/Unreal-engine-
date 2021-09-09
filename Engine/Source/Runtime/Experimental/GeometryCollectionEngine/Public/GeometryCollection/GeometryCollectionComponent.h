@@ -32,6 +32,8 @@ class UBoxComponent;
 class UGeometryCollectionCache;
 class UChaosPhysicalMaterial;
 class AChaosSolverActor;
+struct FGeometryCollectionEmbeddedExemplar;
+class UInstancedStaticMeshComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnChaosBreakEvent, const FChaosBreakEvent&, BreakEvent);
 
@@ -376,6 +378,9 @@ public:
 	FORCEINLINE FGeometryCollectionEdit EditRestCollection(GeometryCollection::EEditUpdate EditUpdate = GeometryCollection::EEditUpdate::RestPhysics) { return FGeometryCollectionEdit(this, EditUpdate); }
 #if WITH_EDITOR
 	FORCEINLINE FScopedColorEdit EditBoneSelection() { return FScopedColorEdit(this); }
+
+	/** Propagate bone selection to embedded geometry components. */
+	void SelectEmbeddedGeometry();
 #endif
 
 	/** API for getting at geometry collection data */
@@ -422,6 +427,7 @@ public:
 	COPY_ON_WRITE_ATTRIBUTE(int32, SimulationType, FTransformCollection::TransformGroup)
 	COPY_ON_WRITE_ATTRIBUTE(int32, TransformToGeometryIndex, FTransformCollection::TransformGroup)
 	COPY_ON_WRITE_ATTRIBUTE(int32, StatusFlags, FTransformCollection::TransformGroup)
+	COPY_ON_WRITE_ATTRIBUTE(int32, ExemplarIndex, FTransformCollection::TransformGroup)
 
 
 	UPROPERTY(EditAnywhere, NoClear, BlueprintReadOnly, Category = "ChaosPhysics")
@@ -622,6 +628,17 @@ public:
 	/** Gets the physical material to use for this geometry collection, taking into account instance overrides and render materials */
 	UPhysicalMaterial* GetPhysicalMaterial() const;
 
+	/** Update component structure to reflect any changes to the embedded geometry */
+	void InitializeEmbeddedGeometry();
+
+	/** Update instanced static mesh components to reflect internal embedded geometry state. */
+	void RefreshEmbeddedGeometry();
+
+#if WITH_EDITOR
+	void SetEmbeddedGeometrySelectable(bool bSelectableIn);
+	int32 EmbeddedIndexToTransformIndex(const UInstancedStaticMeshComponent* ISMComponent, int32 InstanceIndex) const;
+#endif
+
 public:
 	UPROPERTY(BlueprintAssignable, Category = "Collision")
 	FOnChaosPhysicsCollision OnChaosPhysicsCollision;
@@ -762,4 +779,16 @@ private:
 #if GEOMETRYCOLLECTION_EDITOR_SELECTION
 	bool bIsTransformSelectionModeEnabled;
 #endif  // #if GEOMETRYCOLLECTION_EDITOR_SELECTION
+
+	/** The information of all the embedded instanced static meshes */
+	UPROPERTY()
+	TArray<UInstancedStaticMeshComponent*> EmbeddedGeometryComponents;
+
+#if WITH_EDITORONLY_DATA
+	TArray<TArray<int32>> EmbeddedBoneMaps;
+	TArray<int32> EmbeddedInstanceIndex;
+#endif
+
+	bool IsEmbeddedGeometryValid() const;
+	void ClearEmbeddedGeometry();
 };

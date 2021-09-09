@@ -18,10 +18,10 @@ public:
 	DRAG_DROP_OPERATOR_TYPE(FGeometryCollectionBoneDragDrop, FDecoratedDragDropOp)
 
 
-	TArray<int32> BonePayload;
-	TSharedPtr<FGeometryCollection,ESPMode::ThreadSafe> GeometryCollection;
+		TArray<int32> BonePayload;
+	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollection;
 
-	static TSharedRef<FGeometryCollectionBoneDragDrop> New(TSharedPtr<FGeometryCollection,ESPMode::ThreadSafe> InGeometryCollection, TArray<int32>& InBonePayload)
+	static TSharedRef<FGeometryCollectionBoneDragDrop> New(TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> InGeometryCollection, TArray<int32>& InBonePayload)
 	{
 		TSharedRef<FGeometryCollectionBoneDragDrop> Operation = MakeShareable(new FGeometryCollectionBoneDragDrop);
 		Operation->MouseCursor = EMouseCursor::GrabHandClosed;
@@ -42,5 +42,6 @@ private:
 	bool ContainsCluster() const;
 	bool ContainsRigid() const;
 	bool ContainsEmbedded() const;
-	
+	bool ContainsInstance() const;
+
 };

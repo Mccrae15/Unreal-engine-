@@ -179,6 +179,7 @@ void UGeometryCollection::Reset()
 		Modify();
 		GeometryCollection->Empty();
 		Materials.Empty();
+		EmbeddedGeometryExemplar.Empty();
 		InvalidateCollection();
 	}
 }
@@ -479,6 +480,33 @@ bool UGeometryCollection::IsSimulationDataDirty() const
 #else
 	return false;
 #endif
+}
+
+int32 UGeometryCollection::AttachEmbeddedGeometryExemplar(const UStaticMesh* Exemplar)
+{
+	FSoftObjectPath NewExemplarPath(Exemplar);
+
+	// Check first if the exemplar is already attached
+	for (int32 ExemplarIndex = 0; ExemplarIndex < EmbeddedGeometryExemplar.Num(); ++ExemplarIndex)
+	{
+		if (NewExemplarPath == EmbeddedGeometryExemplar[ExemplarIndex].StaticMeshExemplar)
+		{
+			return ExemplarIndex;
+		}
+	}
+
+	return EmbeddedGeometryExemplar.Emplace(NewExemplarPath);
+}
+
+void UGeometryCollection::RemoveExemplars(const TArray<int32>& SortedRemovalIndices)
+{
+	if (SortedRemovalIndices.Num() > 0)
+	{
+		for (int32 Index = SortedRemovalIndices.Num() - 1; Index >= 0; --Index)
+		{
+			EmbeddedGeometryExemplar.RemoveAt(Index);
+		}
+	}
 }
 
 FGuid UGeometryCollection::GetIdGuid() const

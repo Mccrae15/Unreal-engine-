@@ -5,6 +5,7 @@
 #include "FractureToolProperties.h"
 
 #include "GeometryCollection/GeometryCollectionComponent.h"
+#include "GeometryCollection/GeometryCollectionUtility.h"
 
 #include "Widgets/Colors/SColorBlock.h"
 #include "Widgets/Text/STextBlock.h"
@@ -28,21 +29,20 @@ TSharedRef<ITableRow> FGeometryCollectionHistogramItem::MakeHistogramRowWidget(c
 		.Content()
 		[
 			SNew(SHorizontalBox)
-			+SHorizontalBox::Slot()
-			.FillWidth(NormalizedValue)
-			[
-				SNew(SColorBlock)
-				.Color(NodeColor)
-				//.AlphaDisplayMode(EColorBlockAlphaDisplayMode::Ignore)
-				.IgnoreAlpha(true)
-				.Size(FVector2D(1.0f,5.0f))
-				.ToolTipText(FText::FromString(HoverString))
-			]
 			+ SHorizontalBox::Slot()
-			.FillWidth(1.0-NormalizedValue)
-			[
-				SNew(SBox)
-			]
+		.FillWidth(NormalizedValue)
+		[
+			SNew(SColorBlock)
+			.Color(NodeColor)
+		.IgnoreAlpha(true)
+		.Size(FVector2D(1.0f, 5.0f))
+		.ToolTipText(FText::FromString(HoverString))
+		]
+	+ SHorizontalBox::Slot()
+		.FillWidth(1.0 - NormalizedValue)
+		[
+			SNew(SBox)
+		]
 		];
 }
 
@@ -64,29 +64,34 @@ void FGeometryCollectionHistogramItem::SetInspectedAttribute(EInspectedAttribute
 				break;
 
 			case EInspectedAttributeEnum::Level:
-				{
-					int32 Level = Collection->GetAttribute<int32>(TEXT("Level"), TEXT("Transform"))[BoneIndex];
-					HoverString = FString::Printf(TEXT("%d: %d"), BoneIndex, Level);
-					InspectedValue = static_cast<float>(Level);
-				}
-				break;
+			{
+				int32 Level = Collection->GetAttribute<int32>(TEXT("Level"), TEXT("Transform"))[BoneIndex];
+				HoverString = FString::Printf(TEXT("%d: %d"), BoneIndex, Level);
+				InspectedValue = static_cast<float>(Level);
+			}
+			break;
 
 			case EInspectedAttributeEnum::InitialDynamicState:
-				{
-					int32 InitialDynamicState = static_cast<int32>(Collection->GetAttribute<int32>(TEXT("InitialDynamicState"), TEXT("Transform"))[BoneIndex]);
-					
-					static const TArray<FString> HoverNames{ "No Override", "Sleeping", "Kinematic", "Static" };
-					HoverString = FString::Printf(TEXT("%d: %s"), BoneIndex, *HoverNames[InitialDynamicState]);
+			{
+				int32 InitialDynamicState = static_cast<int32>(Collection->GetAttribute<int32>(TEXT("InitialDynamicState"), TEXT("Transform"))[BoneIndex]);
 
-					InspectedValue = static_cast<float>(InitialDynamicState);
-				}
+				static const TArray<FString> HoverNames{ "No Override", "Sleeping", "Kinematic", "Static" };
+				HoverString = FString::Printf(TEXT("%d: %s"), BoneIndex, *HoverNames[InitialDynamicState]);
+
+				InspectedValue = static_cast<float>(InitialDynamicState);
+			}
+			break;
+
+			case EInspectedAttributeEnum::Size:
+				InspectedValue = Collection->GetAttribute<float>(TEXT("Size"), TEXT("Transform"))[BoneIndex];
+				HoverString = FString::Printf(TEXT("%d: %.2f"), BoneIndex, InspectedValue);
 				break;
 
 			default:
 				// Invalid inspection attribute
 				check(false);
 			}
-		}	
+		}
 	}
 }
 
@@ -96,7 +101,7 @@ void FGeometryCollectionHistogramItem::SetNormalizedValue(float MinValue, float 
 	if ((MaxValue - MinValue) > KINDA_SMALL_NUMBER)
 	{
 		NormalizedValue = (InspectedValue - MinValue) / (MaxValue - MinValue);
-	} 
+	}
 	else
 	{
 		NormalizedValue = 1.0;
@@ -119,9 +124,17 @@ FGeometryCollectionHistogramItemPtr FGeometryCollectionHistogramItemComponent::G
 
 FGeometryCollectionHistogramItemList FGeometryCollectionHistogramItemComponent::RegenerateNodes(int32 LevelView)
 {
+	// Filter nodes by simulation type
+	UHistogramSettings* HistogramSettings = GetMutableDefault<UHistogramSettings>();
+	TArray<bool> FilterNodeFlags;
+	FilterNodeFlags.SetNum(FGeometryCollection::ESimulationTypes::FST_Max);
+	FilterNodeFlags[FGeometryCollection::ESimulationTypes::FST_None] = HistogramSettings->bShowEmbedded;
+	FilterNodeFlags[FGeometryCollection::ESimulationTypes::FST_Rigid] = HistogramSettings->bShowRigids;
+	FilterNodeFlags[FGeometryCollection::ESimulationTypes::FST_Clustered] = HistogramSettings->bShowClusters;
+
 	// Collect the inspected attribute 
 	FGeometryCollectionHistogramItemList NodesList;
-	
+
 	if (Component->GetRestCollection())
 	{
 		FGeometryCollection* Collection = Component->GetRestCollection()->GetGeometryCollection().Get();
@@ -132,15 +145,15 @@ FGeometryCollectionHistogramItemList FGeometryCollectionHistogramItemComponent::
 		if (Collection)
 		{
 			int32 NumElements = Collection->NumElements(FGeometryCollection::TransformGroup);
-
+			
 			const TManagedArray<FGuid>& Guids = Collection->GetAttribute<FGuid>("GUID", "Transform");
 			const TManagedArray<int32>& GeometryToTransform = Collection->GetAttribute<int32>("TransformIndex", "Geometry");
 			const TManagedArray<FLinearColor>& BoneColor = Collection->GetAttribute<FLinearColor>("BoneColor", "Transform");
-		
+
 			// Add a sub item to the histogram for each of the geometry nodes in this GeometryCollection
 			for (int32 Index = 0; Index < NumElements; Index++)
 			{
-				if (Collection->SimulationType[Index] == FGeometryCollection::ESimulationTypes::FST_Rigid)
+				if (FilterNodeFlags[Collection->SimulationType[Index]])
 				{
 					if (LevelView > -1)
 					{
@@ -178,12 +191,12 @@ void SGeometryCollectionHistogram::Construct(const FArguments& InArgs)
 	bPerformingSelection = false;
 
 	ChildSlot
-	[
-		SAssignNew(ListView, SListView<FGeometryCollectionHistogramItemPtr>)
-		.ListItemsSource(&LeafNodes)
+		[
+			SAssignNew(ListView, SListView<FGeometryCollectionHistogramItemPtr>)
+			.ListItemsSource(&LeafNodes)
 		.OnSelectionChanged(this, &SGeometryCollectionHistogram::OnSelectionChanged)
 		.OnGenerateRow(this, &SGeometryCollectionHistogram::MakeHistogramRowWidget)
-	];
+		];
 }
 
 void SGeometryCollectionHistogram::SetComponents(const TArray<UGeometryCollectionComponent*>& InNewComponents, int32 LevelView)
@@ -192,7 +205,7 @@ void SGeometryCollectionHistogram::SetComponents(const TArray<UGeometryCollectio
 	// we want to refresh the tree selection using selected bones
 	TGuardValue<bool> ExternalSelectionGuard(bPerformingSelection, true);
 	ListView->ClearSelection();
-	
+
 	RootNodes.Empty();
 	LeafNodes.Empty();
 
@@ -210,7 +223,7 @@ void SGeometryCollectionHistogram::SetComponents(const TArray<UGeometryCollectio
 		InspectAttribute(HistogramSettings->InspectedAttribute);
 		NormalizeInspectedValues();
 	}
-	
+
 	UHistogramSettings* HistogramSettings = GetMutableDefault<UHistogramSettings>();
 	RefreshView(HistogramSettings->bSorted);
 }
@@ -229,7 +242,7 @@ void SGeometryCollectionHistogram::InspectAttribute(EInspectedAttributeEnum Insp
 
 void SGeometryCollectionHistogram::RefreshView(bool bSorted)
 {
-	
+
 	if (LeafNodes.Num() > 0)
 	{
 		if (bSorted)
@@ -237,18 +250,18 @@ void SGeometryCollectionHistogram::RefreshView(bool bSorted)
 			// Sort nodes by value
 			LeafNodes.Sort([](const TSharedPtr<FGeometryCollectionHistogramItem> A, const TSharedPtr<FGeometryCollectionHistogramItem> B)
 				{
-					return A->GetInspectedValue() > B->GetInspectedValue(); 
+					return A->GetInspectedValue() > B->GetInspectedValue();
 				});
 
 		}
-		else 
+		else
 		{
 			// Sort nodes by value
 			LeafNodes.Sort([](const TSharedPtr<FGeometryCollectionHistogramItem> A, const TSharedPtr<FGeometryCollectionHistogramItem> B)
 				{
 					return A->GetListIndex() > B->GetListIndex();
 				});
-		}	
+		}
 	}
 
 	ListView->RebuildList();
@@ -256,12 +269,16 @@ void SGeometryCollectionHistogram::RefreshView(bool bSorted)
 
 void SGeometryCollectionHistogram::RegenerateNodes(int32 LevelView)
 {
+	LeafNodes.Empty();
 	for (TSharedPtr<FGeometryCollectionHistogramItemComponent> Root : RootNodes)
 	{
-		Root->RegenerateNodes(LevelView);
+		LeafNodes.Append(Root->RegenerateNodes(LevelView));
 	}
+	SetListIndices();
 
 	UHistogramSettings* HistogramSettings = GetMutableDefault<UHistogramSettings>();
+	InspectAttribute(HistogramSettings->InspectedAttribute);
+	NormalizeInspectedValues();
 	RefreshView(HistogramSettings->bSorted);
 }
 
@@ -305,7 +322,7 @@ void SGeometryCollectionHistogram::OnSelectionChanged(FGeometryCollectionHistogr
 			BoneSelectionChangedDelegate.Execute(SelectionPair.Key, SelectionPair.Value);
 		}
 	}
-	
+
 }
 
 
