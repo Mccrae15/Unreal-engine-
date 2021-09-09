@@ -22,9 +22,49 @@
 #include "Logging/LogMacros.h"
 #include "Materials/Material.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "MeshDescription.h"
+#include "StaticMeshAttributes.h"
+#include "StaticMeshOperations.h"
 
 
 DEFINE_LOG_CATEGORY_STATIC(UGeometryCollectionConversionLogging, Log, All);
+
+struct FUniqueVertex
+{
+	FVector Normal;
+	FVector Tangent;
+	TArray<FVector2D> UVs;
+
+	bool operator==(const FUniqueVertex& Other) const
+	{
+		if (this->UVs.Num() != Other.UVs.Num())
+		{
+			return false;
+		}
+		
+		bool bEquality = true;
+		bEquality &= (this->Normal == Other.Normal);
+		bEquality &= (this->Tangent == Other.Tangent);
+		for (int32 UVLayerIdx = 0; UVLayerIdx < UVs.Num(); ++UVLayerIdx)
+		{
+			bEquality &= (this->UVs[UVLayerIdx] == Other.UVs[UVLayerIdx]);
+		}
+		
+		return bEquality;
+	}
+};
+
+FORCEINLINE uint32 GetTypeHash(const FUniqueVertex& UniqueVertex)
+{
+	uint32 VertexHash = GetTypeHash(UniqueVertex.Normal);
+	VertexHash = HashCombine(VertexHash, GetTypeHash(UniqueVertex.Tangent));
+	for (int32 UVLayerIdx = 0; UVLayerIdx < UniqueVertex.UVs.Num(); ++UVLayerIdx)
+	{
+		VertexHash = HashCombine(VertexHash, GetTypeHash(UniqueVertex.UVs[UVLayerIdx]));
+	}
+	
+	return VertexHash;
+}
 
 void FGeometryCollectionConversion::AppendStaticMesh(const UStaticMesh* StaticMesh, const TArray<UMaterialInterface*>& Materials, const FTransform& StaticMeshTransform, UGeometryCollection* GeometryCollectionObject, bool ReindexMaterials)
 {
@@ -33,156 +73,108 @@ void FGeometryCollectionConversion::AppendStaticMesh(const UStaticMesh* StaticMe
 		return;
 	}
 
+	FMeshDescription* MeshDescription = nullptr;
+	MeshDescription = StaticMesh->GetMeshDescription(0);
+
 	check(GeometryCollectionObject);
 	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = GeometryCollectionObject->GetGeometryCollection();
 	FGeometryCollection* GeometryCollection = GeometryCollectionPtr.Get();
 	check(GeometryCollection);
 
-	// @todo : Discuss how to handle multiple LOD's
-	if (StaticMesh->GetRenderData() && StaticMesh->GetRenderData()->LODResources.Num() > 0)
+	if (MeshDescription)
 	{
-		const FStaticMeshVertexBuffers& VertexBuffer = StaticMesh->GetRenderData()->LODResources[0].VertexBuffers;
+		FStaticMeshOperations::ComputePolygonTangentsAndNormals(*MeshDescription);
+		FStaticMeshOperations::RecomputeNormalsAndTangentsIfNeeded(*MeshDescription, EComputeNTBsFlags::UseMikkTSpace);
 
-		// vertex information
-		TManagedArray<FVector>& Vertex = GeometryCollection->Vertex;
-		TManagedArray<FVector>& TangentU = GeometryCollection->TangentU;
-		TManagedArray<FVector>& TangentV = GeometryCollection->TangentV;
-		TManagedArray<FVector>& Normal = GeometryCollection->Normal;
-		TManagedArray<FVector2D>& UV = GeometryCollection->UV;
-		TManagedArray<FLinearColor>& Color = GeometryCollection->Color;
-		TManagedArray<int32>& BoneMap = GeometryCollection->BoneMap;
-		TManagedArray<FLinearColor>& BoneColor = GeometryCollection->BoneColor;
-		TManagedArray<FString>& BoneName = GeometryCollection->BoneName;
+		// source vertex information
+		FStaticMeshAttributes Attributes(*MeshDescription);
+		TVertexAttributesConstRef<FVector> SourcePosition = Attributes.GetVertexPositions();
+		TVertexInstanceAttributesConstRef<FVector> SourceTangent = Attributes.GetVertexInstanceTangents();
+		TVertexInstanceAttributesConstRef<float> SourceBinormalSign = Attributes.GetVertexInstanceBinormalSigns();
+		TVertexInstanceAttributesConstRef<FVector> SourceNormal = Attributes.GetVertexInstanceNormals();
+		TVertexInstanceAttributesConstRef<FVector4> SourceColor = Attributes.GetVertexInstanceColors();
 
-		const int32 VertexCount = VertexBuffer.PositionVertexBuffer.GetNumVertices();
-		int InitialNumVertices = GeometryCollection->NumElements(FGeometryCollection::VerticesGroup);
-		int VertexStart = GeometryCollection->AddElements(VertexCount, FGeometryCollection::VerticesGroup);
+		TVertexInstanceAttributesConstRef<FVector2D> InstanceUVs = Attributes.GetVertexInstanceUVs();
+		const int32 NumUVLayers = InstanceUVs.GetNumIndices();
+		
+		// target vertex information
+		TManagedArray<FVector>& TargetVertex = GeometryCollection->Vertex;
+		TManagedArray<FVector>& TargetTangentU = GeometryCollection->TangentU;
+		TManagedArray<FVector>& TargetTangentV = GeometryCollection->TangentV;
+		TManagedArray<FVector>& TargetNormal = GeometryCollection->Normal;
+		TManagedArray<TArray<FVector2D>>& TargetUVs = GeometryCollection->UVs;
+		TManagedArray<FLinearColor>& TargetColor = GeometryCollection->Color;
+		TManagedArray<int32>& TargetBoneMap = GeometryCollection->BoneMap;
+		TManagedArray<FLinearColor>& TargetBoneColor = GeometryCollection->BoneColor;
+		TManagedArray<FString>& TargetBoneName = GeometryCollection->BoneName;
+
+		const int32 VertexStart = GeometryCollection->NumElements(FGeometryCollection::VerticesGroup);
+		int32 VertexCount = 0;
+		
 		FVector Scale = StaticMeshTransform.GetScale3D();
-		for (int32 VertexIndex = 0; VertexIndex < VertexCount; VertexIndex++)
-		{
-			int VertexOffset = VertexStart + VertexIndex;
-			Vertex[VertexOffset] = VertexBuffer.PositionVertexBuffer.VertexPosition(VertexIndex) * Scale;
-			BoneMap[VertexOffset] = GeometryCollection->NumElements(FGeometryCollection::TransformGroup);
+		
+		// We'll need to re-introduce UV seams, etc. by splitting vertices.
+		// A new mapping of MeshDescription vertex instances to the split vertices is maintained.
+		TMap<FVertexInstanceID, int32> VertexInstanceToGeometryCollectionVertex;
+		VertexInstanceToGeometryCollectionVertex.Reserve(Attributes.GetVertexInstanceNormals().GetNumElements());
+		
+		for (const FVertexID VertexIndex : MeshDescription->Vertices().GetElementIDs())
+		{		
+			
+			TArrayView<const FVertexInstanceID> ReferencingVertexInstances = MeshDescription->GetVertexVertexInstances(VertexIndex);
 
-			TangentU[VertexOffset] = VertexBuffer.StaticMeshVertexBuffer.VertexTangentX(VertexIndex);
-			TangentV[VertexOffset] = VertexBuffer.StaticMeshVertexBuffer.VertexTangentY(VertexIndex);
-			Normal[VertexOffset] = VertexBuffer.StaticMeshVertexBuffer.VertexTangentZ(VertexIndex);
-
-			// @todo : Support multiple UV's per vertex based on MAX_STATIC_TEXCOORDS
-			UV[VertexOffset] = VertexBuffer.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, 0);
-			if (VertexBuffer.ColorVertexBuffer.GetNumVertices() == VertexCount)
-				Color[VertexOffset] = VertexBuffer.ColorVertexBuffer.VertexColor(VertexIndex);
-		}
-
-		// Triangle Indices
-		TManagedArray<FIntVector>& Indices = GeometryCollection->Indices;
-		TManagedArray<bool>& Visible = GeometryCollection->Visible;
-		TManagedArray<int32>& MaterialID = GeometryCollection->MaterialID;
-		TManagedArray<int32>& MaterialIndex = GeometryCollection->MaterialIndex;
-
-		const FRawStaticIndexBuffer& IndexBuffer = StaticMesh->GetRenderData()->LODResources[0].IndexBuffer;
-		FIndexArrayView IndexBufferView = IndexBuffer.GetArrayView();
-		const int32 IndicesCount = IndexBuffer.GetNumIndices() / 3;
-		int InitialNumIndices = GeometryCollection->NumElements(FGeometryCollection::FacesGroup);
-		int IndicesStart = GeometryCollection->AddElements(IndicesCount, FGeometryCollection::FacesGroup);
-		for (int32 IndicesIndex = 0, StaticIndex = 0; IndicesIndex < IndicesCount; IndicesIndex++, StaticIndex += 3)
-		{
-			int32 IndicesOffset = IndicesStart + IndicesIndex;
-			Indices[IndicesOffset] = FIntVector(
-				IndexBufferView[StaticIndex] + VertexStart,
-				IndexBufferView[StaticIndex + 1] + VertexStart,
-				IndexBufferView[StaticIndex + 2] + VertexStart);
-			Visible[IndicesOffset] = true;
-			MaterialID[IndicesOffset] = 0;
-			MaterialIndex[IndicesOffset] = IndicesOffset;
-		}
-
-		// Geometry transform
-		TManagedArray<FTransform>& Transform = GeometryCollection->Transform;
-
-		int32 TransformIndex1 = GeometryCollection->AddElements(1, FGeometryCollection::TransformGroup);
-		Transform[TransformIndex1] = StaticMeshTransform;
-		Transform[TransformIndex1].SetScale3D(FVector(1.f, 1.f, 1.f));
-
-		// Bone Hierarchy - Added at root with no common parent
-		TManagedArray<int32>& Parent = GeometryCollection->Parent;
-		TManagedArray<int32>& SimulationType = GeometryCollection->SimulationType;
-		Parent[TransformIndex1] = FGeometryCollection::Invalid;
-		SimulationType[TransformIndex1] = FGeometryCollection::ESimulationTypes::FST_Rigid;
-
-		const FColor RandBoneColor(FMath::Rand() % 100 + 5, FMath::Rand() % 100 + 5, FMath::Rand() % 100 + 5, 255);
-		BoneColor[TransformIndex1] = FLinearColor(RandBoneColor);
-		BoneName[TransformIndex1] = StaticMesh->GetName();
-
-		// GeometryGroup
-		int GeometryIndex = GeometryCollection->AddElements(1, FGeometryCollection::GeometryGroup);
-
-		TManagedArray<int32>& TransformIndex = GeometryCollection->TransformIndex;
-		TManagedArray<FBox>& BoundingBox = GeometryCollection->BoundingBox;
-		TManagedArray<float>& InnerRadius = GeometryCollection->InnerRadius;
-		TManagedArray<float>& OuterRadius = GeometryCollection->OuterRadius;
-		TManagedArray<int32>& VertexStartArray = GeometryCollection->VertexStart;
-		TManagedArray<int32>& VertexCountArray = GeometryCollection->VertexCount;
-		TManagedArray<int32>& FaceStartArray = GeometryCollection->FaceStart;
-		TManagedArray<int32>& FaceCountArray = GeometryCollection->FaceCount;
-
-		TransformIndex[GeometryIndex] = BoneMap[VertexStart];
-		VertexStartArray[GeometryIndex] = InitialNumVertices;
-		VertexCountArray[GeometryIndex] = VertexCount;
-		FaceStartArray[GeometryIndex] = InitialNumIndices;
-		FaceCountArray[GeometryIndex] = IndicesCount;
-
-		// TransformGroup
-		TManagedArray<int32>& TransformToGeometryIndexArray = GeometryCollection->TransformToGeometryIndex;
-		TransformToGeometryIndexArray[TransformIndex1] = GeometryIndex;
-
-		FVector Center(0);
-		for (int32 VertexIndex = VertexStart; VertexIndex < VertexStart + VertexCount; VertexIndex++)
-		{
-			Center += Vertex[VertexIndex];
-		}
-		if (VertexCount) Center /= VertexCount;
-
-		// Inner/Outer edges, bounding box
-		BoundingBox[GeometryIndex] = FBox(ForceInitToZero);
-		InnerRadius[GeometryIndex] = FLT_MAX;
-		OuterRadius[GeometryIndex] = -FLT_MAX;
-		for (int32 VertexIndex = VertexStart; VertexIndex < VertexStart + VertexCount; VertexIndex++)
-		{
-			BoundingBox[GeometryIndex] += Vertex[VertexIndex];
-
-			float Delta = (Center - Vertex[VertexIndex]).Size();
-			InnerRadius[GeometryIndex] = FMath::Min(InnerRadius[GeometryIndex], Delta);
-			OuterRadius[GeometryIndex] = FMath::Max(OuterRadius[GeometryIndex], Delta);
-		}
-
-		// Inner/Outer centroid
-		for (int fdx = IndicesStart; fdx < IndicesStart + IndicesCount; fdx++)
-		{
-			FVector Centroid(0);
-			for (int e = 0; e < 3; e++)
+			// Generate per instance hash of splittable attributes.
+			TMap<FUniqueVertex, TArray<FVertexInstanceID>> SplitVertices;
+			for (const FVertexInstanceID& InstanceID : ReferencingVertexInstances)
 			{
-				Centroid += Vertex[Indices[fdx][e]];
+				TArray<FVector2D> SourceUVs;
+				SourceUVs.SetNum(NumUVLayers);
+				for (int32 UVLayerIdx = 0; UVLayerIdx < NumUVLayers; ++UVLayerIdx)
+				{
+					SourceUVs[UVLayerIdx] = InstanceUVs.Get(InstanceID, UVLayerIdx);
+				}
+
+				FUniqueVertex UniqueVertex{ SourceNormal[InstanceID], SourceTangent[InstanceID], SourceUVs };
+				TArray<FVertexInstanceID>& SplitVertex = SplitVertices.FindOrAdd(UniqueVertex);
+				SplitVertex.Add(InstanceID);
 			}
-			Centroid /= 3;
 
-			float Delta = (Center - Centroid).Size();
-			InnerRadius[GeometryIndex] = FMath::Min(InnerRadius[GeometryIndex], Delta);
-			OuterRadius[GeometryIndex] = FMath::Max(OuterRadius[GeometryIndex], Delta);
-		}
-
-		// Inner/Outer edges
-		for (int fdx = IndicesStart; fdx < IndicesStart + IndicesCount; fdx++)
-		{
-			for (int e = 0; e < 3; e++)
+			int32 CurrentVertex = GeometryCollection->AddElements(SplitVertices.Num(), FGeometryCollection::VerticesGroup);
+			
+			// Create a new vertex for each split vertex and map the mesh description instance to it.
+			for (const TTuple<FUniqueVertex,TArray<FVertexInstanceID>>& SplitVertex : SplitVertices)
 			{
-				int i = e, j = (e + 1) % 3;
-				FVector Edge = Vertex[Indices[fdx][i]] + 0.5 * (Vertex[Indices[fdx][j]] - Vertex[Indices[fdx][i]]);
-				float Delta = (Center - Edge).Size();
-				InnerRadius[GeometryIndex] = FMath::Min(InnerRadius[GeometryIndex], Delta);
-				OuterRadius[GeometryIndex] = FMath::Max(OuterRadius[GeometryIndex], Delta);
+				const TArray<FVertexInstanceID>& InstanceIDs = SplitVertex.Value;
+				const FVertexInstanceID& ExemplarInstanceID = InstanceIDs[0];
+
+				TargetVertex[CurrentVertex] = SourcePosition[VertexIndex] * Scale;
+				TargetBoneMap[CurrentVertex] = GeometryCollection->NumElements(FGeometryCollection::TransformGroup);
+
+				TargetNormal[CurrentVertex] = SourceNormal[ExemplarInstanceID];
+				TargetTangentU[CurrentVertex] = SourceTangent[ExemplarInstanceID];
+				TargetTangentV[CurrentVertex] = SourceBinormalSign[ExemplarInstanceID] * FVector::CrossProduct(TargetNormal[CurrentVertex], TargetTangentU[CurrentVertex]);
+
+				TargetUVs[CurrentVertex] = SplitVertex.Key.UVs;
+
+				if (SourceColor.GetNumElements() > 0)
+				{
+					TargetColor[CurrentVertex] = FLinearColor(SourceColor[ExemplarInstanceID]);
+				}
+				else
+				{
+					TargetColor[CurrentVertex] = FLinearColor::White;
+				}
+
+				for (const FVertexInstanceID& InstanceID : InstanceIDs)
+				{
+					VertexInstanceToGeometryCollectionVertex.Add(InstanceID, CurrentVertex);
+				}
+
+				++CurrentVertex;
+				++VertexCount;
 			}
 		}
+
 
 		// for each material, add a reference in our GeometryCollectionObject
 		const int32 MaterialStart = GeometryCollectionObject->Materials.Num();
@@ -204,30 +196,121 @@ void FGeometryCollectionConversion::AppendStaticMesh(const UStaticMesh* StaticMe
 			GeometryCollectionObject->Materials.Add(CurrMaterial);
 		}
 
-		TManagedArray<FGeometryCollectionSection>& Sections = GeometryCollection->Sections;
+		// target triangle indices
+		TManagedArray<FIntVector>& TargetIndices = GeometryCollection->Indices;
+		TManagedArray<bool>& TargetVisible = GeometryCollection->Visible;
+		TManagedArray<int32>& TargetMaterialID = GeometryCollection->MaterialID;
+		TManagedArray<int32>& TargetMaterialIndex = GeometryCollection->MaterialIndex;
 
-		// We make sections that mirror what is in the static mesh.  Note that this isn't explicitly
-		// necessary since we reindex after all the meshes are added, but it is a good step to have
-		// optimal min/max vertex index right from the static mesh.  All we really need to do is
-		// assign material ids and rely on reindexing, in theory
-		for (const FStaticMeshSection& CurrSection : StaticMesh->GetRenderData()->LODResources[0].Sections)
-		{			
-			// create new section
-			int32 SectionIndex = GeometryCollection->AddElements(1, FGeometryCollection::MaterialGroup);
+		const int32 IndicesCount = MeshDescription->Triangles().Num();
+		const int32 InitialNumIndices = GeometryCollection->NumElements(FGeometryCollection::FacesGroup);
+		const int32 IndicesStart = GeometryCollection->AddElements(IndicesCount, FGeometryCollection::FacesGroup);
+		int32 TargetIndex = IndicesStart;
+		for (const FTriangleID TriangleIndex : MeshDescription->Triangles().GetElementIDs())
+		{
+			TArrayView<const FVertexInstanceID> TriangleVertices = MeshDescription->GetTriangleVertexInstances(TriangleIndex);
 
-			Sections[SectionIndex].MaterialID = MaterialStart + CurrSection.MaterialIndex;
+			TargetIndices[TargetIndex] = FIntVector(
+				VertexInstanceToGeometryCollectionVertex[TriangleVertices[0]],
+				VertexInstanceToGeometryCollectionVertex[TriangleVertices[1]],
+				VertexInstanceToGeometryCollectionVertex[TriangleVertices[2]]
+			);
 
-			Sections[SectionIndex].FirstIndex = IndicesStart * 3 + CurrSection.FirstIndex;
-			Sections[SectionIndex].MinVertexIndex = VertexStart + CurrSection.MinVertexIndex;
+			TargetVisible[TargetIndex] = true;
 
-			Sections[SectionIndex].NumTriangles = CurrSection.NumTriangles;
-			Sections[SectionIndex].MaxVertexIndex = VertexStart + CurrSection.MaxVertexIndex;
+			// Materials are ganged in pairs and we want the id to associate with the first of each pair.
+			TargetMaterialID[TargetIndex] = MaterialStart + (MeshDescription->GetTrianglePolygonGroup(TriangleIndex).GetValue() * 2);
 
-			// set the MaterialID for all of the faces
-			// note the divide by 3 - the GeometryCollection stores indices in tuples of 3 rather than in a flat array
-			for (int32 i = Sections[SectionIndex].FirstIndex / 3; i < Sections[SectionIndex].FirstIndex / 3 + Sections[SectionIndex].NumTriangles; ++i)
+			// Is this right?
+			TargetMaterialIndex[TargetIndex] = TargetIndex;
+
+			++TargetIndex;
+		}
+
+		// Geometry transform
+		TManagedArray<FTransform>& Transform = GeometryCollection->Transform;
+
+		int32 TransformIndex1 = GeometryCollection->AddElements(1, FGeometryCollection::TransformGroup);
+		Transform[TransformIndex1] = StaticMeshTransform;
+		Transform[TransformIndex1].SetScale3D(FVector(1.f, 1.f, 1.f));
+
+		// Bone Hierarchy - Added at root with no common parent
+		TManagedArray<int32>& Parent = GeometryCollection->Parent;
+		TManagedArray<int32>& SimulationType = GeometryCollection->SimulationType;
+		Parent[TransformIndex1] = FGeometryCollection::Invalid;
+		SimulationType[TransformIndex1] = FGeometryCollection::ESimulationTypes::FST_Rigid;
+
+		const FColor RandBoneColor(FMath::Rand() % 100 + 5, FMath::Rand() % 100 + 5, FMath::Rand() % 100 + 5, 255);
+		TargetBoneColor[TransformIndex1] = FLinearColor(RandBoneColor);
+		TargetBoneName[TransformIndex1] = StaticMesh->GetName();
+
+		// GeometryGroup
+		int GeometryIndex = GeometryCollection->AddElements(1, FGeometryCollection::GeometryGroup);
+
+		TManagedArray<int32>& TransformIndex = GeometryCollection->TransformIndex;
+		TManagedArray<FBox>& BoundingBox = GeometryCollection->BoundingBox;
+		TManagedArray<float>& InnerRadius = GeometryCollection->InnerRadius;
+		TManagedArray<float>& OuterRadius = GeometryCollection->OuterRadius;
+		TManagedArray<int32>& VertexStartArray = GeometryCollection->VertexStart;
+		TManagedArray<int32>& VertexCountArray = GeometryCollection->VertexCount;
+		TManagedArray<int32>& FaceStartArray = GeometryCollection->FaceStart;
+		TManagedArray<int32>& FaceCountArray = GeometryCollection->FaceCount;
+
+		TransformIndex[GeometryIndex] = TargetBoneMap[VertexStart];
+		VertexStartArray[GeometryIndex] = VertexStart;
+		VertexCountArray[GeometryIndex] = VertexCount;
+		FaceStartArray[GeometryIndex] = InitialNumIndices;
+		FaceCountArray[GeometryIndex] = IndicesCount;
+
+		// TransformGroup
+		TManagedArray<int32>& TransformToGeometryIndexArray = GeometryCollection->TransformToGeometryIndex;
+		TransformToGeometryIndexArray[TransformIndex1] = GeometryIndex;
+
+		FVector Center(0);
+		for (int32 VertexIndex = VertexStart; VertexIndex < VertexStart + VertexCount; VertexIndex++)
+		{
+			Center += TargetVertex[VertexIndex];
+		}
+		if (VertexCount) Center /= VertexCount;
+
+		// Inner/Outer edges, bounding box
+		BoundingBox[GeometryIndex] = FBox(ForceInitToZero);
+		InnerRadius[GeometryIndex] = FLT_MAX;
+		OuterRadius[GeometryIndex] = -FLT_MAX;
+		for (int32 VertexIndex = VertexStart; VertexIndex < VertexStart + VertexCount; VertexIndex++)
+		{
+			BoundingBox[GeometryIndex] += TargetVertex[VertexIndex];
+
+			float Delta = (Center - TargetVertex[VertexIndex]).Size();
+			InnerRadius[GeometryIndex] = FMath::Min(InnerRadius[GeometryIndex], Delta);
+			OuterRadius[GeometryIndex] = FMath::Max(OuterRadius[GeometryIndex], Delta);
+		}
+
+		// Inner/Outer centroid
+		for (int fdx = IndicesStart; fdx < IndicesStart + IndicesCount; fdx++)
+		{
+			FVector Centroid(0);
+			for (int e = 0; e < 3; e++)
 			{
-				MaterialID[i] = Sections[SectionIndex].MaterialID;
+				Centroid += TargetVertex[TargetIndices[fdx][e]];
+			}
+			Centroid /= 3;
+
+			float Delta = (Center - Centroid).Size();
+			InnerRadius[GeometryIndex] = FMath::Min(InnerRadius[GeometryIndex], Delta);
+			OuterRadius[GeometryIndex] = FMath::Max(OuterRadius[GeometryIndex], Delta);
+		}
+
+		// Inner/Outer edges
+		for (int fdx = IndicesStart; fdx < IndicesStart + IndicesCount; fdx++)
+		{
+			for (int e = 0; e < 3; e++)
+			{
+				int i = e, j = (e + 1) % 3;
+				FVector Edge = TargetVertex[TargetIndices[fdx][i]] + 0.5 * (TargetVertex[TargetIndices[fdx][j]] - TargetVertex[TargetIndices[fdx][i]]);
+				float Delta = (Center - Edge).Size();
+				InnerRadius[GeometryIndex] = FMath::Min(InnerRadius[GeometryIndex], Delta);
+				OuterRadius[GeometryIndex] = FMath::Max(OuterRadius[GeometryIndex], Delta);
 			}
 		}
 
@@ -236,7 +319,6 @@ void FGeometryCollectionConversion::AppendStaticMesh(const UStaticMesh* StaticMe
 		}
 	}
 }
-
 
 void FGeometryCollectionConversion::AppendGeometryCollection(const UGeometryCollection* SourceGeometryCollection, const TArray<UMaterialInterface*>& Materials, const FTransform& GeometryCollectionTransform, UGeometryCollection* TargetGeometryCollectionObject, bool ReindexMaterials)
 {
@@ -275,7 +357,7 @@ void FGeometryCollectionConversion::AppendGeometryCollection(const UGeometryColl
 	const TManagedArray<FVector>& SourceTangentU = SourceGeometryCollectionPtr->TangentU;
 	const TManagedArray<FVector>& SourceTangentV = SourceGeometryCollectionPtr->TangentV;
 	const TManagedArray<FVector>& SourceNormal = SourceGeometryCollectionPtr->Normal;
-	const TManagedArray<FVector2D>& SourceUV = SourceGeometryCollectionPtr->UV;
+	const TManagedArray<TArray<FVector2D>>& SourceUVs = SourceGeometryCollectionPtr->UVs;
 	const TManagedArray<FLinearColor>& SourceColor = SourceGeometryCollectionPtr->Color;
 	const TManagedArray<int32>& SourceBoneMap = SourceGeometryCollectionPtr->BoneMap;
 
@@ -284,7 +366,7 @@ void FGeometryCollectionConversion::AppendGeometryCollection(const UGeometryColl
 	TManagedArray<FVector>& TargetTangentU = GeometryCollection->TangentU;
 	TManagedArray<FVector>& TargetTangentV = GeometryCollection->TangentV;
 	TManagedArray<FVector>& TargetNormal = GeometryCollection->Normal;
-	TManagedArray<FVector2D>& TargetUV = GeometryCollection->UV;
+	TManagedArray<TArray<FVector2D>>& TargetUVs = GeometryCollection->UVs;
 	TManagedArray<FLinearColor>& TargetColor = GeometryCollection->Color;
 	TManagedArray<int32>& TargetBoneMap = GeometryCollection->BoneMap;
 
@@ -297,7 +379,7 @@ void FGeometryCollectionConversion::AppendGeometryCollection(const UGeometryColl
 		TargetTangentU[VertexOffset] = SourceTangentU[VertexIndex];
 		TargetTangentV[VertexOffset] = SourceTangentV[VertexIndex];
 		TargetNormal[VertexOffset] = SourceNormal[VertexIndex];
-		TargetUV[VertexOffset] = SourceUV[VertexIndex];
+		TargetUVs[VertexOffset] = SourceUVs[VertexIndex];
 		TargetColor[VertexOffset] = SourceColor[VertexIndex];
 
 		TargetBoneMap[VertexOffset] = SourceBoneMap[VertexIndex] + TransformStart;
@@ -549,14 +631,12 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 				{
 					if (SkelMeshRenderData->LODRenderData.Num())
 					{
-						const FSkeletalMeshLODRenderData & SkeletalMeshLODRenderData = SkelMeshRenderData->LODRenderData[0];
-						const FSkinWeightVertexBuffer & SkinWeightVertexBuffer = *SkeletalMeshLODRenderData.GetSkinWeightVertexBuffer();
-
+						const FSkeletalMeshLODRenderData& SkeletalMeshLODRenderData = SkelMeshRenderData->LODRenderData[0];
+						const FSkinWeightVertexBuffer& SkinWeightVertexBuffer = *SkeletalMeshLODRenderData.GetSkinWeightVertexBuffer();
 						const FStaticMeshVertexBuffers& VertexBuffers = SkeletalMeshLODRenderData.StaticVertexBuffers;
 						const FPositionVertexBuffer& PositionVertexBuffer = VertexBuffers.PositionVertexBuffer;
 						const int32 VertexCount = PositionVertexBuffer.GetNumVertices();
-						
-						// Check that all vertex weightings are rigid.
+						// Check that all vertex weightings are rigid. 
 						for (int32 VertexIndex = 0; VertexIndex < VertexCount; VertexIndex++)
 						{
 							int32 SkeletalBoneIndex = -1;
@@ -566,10 +646,8 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 								return;
 							}
 						}
-						
-											
-						const FSkelMeshRenderSection & RenderSection = SkeletalMeshLODRenderData.RenderSections[0];
-						const TArray<FBoneIndexType> & SkeletalBoneMap = RenderSection.BoneMap;
+						const FSkelMeshRenderSection& RenderSection = SkeletalMeshLODRenderData.RenderSections[0];
+						const TArray<FBoneIndexType>& SkeletalBoneMap = RenderSection.BoneMap;
 
 						//
 						// The Component transform for each Mesh will become the FTransform that drives
@@ -625,7 +703,7 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 						TManagedArray<FVector>& TangentU = GeometryCollection->TangentU;
 						TManagedArray<FVector>& TangentV = GeometryCollection->TangentV;
 						TManagedArray<FVector>& Normal = GeometryCollection->Normal;
-						TManagedArray<FVector2D>& UV = GeometryCollection->UV;
+						TManagedArray<TArray<FVector2D>>& UVs = GeometryCollection->UVs;
 						TManagedArray<FLinearColor>& Color = GeometryCollection->Color;
 						TManagedArray<int32>& BoneMap = GeometryCollection->BoneMap;
 						TManagedArray<FLinearColor>& BoneColor = GeometryCollection->BoneColor;
@@ -639,6 +717,7 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 
 						int InitialNumVertices = GeometryCollection->NumElements(FGeometryCollection::VerticesGroup);
 						int VertexBaseIndex = GeometryCollection->AddElements(VertexCount, FGeometryCollection::VerticesGroup);
+						const int32 NumUVLayers = VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords();
 						for (int32 VertexIndex = 0; VertexIndex < VertexCount; VertexIndex++)
 						{
 							int VertexOffset = VertexBaseIndex + VertexIndex;
@@ -654,11 +733,17 @@ void FGeometryCollectionConversion::AppendSkeletalMesh(const USkeletalMesh* Skel
 							TangentU[VertexOffset] = VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexIndex);
 							TangentV[VertexOffset] = VertexBuffers.StaticMeshVertexBuffer.VertexTangentY(VertexIndex);
 							Normal[VertexOffset] = VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexIndex);
-
-							// @todo : Support multiple UV's per vertex based on MAX_STATIC_TEXCOORDS
-							UV[VertexOffset] = VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, 0);
+							
+							UVs[VertexOffset].SetNum(NumUVLayers);
+							for (int32 UVLayerIdx = 0; UVLayerIdx < NumUVLayers; ++UVLayerIdx)
+							{
+								UVs[VertexOffset][UVLayerIdx] = VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, UVLayerIdx);
+							}
+							
 							if (VertexBuffers.ColorVertexBuffer.GetNumVertices() == VertexCount)
 								Color[VertexOffset] = VertexBuffers.ColorVertexBuffer.VertexColor(VertexIndex);
+							else
+								Color[VertexOffset] = FLinearColor::White;
 						}
 
 						int32 InitialIndex = -1;

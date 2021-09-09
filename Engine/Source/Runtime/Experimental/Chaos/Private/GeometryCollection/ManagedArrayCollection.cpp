@@ -12,7 +12,7 @@ int8 FManagedArrayCollection::Invalid = INDEX_NONE;
 
 FManagedArrayCollection::FManagedArrayCollection()
 {
-	Version = 7;
+	Version = 8;
 }
 
 static const FName GuidName("GUID");
