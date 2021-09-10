@@ -59,6 +59,7 @@ class FFractureEditorCommands : public TCommands<FFractureEditorCommands>
 		TSharedPtr< FUICommandInfo > Brick;
 		TSharedPtr< FUICommandInfo > Texture;
 		TSharedPtr< FUICommandInfo > Resample;
+		TSharedPtr< FUICommandInfo > Mesh;
 		TSharedPtr< FUICommandInfo > FixTinyGeo;
 
 		// Property Commands

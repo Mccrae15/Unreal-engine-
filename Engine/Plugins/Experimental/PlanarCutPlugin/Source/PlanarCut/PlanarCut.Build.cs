@@ -28,6 +28,7 @@ namespace UnrealBuildTool.Rules
 					"Chaos",
 					"GeometryAlgorithms",
 					"MeshDescription",
+					"MeshConversion",
                 }
                 );
 		}

@@ -640,9 +640,16 @@ int32 CutWithMesh(
 	FMeshDescriptionToDynamicMesh Converter;
 	FDynamicMesh3 FullMesh; // full-featured conversion of the source mesh
 	Converter.Convert(CuttingMesh, FullMesh);
+	FullMesh.Attributes()->EnableTangents();
 	bool bHasInvalidNormals, bHasInvalidTangents;
 	FStaticMeshOperations::AreNormalsAndTangentsValid(*CuttingMesh, bHasInvalidNormals, bHasInvalidTangents);
-	if (bHasInvalidNormals || bHasInvalidTangents)
+	if (!bHasInvalidNormals && !bHasInvalidTangents) // mesh has valid tangents; copy them over
+	{
+		FMeshTangentsf Tangents;
+		Converter.CopyTangents(CuttingMesh, &FullMesh, &Tangents);
+		Tangents.CopyToOverlays(FullMesh);
+	}
+	else // missing tangents / normals; compute them
 	{
 		FDynamicMeshAttributeSet& Attribs = *FullMesh.Attributes();
 		FDynamicMeshNormalOverlay* NTB[3]{ Attribs.PrimaryNormals(), Attribs.PrimaryTangents(), Attribs.PrimaryBiTangents() };
