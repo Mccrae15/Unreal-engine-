@@ -483,7 +483,6 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 		ToolbarBuilder.AddToolBarButton(Commands.Mesh);
 		ToolbarBuilder.AddToolBarButton(Commands.Slice);
 		ToolbarBuilder.AddToolBarButton(Commands.Brick);
-		ToolbarBuilder.AddToolBarButton(Commands.Resample);
 	}
 	else if (PaletteIndex == TEXT("Cluster"))
 	{
@@ -511,6 +510,8 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 	}
 	else if (PaletteIndex == TEXT("Fix"))
 	{
+		ToolbarBuilder.AddToolBarButton(Commands.RecomputeNormals);
+		ToolbarBuilder.AddToolBarButton(Commands.Resample);
 		ToolbarBuilder.AddToolBarButton(Commands.MakeConvex);
 		ToolbarBuilder.AddToolBarButton(Commands.FixTinyGeo);
 	}
