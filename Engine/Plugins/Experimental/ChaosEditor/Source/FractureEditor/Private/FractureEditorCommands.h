@@ -49,6 +49,9 @@ class FFractureEditorCommands : public TCommands<FFractureEditorCommands>
 		TSharedPtr< FUICommandInfo > AddEmbeddedGeometry;
 		TSharedPtr< FUICommandInfo > AutoEmbedGeometry;
 		TSharedPtr< FUICommandInfo > FlushEmbeddedGeometry;
+
+		// UV Commands
+		TSharedPtr< FUICommandInfo > AutoUV;
 		
 		// Fracture Commands
 		TSharedPtr< FUICommandInfo > Uniform;

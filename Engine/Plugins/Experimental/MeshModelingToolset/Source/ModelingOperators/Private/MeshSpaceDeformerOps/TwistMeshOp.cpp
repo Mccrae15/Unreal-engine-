@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ModelingOperators\Public\SpaceDeformerOps\TwistMeshOp.h"
+#include "SpaceDeformerOps/TwistMeshOp.h"
 #include "DynamicMeshAttributeSet.h"
 
 //Twists along the Z axis

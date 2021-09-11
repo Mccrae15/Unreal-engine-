@@ -7,6 +7,15 @@
 #include "Image/ImageBuilder.h"
 #include "MeshTangents.h"
 
+enum class EOcclusionMapType : uint8
+{
+	None = 0,
+	AmbientOcclusion = 1,
+	BentNormal = 2,
+	All = 3
+};
+ENUM_CLASS_FLAGS(EOcclusionMapType);
+
 class DYNAMICMESH_API FMeshOcclusionMapBaker : public FMeshImageBaker
 {
 public:
@@ -34,6 +43,7 @@ public:
 		Object
 	};
 
+	EOcclusionMapType OcclusionType = EOcclusionMapType::All;
 	int32 NumOcclusionRays = 32;
 	double MaxDistance = TNumericLimits<double>::Max();
 	double SpreadAngle = 180.0;
@@ -89,6 +99,20 @@ public:
 			check(false);
 			return MoveTemp(OcclusionBuilder);
 		}
+	}
+
+	//
+	// Utility
+	//
+
+	inline bool WantAmbientOcclusion() const
+	{
+		return ((OcclusionType & EOcclusionMapType::AmbientOcclusion) == EOcclusionMapType::AmbientOcclusion);
+	}
+
+	inline bool WantBentNormal() const
+	{
+		return ((OcclusionType & EOcclusionMapType::BentNormal) == EOcclusionMapType::BentNormal);
 	}
 
 protected:

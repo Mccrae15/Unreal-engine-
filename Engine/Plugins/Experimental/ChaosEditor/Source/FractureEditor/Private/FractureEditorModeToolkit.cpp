@@ -447,7 +447,7 @@ void FFractureEditorModeToolkit::OnObjectPostEditChange( UObject* Object, FPrope
 	}
 }
 
-const TArray<FName> FFractureEditorModeToolkit::PaletteNames = { FName(TEXT("Generate")), FName(TEXT("Select")), FName(TEXT("Fracture")), FName(TEXT("Cluster")), FName(TEXT("Edit")), FName(TEXT("Embed")), FName(TEXT("Properties")), FName(TEXT("Fix")) };
+const TArray<FName> FFractureEditorModeToolkit::PaletteNames = { FName(TEXT("Generate")), FName(TEXT("Select")), FName(TEXT("Fracture")), FName(TEXT("Cluster")), FName(TEXT("Edit")), FName(TEXT("Embed")), FName(TEXT("Properties")), FName(TEXT("UV")), FName(TEXT("Fix")) };
 
 FText FFractureEditorModeToolkit::GetToolPaletteDisplayName(FName Palette) const
 { 
@@ -507,6 +507,10 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 	else if (PaletteIndex == TEXT("Properties"))
 	{
 		ToolbarBuilder.AddToolBarButton(Commands.SetInitialDynamicState);
+	}
+	else if (PaletteIndex == TEXT("UV"))
+	{
+		ToolbarBuilder.AddToolBarButton(Commands.AutoUV);
 	}
 	else if (PaletteIndex == TEXT("Fix"))
 	{
