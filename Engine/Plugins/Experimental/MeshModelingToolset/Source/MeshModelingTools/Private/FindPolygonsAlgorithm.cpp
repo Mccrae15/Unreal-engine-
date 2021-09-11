@@ -119,10 +119,10 @@ void FFindPolygonsAlgorithm::SetGroupsFromPolygons()
 
 		// find a normal if the average failed
 		AccumNormal.Normalize();
-		int pi = 0;
-		while (AccumNormal.Length() < 0.9 && pi < NumTriangles)
+		int i = 0;
+		while (AccumNormal.Length() < 0.9 && i < NumTriangles)
 		{
-			AccumNormal = Mesh->GetTriNormal(Polygon[pi++]);
+			AccumNormal = Mesh->GetTriNormal(Polygon[i++]);
 		}
 		if (AccumNormal.Length() < 0.9)
 		{

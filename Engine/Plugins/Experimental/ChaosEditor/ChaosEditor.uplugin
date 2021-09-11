@@ -33,6 +33,14 @@
 		{
 			"Name": "GeometryCollectionPlugin",
 			"Enabled": true
+		},
+		{
+			"Name": "MeshModelingToolset",
+			"Enabled": true
+		},
+		{
+			"Name": "EditorScriptingUtilities",
+			"Enabled": true
 		}
 	]
 }

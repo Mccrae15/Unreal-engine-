@@ -590,77 +590,79 @@ void TextureInternalSurfaces(
 	TArray64<float> CurvatureValues; // buffer to fill with curvature values
 	if (CurvatureIdx > -1)
 	{
-		ensure(false); // Not enough backported for this to work properly
-		int UseVoxRes = FMath::Max(8, AttributeSettings.Curvature_VoxelRes);
-		FImageDimensions Dimensions = TextureOut.GetDimensions();
-		int64 TexelsNum = Dimensions.Num();
-		CurvatureValues.SetNumZeroed(TexelsNum);
-		for (int MeshIdx = 0; MeshIdx < CollectionMeshes.Meshes.Num(); MeshIdx++)
-		{
+		// TODO: Backport more smoothing and curvature baking features if we want to support this attribute
+		CurvatureIdx = -1;
+		ensureMsgf(false, TEXT("Curvature attribute baking not supported yet!"));
+		//int UseVoxRes = FMath::Max(8, AttributeSettings.Curvature_VoxelRes);
+		//FImageDimensions Dimensions = TextureOut.GetDimensions();
+		//int64 TexelsNum = Dimensions.Num();
+		//CurvatureValues.SetNumZeroed(TexelsNum);
+		//for (int MeshIdx = 0; MeshIdx < CollectionMeshes.Meshes.Num(); MeshIdx++)
+		//{
 
-			int32 TransformIdx = CollectionMeshes.Meshes[MeshIdx].TransformIndex;
-			FDynamicMesh3& Mesh = CollectionMeshes.Meshes[MeshIdx].AugMesh;
+		//	int32 TransformIdx = CollectionMeshes.Meshes[MeshIdx].TransformIndex;
+		//	FDynamicMesh3& Mesh = CollectionMeshes.Meshes[MeshIdx].AugMesh;
 
-			FDynamicMeshAABBTree3 Spatial(&Mesh);
-			TFastWindingTree<FDynamicMesh3> FastWinding(&Spatial);
-			double ExtendBounds = Spatial.GetBoundingBox().MaxDim() * .01;
+		//	FDynamicMeshAABBTree3 Spatial(&Mesh);
+		//	TFastWindingTree<FDynamicMesh3> FastWinding(&Spatial);
+		//	double ExtendBounds = Spatial.GetBoundingBox().MaxDim() * .01;
 
-			TImplicitSolidify<FDynamicMesh3> Solidify(&Mesh, &Spatial, &FastWinding);
-			Solidify.SetCellSizeAndExtendBounds(Spatial.GetBoundingBox(), ExtendBounds, UseVoxRes);
-			Solidify.WindingThreshold = AttributeSettings.Curvature_Winding;
-			Solidify.SurfaceSearchSteps = 3;
-			Solidify.bSolidAtBoundaries = true;
-			Solidify.ExtendBounds = ExtendBounds;
+		//	TImplicitSolidify<FDynamicMesh3> Solidify(&Mesh, &Spatial, &FastWinding);
+		//	Solidify.SetCellSizeAndExtendBounds(Spatial.GetBoundingBox(), ExtendBounds, UseVoxRes);
+		//	Solidify.WindingThreshold = AttributeSettings.Curvature_Winding;
+		//	Solidify.SurfaceSearchSteps = 3;
+		//	Solidify.bSolidAtBoundaries = true;
+		//	Solidify.ExtendBounds = ExtendBounds;
 
-			FDynamicMesh3 SolidMesh(&Solidify.Generate());
+		//	FDynamicMesh3 SolidMesh(&Solidify.Generate());
 
-			// Smooth mesh
-			double SmoothAlpha = AttributeSettings.Curvature_SmoothingPerStep;
-			TArray<FVector3d> PositionBuffer;
-			PositionBuffer.SetNumUninitialized(SolidMesh.MaxVertexID());
-			for (int VID : SolidMesh.VertexIndicesItr())
-			{
-				PositionBuffer[VID] = SolidMesh.GetVertex(VID);
-			}
-			// TODO: Backport smoothing
-			//UE::MeshDeformation::ComputeSmoothing_Forward(true, false, SolidMesh, [SmoothAlpha](int VID, bool bIsBoundary) { return SmoothAlpha; },
-			//	AttributeSettings.Curvature_SmoothingSteps, PositionBuffer);
-			//for (int VID : SolidMesh.VertexIndicesItr())
-			//{
-			//	SolidMesh.SetVertex(VID, PositionBuffer[VID]);
-			//}
+		//	// Smooth mesh
+		//	double SmoothAlpha = AttributeSettings.Curvature_SmoothingPerStep;
+		//	TArray<FVector3d> PositionBuffer;
+		//	PositionBuffer.SetNumUninitialized(SolidMesh.MaxVertexID());
+		//	for (int VID : SolidMesh.VertexIndicesItr())
+		//	{
+		//		PositionBuffer[VID] = SolidMesh.GetVertex(VID);
+		//	}
+		//	// TODO: Backport smoothing
+		//	//UE::MeshDeformation::ComputeSmoothing_Forward(true, false, SolidMesh, [SmoothAlpha](int VID, bool bIsBoundary) { return SmoothAlpha; },
+		//	//	AttributeSettings.Curvature_SmoothingSteps, PositionBuffer);
+		//	//for (int VID : SolidMesh.VertexIndicesItr())
+		//	//{
+		//	//	SolidMesh.SetVertex(VID, PositionBuffer[VID]);
+		//	//}
 
-			FDynamicMeshAABBTree3 SolidSpatial(&SolidMesh);
+		//	FDynamicMeshAABBTree3 SolidSpatial(&SolidMesh);
 
-			FMeshImageBakingCache BakeCache;
-			//BakeCache.SetGutterSize(GutterSize); // TODO: Backport
-			BakeCache.SetDetailMesh(&SolidMesh, &SolidSpatial);
-			BakeCache.SetBakeTargetMesh(&Mesh);
-			BakeCache.SetDimensions(Dimensions);
-			BakeCache.SetUVLayer(0);
-			// set distance to search for correspondences based on the voxel size
-			double Thickness = AttributeSettings.Curvature_ThicknessFactor * Spatial.GetBoundingBox().MaxDim() / (float)UseVoxRes;
-			BakeCache.SetThickness(Thickness);
-			BakeCache.ValidateCache();
+		//	FMeshImageBakingCache BakeCache;
+		//	//BakeCache.SetGutterSize(GutterSize); // TODO: Backport
+		//	BakeCache.SetDetailMesh(&SolidMesh, &SolidSpatial);
+		//	BakeCache.SetBakeTargetMesh(&Mesh);
+		//	BakeCache.SetDimensions(Dimensions);
+		//	BakeCache.SetUVLayer(0);
+		//	// set distance to search for correspondences based on the voxel size
+		//	double Thickness = AttributeSettings.Curvature_ThicknessFactor * Spatial.GetBoundingBox().MaxDim() / (float)UseVoxRes;
+		//	BakeCache.SetThickness(Thickness);
+		//	BakeCache.ValidateCache();
 
-			FMeshCurvatureMapBaker CurvatureBaker;
-			//CurvatureBaker.bOverrideCurvatureRange = true; // TODO: Backport
-			//CurvatureBaker.OverrideRangeMax = AttributeSettings.Curvature_MaxValue; // TODO: Backport
-			CurvatureBaker.UseColorMode = FMeshCurvatureMapBaker::EColorMode::BlackGrayWhite;
-			CurvatureBaker.SetCache(&BakeCache);
+		//	FMeshCurvatureMapBaker CurvatureBaker;
+		//	//CurvatureBaker.bOverrideCurvatureRange = true; // TODO: Backport
+		//	//CurvatureBaker.OverrideRangeMax = AttributeSettings.Curvature_MaxValue; // TODO: Backport
+		//	CurvatureBaker.UseColorMode = FMeshCurvatureMapBaker::EColorMode::BlackGrayWhite;
+		//	CurvatureBaker.SetCache(&BakeCache);
 
-			CurvatureBaker.BlurRadius = AttributeSettings.bCurvature_Blur ? AttributeSettings.Curvature_BlurRadius : 0.0;
+		//	CurvatureBaker.BlurRadius = AttributeSettings.bCurvature_Blur ? AttributeSettings.Curvature_BlurRadius : 0.0;
 
-			CurvatureBaker.Bake();
+		//	CurvatureBaker.Bake();
 
-			const TUniquePtr<TImageBuilder<FVector3f>>& Result = CurvatureBaker.GetResult();
-			// copy scalar curvature values out to the accumulated curvature buffer
-			for (int64 LinearIdx = 0; LinearIdx < TexelsNum; LinearIdx++)
-			{
-				float& CurvatureOut = CurvatureValues[LinearIdx];
-				CurvatureOut = FMathf::Max(CurvatureOut, Result->GetPixel(LinearIdx).X);
-			}
-		}
+		//	const TUniquePtr<TImageBuilder<FVector3f>>& Result = CurvatureBaker.GetResult();
+		//	// copy scalar curvature values out to the accumulated curvature buffer
+		//	for (int64 LinearIdx = 0; LinearIdx < TexelsNum; LinearIdx++)
+		//	{
+		//		float& CurvatureOut = CurvatureValues[LinearIdx];
+		//		CurvatureOut = FMathf::Max(CurvatureOut, Result->GetPixel(LinearIdx).X);
+		//	}
+		//}
 	}
 	
 	TArray64<float> AmbientValues; // buffer to fill with ambient occlusion values
@@ -690,7 +692,7 @@ void TextureInternalSurfaces(
 			FMeshOcclusionMapBaker OcclusionBaker;
 			OcclusionBaker.SetCache(&BakeCache);
 			
-			//OcclusionBaker.OcclusionType = EOcclusionMapType::AmbientOcclusion; // TODO: Backport
+			OcclusionBaker.OcclusionType = EOcclusionMapType::AmbientOcclusion;
 			OcclusionBaker.NumOcclusionRays = AttributeSettings.AO_Rays;
 			OcclusionBaker.MaxDistance = AttributeSettings.AO_MaxDistance == 0 ? TNumericLimits<double>::Max() : AttributeSettings.AO_MaxDistance;
 			OcclusionBaker.BiasAngleDeg = AttributeSettings.AO_BiasAngleDeg;

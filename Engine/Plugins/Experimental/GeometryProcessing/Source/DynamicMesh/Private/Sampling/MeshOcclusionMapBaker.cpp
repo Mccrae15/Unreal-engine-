@@ -85,10 +85,13 @@ void FMeshOcclusionMapBaker::Bake()
 			DetailTriNormal.Normalize();
 
 			FVector3d BaseTangentX, BaseTangentY;
-			BaseMeshTangents->GetInterpolatedTriangleTangent(
-				SampleData.BaseSample.TriangleIndex,
-				SampleData.BaseSample.BaryCoords,
-				BaseTangentX, BaseTangentY);
+			if (WantBentNormal() && NormalSpace == ESpace::Tangent)
+			{
+				BaseMeshTangents->GetInterpolatedTriangleTangent(
+					SampleData.BaseSample.TriangleIndex,
+					SampleData.BaseSample.BaryCoords,
+					BaseTangentX, BaseTangentY);
+			}
 
 			FVector3d DetailBaryCoords = SampleData.DetailBaryCoords;
 			FVector3d DetailPos = DetailMesh->GetTriBaryPoint(DetailTriID, DetailBaryCoords.X, DetailBaryCoords.Y, DetailBaryCoords.Z);
