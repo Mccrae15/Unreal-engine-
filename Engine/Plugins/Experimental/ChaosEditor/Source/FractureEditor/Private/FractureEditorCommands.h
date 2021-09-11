@@ -62,6 +62,7 @@ class FFractureEditorCommands : public TCommands<FFractureEditorCommands>
 		// Cleanup Commands
 		TSharedPtr< FUICommandInfo > RecomputeNormals;
 		TSharedPtr< FUICommandInfo > Resample;
+		TSharedPtr< FUICommandInfo > ConvertToMesh;
 		TSharedPtr< FUICommandInfo > Mesh;
 		TSharedPtr< FUICommandInfo > FixTinyGeo;
 		TSharedPtr< FUICommandInfo > MakeConvex;
