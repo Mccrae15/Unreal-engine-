@@ -297,7 +297,7 @@ FBox UFractureToolVoronoiCutterBase::GetVoronoiBounds(const FFractureToolContext
 {
 	FBox VoronoiBounds(Sites);
 	VoronoiBounds += FractureContext.GetWorldBounds();
-	VoronoiBounds = VoronoiBounds.ExpandBy(CutterSettings->Amplitude + CutterSettings->Grout + KINDA_SMALL_NUMBER);
+	VoronoiBounds = VoronoiBounds.ExpandBy(CutterSettings->Amplitude + CutterSettings->Grout + .01f);
 	return VoronoiBounds;
 }
 
