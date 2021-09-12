@@ -212,6 +212,7 @@ void UFractureModalTool::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 		for (FFractureToolContext& FractureContext : FractureContexts)
 		{
 			FractureContext.GetFracturedGeometryCollection()->Modify();
+			FractureContext.GetGeometryCollectionComponent()->Modify();
 
 			int32 FirstNewGeometryIndex = ExecuteFracture(FractureContext);
 			
