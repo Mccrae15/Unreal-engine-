@@ -1467,7 +1467,6 @@ FText FFractureEditorModeToolkit::GetStatisticsSummary() const
 	if (GeometryCollectionArray.Num() > 0)
 	{
 		TArray<int32> LevelTransformsAll;
-		LevelTransformsAll.SetNumZeroed(10);
 		int32 LevelMax = INT_MIN;
 		int32 EmbeddedCount = 0;
 
@@ -1495,15 +1494,18 @@ FText FFractureEditorModeToolkit::GetStatisticsSummary() const
 					else
 					{
 						const int32 NodeLevel = Levels[Element];
-						while (LevelTransforms.Num() <= NodeLevel)
+						if (LevelTransforms.Num() <= NodeLevel)
 						{
-							LevelTransforms.SetNum(NodeLevel + 1);
-							LevelTransforms[NodeLevel] = 0;
+							LevelTransforms.SetNumZeroed(NodeLevel + 1);
 						}
 						++LevelTransforms[NodeLevel];
 					}		
 				}
 
+				if (LevelTransformsAll.Num() < LevelTransforms.Num())
+				{
+					LevelTransformsAll.SetNumZeroed(LevelTransforms.Num());
+				}
 				for(int32 Level = 0; Level < LevelTransforms.Num(); ++Level)
 				{
 					LevelTransformsAll[Level] += LevelTransforms[Level];
