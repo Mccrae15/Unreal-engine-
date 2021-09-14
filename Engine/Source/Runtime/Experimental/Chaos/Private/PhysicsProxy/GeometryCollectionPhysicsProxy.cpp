@@ -1007,6 +1007,15 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(Chaos::FPBDRigidsSolver
 			}
 		}
 
+		// call DirtyParticle to make sure the acceleration structure is up to date with all the changes happening here
+		for (int32 TransformGroupIndex = 0; TransformGroupIndex < NumTransforms; ++TransformGroupIndex)
+		{
+			if (FClusterHandle* Handle = SolverParticleHandles[TransformGroupIndex])
+			{
+				RigidsSolver->GetEvolution()->DirtyParticle(*Handle);
+			}
+		}
+
 	} // end if simulating...
 
 }
