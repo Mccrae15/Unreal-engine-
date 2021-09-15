@@ -33,7 +33,7 @@ namespace Chaos
 
 	using FPBDRigidsEvolutionInternalHandleCallback = TFunction<void(
 		const FGeometryParticleHandle* OldParticle,
-		const FGeometryParticleHandle* NewParticle)>;
+		FGeometryParticleHandle* NewParticle)>;
 
 	class FPBDRigidsEvolutionGBF : public FPBDRigidsEvolutionBase
 	{
@@ -136,7 +136,7 @@ namespace Chaos
 			InternalParticleInitilization = Cb;
 		}
 
-		FORCEINLINE void DoInternalParticleInitilization(const FGeometryParticleHandle* OldParticle, const FGeometryParticleHandle* NewParticle) 
+		FORCEINLINE void DoInternalParticleInitilization(const FGeometryParticleHandle* OldParticle, FGeometryParticleHandle* NewParticle) 
 		{ 
 			if(InternalParticleInitilization)
 			{

@@ -232,7 +232,7 @@ struct FSimulationParameters
 		, EnableClustering(true)
 		, ClusterGroupIndex(0)
 		, MaxClusterLevel(100)
-		, DamageThreshold({250.f})
+		, DamageThreshold({ 250.f })
 		, ClusterConnectionMethod(Chaos::FClusterCreationParameters::EConnectionMethod::PointImplicit)
 		, CollisionGroup(0)
 		, CollisionSampleFraction(1.0)
@@ -243,6 +243,8 @@ struct FSimulationParameters
 		, CacheBeginTime(0.0f)
 		, ReverseCacheBeginTime(0.0f)
 		, bClearCache(false)
+		, bGenerateBreakingData(false)
+		, bGenerateCollisionData(false)
 		, RemoveOnFractureEnabled(false)
 		, SimulationFilterData()
 		, QueryFilterData()
@@ -272,9 +274,8 @@ struct FSimulationParameters
 		, ReverseCacheBeginTime(Other.ReverseCacheBeginTime)
 		, bClearCache(Other.bClearCache)
 		, PhysicalMaterialHandle(Other.PhysicalMaterialHandle)
-		, CollisionData(Other.CollisionData)
-		, BreakingData(Other.BreakingData)
-		, TrailingData(Other.TrailingData)
+		, bGenerateBreakingData(Other.bGenerateBreakingData)
+		, bGenerateCollisionData(Other.bGenerateCollisionData)
 		, Shared(Other.Shared)
 		, RemoveOnFractureEnabled(false)
 		, SimulationFilterData(Other.SimulationFilterData)
@@ -326,9 +327,8 @@ struct FSimulationParameters
 
 	Chaos::FMaterialHandle PhysicalMaterialHandle;
 
-	FCollisionDataSimulationParameters CollisionData;
-	FBreakingDataSimulationParameters BreakingData;
-	FTrailingDataSimulationParameters TrailingData;
+	bool bGenerateBreakingData;
+	bool bGenerateCollisionData;
 
 	FSharedSimulationParameters Shared;
 

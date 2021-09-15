@@ -190,6 +190,11 @@ namespace Chaos
 			InFunction(*EventBuffer->AccessProducerBuffer());
 		}
 
+		virtual void AddEvent(TFunction<void(PayloadType& EventDataInOut)> InFunction)
+		{
+			InFunction(*EventBuffer->AccessProducerBuffer());
+		}
+
 		/**
 		 * Flips the buffer if the buffer type is double or triple
 		 */
@@ -329,6 +334,17 @@ namespace Chaos
 		static int32 EncodeCollisionIndex(int32 ActualCollisionIndex, bool bSwapOrder);
 		/** Returns decoded collision index. */
 		static int32 DecodeCollisionIndex(int32 EncodedCollisionIdx, bool& bSwapOrder);
+
+		template<typename PayloadType>
+		void AddEvent(const EEventType& EventType, TFunction<void(PayloadType& EventData)> InFunction)
+		{
+			ContainerLock.ReadLock();
+			if (TEventContainer<PayloadType>* EventContainer = StaticCast<TEventContainer<PayloadType>*>(EventContainers[FEventID(EventType)]))
+			{
+				EventContainer->AddEvent(InFunction);
+			}
+			ContainerLock.ReadUnlock();
+		}
 
 	private:
 
