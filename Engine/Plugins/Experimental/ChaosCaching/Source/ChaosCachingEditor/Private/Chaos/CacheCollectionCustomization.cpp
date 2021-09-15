@@ -25,19 +25,19 @@ void FCacheCollectionDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuild
 	DetailBuilder.GetObjectsBeingCustomized(Objects);
 
 	// In the simple asset editor we should only get one object
-	if(Objects.Num() != 1)
+	if (Objects.Num() != 1)
 	{
 		return;
 	}
 
 	Item = Objects[0];
 
-	if(UChaosCacheCollection* Collection = GetSelectedCollection())
+	if (UChaosCacheCollection* Collection = GetSelectedCollection())
 	{
 		NameEditBoxes.SetNum(Collection->Caches.Num());
 
-		TSharedRef<IPropertyHandle> CachesProp    = DetailBuilder.GetProperty("Caches");
-		IDetailCategoryBuilder&     CacheCategory = DetailBuilder.EditCategory(CachesProp->GetDefaultCategoryName());
+		TSharedRef<IPropertyHandle> CachesProp = DetailBuilder.GetProperty("Caches");
+		IDetailCategoryBuilder& CacheCategory = DetailBuilder.EditCategory(CachesProp->GetDefaultCategoryName());
 
 		TSharedRef<FDetailArrayBuilder> CacheArrayBuilder = MakeShareable(new FDetailArrayBuilder(CachesProp, true, false, true));
 		CacheArrayBuilder->OnGenerateArrayElementWidget(FOnGenerateArrayElementWidget::CreateSP(this, &FCacheCollectionDetails::GenerateCacheArrayElementWidget, &DetailBuilder));
@@ -47,9 +47,9 @@ void FCacheCollectionDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuild
 
 UChaosCacheCollection* FCacheCollectionDetails::GetSelectedCollection()
 {
-	if(UObject* ItemObj = Item.Get())
+	if (UObject* ItemObj = Item.Get())
 	{
-		if(UChaosCacheCollection* Collection = Cast<UChaosCacheCollection>(ItemObj))
+		if (UChaosCacheCollection* Collection = Cast<UChaosCacheCollection>(ItemObj))
 		{
 			return Collection;
 		}
@@ -60,9 +60,9 @@ UChaosCacheCollection* FCacheCollectionDetails::GetSelectedCollection()
 
 const UChaosCacheCollection* FCacheCollectionDetails::GetSelectedCollection() const
 {
-	if(const UObject* ItemObj = Item.Get())
+	if (const UObject* ItemObj = Item.Get())
 	{
-		if(const UChaosCacheCollection* Collection = Cast<UChaosCacheCollection>(ItemObj))
+		if (const UChaosCacheCollection* Collection = Cast<UChaosCacheCollection>(ItemObj))
 		{
 			return Collection;
 		}
@@ -73,9 +73,9 @@ const UChaosCacheCollection* FCacheCollectionDetails::GetSelectedCollection() co
 
 FText FCacheCollectionDetails::GetCacheName(int32 InCacheIndex) const
 {
-	if(const UChaosCacheCollection* Collection = GetSelectedCollection())
+	if (const UChaosCacheCollection* Collection = GetSelectedCollection())
 	{
-		if(Collection->Caches.IsValidIndex(InCacheIndex) && Collection->Caches[InCacheIndex])
+		if (Collection->Caches.IsValidIndex(InCacheIndex) && Collection->Caches[InCacheIndex])
 		{
 			return FText::FromString(Collection->Caches[InCacheIndex]->GetName());
 		}
@@ -86,9 +86,9 @@ FText FCacheCollectionDetails::GetCacheName(int32 InCacheIndex) const
 
 void FCacheCollectionDetails::OnDeleteCache(int32 InArrayIndex, IDetailLayoutBuilder* InLayoutBuilder)
 {
-	if(UChaosCacheCollection* Collection = GetSelectedCollection())
+	if (UChaosCacheCollection* Collection = GetSelectedCollection())
 	{
-		if(Collection->Caches.IsValidIndex(InArrayIndex) && Collection->Caches[InArrayIndex])
+		if (Collection->Caches.IsValidIndex(InArrayIndex) && Collection->Caches[InArrayIndex])
 		{
 			Collection->Caches.RemoveAt(InArrayIndex);
 			InLayoutBuilder->ForceRefreshDetails();
@@ -98,7 +98,7 @@ void FCacheCollectionDetails::OnDeleteCache(int32 InArrayIndex, IDetailLayoutBui
 
 bool IsValidName(UChaosCacheCollection* Collection, FName InName)
 {
-	if(Collection)
+	if (Collection)
 	{
 		UObject* Existing = StaticFindObject(UChaosCache::StaticClass(), Collection, *InName.ToString());
 		return !Existing;
@@ -110,13 +110,13 @@ void FCacheCollectionDetails::OnChangeCacheName(const FText& InNewName, int32 In
 {
 	UChaosCacheCollection* Collection = GetSelectedCollection();
 
-	if(!Collection)
+	if (!Collection)
 	{
 		return;
 	}
 
 	TSharedPtr<SEditableTextBox> TextBox = NameEditBoxes[InIndex];
-	if(!IsValidName(Collection, FName(InNewName.ToString())))
+	if (!IsValidName(Collection, FName(InNewName.ToString())))
 	{
 		TextBox->SetError(LOCTEXT("InvalidNameError", "Invalid Cache Name"));
 	}
@@ -128,16 +128,16 @@ void FCacheCollectionDetails::OnChangeCacheName(const FText& InNewName, int32 In
 
 void FCacheCollectionDetails::OnCommitCacheName(const FText& InNewName, ETextCommit::Type InTextCommit, int32 InIndex)
 {
-	if(InTextCommit != ETextCommit::OnEnter)
+	if (InTextCommit != ETextCommit::OnEnter)
 	{
 		// Focus was taken away, don't perform the edit
 		return;
 	}
 
-	if(UChaosCacheCollection* Collection = GetSelectedCollection())
+	if (UChaosCacheCollection* Collection = GetSelectedCollection())
 	{
 		FName NewName(*InNewName.ToString());
-		if(IsValidName(Collection, NewName))
+		if (IsValidName(Collection, NewName))
 		{
 			UChaosCache* CurrCache = Collection->Caches[InIndex];
 			CurrCache->Rename(*NewName.ToString());
@@ -161,24 +161,24 @@ void FCacheCollectionDetails::GenerateCacheArrayElementWidget(TSharedRef<IProper
 	WidgetRow.ValueContent()
 		[
 			SNew(SHorizontalBox)
-			+SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.HAlign(HAlign_Fill)
-			.AutoWidth()
-			[
-				SAssignNew(NameEditBoxes[ArrayIndex], SEditableTextBox)
-				.Text(this, &FCacheCollectionDetails::GetCacheName, ArrayIndex)
-				.OnTextChanged(this, &FCacheCollectionDetails::OnChangeCacheName, ArrayIndex)
-				.OnTextCommitted(this, &FCacheCollectionDetails::OnCommitCacheName, ArrayIndex)
-			]
-			+SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.HAlign(HAlign_Fill)
-			.Padding(5,0,0,0)
-			.AutoWidth()
-			[
-				PropertyCustomizationHelpers::MakeDeleteButton(FSimpleDelegate::CreateSP(this, &FCacheCollectionDetails::OnDeleteCache, ArrayIndex, DetailLayout))
-			]
+			+ SHorizontalBox::Slot()
+		.VAlign(VAlign_Center)
+		.HAlign(HAlign_Fill)
+		.AutoWidth()
+		[
+			SAssignNew(NameEditBoxes[ArrayIndex], SEditableTextBox)
+			.Text(this, &FCacheCollectionDetails::GetCacheName, ArrayIndex)
+		.OnTextChanged(this, &FCacheCollectionDetails::OnChangeCacheName, ArrayIndex)
+		.OnTextCommitted(this, &FCacheCollectionDetails::OnCommitCacheName, ArrayIndex)
+		]
+	+ SHorizontalBox::Slot()
+		.VAlign(VAlign_Center)
+		.HAlign(HAlign_Fill)
+		.Padding(5, 0, 0, 0)
+		.AutoWidth()
+		[
+			PropertyCustomizationHelpers::MakeDeleteButton(FSimpleDelegate::CreateSP(this, &FCacheCollectionDetails::OnDeleteCache, ArrayIndex, DetailLayout))
+		]
 		];
 }
 

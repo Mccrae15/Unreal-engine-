@@ -601,8 +601,14 @@ void FGeometryCollectionPhysicsProxy::InitializeDynamicCollection(FGeometryDynam
 	//
 
 	TMap<FName, TSet<FName>> SkipList;
-	TSet<FName>& TransformGroupSkipList = SkipList.Emplace(FTransformCollection::TransformGroup);
-	TransformGroupSkipList.Add(DynamicCollection.SimplicialsAttribute);
+	TSet<FName>& KeepFromDynamicCollection = SkipList.Emplace(FTransformCollection::TransformGroup);
+	KeepFromDynamicCollection.Add(FTransformCollection::TransformAttribute);
+	KeepFromDynamicCollection.Add(FTransformCollection::ParentAttribute);
+	KeepFromDynamicCollection.Add(FTransformCollection::ChildrenAttribute);
+	KeepFromDynamicCollection.Add(FGeometryCollection::SimulationTypeAttribute);
+	KeepFromDynamicCollection.Add(DynamicCollection.SimplicialsAttribute);
+	KeepFromDynamicCollection.Add(DynamicCollection.ActiveAttribute);
+	KeepFromDynamicCollection.Add(DynamicCollection.CollisionGroupAttribute);
 	DynamicCollection.CopyMatchingAttributesFrom(RestCollection, &SkipList);
 
 
@@ -678,8 +684,6 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(Chaos::FPBDRigidsSolver
 	{
 		const TManagedArray<int32>& TransformIndex = RestCollection->TransformIndex;
 		const TManagedArray<int32>& BoneMap = RestCollection->BoneMap;
-		const TManagedArray<int32>& Parent = RestCollection->Parent;
-		const TManagedArray<TSet<int32>>& Children = RestCollection->Children;
 		const TManagedArray<int32>& SimulationType = RestCollection->SimulationType;
 		const TManagedArray<FVector>& Vertex = RestCollection->Vertex;
 		const TManagedArray<float>& Mass = RestCollection->GetAttribute<float>("Mass", FTransformCollection::TransformGroup);
@@ -694,6 +698,8 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(Chaos::FPBDRigidsSolver
 		const TManagedArray<FVector>& InitialLinearVelocity = DynamicCollection.InitialLinearVelocity;
 		const TManagedArray<FGeometryDynamicCollection::FSharedImplicit>& Implicits = DynamicCollection.Implicits;
 		const TManagedArray<TUniquePtr<FCollisionStructureManager::FSimplicial>>& Simplicials = DynamicCollection.Simplicials;
+		const TManagedArray<TSet<int32>>& Children = DynamicCollection.Children;
+		const TManagedArray<int32>& Parent = DynamicCollection.Parent;
 
 		TArray<FTransform> Transform;
 		GeometryCollectionAlgo::GlobalMatrices(DynamicCollection.Transform, DynamicCollection.Parent, Transform);
@@ -729,6 +735,8 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(Chaos::FPBDRigidsSolver
 				// todo: Unblocked read access of game thread data on the physics thread.
 
 				Chaos::TPBDGeometryCollectionParticleHandle<float, 3>* Handle = Handles[NextIdx++];
+
+				Handle->SetPhysicsProxy(this);
 
 				RigidsSolver->AddParticleToProxy(Handle, this);
 
@@ -945,6 +953,7 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(Chaos::FPBDRigidsSolver
 					SolverClusterHandles[TransformGroupIndex] = Handle;
 					SolverParticleHandles[TransformGroupIndex] = Handle;
 					HandleToTransformGroupIndex.Add(Handle, TransformGroupIndex);
+					Handle->SetPhysicsProxy(this);
 					RigidsSolver->AddParticleToProxy(Handle, this);
 
 					RigidsSolver->GetEvolution()->DirtyParticle(*Handle);

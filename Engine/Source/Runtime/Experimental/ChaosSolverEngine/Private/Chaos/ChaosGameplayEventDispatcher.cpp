@@ -405,19 +405,19 @@ void UChaosGameplayEventDispatcher::HandleBreakingEvents(const Chaos::FBreakingE
 		if (NumBreaks > 0)
 		{
 			for (Chaos::FBreakingData const& BreakingDataItem : BreakingData)
-			{	
-				if (BreakingDataItem.Particle && (BreakingDataItem.ParticleProxy))
+			{
+				if (BreakingDataItem.Proxy)
 				{
-					UPrimitiveComponent* const PrimComp = Cast<UPrimitiveComponent>(BreakingDataItem.ParticleProxy->GetOwner());
+					UPrimitiveComponent* const PrimComp = Cast<UPrimitiveComponent>(BreakingDataItem.Proxy->GetOwner());
 					if (PrimComp && BreakEventRegistrations.Contains(PrimComp))
 					{
 						// queue them up so we can release the physics data before trigging BP events
 						FChaosBreakEvent& BreakEvent = PendingBreakEvents.AddZeroed_GetRef();
-							BreakEvent.Component = PrimComp;
-							BreakEvent.Location = BreakingDataItem.Location;
-							BreakEvent.Velocity = BreakingDataItem.Velocity;
-							BreakEvent.AngularVelocity = BreakingDataItem.AngularVelocity;
-							BreakEvent.Mass = BreakingDataItem.Mass;
+						BreakEvent.Component = PrimComp;
+						BreakEvent.Location = BreakingDataItem.Location;
+						BreakEvent.Velocity = BreakingDataItem.Velocity;
+						BreakEvent.AngularVelocity = BreakingDataItem.AngularVelocity;
+						BreakEvent.Mass = BreakingDataItem.Mass;
 					}
 				}
 			}

@@ -86,6 +86,7 @@ namespace Chaos
 		FBreakingEventData() {}
 
 		FAllBreakingData BreakingData;
+		FIndicesByPhysicsProxy PhysicsProxyToBreakingIndices;
 	};
 
 	/* Trailing */
@@ -111,6 +112,7 @@ namespace Chaos
 		FTrailingEventData() {}
 
 		FAllTrailingData TrailingData;
+		FIndicesByPhysicsProxy PhysicsProxyToTrailingIndices;
 	};
 
 	struct FSleepingEventData

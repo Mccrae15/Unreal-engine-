@@ -9,6 +9,8 @@
 #include "Chaos/CacheEditorCommands.h"
 #include "Chaos/CacheManagerActor.h"
 #include "Chaos/CacheManagerCustomization.h"
+#include "Chaos/CacheCollectionFactory.h"
+#include "Chaos/CacheCollection.h"
 #include "CoreMinimal.h"
 #include "Engine/Selection.h"
 #include "Kismet2/ComponentEditorUtils.h"
@@ -25,7 +27,7 @@ void IChaosCachingEditorPlugin::StartupModule()
 	AssetTypeActions_ChaosCacheCollection = new FAssetTypeActions_ChaosCacheCollection();
 
 	FAssetToolsModule& AssetToolsModule = FAssetToolsModule::GetModule();
-	IAssetTools&       AssetTools       = AssetToolsModule.Get();
+	IAssetTools& AssetTools = AssetToolsModule.Get();
 	AssetTools.RegisterAssetTypeActions(MakeShareable(AssetTypeActions_ChaosCacheCollection));
 
 	FCachingEditorCommands::Register();
@@ -40,7 +42,7 @@ void IChaosCachingEditorPlugin::StartupModule()
 
 void IChaosCachingEditorPlugin::ShutdownModule()
 {
-	if(UObjectInitialized())
+	if (UObjectInitialized())
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("ObservedComponent");
@@ -52,7 +54,7 @@ void IChaosCachingEditorPlugin::ShutdownModule()
 		FCachingEditorCommands::Unregister();
 
 		FAssetToolsModule& AssetToolsModule = FAssetToolsModule::GetModule();
-		IAssetTools&       AssetTools       = AssetToolsModule.Get();
+		IAssetTools& AssetTools = AssetToolsModule.Get();
 
 		AssetTools.UnregisterAssetTypeActions(AssetTypeActions_ChaosCacheCollection->AsShared());
 	}
@@ -69,7 +71,7 @@ void IChaosCachingEditorPlugin::RegisterMenus()
 	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.ActorContextMenu");
 
 	FToolMenuSection* Section = Menu->FindSection("Chaos");
-	if(!Section)
+	if (!Section)
 	{
 		Section = &Menu->AddSection("Chaos", LOCTEXT("ChaosSectionLabel", "Chaos"));
 	}
@@ -77,47 +79,29 @@ void IChaosCachingEditorPlugin::RegisterMenus()
 	Section->InitSection("Chaos", LOCTEXT("ChaosSectionLabel", "Chaos"), FToolMenuInsert());
 
 	Section->AddSubMenu("CachingSub",
-						LOCTEXT("SubMenu_Caching", "Caching"),
-						LOCTEXT("Tooltip_Caching", "Options for manipulating cache managers and their observed components"),
-						FNewToolMenuDelegate::CreateLambda([this](UToolMenu* InMenu) {
-							FToolMenuSection& CacheSubMenuSection = InMenu->AddSection("Caching");
-							RegisterCachingSubMenu(InMenu, &CacheSubMenuSection);
-						}),
-						FUIAction(FExecuteAction(), FCanExecuteAction(), FIsActionChecked(), FIsActionButtonVisible::CreateLambda([]() -> bool 
-						{
-							return IsCreateCacheManagerVisible() || IsSetAllPlayVisible() || IsSetAllRecordVisible();
-						})),
-						EUserInterfaceActionType::Button);
+		LOCTEXT("SubMenu_Caching", "Caching"),
+		LOCTEXT("Tooltip_Caching", "Options for manipulating cache managers and their observed components"),
+		FNewToolMenuDelegate::CreateLambda([this](UToolMenu* InMenu) {
+			FToolMenuSection& CacheSubMenuSection = InMenu->AddSection("Caching");
+			RegisterCachingSubMenu(InMenu, &CacheSubMenuSection);
+			}),
+		FUIAction(FExecuteAction(), FCanExecuteAction(), FIsActionChecked(), FIsActionButtonVisible::CreateLambda([]() -> bool
+			{
+				return IsCreateCacheManagerVisible() || IsSetAllPlayVisible() || IsSetAllRecordVisible();
+			})),
+				EUserInterfaceActionType::Button);
 }
 
 void IChaosCachingEditorPlugin::RegisterCachingSubMenu(UToolMenu* InMenu, FToolMenuSection* InSection)
 {
 	InSection->AddMenuEntry("CreateCacheManager",
-							LOCTEXT("MenuItem_CreateCacheManager", "Create Cache Manager"),
-							LOCTEXT("MenuItem_CreateCacheManager_ToolTip", "Adds a cache manager to observe compatible components in the selection set."),
-							FSlateIcon(),
-							FUIAction(FExecuteAction::CreateRaw(this, &IChaosCachingEditorPlugin::OnCreateCacheManager),
-									  FCanExecuteAction(),
-									  FIsActionChecked(),
-									  FIsActionButtonVisible::CreateStatic(&IsCreateCacheManagerVisible)));
-
-	InSection->AddMenuEntry("SetRecordAll",
-							LOCTEXT("MenuItem_SetRecordAll", "Set All Record"),
-							LOCTEXT("MenuItem_SetRecordAll_ToolTip", "Sets selected cache managers to record all of their observed components."),
-							FSlateIcon(),
-							FUIAction(FExecuteAction::CreateRaw(this, &IChaosCachingEditorPlugin::OnSetAllRecord),
-									  FCanExecuteAction(),
-									  FIsActionChecked(),
-									  FIsActionButtonVisible::CreateStatic(&IsSetAllRecordVisible)));
-
-	InSection->AddMenuEntry("SetPlayAll",
-							LOCTEXT("MenuItem_SetPlayAll", "Set All Play"),
-							LOCTEXT("MenuItem_SetPlayAll_ToolTip", "Sets selected cache managers to playback all of their observed components."),
-							FSlateIcon(),
-							FUIAction(FExecuteAction::CreateRaw(this, &IChaosCachingEditorPlugin::OnSetAllPlay),
-									  FCanExecuteAction(),
-									  FIsActionChecked(),
-									  FIsActionButtonVisible::CreateStatic(&IsSetAllPlayVisible)));
+		LOCTEXT("MenuItem_CreateCacheManager", "Create Cache Manager"),
+		LOCTEXT("MenuItem_CreateCacheManager_ToolTip", "Adds a cache manager to observe compatible components in the selection set."),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateRaw(this, &IChaosCachingEditorPlugin::OnCreateCacheManager),
+			FCanExecuteAction(),
+			FIsActionChecked(),
+			FIsActionButtonVisible::CreateStatic(&IsCreateCacheManagerVisible)));
 }
 
 void IChaosCachingEditorPlugin::OnCreateCacheManager()
@@ -130,7 +114,7 @@ void IChaosCachingEditorPlugin::OnCreateCacheManager()
 	AChaosCacheManager* Manager = nullptr;
 
 	// Get the implementation of our adapters for identifying compatible components
-	IModularFeatures&                      ModularFeatures = IModularFeatures::Get();
+	IModularFeatures& ModularFeatures = IModularFeatures::Get();
 	TArray<Chaos::FComponentCacheAdapter*> Adapters = ModularFeatures.GetModularFeatureImplementations<Chaos::FComponentCacheAdapter>(Chaos::FComponentCacheAdapter::FeatureName);
 
 	USelection* SelectedActors = GEditor->GetSelectedActors();
@@ -139,31 +123,31 @@ void IChaosCachingEditorPlugin::OnCreateCacheManager()
 	SelectedActors->GetSelectedObjects<AActor>(Actors);
 
 	TArray<UActorComponent*> ComponentArray;
-	for(AActor* Actor : Actors)
+	for (AActor* Actor : Actors)
 	{
 		ComponentArray.Reset();
 		Actor->GetComponents(ComponentArray);
 
-		for(UActorComponent* Component : ComponentArray)
+		for (UActorComponent* Component : ComponentArray)
 		{
-			if(Component->CreationMethod == EComponentCreationMethod::UserConstructionScript)
+			if (Component->CreationMethod == EComponentCreationMethod::UserConstructionScript)
 			{
 				// Can't hold references to UCS created components (See FComponentEditorUtils::MakeComponentReference)
 				continue;
 			}
 
-			if(UPrimitiveComponent* PrimitiveComp = Cast<UPrimitiveComponent>(Component))
+			if (UPrimitiveComponent* PrimitiveComp = Cast<UPrimitiveComponent>(Component))
 			{
-				Chaos::FComponentCacheAdapter* BestFitAdapter = Chaos::FAdapterUtil::GetBestAdapterForClass(PrimitiveComp->GetClass());
+				Chaos::FComponentCacheAdapter* BestFitAdapter = Chaos::FAdapterUtil::GetBestAdapterForClass(PrimitiveComp->GetClass(), false);
 
 				// Can't be observed
-				if(!BestFitAdapter)
+				if (!BestFitAdapter)
 				{
 					continue;
 				}
 
 				// If we get here without a manager, lazy spawn one
-				if(!Manager)
+				if (!Manager)
 				{
 					Manager = SpawnManager(Component->GetWorld());
 				}
@@ -172,20 +156,40 @@ void IChaosCachingEditorPlugin::OnCreateCacheManager()
 
 				FObservedComponent* Existing = Manager->ObservedComponents.FindByPredicate([PrimitiveComp](const FObservedComponent& InItem) {
 					return InItem.GetComponent() == PrimitiveComp;
-				});
+					});
 
-				if(!Existing)
+				if (!Existing)
 				{
 					FObservedComponent& NewEntry = Manager->AddNewObservedComponent(PrimitiveComp);
+					NewEntry.bIsSimulating = PrimitiveComp->BodyInstance.bSimulatePhysics;
 				}
 			}
 		}
+	}
+
+	if (Manager)
+	{
+		// Create an associated Cache Collection
+		if (Manager->ObservedComponents.Num() > 0)
+		{
+			FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+			UCacheCollectionFactory* Factory = NewObject<UCacheCollectionFactory>();
+			UChaosCacheCollection* NewAsset = Cast<UChaosCacheCollection>(AssetToolsModule.Get().CreateAssetWithDialog(UChaosCacheCollection::StaticClass(), Factory));
+
+			if (NewAsset)
+			{
+				Manager->CacheCollection = NewAsset;
+			}
+		}
+
+		// Initialize observed components according to mode
+		Manager->SetObservedComponentProperties(Manager->CacheMode);
 	}
 }
 
 bool IsCreateCacheManagerVisible()
 {
-	IModularFeatures&                      ModularFeatures = IModularFeatures::Get();
+	IModularFeatures& ModularFeatures = IModularFeatures::Get();
 	TArray<Chaos::FComponentCacheAdapter*> Adapters = ModularFeatures.GetModularFeatureImplementations<Chaos::FComponentCacheAdapter>(Chaos::FComponentCacheAdapter::FeatureName);
 
 	USelection* SelectedActors = GEditor->GetSelectedActors();
@@ -194,25 +198,25 @@ bool IsCreateCacheManagerVisible()
 	SelectedActors->GetSelectedObjects<AActor>(Actors);
 
 	TArray<UActorComponent*> ComponentArray;
-	for(AActor* Actor : Actors)
+	for (AActor* Actor : Actors)
 	{
 		ComponentArray.Reset();
 		Actor->GetComponents(ComponentArray);
 
-		for(UActorComponent* Component : ComponentArray)
+		for (UActorComponent* Component : ComponentArray)
 		{
-			if(Component->CreationMethod == EComponentCreationMethod::UserConstructionScript)
+			if (Component->CreationMethod == EComponentCreationMethod::UserConstructionScript)
 			{
 				// Can't hold references to UCS created components (See FComponentEditorUtils::MakeComponentReference)
 				continue;
 			}
 
-			if(UPrimitiveComponent* PrimitiveComp = Cast<UPrimitiveComponent>(Component))
+			if (UPrimitiveComponent* PrimitiveComp = Cast<UPrimitiveComponent>(Component))
 			{
 				Chaos::FComponentCacheAdapter* BestFitAdapter = Chaos::FAdapterUtil::GetBestAdapterForClass(PrimitiveComp->GetClass());
 
 				// Can't be observed
-				if(!BestFitAdapter)
+				if (!BestFitAdapter)
 				{
 					continue;
 				}
@@ -224,22 +228,6 @@ bool IsCreateCacheManagerVisible()
 	}
 
 	return false;
-}
-
-void IChaosCachingEditorPlugin::OnSetAllPlay()
-{
-	USelection* SelectedActors = GEditor->GetSelectedActors();
-
-	TArray<AChaosCacheManager*> CacheManagers;
-	SelectedActors->GetSelectedObjects<AChaosCacheManager>(CacheManagers);
-
-	for(AChaosCacheManager* Manager : CacheManagers)
-	{
-		if(Manager)
-		{
-			Manager->SetAllMode(ECacheMode::Play);
-		}
-	}
 }
 
 template<typename T>
@@ -258,22 +246,6 @@ bool SelectionContains()
 bool IsSetAllPlayVisible()
 {
 	return SelectionContains<AChaosCacheManager>();
-}
-
-void IChaosCachingEditorPlugin::OnSetAllRecord()
-{
-	USelection* SelectedActors = GEditor->GetSelectedActors();
-
-	TArray<AChaosCacheManager*> CacheManagers;
-	SelectedActors->GetSelectedObjects<AChaosCacheManager>(CacheManagers);
-
-	for(AChaosCacheManager* Manager : CacheManagers)
-	{
-		if(Manager)
-		{
-			Manager->SetAllMode(ECacheMode::Record);
-		}
-	}
 }
 
 bool IsSetAllRecordVisible()

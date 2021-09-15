@@ -218,150 +218,149 @@ namespace Chaos
 	{
 		EventManager.template RegisterEvent<FBreakingEventData>(EEventType::Breaking, []
 		(const Chaos::FPBDRigidsSolver* Solver, FBreakingEventData& BreakingEventData)
-		{
-			check(Solver);
-			SCOPE_CYCLE_COUNTER(STAT_GatherBreakingEvent);
+			{
+				check(Solver);
+				ensure(IsInPhysicsThreadContext());
 
-			// #todo: This isn't working - SolverActor parameters are set on a solver but it is currently a different solver that is simulating!!
-			if (!Solver->GetEventFilters()->IsBreakingEventEnabled())
-				return;
+				SCOPE_CYCLE_COUNTER(STAT_GatherBreakingEvent);
 
-			FBreakingDataArray& AllBreakingDataArray = BreakingEventData.BreakingData.AllBreakingsArray;
+				// #todo: This isn't working - SolverActor parameters are set on a solver but it is currently a different solver that is simulating!!
+				if (!Solver->GetEventFilters()->IsBreakingEventEnabled())
+					return;
 
-			AllBreakingDataArray.Reset();
+				FBreakingDataArray& AllBreakingDataArray = BreakingEventData.BreakingData.AllBreakingsArray;
+				TMap<IPhysicsProxyBase*, TArray<int32>>& AllBreakingIndicesByPhysicsProxy = BreakingEventData.PhysicsProxyToBreakingIndices.PhysicsProxyToIndicesMap;
 
-			BreakingEventData.BreakingData.TimeCreated = Solver->MTime;
+				if (BreakingEventData.BreakingData.TimeCreated != Solver->MTime)
+				{
+					AllBreakingDataArray.Reset();
+					AllBreakingIndicesByPhysicsProxy.Reset();
+					BreakingEventData.BreakingData.TimeCreated = Solver->MTime;
+				}
 
-			const auto* Evolution = Solver->GetEvolution();
-			const FPBDRigidParticles& Particles = Evolution->GetParticles().GetDynamicParticles();
-			const TArray<FBreakingData>& AllBreakingsArray = Evolution->GetRigidClustering().GetAllClusterBreakings();
-			const TArrayCollectionArray<ClusterId>& ClusterIdsArray = Evolution->GetRigidClustering().GetClusterIdsArray();
+				const auto* Evolution = Solver->GetEvolution();
+				const FPBDRigidParticles& Particles = Evolution->GetParticles().GetDynamicParticles();
+				const TArray<FBreakingData>& AllBreakingsArray = Evolution->GetRigidClustering().GetAllClusterBreakings();
+				const TArrayCollectionArray<ClusterId>& ClusterIdsArray = Evolution->GetRigidClustering().GetClusterIdsArray();
 
 #if TODO_REIMPLEMENT_RIGID_CLUSTERING
-			const Chaos::FPBDRigidsSolver::FClusteringType::FClusterMap& ParentToChildrenMap = Evolution->GetRigidClustering().GetChildrenMap();
+				const Chaos::FPBDRigidsSolver::FClusteringType::FClusterMap& ParentToChildrenMap = Evolution->GetRigidClustering().GetChildrenMap();
 #endif
 
-			if(AllBreakingsArray.Num() > 0)
-			{
-				for(int32 Idx = 0; Idx < AllBreakingsArray.Num(); ++Idx)
+				if (AllBreakingsArray.Num() > 0)
 				{
-					// Since Clustered GCs can be unioned the particleIndex representing the union 
-					// is not associated with a PhysicsProxy
-					FPBDRigidParticleHandle* PBDRigid = AllBreakingsArray[Idx].Particle->CastToRigidParticle();
-					if(PBDRigid)
+					for (int32 Idx = 0; Idx < AllBreakingsArray.Num(); ++Idx)
 					{
-						if(ensure(!AllBreakingsArray[Idx].Location.ContainsNaN() &&
-							!PBDRigid->V().ContainsNaN() &&
-							!PBDRigid->W().ContainsNaN()))
+						FBreakingData BreakingData;
+						BreakingData.Location = AllBreakingsArray[Idx].Location;
+						BreakingData.Velocity = AllBreakingsArray[Idx].Velocity;
+						BreakingData.AngularVelocity = AllBreakingsArray[Idx].AngularVelocity;
+						BreakingData.Mass = AllBreakingsArray[Idx].Mass;
+						BreakingData.Proxy = AllBreakingsArray[Idx].Proxy;
+						BreakingData.BoundingBox = AllBreakingsArray[Idx].BoundingBox;
+						BreakingData.TransformGroupIndex = AllBreakingsArray[Idx].TransformGroupIndex;
+
+						const FSolverBreakingEventFilter* SolverBreakingEventFilter = Solver->GetEventFilters()->GetBreakingFilter();
+						if (!SolverBreakingEventFilter->Enabled() || SolverBreakingEventFilter->Pass(BreakingData))
 						{
-							FBreakingData BreakingData;
-							BreakingData.Location = AllBreakingsArray[Idx].Location;
-							BreakingData.Velocity = PBDRigid->V();
-							BreakingData.AngularVelocity = PBDRigid->W();
-							BreakingData.Mass = PBDRigid->M();
-							BreakingData.Particle = PBDRigid;
-							BreakingData.ParticleProxy = Solver->GetProxies(PBDRigid->Handle()) && Solver->GetProxies(PBDRigid->Handle())->Array().Num() ?
-								Solver->GetProxies(PBDRigid->Handle())->Array().operator[](0) : nullptr; // @todo(chaos) : Iterate all proxies
-							
-							if(PBDRigid->Geometry()->HasBoundingBox())
-							{
-								BreakingData.BoundingBox = PBDRigid->Geometry()->BoundingBox();
-							}
+							int32 NewIdx = AllBreakingDataArray.Add(FBreakingData());
+							FBreakingData& BreakingDataArrayItem = AllBreakingDataArray[NewIdx];
+							BreakingDataArrayItem = BreakingData;
 
-							const FSolverBreakingEventFilter* SolverBreakingEventFilter = Solver->GetEventFilters()->GetBreakingFilter();
-							if(!SolverBreakingEventFilter->Enabled() || SolverBreakingEventFilter->Pass(BreakingData))
-							{
-								int32 NewIdx = AllBreakingDataArray.Add(FBreakingData());
-								FBreakingData& BreakingDataArrayItem = AllBreakingDataArray[NewIdx];
-								BreakingDataArrayItem = BreakingData;
-
-#if 0 // #todo
-								// If AllBreakingsArray[Idx].ParticleIndex is a cluster store an index for a mesh in this cluster
-								if(ClusterIdsArray[AllBreakingsArray[Idx].ParticleIndex].NumChildren > 0)
-								{
-									int32 ParticleIndexMesh = GetParticleIndexMesh(ParentToChildrenMap, AllBreakingsArray[Idx].ParticleIndex);
-									ensure(ParticleIndexMesh != INDEX_NONE);
-									BreakingDataArrayItem.ParticleIndexMesh = ParticleIndexMesh;
-								}
-#endif
-								}
+							// Add to AllBreakingIndicesByPhysicsProxy
+							AllBreakingIndicesByPhysicsProxy.FindOrAdd(BreakingData.Proxy).Add(FEventManager::EncodeCollisionIndex(NewIdx, false));
 						}
 					}
 				}
-			}
-		});
+
+			});
 	}
 
+	
 	void FEventDefaults::RegisterTrailingEvent(FEventManager& EventManager)
 	{
 		EventManager.template RegisterEvent<FTrailingEventData>(EEventType::Trailing, []
 		(const Chaos::FPBDRigidsSolver* Solver, FTrailingEventData& TrailingEventData)
-		{
-			check(Solver);
-
-			// #todo: This isn't working - SolverActor parameters are set on a solver but it is currently a different solver that is simulating!!
-			if (!Solver->GetEventFilters()->IsTrailingEventEnabled())
-				return;
-
-			const auto* Evolution = Solver->GetEvolution();
-
-			const TArrayCollectionArray<ClusterId>& ClusterIdsArray = Evolution->GetRigidClustering().GetClusterIdsArray();
-#if TODO_REIMPLEMENT_RIGID_CLUSTERING
-			const TMap<uint32, TUniquePtr<TArray<uint32>>>& ParentToChildrenMap = Evolution->GetRigidClustering().GetChildrenMap();
-#endif
-			auto& AllTrailingsDataArray = TrailingEventData.TrailingData.AllTrailingsArray;
-
-			AllTrailingsDataArray.Reset();
-
-			TrailingEventData.TrailingData.TimeCreated = Solver->MTime;
-
-			for (auto& ActiveParticle : Evolution->GetParticles().GetActiveParticlesView())
 			{
+				check(Solver);
+				ensure(IsInPhysicsThreadContext());
 
-				if (ensure(FMath::IsFinite(ActiveParticle.InvM())))
-				{
-					if (ActiveParticle.InvM() != 0.f &&
-						ActiveParticle.Geometry() &&
-						ActiveParticle.Geometry()->HasBoundingBox())
-					{
-						if (ensure(!ActiveParticle.X().ContainsNaN() &&
-							!ActiveParticle.V().ContainsNaN() &&
-							!ActiveParticle.W().ContainsNaN() &&
-							FMath::IsFinite(ActiveParticle.M())))
-						{
-							FTrailingData TrailingData;
-							TrailingData.Location = ActiveParticle.X();
-							TrailingData.Velocity = ActiveParticle.V();
-							TrailingData.AngularVelocity = ActiveParticle.W();
-							TrailingData.Mass = ActiveParticle.M();
-							TrailingData.Particle = nullptr; // #todo: provide a particle
-							if (ActiveParticle.Geometry()->HasBoundingBox())
-							{
-								TrailingData.BoundingBox = ActiveParticle.Geometry()->BoundingBox();
-							}
+				// #todo: This isn't working - SolverActor parameters are set on a solver but it is currently a different solver that is simulating!!
+				if (!Solver->GetEventFilters()->IsTrailingEventEnabled())
+					return;
 
-							const FSolverTrailingEventFilter* SolverTrailingEventFilter = Solver->GetEventFilters()->GetTrailingFilter();
-							if (!SolverTrailingEventFilter->Enabled() || SolverTrailingEventFilter->Pass(TrailingData))
-							{
-								int32 NewIdx = AllTrailingsDataArray.Add(FTrailingData());
-								FTrailingData& TrailingDataArrayItem = AllTrailingsDataArray[NewIdx];
-								TrailingDataArrayItem = TrailingData;
+				const auto* Evolution = Solver->GetEvolution();
 
-								// If IdxParticle is a cluster store an index for a mesh in this cluster
-#if 0
-								if (ClusterIdsArray[IdxParticle].NumChildren > 0)
-								{
-									int32 ParticleIndexMesh = GetParticleIndexMesh(ParentToChildrenMap, IdxParticle);
-									ensure(ParticleIndexMesh != INDEX_NONE);
-									TrailingDataArrayItem.ParticleIndexMesh = ParticleIndexMesh;
-								}
+				const TArrayCollectionArray<ClusterId>& ClusterIdsArray = Evolution->GetRigidClustering().GetClusterIdsArray();
+#if TODO_REIMPLEMENT_RIGID_CLUSTERING
+				const TMap<uint32, TUniquePtr<TArray<uint32>>>& ParentToChildrenMap = Evolution->GetRigidClustering().GetChildrenMap();
 #endif
+				FTrailingDataArray& AllTrailingsDataArray = TrailingEventData.TrailingData.AllTrailingsArray;
+				TMap<IPhysicsProxyBase*, TArray<int32>>& AllTrailingIndicesByPhysicsProxy = TrailingEventData.PhysicsProxyToTrailingIndices.PhysicsProxyToIndicesMap;
+
+				if (TrailingEventData.TrailingData.TimeCreated != Solver->MTime)
+				{
+					AllTrailingsDataArray.Reset();
+					AllTrailingIndicesByPhysicsProxy.Reset();
+
+					TrailingEventData.TrailingData.TimeCreated = Solver->MTime;
+					TrailingEventData.PhysicsProxyToTrailingIndices.TimeCreated = Solver->MTime;
+				}
+
+				const TArray<TPBDRigidParticleHandle<Chaos::FReal, 3>*>& ActiveParticlesArray = Evolution->GetParticles().GetActiveParticlesArray();
+
+				for (TPBDRigidParticleHandle<Chaos::FReal, 3>*ActiveParticle : ActiveParticlesArray)
+				{
+
+					if (ensure(FMath::IsFinite(ActiveParticle->InvM())))
+					{
+						if (ActiveParticle->InvM() != 0.f &&
+							ActiveParticle->Geometry() &&
+							ActiveParticle->Geometry()->HasBoundingBox())
+						{
+							if (ensure(!ActiveParticle->X().ContainsNaN() &&
+								!ActiveParticle->V().ContainsNaN() &&
+								!ActiveParticle->W().ContainsNaN() &&
+								FMath::IsFinite(ActiveParticle->M())))
+							{
+								FTrailingData TrailingData;
+								TrailingData.Location = ActiveParticle->X();
+								TrailingData.Velocity = ActiveParticle->V();
+								TrailingData.AngularVelocity = ActiveParticle->W();
+								TrailingData.Mass = ActiveParticle->M();
+								TrailingData.Proxy = ActiveParticle->PhysicsProxy();
+
+								if (ActiveParticle->Geometry()->HasBoundingBox())
+								{
+									TrailingData.BoundingBox = ActiveParticle->Geometry()->BoundingBox();
+								}
+
+								if (TrailingData.Proxy->GetType() == EPhysicsProxyType::GeometryCollectionType)
+								{
+									FGeometryCollectionPhysicsProxy* ConcreteProxy = static_cast<FGeometryCollectionPhysicsProxy*>(TrailingData.Proxy);
+									TrailingData.TransformGroupIndex = ConcreteProxy->GetTransformGroupIndexFromHandle(ActiveParticle);
+								}
+								else
+								{
+									TrailingData.TransformGroupIndex = INDEX_NONE;
+								}
+
+								const FSolverTrailingEventFilter* SolverTrailingEventFilter = Solver->GetEventFilters()->GetTrailingFilter();
+								if (!SolverTrailingEventFilter->Enabled() || SolverTrailingEventFilter->Pass(TrailingData))
+								{
+									int32 NewIdx = AllTrailingsDataArray.Add(FTrailingData());
+									FTrailingData& TrailingDataArrayItem = AllTrailingsDataArray[NewIdx];
+									TrailingDataArrayItem = TrailingData;
+
+									// Add to AllTrailingIndicesByPhysicsProxy
+									AllTrailingIndicesByPhysicsProxy.FindOrAdd(TrailingData.Proxy).Add(FEventManager::EncodeCollisionIndex(NewIdx, false));
+
+								}
 							}
 						}
 					}
 				}
-			}
-		});
+			});
 	}
 
 	void FEventDefaults::RegisterSleepingEvent(FEventManager& EventManager)

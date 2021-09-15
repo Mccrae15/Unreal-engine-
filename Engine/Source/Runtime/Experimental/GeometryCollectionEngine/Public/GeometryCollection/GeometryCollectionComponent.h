@@ -360,6 +360,8 @@ public:
 	virtual void OnRegister() override;
 	virtual FBodyInstance* GetBodyInstance(FName BoneName = NAME_None, bool bGetWelded = true) const override;
 	virtual void SetNotifyRigidBodyCollision(bool bNewNotifyRigidBodyCollision) override;
+	virtual bool CanEditSimulatePhysics() override;
+	virtual void SetSimulatePhysics(bool bEnabled) override;
 	//~ End UPrimitiveComponent Interface.
 
 
@@ -505,6 +507,10 @@ public:
 	UPROPERTY()
 	FGeomComponentCacheParameters CacheParameters;
 
+	/** Optional transforms to initialize scene proxy if difference from the RestCollection. */
+	UPROPERTY()
+	TArray<FTransform> RestTransforms;
+
 	/**
 	*  SetDynamicState
 	*    This function will dispatch a command to the physics thread to apply
@@ -595,6 +601,7 @@ public:
 	const TArray<bool>& GetDisabledFlags() const { return DisabledFlags; }
 
 	virtual void OnCreatePhysicsState() override;
+	void RegisterAndInitializePhysicsProxy();
 	virtual void OnDestroyPhysicsState() override;
 	virtual bool ShouldCreatePhysicsState() const override;
 	virtual bool HasValidPhysicsState() const override;
@@ -638,6 +645,19 @@ public:
 	void SetEmbeddedGeometrySelectable(bool bSelectableIn);
 	int32 EmbeddedIndexToTransformIndex(const UInstancedStaticMeshComponent* ISMComponent, int32 InstanceIndex) const;
 #endif
+
+	// #todo should this only be available in editor?
+	void SetRestState(TArray<FTransform>&& InRestTransforms);
+
+	/** Set the dynamic state for all bodies in the DynamicCollection. */
+	void SetDynamicState(const Chaos::EObjectStateType& NewDynamicState);
+
+	/** Set transforms for all bodies in the DynamicCollection. */
+	void SetInitialTransforms(const TArray<FTransform>& InitialTransforms);
+
+	/** Modify DynamicCollection transform hierarchy to effect cluster breaks releasing the specified indices. */
+	void SetInitialClusterBreaks(const TArray<int32>& ReleaseIndices);
+
 
 public:
 	UPROPERTY(BlueprintAssignable, Category = "Collision")

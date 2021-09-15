@@ -163,22 +163,28 @@ namespace Chaos
 	struct FBreakingData
 	{
 		FBreakingData()
-			: Particle(nullptr)
-		    , ParticleProxy(nullptr)
+			: Proxy(nullptr)
 			, Location(FVec3((FReal)0.0))
 			, Velocity(FVec3((FReal)0.0))
 			, AngularVelocity(FVec3((FReal)0.0))
 			, Mass((FReal)0.0)
 			, BoundingBox(FAABB3(FVec3((FReal)0.0), FVec3((FReal)0.0)))
+			, TransformGroupIndex(INDEX_NONE)
 		{}
 
-		FGeometryParticleHandle* Particle;
-		IPhysicsProxyBase* ParticleProxy;
+		// The pointer to the proxy should be used with caution on the Game Thread.
+		// Ideally we only ever use this as a table key when acquiring related structures.
+		// If we genuinely need to dereference the pointer for any reason, test if it is deleted (nullptr) or
+		// pending deletion: if a call to FPhysScene_Chaos::GetOwningComponent<UPrimitiveComponent>() returns
+		// nullptr, the proxy should not be used.
+		IPhysicsProxyBase* Proxy;
+
 		FVec3 Location;
 		FVec3 Velocity;
 		FVec3 AngularVelocity;
 		FReal Mass;
 		Chaos::FAABB3 BoundingBox;
+		int32 TransformGroupIndex;
 	};
 
 	/*
@@ -191,8 +197,6 @@ namespace Chaos
 			, Velocity(FVec3((FReal)0.0))
 			, AngularVelocity(FVec3((FReal)0.0))
 			, Mass((FReal)0.0)
-		    , Particle(nullptr)
-		    , ParticleProxy(nullptr)
 			, BoundingboxVolume((FReal)-1.0)
 			, BoundingboxExtentMin((FReal)-1.0)
 			, BoundingboxExtentMax((FReal)-1.0)
@@ -204,7 +208,6 @@ namespace Chaos
 			, FVec3 InAngularVelocity
 			, FReal InMass
 			, FGeometryParticleHandle* InParticle
-			, IPhysicsProxyBase* InParticleProxy
 			, FReal InBoundingboxVolume
 			, FReal InBoundingboxExtentMin
 			, FReal InBoundingboxExtentMax
@@ -213,8 +216,6 @@ namespace Chaos
 			, Velocity(InVelocity)
 			, AngularVelocity(InAngularVelocity)
 			, Mass(InMass)
-		    , Particle(InParticle)
-		    , ParticleProxy(InParticleProxy)
 			, BoundingboxVolume(InBoundingboxVolume)
 			, BoundingboxExtentMin(InBoundingboxExtentMin)
 			, BoundingboxExtentMax(InBoundingboxExtentMax)
@@ -226,8 +227,6 @@ namespace Chaos
 			, Velocity(InBreakingData.Velocity)
 			, AngularVelocity(InBreakingData.AngularVelocity)
 			, Mass(InBreakingData.Mass)
-		    , Particle(InBreakingData.Particle)
-		    , ParticleProxy(InBreakingData.ParticleProxy)
 			, BoundingboxVolume((FReal)-1.0)
 			, BoundingboxExtentMin((FReal)-1.0)
 			, BoundingboxExtentMax((FReal)-1.0)
@@ -239,8 +238,6 @@ namespace Chaos
 		FVec3 Velocity;
 		FVec3 AngularVelocity;
 		FReal Mass;
-		FGeometryParticleHandle* Particle;
-		IPhysicsProxyBase* ParticleProxy;
 		FReal BoundingboxVolume;
 		FReal BoundingboxExtentMin, BoundingboxExtentMax;
 		int32 SurfaceType;
@@ -267,39 +264,35 @@ namespace Chaos
 			, Velocity(FVec3((FReal)0.0))
 			, AngularVelocity(FVec3((FReal)0.0))
 			, Mass((FReal)0.0)
-			, Particle(nullptr)
-		    , ParticleProxy(nullptr)
+			, Proxy(nullptr)
 			, BoundingBox(FAABB3(FVec3((FReal)0.0), FVec3((FReal)0.0)))
 		{}
 
 		FTrailingData(FVec3 InLocation, FVec3 InVelocity, FVec3 InAngularVelocity, FReal InMass
-			, FGeometryParticleHandle* InParticle, IPhysicsProxyBase* InParticleProxy, Chaos::FAABB3& InBoundingBox)
+			, IPhysicsProxyBase* InProxy, Chaos::TAABB<FReal, 3>& InBoundingBox)
 			: Location(InLocation)
 			, Velocity(InVelocity)
 			, AngularVelocity(InAngularVelocity)
 			, Mass(InMass)
-			, Particle(InParticle)
-		    , ParticleProxy(InParticleProxy)
+			, Proxy(InProxy)
 			, BoundingBox(InBoundingBox)
+			, TransformGroupIndex(INDEX_NONE)
 		{}
 
 		FVec3 Location;
 		FVec3 Velocity;
 		FVec3 AngularVelocity;
 		FReal Mass;
-		FGeometryParticleHandle* Particle;
-		IPhysicsProxyBase* ParticleProxy;
+
+		// The pointer to the proxy should be used with caution on the Game Thread.
+		// Ideally we only ever use this as a table key when acquiring related structures.
+		// If we genuinely need to dereference the pointer for any reason, test if it is deleted (nullptr) or
+		// pending deletion: if a call to FPhysScene_Chaos::GetOwningComponent<UPrimitiveComponent>() returns
+		// nullptr, the proxy should not be used.
+		IPhysicsProxyBase* Proxy;
+
 		Chaos::FAABB3 BoundingBox;
-
-		friend inline uint32 GetTypeHash(const FTrailingData& Other)
-		{
-			return ::GetTypeHash(Other.Particle);
-		}
-
-		friend bool operator==(const FTrailingData& A, const FTrailingData& B)
-		{
-			return A.Particle == B.Particle;
-		}
+		int32 TransformGroupIndex;
 	};
 
 	/*
@@ -312,7 +305,6 @@ namespace Chaos
 			, Velocity(FVec3((FReal)0.0))
 			, AngularVelocity(FVec3((FReal)0.0))
 			, Mass((FReal)0.0)
-			, Particle(nullptr)
 			, BoundingboxVolume((FReal)-1.0)
 			, BoundingboxExtentMin((FReal)-1.0)
 			, BoundingboxExtentMax((FReal)-1.0)
@@ -324,7 +316,6 @@ namespace Chaos
 			, FVec3 InAngularVelocity
 			, FReal InMass
 			, FGeometryParticleHandle* InParticle
-			, IPhysicsProxyBase* InParticleProxy
 			, FReal InBoundingboxVolume
 			, FReal InBoundingboxExtentMin
 			, FReal InBoundingboxExtentMax
@@ -333,8 +324,6 @@ namespace Chaos
 			, Velocity(InVelocity)
 			, AngularVelocity(InAngularVelocity)
 			, Mass(InMass)
-			, Particle(InParticle)
-		    , ParticleProxy(InParticleProxy)
 			, BoundingboxVolume(InBoundingboxVolume)
 			, BoundingboxExtentMin(InBoundingboxExtentMin)
 			, BoundingboxExtentMax(InBoundingboxExtentMax)
@@ -346,8 +335,6 @@ namespace Chaos
 			, Velocity(InTrailingData.Velocity)
 			, AngularVelocity(InTrailingData.AngularVelocity)
 			, Mass(InTrailingData.Mass)
-			, Particle(InTrailingData.Particle)
-		    , ParticleProxy(InTrailingData.ParticleProxy)
 			, BoundingboxVolume((FReal)-1.0)
 			, BoundingboxExtentMin((FReal)-1.0)
 			, BoundingboxExtentMax((FReal)-1.0)
@@ -358,23 +345,9 @@ namespace Chaos
 		FVec3 Velocity;
 		FVec3 AngularVelocity;
 		FReal Mass;
-		FGeometryParticleHandle* Particle;
-		IPhysicsProxyBase* ParticleProxy;
-		//	int32 ParticleIndexMesh; // If ParticleIndex points to a cluster then this index will point to an actual mesh in the cluster
-								 // It is important to be able to get extra data from the component
 		FReal BoundingboxVolume;
 		FReal BoundingboxExtentMin, BoundingboxExtentMax;
 		int32 SurfaceType;
-
-		friend inline uint32 GetTypeHash(const FTrailingDataExt& Other)
-		{
-			return ::GetTypeHash(Other.Particle);
-		}
-
-		friend bool operator==(const FTrailingDataExt& A, const FTrailingDataExt& B)
-		{
-			return A.Particle == B.Particle;
-		}
 	};
 
 	struct FSleepingData

@@ -399,13 +399,14 @@ namespace Chaos
 		MEvolution->AddConstraintRule(&SuspensionConstraintRule);
 
 		MEvolution->SetInternalParticleInitilizationFunction(
-			[this](const Chaos::FGeometryParticleHandle* OldParticle, const Chaos::FGeometryParticleHandle* NewParticle) {
+			[this](const Chaos::FGeometryParticleHandle* OldParticle, Chaos::FGeometryParticleHandle* NewParticle) {
 				if (const TSet<IPhysicsProxyBase*>* Proxies = GetProxies(OldParticle))
 				{
 					for (IPhysicsProxyBase* Proxy : *Proxies)
 					{
 						this->AddParticleToProxy(NewParticle, Proxy);
-					}
+						NewParticle->SetPhysicsProxy(Proxy);
+					}	
 				}
 			});
 	}
@@ -918,6 +919,7 @@ namespace Chaos
 					Rigid->SetPreObjectStateLowLevel(Rigid->ObjectState());	//created this frame so pre is the initial value
 				}
 
+				Handle->SetPhysicsProxy(Proxy);
 				AddParticleToProxy(Handle,Proxy);
 				GetEvolution()->CreateParticle(Handle);
 				Proxy->SetInitialized(GetCurrentFrame());
