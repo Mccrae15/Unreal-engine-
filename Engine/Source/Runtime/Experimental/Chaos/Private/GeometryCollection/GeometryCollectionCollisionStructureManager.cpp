@@ -8,6 +8,7 @@
 #include "Chaos/Levelset.h"
 #include "Chaos/Particles.h"
 #include "Chaos/Sphere.h"
+#include "Chaos/Capsule.h"
 #include "Chaos/Vector.h"
 #include "HAL/IConsoleManager.h"
 #include "Chaos/TriangleMesh.h"
@@ -280,6 +281,19 @@ FCollisionStructureManager::NewImplicitConvex(
 		}
 	}
 	return nullptr;
+}
+
+FCollisionStructureManager::FImplicit*
+FCollisionStructureManager::NewImplicitCapsule(
+	const float Radius,
+	const float Length,
+	const float CollisionObjectReduction,
+	const ECollisionTypeEnum CollisionType)
+{
+	const Chaos::FReal HalfLength = (Chaos::FReal)Length * (Chaos::FReal)0.5;
+	Chaos::FImplicitObject* Implicit = new Chaos::FCapsule(Chaos::FVec3(0, 0, -HalfLength), Chaos::FVec3(0, 0, +HalfLength), Radius * (1 - CollisionObjectReduction / 100.f));
+	UpdateImplicitFlags(Implicit, CollisionType);
+	return Implicit;
 }
 
 FCollisionStructureManager::FImplicit*
