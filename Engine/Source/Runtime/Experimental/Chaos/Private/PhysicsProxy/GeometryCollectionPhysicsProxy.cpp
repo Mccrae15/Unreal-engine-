@@ -1940,7 +1940,6 @@ void FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures(
 				{
 					CalculateVolumeAndCenterOfMass(MassSpaceParticles, TriMesh->GetElements(), MassProperties.Volume, MassProperties.CenterOfMass);
 					InertiaComputationNeeded[GeometryIndex] = true;
-
 					if(MassProperties.Volume == 0)
 					{
 						FVector Extents = BoundingBox[GeometryIndex].GetExtent();
@@ -1950,6 +1949,7 @@ void FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures(
 						float ExtentsXY = Extents.X * Extents.X + Extents.Y * Extents.Y;
 						MassProperties.InertiaTensor = PMatrix<float, 3, 3>(ExtentsYZ / 12., ExtentsXZ / 12., ExtentsXY / 12.);
 						MassProperties.CenterOfMass = BoundingBox[GeometryIndex].GetCenter();
+						CollectionMassToLocal[TransformGroupIndex] = FTransform(FQuat::Identity, MassProperties.CenterOfMass);
 						InertiaComputationNeeded[GeometryIndex] = false;
 					}
 
@@ -2067,7 +2067,6 @@ void FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures(
 				// Note: particles already in CoM space, so passing in zero as CoM
 				CalculateInertiaAndRotationOfMass(MassSpaceParticles, TriMesh->GetSurfaceElements(), Density_i, FVec3(0), MassProperties.InertiaTensor, MassProperties.RotationOfMass);
 				CollectionInertiaTensor[TransformGroupIndex] = FVec3(MassProperties.InertiaTensor.M[0][0], MassProperties.InertiaTensor.M[1][1], MassProperties.InertiaTensor.M[2][2]);
-#if false
 				CollectionMassToLocal[TransformGroupIndex] = FTransform(MassProperties.RotationOfMass, MassProperties.CenterOfMass);
 
 
@@ -2081,7 +2080,6 @@ void FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures(
 						MassSpaceParticles.X(Idx) = InverseMassRotation.TransformPosition(MassSpaceParticles.X(Idx));
 					}
 				}
-#endif
 			}
 			else
 			{
@@ -2249,7 +2247,7 @@ void FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures(
 
  			if (CollectionSimulatableParticles[TransformGroupIndex])
  			{
-				FTransform GeometryWorldTransform = CollectionSpaceTransforms[TransformGroupIndex] * CollectionMassToLocal[TransformGroupIndex];
+				FTransform GeometryWorldTransform = CollectionMassToLocal[TransformGroupIndex] * CollectionSpaceTransforms[TransformGroupIndex];
 
  				PopulateSimulatedParticle(
  					Handles[TransformGroupIndex].Get(),
@@ -2339,7 +2337,7 @@ void FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures(
 							// To move a particle from mass-space in the child to mass-space in the cluster parent, calculate
 							// the relative transform between the mass-space origin for both the parent and child before
 							// transforming the mass space particles into the parent mass-space.
-							const FTransform ChildMassToClusterMass = (CollectionSpaceTransforms[ChildTransformIdx] * CollectionMassToLocal[ChildTransformIdx]).GetRelativeTransform(CollectionSpaceTransforms[ClusterTransformIdx] * CollectionMassToLocal[ClusterTransformIdx]);
+							const FTransform ChildMassToClusterMass = (CollectionMassToLocal[ChildTransformIdx] * CollectionSpaceTransforms[ChildTransformIdx]).GetRelativeTransform(CollectionMassToLocal[ClusterTransformIdx] * CollectionSpaceTransforms[ClusterTransformIdx]);
 
 							ChildMesh->GetVertexSet(VertsAdded);
 							for (const int32 VertIdx : VertsAdded)
