@@ -2186,6 +2186,31 @@ void FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures(
 						);
 					}
 				}
+				else if (SizeSpecificData.ImplicitType == EImplicitTypeEnum::Chaos_Implicit_Capsule)
+				{
+					const FVector BBoxExtent = InstanceBoundingBox.GetExtent(); // FBox's extents are 1/2 (Max - Min)
+					const float Radius = BBoxExtent.GetAbsMin();
+					const float Length = (BBoxExtent.GetAbsMax() - Radius) * 2.f;
+
+					if (Length < SMALL_NUMBER)
+					{
+						// make a more optimized shape : sphere
+						CollectionImplicits[TransformGroupIndex] = FGeometryDynamicCollection::FSharedImplicit(
+							FCollisionStructureManager::NewImplicitSphere(
+								Radius,
+								SizeSpecificData.CollisionObjectReductionPercentage,
+								SizeSpecificData.CollisionType));
+					}
+					else
+					{
+						CollectionImplicits[TransformGroupIndex] = FGeometryDynamicCollection::FSharedImplicit(
+							FCollisionStructureManager::NewImplicitCapsule(
+								Radius,
+								Length,
+								SizeSpecificData.CollisionObjectReductionPercentage,
+								SizeSpecificData.CollisionType));
+					}
+				}
 				else if (SizeSpecificData.ImplicitType == EImplicitTypeEnum::Chaos_Implicit_None)
 				{
 					CollectionImplicits[TransformGroupIndex] = nullptr;
@@ -2436,11 +2461,33 @@ void FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures(
 						);
 					}
 				}
-				else if(SizeSpecificData.ImplicitType == EImplicitTypeEnum::Chaos_Implicit_Capsule)
+				else if (SizeSpecificData.ImplicitType == EImplicitTypeEnum::Chaos_Implicit_Capsule)
 				{
-					ensure(false); // unsupported implicit type
-					CollectionImplicits[ClusterTransformIdx].Reset();
-					CollectionSimplicials[ClusterTransformIdx].Reset();
+					const FVector BBoxExtent = InstanceBoundingBox.GetExtent(); // FBox's extents are 1/2 (Max - Min)
+					const float Radius = BBoxExtent.GetAbsMin();
+					const float Length = (BBoxExtent.GetAbsMax() - Radius) * 2.f;
+
+					if (Length < SMALL_NUMBER)
+					{
+						// make a more optimized shape : sphere
+						CollectionImplicits[ClusterTransformIdx] = FGeometryDynamicCollection::FSharedImplicit(
+							FCollisionStructureManager::NewImplicitSphere(
+								Radius,
+								SizeSpecificData.CollisionObjectReductionPercentage,
+								SizeSpecificData.CollisionType));
+					}
+					else
+					{
+						CollectionImplicits[ClusterTransformIdx] = FGeometryDynamicCollection::FSharedImplicit(
+							FCollisionStructureManager::NewImplicitCapsule(
+								Radius,
+								Length,
+								SizeSpecificData.CollisionObjectReductionPercentage,
+								SizeSpecificData.CollisionType));
+					}
+					CollectionSimplicials[ClusterTransformIdx] = TUniquePtr<FSimplicial>(
+						FCollisionStructureManager::NewSimplicial(MassSpaceParticles, *UnionMesh, CollectionImplicits[ClusterTransformIdx].Get(),
+							SharedParams.MaximumCollisionParticleCount));
 				}
 				else // Assume it's a union???
 				{
