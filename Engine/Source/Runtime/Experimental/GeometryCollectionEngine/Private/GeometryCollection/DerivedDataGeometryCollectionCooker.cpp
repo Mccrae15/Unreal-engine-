@@ -58,8 +58,8 @@ const TCHAR* FDerivedDataGeometryCollectionCooker::GetVersionString() const
 	{
 		return OverrideVersion;	//force load old ddc if found. Not recommended
 	}
-
-	return TEXT("A8A2C0FB45084FCB922FEC1139E11341");
+	
+	return TEXT("645131F49EB34ADBB2254B2C04A6C28E");
 }
 
 FString FDerivedDataGeometryCollectionCooker::GetPluginSpecificCacheKeySuffix() const
