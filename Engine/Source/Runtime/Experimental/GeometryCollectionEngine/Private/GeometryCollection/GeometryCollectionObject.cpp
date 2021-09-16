@@ -60,6 +60,9 @@ UGeometryCollection::UGeometryCollection(const FObjectInitializer& ObjectInitial
 	, MinimumMassClamp(0.1f)
 	, CollisionParticlesFraction(1.0f)
 	, MaximumCollisionParticles(60)
+	, bRemoveOnMaxSleep(false)
+	, MaximumSleepTime(10.0)
+	, RemovalDuration(5.0)
 	, EnableRemovePiecesOnFracture(false)
 	, GeometryCollection(new FGeometryCollection())
 {

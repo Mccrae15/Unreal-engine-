@@ -24,6 +24,14 @@ FChaosBreakEvent::FChaosBreakEvent()
 
 }
 
+FChaosRemovalEvent::FChaosRemovalEvent()
+	: Component(nullptr)
+	, Location(FVector::ZeroVector)
+	, Mass(0.0f)
+{
+
+}
+
 void UChaosGameplayEventDispatcher::OnRegister()
 {
 	Super::OnRegister();
@@ -48,6 +56,21 @@ static void DispatchPendingBreakEvents(TArray<FChaosBreakEvent> const& Events, T
 			if (Callback)
 			{
 				Callback->BreakEventCallback(E);
+			}
+		}
+	}
+}
+
+static void DispatchPendingRemovalEvents(TArray<FChaosRemovalEvent> const& Events, TMap<UPrimitiveComponent*, FRemovalEventCallbackWrapper> const& Registrations)
+{
+	for (FChaosRemovalEvent const& E : Events)
+	{
+		if (E.Component)
+		{
+			const FRemovalEventCallbackWrapper* const Callback = Registrations.Find(E.Component);
+			if (Callback)
+			{
+				Callback->RemovalEventCallback(E);
 			}
 		}
 	}
@@ -203,6 +226,23 @@ void UChaosGameplayEventDispatcher::UnRegisterForBreakEvents(UPrimitiveComponent
 	}
 }
 
+void UChaosGameplayEventDispatcher::RegisterForRemovalEvents(UPrimitiveComponent* Component, FOnRemovalEventCallback InFunc)
+{
+	if (Component)
+	{
+		FRemovalEventCallbackWrapper F = { InFunc };
+		RemovalEventRegistrations.Add(Component, F);
+	}
+}
+
+void UChaosGameplayEventDispatcher::UnRegisterForRemovalEvents(UPrimitiveComponent* Component)
+{
+	if (Component)
+	{
+		RemovalEventRegistrations.Remove(Component);
+	}
+}
+
 void UChaosGameplayEventDispatcher::DispatchPendingWakeNotifies()
 {
 	for (auto MapItr = PendingSleepNotifies.CreateIterator(); MapItr; ++MapItr)
@@ -228,6 +268,7 @@ void UChaosGameplayEventDispatcher::RegisterChaosEvents()
 			EventManager->RegisterHandler<Chaos::FCollisionEventData>(Chaos::EEventType::Collision, this, &UChaosGameplayEventDispatcher::HandleCollisionEvents);
 			EventManager->RegisterHandler<Chaos::FBreakingEventData>(Chaos::EEventType::Breaking, this, &UChaosGameplayEventDispatcher::HandleBreakingEvents);
 			EventManager->RegisterHandler<Chaos::FSleepingEventData>(Chaos::EEventType::Sleeping, this, &UChaosGameplayEventDispatcher::HandleSleepingEvents);
+			EventManager->RegisterHandler<Chaos::FRemovalEventData>(Chaos::EEventType::Removal, this, &UChaosGameplayEventDispatcher::HandleRemovalEvents);
 		}
 	}
 
@@ -247,6 +288,7 @@ void UChaosGameplayEventDispatcher::UnregisterChaosEvents()
 				EventManager->UnregisterHandler(Chaos::EEventType::Collision, this);
 				EventManager->UnregisterHandler(Chaos::EEventType::Breaking, this);
 				EventManager->UnregisterHandler(Chaos::EEventType::Sleeping, this);
+				EventManager->UnregisterHandler(Chaos::EEventType::Removal, this);
 			}
 		}
 	}
@@ -456,3 +498,42 @@ void UChaosGameplayEventDispatcher::AddPendingSleepingNotify(FBodyInstance* Body
 {
 	PendingSleepNotifies.FindOrAdd(BodyInstance) = SleepEventType;
 }
+
+void UChaosGameplayEventDispatcher::HandleRemovalEvents(const Chaos::FRemovalEventData& Event)
+{
+	// REMOVAL EVENTS
+
+	TArray<FChaosRemovalEvent> PendingRemovalEvents;
+
+	const float RemovalDataTimestamp = Event.RemovalData.TimeCreated;
+	if (RemovalDataTimestamp > LastRemovalDataTime)
+	{
+		LastRemovalDataTime = RemovalDataTimestamp;
+
+		Chaos::FRemovalDataArray const& RemovalData = Event.RemovalData.AllRemovalArray;
+
+		const int32 NumRemovals = RemovalData.Num();
+		if (NumRemovals > 0)
+		{
+			for (Chaos::FRemovalData const& RemovalDataItem : RemovalData)
+			{
+				if (RemovalDataItem.Proxy)
+				{
+					UPrimitiveComponent* const PrimComp = Cast<UPrimitiveComponent>(RemovalDataItem.Proxy->GetOwner());
+					if (PrimComp && RemovalEventRegistrations.Contains(PrimComp))
+					{
+						// queue them up so we can release the physics data before trigging BP events
+						FChaosRemovalEvent& RemovalEvent = PendingRemovalEvents.AddZeroed_GetRef();
+						RemovalEvent.Component = PrimComp;
+						RemovalEvent.Location = RemovalDataItem.Location;
+						RemovalEvent.Mass = RemovalDataItem.Mass;
+					}
+				}
+			}
+
+			DispatchPendingRemovalEvents(PendingRemovalEvents, RemovalEventRegistrations);
+		}
+	}
+
+}
+
