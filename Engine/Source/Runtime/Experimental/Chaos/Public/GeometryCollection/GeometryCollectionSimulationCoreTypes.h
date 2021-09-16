@@ -245,6 +245,7 @@ struct FSimulationParameters
 		, bClearCache(false)
 		, bGenerateBreakingData(false)
 		, bGenerateCollisionData(false)
+		, bGenerateRemovalsData(false)
 		, RemoveOnFractureEnabled(false)
 		, SimulationFilterData()
 		, QueryFilterData()
@@ -276,6 +277,7 @@ struct FSimulationParameters
 		, PhysicalMaterialHandle(Other.PhysicalMaterialHandle)
 		, bGenerateBreakingData(Other.bGenerateBreakingData)
 		, bGenerateCollisionData(Other.bGenerateCollisionData)
+		, bGenerateRemovalsData(Other.bGenerateRemovalsData)
 		, Shared(Other.Shared)
 		, RemoveOnFractureEnabled(false)
 		, SimulationFilterData(Other.SimulationFilterData)
@@ -329,6 +331,7 @@ struct FSimulationParameters
 
 	bool bGenerateBreakingData;
 	bool bGenerateCollisionData;
+	bool bGenerateRemovalsData;
 
 	FSharedSimulationParameters Shared;
 

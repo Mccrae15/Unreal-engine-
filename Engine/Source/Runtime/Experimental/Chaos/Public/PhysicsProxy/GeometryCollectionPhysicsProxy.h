@@ -230,6 +230,8 @@ public:
 		}
 	}
 
+	void DisableParticles(TArray<int32>& TransformGroupIndices);
+
 protected:
 	/**
 	 * Build a physics thread cluster parent particle.

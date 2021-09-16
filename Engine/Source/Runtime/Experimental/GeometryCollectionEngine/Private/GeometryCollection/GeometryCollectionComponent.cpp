@@ -210,6 +210,7 @@ UGeometryCollectionComponent::UGeometryCollectionComponent(const FObjectInitiali
 	, CachePlayback(false)
 	, bNotifyBreaks(false)
 	, bNotifyCollisions(false)
+	, bNotifyRemovals(false)
 	, bEnableReplication(false)
 	, bEnableAbandonAfterLevel(false)
 	, ReplicationAbandonClusterLevel(0)
@@ -505,6 +506,15 @@ void UGeometryCollectionComponent::SetNotifyBreaks(bool bNewNotifyBreaks)
 	}
 }
 
+void UGeometryCollectionComponent::SetNotifyRemovals(bool bNewNotifyRemovals)
+{
+	if (bNotifyRemovals != bNewNotifyRemovals)
+	{
+		bNotifyRemovals = bNewNotifyRemovals;
+		UpdateRemovalEventRegistration();
+	}
+}
+
 FBodyInstance* UGeometryCollectionComponent::GetBodyInstance(FName BoneName /*= NAME_None*/, bool bGetWelded /*= true*/) const
 {
 	return nullptr;// const_cast<FBodyInstance*>(&DummyBodyInstance);
@@ -541,6 +551,18 @@ void UGeometryCollectionComponent::DispatchBreakEvent(const FChaosBreakEvent& Ev
 	if (OnChaosBreakEvent.IsBound())
 	{
 		OnChaosBreakEvent.Broadcast(Event);
+	}
+}
+
+void UGeometryCollectionComponent::DispatchRemovalEvent(const FChaosRemovalEvent& Event)
+{
+	// native
+	NotifyRemoval(Event);
+
+	// bp
+	if (OnChaosRemovalEvent.IsBound())
+	{
+		OnChaosRemovalEvent.Broadcast(Event);
 	}
 }
 
@@ -914,6 +936,14 @@ static void DispatchGeometryCollectionBreakEvent(const FChaosBreakEvent& Event)
 	}
 }
 
+static void DispatchGeometryCollectionRemovalEvent(const FChaosRemovalEvent& Event)
+{
+	if (UGeometryCollectionComponent* const GC = Cast<UGeometryCollectionComponent>(Event.Component))
+	{
+		GC->DispatchRemovalEvent(Event);
+	}
+}
+
 void UGeometryCollectionComponent::DispatchChaosPhysicsCollisionBlueprintEvents(const FChaosPhysicsCollisionInfo& CollisionInfo)
 {
 	ReceivePhysicsCollision(CollisionInfo);
@@ -929,7 +959,7 @@ void UGeometryCollectionComponent::RegisterForEvents()
 		Chaos::FPhysicsSolver* Solver = GetWorld()->GetPhysicsScene()->GetSolver();
 		if (Solver)
 		{
-			if (bNotifyCollisions || BodyInstance.bNotifyRigidBodyCollision)
+			if (BodyInstance.bNotifyRigidBodyCollision || bNotifyBreaks || bNotifyCollisions || bNotifyRemovals)
 			{
 				EventDispatcher->RegisterForCollisionEvents(this, this);
 
@@ -946,6 +976,17 @@ void UGeometryCollectionComponent::RegisterForEvents()
 				Solver->EnqueueCommandImmediate([Solver]()
 					{
 						Solver->SetGenerateBreakingData(true);
+					});
+
+			}
+
+			if (bNotifyRemovals)
+			{
+				EventDispatcher->RegisterForRemovalEvents(this, &DispatchGeometryCollectionRemovalEvent);
+
+				Solver->EnqueueCommandImmediate([Solver]()
+					{
+						Solver->SetGenerateRemovalData(true);
 					});
 
 			}
@@ -975,6 +1016,18 @@ void UGeometryCollectionComponent::UpdateBreakEventRegistration()
 	else
 	{
 		EventDispatcher->UnRegisterForBreakEvents(this);
+	}
+}
+
+void UGeometryCollectionComponent::UpdateRemovalEventRegistration()
+{
+	if (bNotifyRemovals)
+	{
+		EventDispatcher->RegisterForRemovalEvents(this, &DispatchGeometryCollectionRemovalEvent);
+	}
+	else
+	{
+		EventDispatcher->UnRegisterForRemovalEvents(this);
 	}
 }
 
@@ -1713,6 +1766,11 @@ void UGeometryCollectionComponent::TickComponent(float DeltaTime, enum ELevelTic
 		// In editor mode we have no DynamicCollection so this test is necessary
 		if(DynamicCollection) //, TEXT("No dynamic collection available for component %s during tick."), *GetName()))
 		{
+			if (RestCollection->bRemoveOnMaxSleep)
+			{
+				IncrementSleepTimer(DeltaTime);
+			}
+			
 			if(RestCollection->HasVisibleGeometry() || DynamicCollection->IsDirty())
 			{
 				RefreshEmbeddedGeometry();
@@ -1782,6 +1840,44 @@ void UGeometryCollectionComponent::ResetDynamicCollection()
 		GetChildrenArrayCopyOnWrite();
 		GetSimulationTypeArrayCopyOnWrite();
 		GetStatusFlagsArrayCopyOnWrite();
+
+		if (RestCollection->bRemoveOnMaxSleep)
+		{
+			if (!DynamicCollection->HasAttribute("SleepTimer", FGeometryCollection::TransformGroup))
+			{
+				TManagedArray<float>& SleepTimer = DynamicCollection->AddAttribute<float>("SleepTimer", FGeometryCollection::TransformGroup);
+				SleepTimer.Fill(0.f);
+			}
+
+			if (!DynamicCollection->HasAttribute("UniformScale", FGeometryCollection::TransformGroup))
+			{
+				TManagedArray<FTransform>& UniformScale = DynamicCollection->AddAttribute<FTransform>("UniformScale", FGeometryCollection::TransformGroup);
+				UniformScale.Fill(FTransform::Identity);
+			}
+
+			if (!DynamicCollection->HasAttribute("MaxSleepTime", FGeometryCollection::TransformGroup))
+			{
+				float MinTime = FMath::Max(0.0f, RestCollection->MaximumSleepTime.X);
+				float MaxTime = FMath::Max(MinTime, RestCollection->MaximumSleepTime.Y);
+				TManagedArray<float>& MaxSleepTime = DynamicCollection->AddAttribute<float>("MaxSleepTime", FGeometryCollection::TransformGroup);
+				for (int32 Idx = 0; Idx < MaxSleepTime.Num(); ++Idx)
+				{
+					MaxSleepTime[Idx] = FMath::RandRange(MinTime, MaxTime);
+				}
+			}
+
+			if (!DynamicCollection->HasAttribute("RemovalDuration", FGeometryCollection::TransformGroup))
+			{
+				float MinTime = FMath::Max(0.0f, RestCollection->RemovalDuration.X);
+				float MaxTime = FMath::Max(MinTime, RestCollection->RemovalDuration.Y);
+				TManagedArray<float>& RemovalDuration = DynamicCollection->AddAttribute<float>("RemovalDuration", FGeometryCollection::TransformGroup);
+				for (int32 Idx = 0; Idx < RemovalDuration.Num(); ++Idx)
+				{
+					RemovalDuration[Idx] = FMath::RandRange(MinTime, MaxTime);
+				}
+			}
+		}
+
 		SetRenderStateDirty();
 	}
 
@@ -1951,6 +2047,7 @@ void UGeometryCollectionComponent::RegisterAndInitializePhysicsProxy()
 		SimulationParameters.ReverseCacheBeginTime = CacheParameters.ReverseCacheBeginTime;
 		SimulationParameters.bGenerateBreakingData = bNotifyBreaks;
 		SimulationParameters.bGenerateCollisionData = bNotifyCollisions;
+		SimulationParameters.bGenerateRemovalsData = bNotifyRemovals;
 		SimulationParameters.RemoveOnFractureEnabled = SimulationParameters.Shared.RemoveOnFractureIndices.Num() > 0;
 		SimulationParameters.WorldTransform = GetComponentToWorld();
 		SimulationParameters.UserData = static_cast<void*>(&PhysicsUserData);
@@ -2875,7 +2972,48 @@ void UGeometryCollectionComponent::CalculateGlobalMatrices()
 		else
 		{
 			// Have to fully rebuild
-			GeometryCollectionAlgo::GlobalMatrices(GetTransformArray(), GetParentArray(), GlobalMatrices);
+			if (DynamicCollection
+				&& RestCollection->bRemoveOnMaxSleep
+				&& DynamicCollection->HasAttribute("SleepTimer", FGeometryCollection::TransformGroup)
+				&& DynamicCollection->HasAttribute("UniformScale", FGeometryCollection::TransformGroup)
+				&& DynamicCollection->HasAttribute("MaxSleepTime", FGeometryCollection::TransformGroup)
+				&& DynamicCollection->HasAttribute("RemovalDuration", FGeometryCollection::TransformGroup))
+			{
+				const TManagedArray<float>& SleepTimer = DynamicCollection->GetAttribute<float>("SleepTimer", FGeometryCollection::TransformGroup);
+				const TManagedArray<float>& MaxSleepTime = DynamicCollection->GetAttribute<float>("MaxSleepTime", FGeometryCollection::TransformGroup);
+				const TManagedArray<float>& RemovalDuration = DynamicCollection->GetAttribute<float>("RemovalDuration", FGeometryCollection::TransformGroup);
+				TManagedArray<FTransform>& UniformScale = DynamicCollection->GetAttribute<FTransform>("UniformScale", FGeometryCollection::TransformGroup);
+
+				for (int32 Idx = 0; Idx < GetTransformArray().Num(); ++Idx)
+				{
+					if (SleepTimer[Idx] > MaxSleepTime[Idx])
+					{
+						float Scale = 1.0 - FMath::Min(1.0f, (SleepTimer[Idx] - MaxSleepTime[Idx]) / RemovalDuration[Idx]);
+
+						if ((Scale < 1.0) && (Scale > 0.0))
+						{
+							float ShrinkRadius = 0.0f;
+							FSphere AccumulatedSphere;
+							if (CalculateInnerSphere(Idx, AccumulatedSphere))
+							{
+								ShrinkRadius = -AccumulatedSphere.W;
+							}
+
+							FQuat LocalRotation = (GetComponentTransform().Inverse() * FTransform(GlobalMatrices[Idx]).Inverse()).GetRotation();
+							FTransform LocalDown(LocalRotation.RotateVector(FVector(0.f, 0.f, ShrinkRadius)));
+							FTransform ToCOM(DynamicCollection->MassToLocal[Idx].GetTranslation());
+							UniformScale[Idx] = ToCOM.Inverse() * LocalDown.Inverse() * FTransform(FQuat::Identity, FVector(0.f, 0.f, 0.f), FVector(Scale)) * LocalDown * ToCOM;
+						}
+
+					}
+				}
+
+				GeometryCollectionAlgo::GlobalMatrices(GetTransformArray(), GetParentArray(), UniformScale, GlobalMatrices);
+			}
+			else
+			{
+				GeometryCollectionAlgo::GlobalMatrices(GetTransformArray(), GetParentArray(), GlobalMatrices);
+			}
 		}
 	}
 
@@ -3099,3 +3237,87 @@ void UGeometryCollectionComponent::InitializeEmbeddedGeometry()
 		RefreshEmbeddedGeometry();
 	}
 }
+
+void UGeometryCollectionComponent::IncrementSleepTimer(float DeltaTime)
+{
+	// If a particle is sleeping, increment its sleep timer, otherwise reset it.
+	if (DynamicCollection && PhysicsProxy
+		&& DynamicCollection->HasAttribute("SleepTimer", FGeometryCollection::TransformGroup)
+		&& DynamicCollection->HasAttribute("MaxSleepTime", FGeometryCollection::TransformGroup)
+		&& DynamicCollection->HasAttribute("RemovalDuration", FGeometryCollection::TransformGroup))
+	{
+		TManagedArray<float>& SleepTimer = DynamicCollection->GetAttribute<float>("SleepTimer", FGeometryCollection::TransformGroup);
+		const TManagedArray<float>& RemovalDuration = DynamicCollection->GetAttribute<float>("RemovalDuration", FGeometryCollection::TransformGroup);
+		const TManagedArray<float>& MaxSleepTime = DynamicCollection->GetAttribute<float>("MaxSleepTime", FGeometryCollection::TransformGroup);
+		TArray<int32> ToDisable;
+		for (int32 TransformIdx = 0; TransformIdx < SleepTimer.Num(); ++TransformIdx)
+		{
+			bool PreviouslyAwake = SleepTimer[TransformIdx] < MaxSleepTime[TransformIdx];
+			if (SleepTimer[TransformIdx] < (MaxSleepTime[TransformIdx] + RemovalDuration[TransformIdx]))
+			{
+				SleepTimer[TransformIdx] = (DynamicCollection->DynamicState[TransformIdx] == (int)EObjectStateTypeEnum::Chaos_Object_Sleeping) ? SleepTimer[TransformIdx] + DeltaTime : 0.0f;
+
+				if (SleepTimer[TransformIdx] > MaxSleepTime[TransformIdx])
+				{
+					DynamicCollection->MakeDirty();
+					if (PreviouslyAwake)
+					{
+						// Disable the particle if it has been asleep for the requisite time
+						ToDisable.Add(TransformIdx);
+					}
+				}
+			}
+		}
+
+		if (ToDisable.Num())
+		{
+			PhysicsProxy->DisableParticles(ToDisable);
+		}
+	}
+}
+
+bool UGeometryCollectionComponent::CalculateInnerSphere(int32 TransformIndex, FSphere& SphereOut) const
+{
+	// Approximates the inscribed sphere. Returns false if no such sphere exists, if for instance the index is to an embedded geometry. 
+
+	const TManagedArray<int32>& TransformToGeometryIndex = RestCollection->GetGeometryCollection()->TransformToGeometryIndex;
+	const TManagedArray<Chaos::FRealSingle>& InnerRadius = RestCollection->GetGeometryCollection()->InnerRadius;
+	const TManagedArray<TSet<int32>>& Children = RestCollection->GetGeometryCollection()->Children;
+	const TManagedArray<FTransform>& MassToLocal = RestCollection->GetGeometryCollection()->GetAttribute<FTransform>("MassToLocal", FGeometryCollection::TransformGroup);
+
+	if (RestCollection->GetGeometryCollection()->IsRigid(TransformIndex))
+	{
+		// Sphere in component space, centered on body's COM.
+		FVector COM = MassToLocal[TransformIndex].GetLocation();
+		SphereOut = FSphere(COM, InnerRadius[TransformToGeometryIndex[TransformIndex]]);
+		return true;
+	}
+	else if (RestCollection->GetGeometryCollection()->IsClustered(TransformIndex))
+	{
+		// Recursively accumulate the cluster's child spheres. 
+		bool bSphereFound = false;
+		for (int32 ChildIndex : Children[TransformIndex])
+		{
+			FSphere LocalSphere;
+			if (CalculateInnerSphere(ChildIndex, LocalSphere))
+			{
+				if (!bSphereFound)
+				{
+					bSphereFound = true;
+					SphereOut = LocalSphere;
+				}
+				else
+				{
+					SphereOut += LocalSphere;
+				}
+			}
+		}
+		return bSphereFound;
+	}
+	else
+	{
+		// Likely an embedded geometry, which doesn't count towards volume.
+		return false;
+	}
+}
+

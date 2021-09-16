@@ -328,6 +328,7 @@ namespace Chaos
 				{
 					SCOPE_CYCLE_COUNTER(STAT_FillProducerData);
 					MSolver->GetEventManager()->FillProducerData(MSolver);
+					MSolver->GetEvolution()->ResetAllRemovals();
 				}
 				{
 					SCOPE_CYCLE_COUNTER(STAT_FlipBuffersIfRequired);

@@ -315,6 +315,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Collisions")
 	int32 MaximumCollisionParticles;
 
+	/** Remove particle from simulation and dissolve rendered geometry once sleep threshold has been exceeded. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal, meta = (DisplayName = "RemoveOnMaxSleep"))
+	bool bRemoveOnMaxSleep;
+
+	/** How long may the particle sleep before initiating removal (in seconds). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal)
+	FVector2D MaximumSleepTime;
+
+	/** How long does the removal process take (in seconds). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal)
+	FVector2D RemovalDuration;
+
 	UPROPERTY(EditAnywhere, Category = "Collisions")
 	TArray<FGeometryCollectionSizeSpecificData> SizeSpecificData;
 

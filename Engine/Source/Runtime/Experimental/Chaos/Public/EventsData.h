@@ -18,6 +18,7 @@ namespace Chaos
 	typedef TArray<FCollidingData> FCollisionDataArray;
 	typedef TArray<FBreakingData> FBreakingDataArray;
 	typedef TArray<FTrailingData> FTrailingDataArray;
+	typedef TArray<FRemovalData> FRemovalDataArray;
 	typedef TArray<FSleepingData> FSleepingDataArray;
 
 	/* Common */
@@ -113,6 +114,32 @@ namespace Chaos
 
 		FAllTrailingData TrailingData;
 		FIndicesByPhysicsProxy PhysicsProxyToTrailingIndices;
+	};
+
+	/* Removal */
+
+	/*
+	 * All the removal events for one frame time stamped with the time for that frame
+	 */
+	struct FAllRemovalData : FTimeResource
+	{
+		FAllRemovalData() : AllRemovalArray(FRemovalDataArray()) {}
+
+		void Reset()
+		{
+			AllRemovalArray.Reset();
+		}
+
+		FRemovalDataArray AllRemovalArray;
+	};
+
+
+	struct FRemovalEventData
+	{
+		FRemovalEventData() {}
+
+		FAllRemovalData RemovalData;
+		FIndicesByPhysicsProxy PhysicsProxyToRemovalIndices;
 	};
 
 	struct FSleepingEventData

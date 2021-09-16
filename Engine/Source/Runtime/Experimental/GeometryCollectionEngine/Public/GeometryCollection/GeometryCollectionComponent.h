@@ -37,6 +37,8 @@ class UInstancedStaticMeshComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnChaosBreakEvent, const FChaosBreakEvent&, BreakEvent);
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnChaosRemovalEvent, const FChaosRemovalEvent&, RemovalEvent);
+
 namespace GeometryCollection
 {
 	enum class ESelectionMode : uint8
@@ -616,13 +618,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Physics")
 	void SetNotifyBreaks(bool bNewNotifyBreaks);
 
+	/** Changes whether or not this component will get future removal notifications. */
+	UFUNCTION(BlueprintCallable, Category = "Physics")
+	void SetNotifyRemovals(bool bNewNotifyRemovals);
+
 	/** Overrideable native notification */
 	virtual void NotifyBreak(const FChaosBreakEvent& Event) {};
 
+	/** Overrideable native notification */
+	virtual void NotifyRemoval(const FChaosRemovalEvent& Event) {};
+
 	UPROPERTY(BlueprintAssignable, Category = "Chaos")
 	FOnChaosBreakEvent OnChaosBreakEvent;
+
+	UPROPERTY(BlueprintAssignable, Category = "Chaos")
+	FOnChaosRemovalEvent OnChaosRemovalEvent;
 	
 	void DispatchBreakEvent(const FChaosBreakEvent& Event);
+
+	void DispatchRemovalEvent(const FChaosRemovalEvent& Event);
 
 	UPROPERTY(Transient, VisibleAnywhere, BlueprintReadWrite, Interp, Category = "Chaos")
 	float DesiredCacheTime;
@@ -678,6 +692,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
 	bool bNotifyCollisions;
 
+	/** If true, this component will generate removal events that other systems may subscribe to. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
+	bool bNotifyRemovals;
+
 	/** Populate the static geometry structures for the render thread. */
 	void InitConstantData(FGeometryCollectionConstantData* ConstantData) const;
 
@@ -699,6 +717,7 @@ protected:
 	void RegisterForEvents();
 	void UpdateRBCollisionEventRegistration();
 	void UpdateBreakEventRegistration();
+	void UpdateRemovalEventRegistration();
 
 	/* Per-instance override to enable/disable replication for the geometry collection */
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category=Network)
@@ -811,4 +830,7 @@ private:
 
 	bool IsEmbeddedGeometryValid() const;
 	void ClearEmbeddedGeometry();
+
+	void IncrementSleepTimer(float DeltaTime);
+	bool CalculateInnerSphere(int32 TransformIndex, FSphere& SphereOut) const;
 };
