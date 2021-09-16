@@ -252,6 +252,9 @@ UGeometryCollectionComponent::UGeometryCollectionComponent(const FObjectInitiali
 	// By default use the destructible object channel unless the user specifies otherwise
 	BodyInstance.SetObjectType(ECC_Destructible);
 
+	// By default, we initialize immediately. If this is set false, we defer initialization.
+	BodyInstance.bSimulatePhysics = true;
+
 	EventDispatcher = ObjectInitializer.CreateDefaultSubobject<UChaosGameplayEventDispatcher>(this, TEXT("GameplayEventDispatcher"));
 
 	DynamicCollection = nullptr;
