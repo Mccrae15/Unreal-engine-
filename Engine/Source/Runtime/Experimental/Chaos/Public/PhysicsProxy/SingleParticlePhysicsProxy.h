@@ -15,6 +15,10 @@
 #include "PhysicsProxy/SingleParticlePhysicsProxyFwd.h"
 #include "Framework/Threading.h"
 
+
+
+extern CHAOS_API int32 SyncKinematicOnGameThread;
+
 namespace Chaos
 {
 	class FPBDRigidsEvolutionGBF;
