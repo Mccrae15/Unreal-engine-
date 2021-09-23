@@ -72,6 +72,9 @@ public:
 	static 	FString GetHMDModel();
 
 	UFUNCTION(BlueprintPure, Category = "SteamVR")
+	static float GetHMD_Frequency();
+
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
 	static FVector GetBasePosition();
 
 	UFUNCTION(BlueprintPure, Category = "SteamVR")

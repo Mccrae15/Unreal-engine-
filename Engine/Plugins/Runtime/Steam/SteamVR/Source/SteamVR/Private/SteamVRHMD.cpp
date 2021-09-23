@@ -1118,6 +1118,17 @@ FString  FSteamVRHMD::GetHMDModel() const
 
 	return GetFStringTrackedDeviceProperty(VRSystem, vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_ModelNumber_String);
 }
+
+float  FSteamVRHMD::GetHMD_Frequency() const
+{
+	if (VRSystem == nullptr)
+	{
+		return -1.0f;
+	}
+
+	return VRSystem->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_DisplayFrequency_Float);
+}
+
 FString FSteamVRHMD::GetVersionString() const
 {
 	if (VRSystem == nullptr)

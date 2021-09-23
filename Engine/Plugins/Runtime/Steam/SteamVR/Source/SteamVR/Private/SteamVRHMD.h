@@ -85,6 +85,8 @@ public:
 	}
 
 	FString GetHMDModel() const;
+	/*Returns Current HMD  refresh rate in Hz*/
+	float  GetHMD_Frequency() const;
 	virtual FString GetVersionString() const override;
 	virtual FString GetControllerName(uint32 DeviceIndex) const;
 

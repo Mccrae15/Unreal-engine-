@@ -127,6 +127,19 @@ FString USteamVRFunctionLibrary::GetHMDModel()
 	return FString();
 }
 
+float USteamVRFunctionLibrary::GetHMD_Frequency()
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetHMD_Frequency();
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return -1.0f;
+}
+
 FVector USteamVRFunctionLibrary::GetBasePosition()
 {
 #if STEAMVR_SUPPORTED_PLATFORMS

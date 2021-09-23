@@ -403,7 +403,7 @@ float UOculusFunctionLibrary::GetCurrentDisplayFrequency()
 		}
 	}
 #endif
-	return 0.0f;
+	return -1.0f;
 }
 
 void UOculusFunctionLibrary::SetDisplayFrequency(float RequestedFrequency)
