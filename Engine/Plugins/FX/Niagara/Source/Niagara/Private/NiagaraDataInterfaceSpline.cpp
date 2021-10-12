@@ -274,12 +274,12 @@ void UNiagaraDataInterfaceSpline::GetVMExternalFunction(const FVMExternalFunctio
 	else if (BindingInfo.Name == SampleSplineRotationByUnitDistanceName)
 	{
 		check(BindingInfo.GetNumInputs() == 2 && BindingInfo.GetNumOutputs() == 4);
-		TNDIExplicitBinder<FNDITransformHandlerNoop, TNDIParamBinder<0, float, NDI_FUNC_BINDER(UNiagaraDataInterfaceSpline, SampleSplineRotationByUnitDistance)>>::Bind(this, BindingInfo, InstanceData, OutFunc);
+		TNDIExplicitBinder<FNDITransformHandlerNoop, TNDIParamBinder<1, float, NDI_FUNC_BINDER(UNiagaraDataInterfaceSpline, SampleSplineRotationByUnitDistance)>>::Bind(this, BindingInfo, InstanceData, OutFunc);
 	}
 	else if (BindingInfo.Name == SampleSplineRotationByUnitDistanceWSName)
 	{
 		check(BindingInfo.GetNumInputs() == 2 && BindingInfo.GetNumOutputs() == 4);
-		TNDIExplicitBinder<FNDITransformHandler, TNDIParamBinder<0, float, NDI_FUNC_BINDER(UNiagaraDataInterfaceSpline, SampleSplineRotationByUnitDistance)>>::Bind(this, BindingInfo, InstanceData, OutFunc);
+		TNDIExplicitBinder<FNDITransformHandler, TNDIParamBinder<1, float, NDI_FUNC_BINDER(UNiagaraDataInterfaceSpline, SampleSplineRotationByUnitDistance)>>::Bind(this, BindingInfo, InstanceData, OutFunc);
 	}
 	else if (BindingInfo.Name == SampleSplineUpVectorByUnitDistanceName)
 	{
@@ -676,9 +676,9 @@ void UNiagaraDataInterfaceSpline::SampleSplinePositionByUnitDistance(FVectorVMCo
 template<typename TransformHandlerType, typename SplineSampleType>
 void UNiagaraDataInterfaceSpline::SampleSplineRotationByUnitDistance(FVectorVMContext& Context)
 {
+	VectorVM::FUserPtrHandler<FNDISpline_InstanceData> InstData(Context);
 	TransformHandlerType TransformHandler;
 	SplineSampleType SplineSampleParam(Context);
-	VectorVM::FUserPtrHandler<FNDISpline_InstanceData> InstData(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> OutQuatX(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> OutQuatY(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> OutQuatZ(Context);
@@ -686,7 +686,7 @@ void UNiagaraDataInterfaceSpline::SampleSplineRotationByUnitDistance(FVectorVMCo
 
 	if (InstData->IsValid())
 	{
-		const FQuat TransformQuat = InstData->Transform.ToQuat();
+		const FQuat TransformQuat = InstData->Transform.GetMatrixWithoutScale().ToQuat();
 		const float SplineLength = InstData->GetSplineLength();
 		for (int32 i = 0; i < Context.NumInstances; ++i)
 		{

@@ -727,7 +727,7 @@ namespace UsdSkelRootTranslatorImpl
 				UsdUtils::FBlendShapeMap* OutBlendShapes = Context->BlendShapesByPath ? &NewBlendShapes : nullptr;
 
 				TMap< FString, TMap< FString, int32 > > Unused;
-				TMap< FString, TMap< FString, int32 > >* MaterialToPrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? Context->MaterialToPrimvarToUVIndex : &Unused;
+				const TMap< FString, TMap< FString, int32 > >* MaterialToPrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? Context->MaterialToPrimvarToUVIndex : &Unused;
 
 				const bool bContinueTaskChain = UsdSkelRootTranslatorImpl::LoadAllSkeletalData(
 					SkeletonCache.Get(),
@@ -1089,6 +1089,12 @@ void FUsdSkelRootTranslator::UpdateComponents( USceneComponent* SceneComponent )
 
 				if ( Weights.size() > 0 )
 				{
+					// All of these seem required, or else it won't e.g. update morph targets unless there's also a joint animation update
+					PoseableMeshComponent->RefreshBoneTransforms();
+					PoseableMeshComponent->RefreshSlaveComponents();
+					PoseableMeshComponent->UpdateComponentToWorld();
+					PoseableMeshComponent->FinalizeBoneTransform();
+					PoseableMeshComponent->MarkRenderTransformDirty();
 					PoseableMeshComponent->MarkRenderDynamicDataDirty();
 				}
 			}

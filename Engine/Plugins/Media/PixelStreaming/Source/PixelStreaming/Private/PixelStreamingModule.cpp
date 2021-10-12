@@ -8,13 +8,11 @@
 #include "PixelStreamerDelegates.h"
 #include "SignallingServerConnection.h"
 #include "PixelStreamingSettings.h"
-#include "HUDStats.h"
+#include "PixelStreamingStats.h"
 #include "PixelStreamingPrivate.h"
-#include "PixelStreamingSettings.h"
 #include "PlayerSession.h"
 #include "PixelStreamingAudioSink.h"
 #include "LatencyTester.h"
-
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectIterator.h"
@@ -162,6 +160,9 @@ void FPixelStreamingModule::StartupModule()
 		return;
 	}
 
+	// Initialise all settings from command line args etc
+	PixelStreamingSettings::InitialiseSettings();
+
 	// only D3D11/D3D12 is supported
 	if (GDynamicRHI == nullptr ||
 		!( GDynamicRHI->GetName() == FString(TEXT("D3D11")) || 
@@ -243,7 +244,7 @@ void FPixelStreamingModule::OnBackBufferReady_RenderThread(SWindow& SlateWindow,
 
 	// Check to see if we have been instructed to capture the back buffer as a
 	// freeze frame.
-	if (bCaptureNextBackBufferAndStream)
+	if (bCaptureNextBackBufferAndStream && Streamer->IsStreaming())
 	{
 		bCaptureNextBackBufferAndStream = false;
 
@@ -291,21 +292,28 @@ const TArray<UPixelStreamerInputComponent*> FPixelStreamingModule::GetInputCompo
 void FPixelStreamingModule::FreezeFrame(UTexture2D* Texture)
 {
 	if (Texture)
-	{
-		// A frame is supplied so immediately read its data and send as a JPEG.
-		FTexture2DRHIRef Texture2DRHI = Texture->Resource && Texture->Resource->TextureRHI ? Texture->Resource->TextureRHI->GetTexture2D() : nullptr;
-		if (!Texture2DRHI)
+	{		
+		ENQUEUE_RENDER_COMMAND(ReadSurfaceCommand)([this, Texture](FRHICommandListImmediate& RHICmdList)
 		{
-			UE_LOG(PixelStreamer, Error, TEXT("Attempting freeze frame with texture %s with no texture 2D RHI"), *Texture->GetName());
-			return;
-		}
+			// A frame is supplied so immediately read its data and send as a JPEG.
+			FTexture2DRHIRef Texture2DRHI = (Texture->Resource && Texture->Resource->TextureRHI) ? Texture->Resource->TextureRHI->GetTexture2D() : nullptr;
+			if (!Texture2DRHI)
+			{
+				UE_LOG(PixelStreamer, Error, TEXT("Attempting freeze frame with texture %s with no texture 2D RHI"), *Texture->GetName());
+				return;
+			}
+			uint32 Width = Texture2DRHI->GetSizeX();
+			uint32 Height = Texture2DRHI->GetSizeY();
+			// Create empty texture
+			FRHIResourceCreateInfo CreateInfo(TEXT("FreezeFrameTexture"));
+			FTexture2DRHIRef DestTexture = GDynamicRHI->RHICreateTexture2D(Width, Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_RenderTargetable, ERHIAccess::Present, CreateInfo);
+			// Copy freeze frame texture to empty texture
+			CopyTexture(Texture2DRHI, DestTexture);
 
-		ENQUEUE_RENDER_COMMAND(ReadSurfaceCommand)([this, Texture2DRHI](FRHICommandListImmediate& RHICmdList)
-		{
 			TArray<FColor> Data;
-			FIntRect Rect{ {0, 0}, Texture2DRHI->GetSizeXY() };
-			RHICmdList.ReadSurfaceData(Texture2DRHI, Rect, Data, FReadSurfaceDataFlags());
-			SendJpeg(MoveTemp(Data), Rect);
+			FIntRect Rect(0, 0, Width, Height);
+			RHICmdList.ReadSurfaceData(DestTexture, Rect, Data, FReadSurfaceDataFlags());
+			this->SendJpeg(MoveTemp(Data), Rect);
 		});
 	}
 	else
@@ -322,7 +330,7 @@ void FPixelStreamingModule::FreezeFrame(UTexture2D* Texture)
 void FPixelStreamingModule::UnfreezeFrame()
 {
 	Streamer->SendUnfreezeFrame();
-
+	
 	// Resume streaming.
 	bFrozen = false;
 }
@@ -374,7 +382,7 @@ void FPixelStreamingModule::SendJpeg(TArray<FColor> RawData, const FIntRect& Rec
 	if (bSuccess)
 	{
 		// Compress to a JPEG of the maximum possible quality.
-		int32 Quality = PixelStreamingSettings::CVarFreezeFrameQuality.GetValueOnAnyThread();
+		int32 Quality = PixelStreamingSettings::CVarPixelStreamingFreezeFrameQuality.GetValueOnAnyThread();
 		const TArray64<uint8>& JpegBytes = ImageWrapper->GetCompressed(Quality);
 		Streamer->SendFreezeFrame(JpegBytes);
 	}
@@ -396,7 +404,7 @@ bool FPixelStreamingModule::IsTickableInEditor() const
 
 void FPixelStreamingModule::Tick(float DeltaTime)
 {
-	FHUDStats::Get().Tick();
+	FPixelStreamingStats::Get().Tick();
 
 	// If we are running a latency test then check if we have timing results and if we do transmit them
 	if(FLatencyTester::IsTestRunning() && FLatencyTester::GetTestStage() == FLatencyTester::ELatencyTestStage::RESULTS_READY)
@@ -406,27 +414,17 @@ void FPixelStreamingModule::Tick(float DeltaTime)
 		bool bEnded = FLatencyTester::End(LatencyResults, LatencyTestPlayerId);
 		if(bEnded)
 		{
-			FPlayerSession* PlayerSession = Streamer->GetPlayerSession(LatencyTestPlayerId);
-			if(PlayerSession != nullptr)
-			{
-				PlayerSession->SendMessage(PixelStreamingProtocol::EToPlayerMsg::LatencyTest, LatencyResults);
-			}
+			Streamer->SendMessage(LatencyTestPlayerId, PixelStreamingProtocol::EToPlayerMsg::LatencyTest, LatencyResults);
 		}
 	}
 
 	// Send video encoder averaged QP approx every 1 second
-	if(this->Streamer.IsValid() && this->Streamer->GetNumPlayers() > 0)
+	if(this->Streamer.IsValid() && this->Streamer->IsStreaming() && this->Streamer->GetNumPlayers() > 0)
 	{
 		double Now = FPlatformTime::Seconds();
 		if (Now - LastVideoEncoderQPReportTime > 1)
 		{
-			TArray<FPlayerSession*> PlayerSessions;
-			Streamer->GetPlayerSessions(PlayerSessions);
-			for(FPlayerSession* PlayerSession : PlayerSessions)
-			{
-				PlayerSession->SendVideoEncoderQP();
-			}
-
+			Streamer->SendLatestQPAllPlayers();
 			LastVideoEncoderQPReportTime = FPlatformTime::Seconds();
 		}
 	}
@@ -438,36 +436,24 @@ TStatId FPixelStreamingModule::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(FPixelStreamingModule, STATGROUP_Tickables);
 }
 
-FPixelStreamingAudioSink* FPixelStreamingModule::GetPeerAudioSink(FPlayerId PlayerId)
+IPixelStreamingAudioSink* FPixelStreamingModule::GetPeerAudioSink(FPlayerId PlayerId)
 {
 	if(!this->Streamer.IsValid())
 	{
 		return nullptr;
 	}
-	FPlayerSession* Session = this->Streamer->GetPlayerSession(PlayerId);
 
-	if(!Session)
-	{
-		return nullptr;
-	}
-
-	return &Session->GetAudioSink();
+	return this->Streamer->GetAudioSink(PlayerId);
 }
 
-FPixelStreamingAudioSink* FPixelStreamingModule::GetUnlistenedAudioSink()
+IPixelStreamingAudioSink* FPixelStreamingModule::GetUnlistenedAudioSink()
 {
 	if(!this->Streamer.IsValid())
 	{
 		return nullptr;
 	}
-	FPlayerSession* Session = this->Streamer->GetUnlistenedPlayerSession();
 
-	if(!Session)
-	{
-		return nullptr;
-	}
-
-	return &Session->GetAudioSink();
+	return this->Streamer->GetUnlistenedAudioSink();
 }
 
 IMPLEMENT_MODULE(FPixelStreamingModule, PixelStreaming)

@@ -4,6 +4,7 @@
 #include "IRemoteControlModule.h"
 #include "IStructDeserializerBackend.h"
 #include "IStructSerializerBackend.h"
+#include "Components/ActorComponent.h"
 #include "Components/LightComponent.h"
 #include "RCPropertyUtilities.h"
 #include "RemoteControlFieldPath.h"
@@ -525,6 +526,11 @@ public:
 					if (OngoingModification->bHasStartedTransaction)
 					{
 						SnapshotTransactionBuffer(InCall.CallRef.Object.Get());
+
+						if (UActorComponent* Component = Cast<UActorComponent>(InCall.CallRef.Object.Get()))
+						{
+							SnapshotTransactionBuffer(Component->GetOwner());
+						}
 					}
 				}
 				else
@@ -958,9 +964,29 @@ public:
 			FRCFieldPathInfo FieldPathInfo = ObjectAccess.PropertyPathInfo;
 			void* TargetAddress = FieldPathInfo.GetResolvedData().ContainerAddress;
 			UObject* DefaultObject = Object->GetClass()->GetDefaultObject();
-			FieldPathInfo.Resolve(DefaultObject);
-			FRCFieldResolvedData DefaultObjectResolvedData = FieldPathInfo.GetResolvedData();
-			ObjectAccess.Property->CopyCompleteValue_InContainer(TargetAddress, DefaultObjectResolvedData.ContainerAddress);
+			if (FieldPathInfo.Resolve(DefaultObject))
+			{
+				FRCFieldResolvedData DefaultObjectResolvedData = FieldPathInfo.GetResolvedData();
+				ObjectAccess.Property->CopyCompleteValue_InContainer(TargetAddress, DefaultObjectResolvedData.ContainerAddress);
+			}
+			else
+			{
+				// Object might have been invalidated by the previous TestOrFinalizeOngoingChange invocation.
+				if (ObjectAccess.Object.IsValid())
+				{
+					if (UStruct* Struct = ObjectAccess.Property->GetOwnerStruct())
+					{
+						FStructOnScope PropertyOwnerStruct{Struct};
+						ObjectAccess.Property->CopyCompleteValue_InContainer(TargetAddress, PropertyOwnerStruct.GetStructMemory());
+					}
+					else
+					{
+						// Default to reseting using the property's type default value.
+						ObjectAccess.Property->InitializeValue_InContainer(TargetAddress);
+					}
+
+				}
+			}
 
 			// if we are generating a transaction, also generate post edit property event, event if the change ended up unsuccessful
 			// this is to match the pre edit change call that can unregister components for example

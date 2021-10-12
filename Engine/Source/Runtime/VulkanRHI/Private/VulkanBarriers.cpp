@@ -267,10 +267,10 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 		switch (ResourceType)
 		{
 			case FRHITransitionInfo::EType::IndexBuffer:
-				AccessFlags |= VK_ACCESS_INDEX_READ_BIT;
+					AccessFlags |= VK_ACCESS_INDEX_READ_BIT;
 				break;
 			case FRHITransitionInfo::EType::VertexBuffer:
-				AccessFlags |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+					AccessFlags |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
 				break;
 			default:
 				checkNoEntry();
@@ -379,7 +379,15 @@ static void GetDepthStencilStageAndAccessFlags(ERHIAccess DepthAccess, ERHIAcces
 
 	Layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-	if (EnumHasAnyFlags(DepthAccess, ERHIAccess::DSVWrite))
+	if (EnumHasAnyFlags(DepthAccess, ERHIAccess::CopySrc))
+	{
+		Layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	}
+	else if (EnumHasAnyFlags(DepthAccess, ERHIAccess::CopyDest))
+	{
+		Layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	}
+	else if (EnumHasAnyFlags(DepthAccess, ERHIAccess::DSVWrite))
 	{
 		if (EnumHasAnyFlags(StencilAccess, ERHIAccess::DSVWrite))
 		{
@@ -443,6 +451,20 @@ static void GetDepthStencilStageAndAccessFlags(ERHIAccess DepthAccess, ERHIAcces
 		StageFlags |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 		AccessFlags |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 		ProcessedRHIFlags |= (uint32)ERHIAccess::UAVCompute;
+	}
+
+	if (EnumHasAnyFlags(CombinedAccess, ERHIAccess::CopySrc))
+	{
+		StageFlags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+		AccessFlags |= VK_ACCESS_TRANSFER_READ_BIT;
+		ProcessedRHIFlags |= (uint32)ERHIAccess::CopySrc;
+	}
+
+	if (EnumHasAnyFlags(CombinedAccess, ERHIAccess::CopyDest))
+	{
+		StageFlags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+		AccessFlags |= VK_ACCESS_TRANSFER_WRITE_BIT;
+		ProcessedRHIFlags |= (uint32)ERHIAccess::CopyDest;
 	}
 
 	uint32 RemainingFlags = (uint32)CombinedAccess & (~ProcessedRHIFlags);
@@ -1255,6 +1277,102 @@ void FVulkanPipelineBarrier::AddImageLayoutTransition(VkImage Image, VkImageLayo
 
 	VkImageMemoryBarrier& ImgBarrier = ImageBarriers.AddDefaulted_GetRef();
 	SetupImageBarrier(ImgBarrier, Image, SrcAccessFlags, DstAccessFlags, SrcLayout, DstLayout, SubresourceRange);
+}
+
+void FVulkanPipelineBarrier::AddImageLayoutTransition(VkImage Image, VkImageAspectFlags AspectMask, const FVulkanImageLayout& SrcLayout, VkImageLayout DstLayout)
+{
+	if (SrcLayout.AreAllSubresourcesSameLayout())
+	{
+		AddImageLayoutTransition(Image, SrcLayout.MainLayout, DstLayout, MakeSubresourceRange(AspectMask));
+		return;
+	}
+
+	DstStageMask |= GetVkStageFlagsForLayout(DstLayout);
+	const VkAccessFlags DstAccessFlags = GetVkAccessMaskForLayout(DstLayout);
+
+	VkImageSubresourceRange SubresourceRange = MakeSubresourceRange(AspectMask, 0, 1, 0, 1);
+	for (; SubresourceRange.baseArrayLayer < SrcLayout.NumLayers; ++SubresourceRange.baseArrayLayer)
+	{
+		for (SubresourceRange.baseMipLevel=0; SubresourceRange.baseMipLevel < SrcLayout.NumMips; ++SubresourceRange.baseMipLevel)
+		{
+			const VkImageLayout SubresourceLayout = SrcLayout.GetSubresLayout(SubresourceRange.baseArrayLayer, SubresourceRange.baseMipLevel);
+			if (SubresourceLayout != DstLayout)
+			{
+				SrcStageMask |= GetVkStageFlagsForLayout(SubresourceLayout);
+				const VkAccessFlags SrcAccessFlags = GetVkAccessMaskForLayout(SubresourceLayout);
+
+				VkImageMemoryBarrier& ImgBarrier = ImageBarriers.AddDefaulted_GetRef();
+				SetupImageBarrier(ImgBarrier, Image, SrcAccessFlags, DstAccessFlags, SubresourceLayout, DstLayout, SubresourceRange);
+			}
+		}
+	}
+}
+
+void FVulkanPipelineBarrier::AddImageLayoutTransition(VkImage Image, VkImageAspectFlags AspectMask, VkImageLayout SrcLayout, const FVulkanImageLayout& DstLayout)
+{
+	if (DstLayout.AreAllSubresourcesSameLayout())
+	{
+		AddImageLayoutTransition(Image, SrcLayout, DstLayout.MainLayout, MakeSubresourceRange(AspectMask));
+		return;
+	}
+
+	SrcStageMask |= GetVkStageFlagsForLayout(SrcLayout);
+	const VkAccessFlags SrcAccessFlags = GetVkAccessMaskForLayout(SrcLayout);
+
+	VkImageSubresourceRange SubresourceRange = MakeSubresourceRange(AspectMask, 0, 1, 0, 1);
+	for (; SubresourceRange.baseArrayLayer < DstLayout.NumLayers; ++SubresourceRange.baseArrayLayer)
+	{
+		for (SubresourceRange.baseMipLevel=0; SubresourceRange.baseMipLevel < DstLayout.NumMips; ++SubresourceRange.baseMipLevel)
+		{
+			const VkImageLayout SubresourceLayout = DstLayout.GetSubresLayout(SubresourceRange.baseArrayLayer, SubresourceRange.baseMipLevel);
+			if (SubresourceLayout != SrcLayout)
+			{
+				DstStageMask |= GetVkStageFlagsForLayout(SubresourceLayout);
+				const VkAccessFlags DstAccessFlags = GetVkAccessMaskForLayout(SubresourceLayout);
+
+				VkImageMemoryBarrier& ImgBarrier = ImageBarriers.AddDefaulted_GetRef();
+				SetupImageBarrier(ImgBarrier, Image, SrcAccessFlags, DstAccessFlags, SrcLayout, SubresourceLayout, SubresourceRange);
+			}
+		}
+	}
+}
+
+void FVulkanPipelineBarrier::AddImageLayoutTransition(VkImage Image, VkImageAspectFlags AspectMask, const FVulkanImageLayout& SrcLayout, const FVulkanImageLayout& DstLayout)
+{
+	if (SrcLayout.AreAllSubresourcesSameLayout())
+	{
+		AddImageLayoutTransition(Image, AspectMask, SrcLayout.MainLayout, DstLayout);
+	}
+	else if (DstLayout.AreAllSubresourcesSameLayout())
+	{
+		AddImageLayoutTransition(Image, AspectMask, SrcLayout, DstLayout.MainLayout);
+	}
+	else
+	{
+		checkf(SrcLayout.NumLayers == DstLayout.NumLayers, TEXT("Source (%d) and Destination (%d) layer count mismatch!"), SrcLayout.NumLayers, DstLayout.NumLayers);
+		checkf(SrcLayout.NumMips == DstLayout.NumMips, TEXT("Source (%d) and Destination (%d) mip count mismatch!"), SrcLayout.NumMips, DstLayout.NumMips);
+
+		VkImageSubresourceRange SubresourceRange = MakeSubresourceRange(AspectMask, 0, 1, 0, 1);
+		for (; SubresourceRange.baseArrayLayer < DstLayout.NumLayers; ++SubresourceRange.baseArrayLayer)
+		{
+			for (SubresourceRange.baseMipLevel = 0; SubresourceRange.baseMipLevel < DstLayout.NumMips; ++SubresourceRange.baseMipLevel)
+			{
+				const VkImageLayout SrcSubresourceLayout = SrcLayout.GetSubresLayout(SubresourceRange.baseArrayLayer, SubresourceRange.baseMipLevel);
+				const VkImageLayout DstSubresourceLayout = DstLayout.GetSubresLayout(SubresourceRange.baseArrayLayer, SubresourceRange.baseMipLevel);
+				if (SrcSubresourceLayout != DstSubresourceLayout)
+				{
+					SrcStageMask |= GetVkStageFlagsForLayout(SrcSubresourceLayout);
+					const VkAccessFlags SrcAccessFlags = GetVkAccessMaskForLayout(SrcSubresourceLayout);
+
+					DstStageMask |= GetVkStageFlagsForLayout(DstSubresourceLayout);
+					const VkAccessFlags DstAccessFlags = GetVkAccessMaskForLayout(DstSubresourceLayout);
+
+					VkImageMemoryBarrier& ImgBarrier = ImageBarriers.AddDefaulted_GetRef();
+					SetupImageBarrier(ImgBarrier, Image, SrcAccessFlags, DstAccessFlags, SrcSubresourceLayout, DstSubresourceLayout, SubresourceRange);
+				}
+			}
+		}
+	}
 }
 
 void FVulkanPipelineBarrier::AddImageAccessTransition(const FVulkanSurface& Surface, ERHIAccess SrcAccess, ERHIAccess DstAccess, const VkImageSubresourceRange& SubresourceRange, VkImageLayout& InOutLayout)

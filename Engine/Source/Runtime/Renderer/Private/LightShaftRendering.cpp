@@ -467,6 +467,9 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(
 						if (!Output.IsValid())
 						{
 							Output = CreateLightShaftTexture(GraphBuilder, OutputViewport, TEXT("LightShaftOcclusion"));
+							// If there are multiple views, we want to clear the texture in case some of them are not going to render any occlusion this frame 
+							// See ShouldRenderLightShaftsForLight for the skipping logic.
+							Output.LoadAction = Views.Num() > 1 ? ERenderTargetLoadAction::EClear : Output.LoadAction;
 						}
 						else
 						{
@@ -594,7 +597,17 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 
 							if (View.State)
 							{
-								TemporalHistory = &static_cast<FSceneViewState*>(View.State)->LightShaftBloomHistoryRTs.FindOrAdd(LightSceneProxy.GetLightComponent());
+								FSceneViewState* ViewState = static_cast<FSceneViewState*>(View.State);
+								TUniquePtr<FTemporalAAHistory>* Entry = ViewState->LightShaftBloomHistoryRTs.Find(LightSceneProxy.GetLightComponent());
+								if (Entry == nullptr)
+								{
+									TemporalHistory = new FTemporalAAHistory;
+									ViewState->LightShaftBloomHistoryRTs.Emplace(LightSceneProxy.GetLightComponent(), TemporalHistory);
+								}
+								else
+								{
+									TemporalHistory = Entry->Get();
+								}
 							}
 
 							FScreenPassTexture LightShafts = AddLightShaftSetupPass(
@@ -620,7 +633,7 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 
 void FSceneViewState::TrimHistoryRenderTargets(const FScene* Scene)
 {
-	for (TMap<const ULightComponent*, FTemporalAAHistory>::TIterator It(LightShaftBloomHistoryRTs); It; ++It)
+	for (TMap<const ULightComponent*, TUniquePtr<FTemporalAAHistory>>::TIterator It(LightShaftBloomHistoryRTs); It; ++It)
 	{
 		bool bLightIsUsed = false;
 

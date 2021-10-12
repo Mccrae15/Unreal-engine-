@@ -41,22 +41,30 @@
 
 void FDisplayClusterConfiguratorProjectionCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InPropertyHandle, FDetailWidgetRow& InHeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
-	if (bMultipleObjectsSelected)
-	{
-		// Do not currently support multiple objects being edited.
-		return;
-	}
-	
 	FDisplayClusterConfiguratorPolymorphicEntityCustomization::CustomizeHeader(InPropertyHandle, InHeaderRow, CustomizationUtils);
 	CustomOption = MakeShared<FString>("Custom");
 
 	// Get the Editing object
+	if (!EditingObject->IsA<UDisplayClusterConfigurationViewport>())
+	{
+		// The editing object should only be invalid in the case where the customized row was created in a different context than the config editor,
+		// ie. when using a property row generator like in the Remote Control Preset.
+		return;
+	}
+
 	ConfigurationViewportPtr = CastChecked<UDisplayClusterConfigurationViewport>(EditingObject);
 
+	for (const TWeakObjectPtr<UObject>& Object : EditingObjects)
+	{
+		UDisplayClusterConfigurationViewport* Viewport = CastChecked<UDisplayClusterConfigurationViewport>(Object.Get());
+		ConfigurationViewports.Add(Viewport);
+	}
+	
 	// Store what's currently selected.
 	CurrentSelectedPolicy = ConfigurationViewportPtr->ProjectionPolicy.Type;
-	
-	bIsCustomPolicy = IsCustomTypeInConfig();
+
+	const bool bRequireCustomPolicy = true;
+	bIsCustomPolicy = IsCustomTypeInConfig() && IsPolicyIdenticalAcrossEditedObjects(bRequireCustomPolicy);
 	if (bIsCustomPolicy)
 	{
 		// Load default config
@@ -66,12 +74,6 @@ void FDisplayClusterConfiguratorProjectionCustomization::CustomizeHeader(TShared
 
 void FDisplayClusterConfiguratorProjectionCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> InPropertyHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
-	if (bMultipleObjectsSelected)
-	{
-		// Do not currently support multiple objects being edited.
-		return;
-	}
-	
 	FDisplayClusterConfiguratorPolymorphicEntityCustomization::CustomizeChildren(InPropertyHandle, InChildBuilder, CustomizationUtils);
 
 	// Hide properties 
@@ -99,32 +101,32 @@ TSharedRef<SWidget> FDisplayClusterConfiguratorProjectionCustomization::MakeProj
 
 EVisibility FDisplayClusterConfiguratorProjectionCustomization::GetCustomRowsVisibility() const
 {
-	return bIsCustomPolicy ? EVisibility::Visible :  EVisibility::Collapsed;
+	return bIsCustomPolicy && IsPolicyIdenticalAcrossEditedObjects() ? EVisibility::Visible :  EVisibility::Collapsed;
 }
 
 void FDisplayClusterConfiguratorProjectionCustomization::ResetProjectionPolicyOptions()
 {
 	ProjectionPolicyOptions.Reset();
 
-	UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get();
-	check(ConfigurationViewport != nullptr);
-
-	for (const FString& ProjectionPolicy : UDisplayClusterConfigurationData::ProjectionPolicies)
+	if (UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get())
 	{
-		ProjectionPolicyOptions.Add(MakeShared<FString>(ProjectionPolicy));
-	}
+		for (const FString& ProjectionPolicy : UDisplayClusterConfigurationData::ProjectionPolicies)
+		{
+			ProjectionPolicyOptions.Add(MakeShared<FString>(ProjectionPolicy));
+		}
 
-	// Add Custom option
-	if (!bIsCustomPolicy)
-	{
-		ProjectionPolicyOptions.Add(CustomOption);
-	}
+		// Add Custom option
+		if (!bIsCustomPolicy)
+		{
+			ProjectionPolicyOptions.Add(CustomOption);
+		}
 
-	if (ProjectionPolicyComboBox.IsValid())
-	{
-		// Refreshes the available options now that the shared array has been updated.
+		if (ProjectionPolicyComboBox.IsValid())
+		{
+			// Refreshes the available options now that the shared array has been updated.
 		
-		ProjectionPolicyComboBox->ResetOptionsSource();
+			ProjectionPolicyComboBox->ResetOptionsSource();
+		}
 	}
 }
 
@@ -186,36 +188,36 @@ void FDisplayClusterConfiguratorProjectionCustomization::OnProjectionPolicySelec
 	{
 		FString SelectedPolicy = *InPolicy.Get();
 
-		UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get();
-		check(ConfigurationViewport != nullptr);
-
-		ConfigurationViewport->Modify();
-		ModifyBlueprint();
+		if (UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get())
+		{
+			ConfigurationViewport->Modify();
+			ModifyBlueprint();
 		
-		if (SelectedPolicy.Equals(*CustomOption.Get()))
-		{
-			bIsCustomPolicy = true;
-			CustomPolicy = ConfigurationViewport->ProjectionPolicy.Type;
-			IsCustomHandle->SetValue(true);
-		}
-		else
-		{
-			bIsCustomPolicy = false;
-			IsCustomHandle->SetValue(false);
-			
-			TypeHandle->SetValue(SelectedPolicy);
-
-			if (CurrentSelectedPolicy.ToLower() != SelectedPolicy.ToLower())
+			if (SelectedPolicy.Equals(*CustomOption.Get()) && IsPolicyIdenticalAcrossEditedObjects())
 			{
-				// Reset when going from custom to another policy.
-				ensure(ParametersHandle->AsMap()->Empty() == FPropertyAccess::Result::Success);
+				bIsCustomPolicy = true;
+				CustomPolicy = ConfigurationViewport->ProjectionPolicy.Type;
+				IsCustomHandle->SetValue(true);
 			}
+			else
+			{
+				bIsCustomPolicy = false;
+				IsCustomHandle->SetValue(false);
+			
+				TypeHandle->SetValue(SelectedPolicy);
+
+				if (CurrentSelectedPolicy.ToLower() != SelectedPolicy.ToLower())
+				{
+					// Reset when going from custom to another policy.
+					ensure(ParametersHandle->AsMap()->Empty() == FPropertyAccess::Result::Success);
+				}
+			}
+
+			CurrentSelectedPolicy = SelectedPolicy;
+
+			RefreshBlueprint();
+			PropertyUtilities.Pin()->ForceRefresh();
 		}
-
-		CurrentSelectedPolicy = SelectedPolicy;
-
-		RefreshBlueprint();
-		PropertyUtilities.Pin()->ForceRefresh();
 	}
 	else
 	{
@@ -225,7 +227,12 @@ void FDisplayClusterConfiguratorProjectionCustomization::OnProjectionPolicySelec
 
 FText FDisplayClusterConfiguratorProjectionCustomization::GetSelectedProjectionPolicyText() const
 {
-	return FText::FromString(GetCurrentPolicy());
+	if (IsPolicyIdenticalAcrossEditedObjects())
+	{
+		return FText::FromString(GetCurrentPolicy());
+	}
+
+	return LOCTEXT("MultipleValues", "Multiple Values");
 }
 
 FText FDisplayClusterConfiguratorProjectionCustomization::GetCustomPolicyText() const
@@ -240,27 +247,30 @@ const FString& FDisplayClusterConfiguratorProjectionCustomization::GetCurrentPol
 		return *CustomOption.Get();
 	}
 
-	UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get();
-	check(ConfigurationViewport != nullptr);
+	if (UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get())
+	{
+		return ConfigurationViewport->ProjectionPolicy.Type;
+	}
 
-	return ConfigurationViewport->ProjectionPolicy.Type;
+	static FString Empty;
+	return Empty;
 }
 
 bool FDisplayClusterConfiguratorProjectionCustomization::IsCustomTypeInConfig() const
 {
-	UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get();
-	check(ConfigurationViewport != nullptr);
-
-	if (ConfigurationViewport->ProjectionPolicy.bIsCustom)
+	if (UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get())
 	{
-		return true;
-	}
-	
-	for (const FString& ProjectionPolicy : UDisplayClusterConfigurationData::ProjectionPolicies)
-	{
-		if (ConfigurationViewport->ProjectionPolicy.Type.ToLower().Equals(ProjectionPolicy.ToLower()))
+		if (ConfigurationViewport->ProjectionPolicy.bIsCustom)
 		{
-			return false;
+			return true;
+		}
+	
+		for (const FString& ProjectionPolicy : UDisplayClusterConfigurationData::ProjectionPolicies)
+		{
+			if (ConfigurationViewport->ProjectionPolicy.Type.ToLower().Equals(ProjectionPolicy.ToLower()))
+			{
+				return false;
+			}
 		}
 	}
 
@@ -296,11 +306,36 @@ void FDisplayClusterConfiguratorProjectionCustomization::OnTextCommittedInCustom
 	*/
 }
 
+bool FDisplayClusterConfiguratorProjectionCustomization::IsPolicyIdenticalAcrossEditedObjects(bool bRequireCustomPolicy) const
+{
+	if (ConfigurationViewports.Num() <= 1)
+	{
+		return true;
+	}
+	for (const TWeakObjectPtr<UDisplayClusterConfigurationViewport>& Viewport : ConfigurationViewports)
+	{
+		if (Viewport.IsValid() &&
+			(Viewport->ProjectionPolicy.Type != CurrentSelectedPolicy ||
+			(bRequireCustomPolicy && !Viewport->ProjectionPolicy.bIsCustom) ||
+			(!bRequireCustomPolicy && Viewport->ProjectionPolicy.bIsCustom != bIsCustomPolicy)))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
 void FDisplayClusterConfiguratorProjectionCustomization::BuildParametersForPolicy(const FString& Policy)
 {
 	CustomPolicyParameters.Reset();
 
-	UDisplayClusterBlueprint* Blueprint = FDisplayClusterConfiguratorUtils::FindBlueprintFromObject(EditingObject);
+	if (!IsPolicyIdenticalAcrossEditedObjects())
+	{
+		return;
+	}
+	
+	UDisplayClusterBlueprint* Blueprint = FDisplayClusterConfiguratorUtils::FindBlueprintFromObject(EditingObject.Get());
 	check(Blueprint);
 
 	const FString PolicyLower = Policy.ToLower();
@@ -374,8 +409,7 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateSimplePolicy(UDis
 		"Screen",
 		DisplayClusterProjectionStrings::cfg::simple::Screen,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<TSubclassOf<UActorComponent>>{ UDisplayClusterScreenComponent::StaticClass() });
 
 	ScreenCombo->SetParameterTooltip(LOCTEXT("SimplePolicyScreenTooltip", "Target Screen or Display"));
@@ -389,16 +423,14 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateCameraPolicy(UDis
 		"Camera",
 		DisplayClusterProjectionStrings::cfg::camera::Component,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<TSubclassOf<UActorComponent>>{ UCameraComponent::StaticClass() } ));
 
 	CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoBool>(
 		"Use nDisplay Renderer",
 		DisplayClusterProjectionStrings::cfg::camera::Native,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		true));
 }
 
@@ -408,8 +440,7 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateMeshPolicy(UDispl
 		"Mesh",
 		DisplayClusterProjectionStrings::cfg::mesh::Component,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<TSubclassOf<UActorComponent>>{ UStaticMeshComponent::StaticClass() }));
 }
 
@@ -419,24 +450,21 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateDomePolicy(UDispl
 		"File",
 		DisplayClusterProjectionStrings::cfg::domeprojection::File,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<FString>{"xml"}));
 
 	CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoComponentCombo>(
 		"Origin",
 		DisplayClusterProjectionStrings::cfg::domeprojection::Origin,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<TSubclassOf<UActorComponent>>{ USceneComponent::StaticClass() }));
 
 	CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoNumber<int32>>(
 		"Channel",
 		DisplayClusterProjectionStrings::cfg::domeprojection::Channel,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle));
+		ConfigurationViewports));
 }
 
 void FDisplayClusterConfiguratorProjectionCustomization::CreateVIOSOPolicy(UDisplayClusterBlueprint* Blueprint)
@@ -445,24 +473,21 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateVIOSOPolicy(UDisp
 		"File",
 		DisplayClusterProjectionStrings::cfg::VIOSO::File,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<FString>{"vwf"}));
 
 	CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoComponentCombo>(
 		"Origin",
 		DisplayClusterProjectionStrings::cfg::VIOSO::Origin,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<TSubclassOf<UActorComponent>>{ USceneComponent::StaticClass() }));
 
 	CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfo4x4Matrix>(
 		"Matrix",
 		DisplayClusterProjectionStrings::cfg::VIOSO::BaseMatrix,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle));
+		ConfigurationViewports));
 }
 
 void FDisplayClusterConfiguratorProjectionCustomization::CreateEasyBlendPolicy(UDisplayClusterBlueprint* Blueprint)
@@ -471,24 +496,21 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateEasyBlendPolicy(U
 		"File",
 		DisplayClusterProjectionStrings::cfg::easyblend::File,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<FString>{"pol*", "ol*"}));
 
 	CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoComponentCombo>(
 		"Origin",
 		DisplayClusterProjectionStrings::cfg::easyblend::Origin,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<TSubclassOf<UActorComponent>>{ USceneComponent::StaticClass() }));
 
 	CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoNumber<float>>(
 		"Scale",
 		DisplayClusterProjectionStrings::cfg::easyblend::Scale,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle));
+		ConfigurationViewports));
 }
 
 void FDisplayClusterConfiguratorProjectionCustomization::CreateManualPolicy(UDisplayClusterBlueprint* Blueprint)
@@ -515,8 +537,7 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateManualPolicy(UDis
 		"Rendering",
 		RenderingKey,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		//TArray<FString>{RenderingMono, RenderingStereo, RenderingMonoStereo}, temporarily disabled MonoStereo, not supported  implementation from projection policy side
 		TArray<FString>{RenderingMono, RenderingStereo},
 		& RenderingMono,
@@ -528,8 +549,7 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateManualPolicy(UDis
 		"Frustum",
 		FrustumKey,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<FString>{FrustumMatrix, FrustumAngles},
 		& FrustumMatrix,
 		bSort);
@@ -544,8 +564,7 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateManualPolicy(UDis
 			"Rotation",
 			DisplayClusterProjectionStrings::cfg::manual::Rotation,
 			Blueprint,
-			ConfigurationViewportPtr.Get(),
-			ParametersHandle));
+			ConfigurationViewports));
 	}
 	
 	/*
@@ -569,8 +588,7 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateManualPolicy(UDis
 				"Matrix",
 				DisplayClusterProjectionStrings::cfg::manual::Matrix,
 				Blueprint,
-				ConfigurationViewportPtr.Get(),
-				ParametersHandle);
+				ConfigurationViewports);
 			CustomPolicyParameters.Add(MatrixPolicy);
 		}
 	}
@@ -593,8 +611,7 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateManualPolicy(UDis
 				"MatrixLeft",
 				DisplayClusterProjectionStrings::cfg::manual::MatrixLeft,
 				Blueprint,
-				ConfigurationViewportPtr.Get(),
-				ParametersHandle);
+				ConfigurationViewports);
 			CustomPolicyParameters.Add(MatrixLeftPolicy);
 
 			const TSharedPtr<FPolicyParameterInfo4x4Matrix> MatrixRightPolicy =
@@ -602,8 +619,7 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateManualPolicy(UDis
 					"MatrixRight",
 					DisplayClusterProjectionStrings::cfg::manual::MatrixRight,
 					Blueprint,
-					ConfigurationViewportPtr.Get(),
-					ParametersHandle);
+					ConfigurationViewports);
 			CustomPolicyParameters.Add(MatrixRightPolicy);
 		}
 	}
@@ -627,8 +643,7 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateManualPolicy(UDis
 				"Frustum",
 				DisplayClusterProjectionStrings::cfg::manual::Frustum,
 				Blueprint,
-				ConfigurationViewportPtr.Get(),
-				ParametersHandle));
+				ConfigurationViewports));
 		}
 
 		auto IsLeftRightFrustumVisible = [RenderingCombo, RenderingStereo, RenderingMonoStereo, FrustumCombo, FrustumAngles]() -> bool
@@ -646,15 +661,13 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateManualPolicy(UDis
 				"FrustumLeft",
 				DisplayClusterProjectionStrings::cfg::manual::FrustumLeft,
 				Blueprint,
-				ConfigurationViewportPtr.Get(),
-				ParametersHandle));
+				ConfigurationViewports));
 
 			CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoFrustumAngle>(
 				"FrustumRight",
 				DisplayClusterProjectionStrings::cfg::manual::FrustumRight,
 				Blueprint,
-				ConfigurationViewportPtr.Get(),
-				ParametersHandle));
+				ConfigurationViewports));
 		}
 	}
 }
@@ -678,14 +691,13 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateMPCDIPolicy(UDisp
 		"MPCDI Type",
 		MPCDITypeKey,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<FString>{TypeMPCDI, TypePFM},
 		&TypeMPCDI,
 		bSort);
 	MPCDICombo->SetOnSelectedDelegate(FPolicyParameterInfoCombo::FOnItemSelected::CreateLambda(RefreshPolicy));
 	CustomPolicyParameters.Add(MPCDICombo);
-	
+
 	const FString Setting = MPCDICombo->GetOrAddCustomParameterValueText().ToString();
 	if (Setting == TypeMPCDI)
 	{
@@ -693,23 +705,20 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateMPCDIPolicy(UDisp
 			"File",
 			DisplayClusterProjectionStrings::cfg::mpcdi::File,
 			Blueprint,
-			ConfigurationViewportPtr.Get(),
-			ParametersHandle,
+			ConfigurationViewports,
 			TArray<FString>{"mpcdi"}));
 
 		CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoText>(
 			"Buffer",
 			DisplayClusterProjectionStrings::cfg::mpcdi::Buffer,
 			Blueprint,
-			ConfigurationViewportPtr.Get(),
-			ParametersHandle));
+			ConfigurationViewports));
 
 		CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoText>(
 			"Region",
 			DisplayClusterProjectionStrings::cfg::mpcdi::Region,
 			Blueprint,
-			ConfigurationViewportPtr.Get(),
-			ParametersHandle));
+			ConfigurationViewports));
 	}
 	else if (Setting == TypePFM)
 	{
@@ -717,64 +726,56 @@ void FDisplayClusterConfiguratorProjectionCustomization::CreateMPCDIPolicy(UDisp
 			"File",
 			DisplayClusterProjectionStrings::cfg::mpcdi::FilePFM,
 			Blueprint,
-			ConfigurationViewportPtr.Get(),
-			ParametersHandle,
+			ConfigurationViewports,
 			TArray<FString>{"pfm"}));
 
 		CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoFile>(
 			"Alpha Mask",
 			DisplayClusterProjectionStrings::cfg::mpcdi::FileAlpha,
 			Blueprint,
-			ConfigurationViewportPtr.Get(),
-			ParametersHandle,
+			ConfigurationViewports,
 			TArray<FString>{"png"}));
 		
 		CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoNumber<float>>(
 			"Alpha Gamma",
 			DisplayClusterProjectionStrings::cfg::mpcdi::AlphaGamma,
 			Blueprint,
-			ConfigurationViewportPtr.Get(),
-			ParametersHandle,
+			ConfigurationViewports,
 			1.f));
 
 		CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoFile>(
 			"Beta Mask",
 			DisplayClusterProjectionStrings::cfg::mpcdi::FileBeta,
 			Blueprint,
-			ConfigurationViewportPtr.Get(),
-			ParametersHandle,
+			ConfigurationViewports,
 			TArray<FString>{"png"}));
 
 		CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoNumber<float>>(
 			"Scale",
 			DisplayClusterProjectionStrings::cfg::mpcdi::WorldScale,
 			Blueprint,
-			ConfigurationViewportPtr.Get(), 
-			ParametersHandle,
+			ConfigurationViewports,
 			1.f));
 		
 		CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoBool>(
 			"Use Unreal Axis",
 			DisplayClusterProjectionStrings::cfg::mpcdi::UseUnrealAxis,
 			Blueprint,
-			ConfigurationViewportPtr.Get(),
-			ParametersHandle));
+			ConfigurationViewports));
 	}
 	
 	TSharedPtr<FPolicyParameterInfoCombo> Origin = MakeShared<FPolicyParameterInfoComponentCombo>(
 		"Origin",
 		DisplayClusterProjectionStrings::cfg::mpcdi::Origin,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle,
+		ConfigurationViewports,
 		TArray<TSubclassOf<UActorComponent>>{ USceneComponent::StaticClass() });
 
 	CustomPolicyParameters.Add(MakeShared<FPolicyParameterInfoBool>(
 		"Enable Preview",
 		DisplayClusterProjectionStrings::cfg::mpcdi::EnablePreview,
 		Blueprint,
-		ConfigurationViewportPtr.Get(),
-		ParametersHandle));
+		ConfigurationViewports));
 }
 
 #undef LOCTEXT_NAMESPACE

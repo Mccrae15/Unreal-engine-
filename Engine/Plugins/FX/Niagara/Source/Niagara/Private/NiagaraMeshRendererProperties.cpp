@@ -197,13 +197,6 @@ void UNiagaraMeshRendererProperties::PostInitProperties()
 			return;
 		}
 		InitBindings();
-
-#if WITH_EDITOR
-		if (GIsEditor)
-		{
-			GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetReimport.AddUObject(this, &UNiagaraMeshRendererProperties::OnAssetReimported);
-		}
-#endif
 	}
 }
 
@@ -624,8 +617,6 @@ void UNiagaraMeshRendererProperties::BeginDestroy()
 				MeshProperties.Mesh->OnPostMeshBuild().RemoveAll(this);
 			}
 		}
-
-		GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetReimport.RemoveAll(this);
 	}
 #endif
 }
@@ -826,13 +817,14 @@ bool UNiagaraMeshRendererProperties::ChangeRequiresMeshListRebuild(const FProper
 	}
 
 	// If any of these are changed, we have to rebuild the mesh list
-	static const TArray<FName, TInlineAllocator<4>> RebuildMeshPropertyNames
+	static const TArray<FName, TInlineAllocator<6>> RebuildMeshPropertyNames
 	{
 		GET_MEMBER_NAME_CHECKED(UNiagaraMeshRendererProperties, bEnableMeshFlipbook),
 		GET_MEMBER_NAME_CHECKED(UNiagaraMeshRendererProperties, FirstFlipbookFrame),
 		GET_MEMBER_NAME_CHECKED(UNiagaraMeshRendererProperties, FlipbookSuffixFormat),
 		GET_MEMBER_NAME_CHECKED(UNiagaraMeshRendererProperties, FlipbookSuffixNumDigits),
 		GET_MEMBER_NAME_CHECKED(UNiagaraMeshRendererProperties, NumFlipbookFrames),
+		GET_MEMBER_NAME_CHECKED(FNiagaraMeshRendererMeshProperties, Mesh),
 	};
 	return RebuildMeshPropertyNames.Contains(Property->GetFName());
 }

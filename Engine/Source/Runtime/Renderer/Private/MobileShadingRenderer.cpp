@@ -219,7 +219,7 @@ FMobileSceneRenderer::FMobileSceneRenderer(const FSceneViewFamily* InViewFamily,
 	}
 
 	static const auto CVarMobileMSAA = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileMSAA"));
-	NumMSAASamples = (CVarMobileMSAA ? CVarMobileMSAA->GetValueOnAnyThread() : 1);
+	NumMSAASamples = (CVarMobileMSAA && SupportsMSAA() ? CVarMobileMSAA->GetValueOnAnyThread() : 1);
 }
 
 class FMobileDirLightShaderParamsRenderResource : public FRenderResource
@@ -398,7 +398,8 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 		bSeparateTranslucencyActive ||
 		Views[0].bIsReflectionCapture ||
 		(bDeferredShading && bPostProcessUsesSceneDepth) ||
-		bShouldRenderVelocities;
+		bShouldRenderVelocities ||
+		bIsFullPrepassEnabled;
 	// never keep MSAA depth
 	bKeepDepthContent = (NumMSAASamples > 1 ? false : bKeepDepthContent);
 
@@ -759,7 +760,7 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	if (bShouldRenderCustomDepth)
 	{
 		FRDGBuilder GraphBuilder(RHICmdList);
-		FSceneTextureShaderParameters SceneTextures = CreateSceneTextureShaderParameters(GraphBuilder, Views[0].GetFeatureLevel(), ESceneTextureSetupMode::All);
+		FSceneTextureShaderParameters SceneTextures = CreateSceneTextureShaderParameters(GraphBuilder, Views[0].GetFeatureLevel(), ESceneTextureSetupMode::None);
 		RenderCustomDepthPass(GraphBuilder, SceneTextures);
 		GraphBuilder.Execute();
 	}
@@ -953,7 +954,7 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 				{
 					RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
 					PostProcessingInputs.SceneTextures = MobileSceneTexturesPerView[ViewIndex];
-					AddMobilePostProcessingPasses(GraphBuilder, Views[ViewIndex], PostProcessingInputs);
+					AddMobilePostProcessingPasses(GraphBuilder, Views[ViewIndex], PostProcessingInputs, NumMSAASamples > 1);
 				}
 			}
 		}
@@ -1642,7 +1643,7 @@ void FMobileSceneRenderer::UpdateDirectionalLightUniformBuffers(FRHICommandListI
 void FMobileSceneRenderer::UpdateSkyReflectionUniformBuffer()
 {
 	FSkyLightSceneProxy* SkyLight = nullptr;
-	if (Scene->ReflectionSceneData.RegisteredReflectionCapturePositionAndRadius.Num() == 0
+	if (Scene->ReflectionSceneData.RegisteredReflectionCapturePositions.Num() == 0
 		&& Scene->SkyLight
 		&& Scene->SkyLight->ProcessedTexture
 		&& Scene->SkyLight->ProcessedTexture->TextureRHI
@@ -1810,7 +1811,7 @@ void FMobileSceneRenderer::UpdateMovablePointLightUniformBufferAndShadowInfo()
 
 bool FMobileSceneRenderer::SupportsMSAA() const
 {
-	return !(IsUsingMobilePixelProjectedReflection(ShaderPlatform) || IsUsingMobileAmbientOcclusion(ShaderPlatform) || ShouldRenderVelocities() || bDeferredShading);
+	return !(IsUsingMobilePixelProjectedReflection(ShaderPlatform) || IsUsingMobileAmbientOcclusion(ShaderPlatform) || ShouldRenderVelocities() || bIsFullPrepassEnabled || bDeferredShading);
 }
 
 bool FMobileSceneRenderer::ShouldRenderHZB()

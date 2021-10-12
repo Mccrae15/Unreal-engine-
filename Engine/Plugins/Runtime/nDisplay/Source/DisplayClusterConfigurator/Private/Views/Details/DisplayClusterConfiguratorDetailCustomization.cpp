@@ -561,18 +561,17 @@ void FDisplayClusterConfiguratorTypeCustomization::CustomizeHeader(TSharedRef<IP
 {
 	PropertyUtilities = CustomizationUtils.GetPropertyUtilities();
 	
-	TArray<UObject*> OuterObjects;
-	InPropertyHandle->GetOuterObjects(OuterObjects);
-	if (OuterObjects.Num())
+	EditingObjects = PropertyUtilities.Pin()->GetSelectedObjects();
+	
+	if (EditingObjects.Num())
 	{
-		EditingObject = OuterObjects[0];
-		bMultipleObjectsSelected = OuterObjects.Num() > 1;
+		EditingObject = EditingObjects[0];
 	}
 }
 
 void FDisplayClusterConfiguratorTypeCustomization::RefreshBlueprint()
 {
-	if (FDisplayClusterConfiguratorBlueprintEditor* BlueprintEditor = FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(EditingObject))
+	if (FDisplayClusterConfiguratorBlueprintEditor* BlueprintEditor = FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(EditingObject.Get()))
 	{
 		BlueprintEditor->RefreshDisplayClusterPreviewActor();
 	}
@@ -580,7 +579,7 @@ void FDisplayClusterConfiguratorTypeCustomization::RefreshBlueprint()
 
 void FDisplayClusterConfiguratorTypeCustomization::ModifyBlueprint()
 {
-	if (UDisplayClusterBlueprint* Blueprint = FDisplayClusterConfiguratorUtils::FindBlueprintFromObject(EditingObject))
+	if (UDisplayClusterBlueprint* Blueprint = FDisplayClusterConfiguratorUtils::FindBlueprintFromObject(EditingObject.Get()))
 	{
 		FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(Blueprint, false);
 	}
@@ -1424,8 +1423,26 @@ void FDisplayClusterConfiguratorOCIOProfileCustomization::CustomizeHeader(TShare
 {
 	FDisplayClusterConfiguratorTypeCustomization::CustomizeHeader(PropertyHandle, HeaderRow, CustomizationUtils);
 
+	ADisplayClusterRootActor* RootActor = FindRootActor();
+	FDisplayClusterConfiguratorBlueprintEditor* BPEditor = FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(EditingObject.Get());
+
+	if (RootActor == nullptr && BPEditor == nullptr)
+	{
+		HeaderRow.NameContent()
+		[
+			PropertyHandle->CreatePropertyNameWidget()
+		];
+		HeaderRow.ValueContent()
+		[
+			PropertyHandle->CreatePropertyValueWidget()
+		];
+
+		bIsDefaultDetailsDisplay = true;
+		return;
+	}
+	
 	Mode = FDisplayClusterConfiguratorNodeSelection::GetOperationModeFromProperty(PropertyHandle->GetProperty()->GetOwnerProperty());
-	NodeSelection = MakeShared<FDisplayClusterConfiguratorNodeSelection>(Mode, FindRootActor(), FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(EditingObject));
+	NodeSelection = MakeShared<FDisplayClusterConfiguratorNodeSelection>(Mode, RootActor, BPEditor);
 	
 	FText ElementTooltip = FText::GetEmpty();
 
@@ -1449,6 +1466,19 @@ void FDisplayClusterConfiguratorOCIOProfileCustomization::CustomizeHeader(TShare
 void FDisplayClusterConfiguratorOCIOProfileCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle,
 	IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
+	if (bIsDefaultDetailsDisplay)
+	{
+		uint32 NumChildren;
+		PropertyHandle->GetNumChildren(NumChildren);
+
+		for (uint32 ChildIndex = 0; ChildIndex < NumChildren; ++ChildIndex)
+		{
+			const TSharedRef<IPropertyHandle> ChildHandle = PropertyHandle->GetChildHandle(ChildIndex).ToSharedRef();
+			ChildBuilder.AddProperty(ChildHandle);
+		}
+		return;
+	}
+	
 	GET_CHILD_PROPERTY_HANDLE(PropertyHandle, EnableOCIOHandle, FDisplayClusterConfigurationOCIOProfile, bIsEnabled);
 	
 	GET_CHILD_PROPERTY_HANDLE(PropertyHandle, OCIOConfigurationHandle, FDisplayClusterConfigurationOCIOProfile, OCIOConfiguration);
@@ -1495,7 +1525,7 @@ void FDisplayClusterConfiguratorPerViewportColorGradingCustomization::CustomizeH
 	FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
 	FDisplayClusterConfiguratorTypeCustomization::CustomizeHeader(PropertyHandle, HeaderRow, CustomizationUtils);
-	NodeSelection = MakeShared<FDisplayClusterConfiguratorNodeSelection>(FDisplayClusterConfiguratorNodeSelection::EOperationMode::Viewports, FindRootActor(), FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(EditingObject));
+	NodeSelection = MakeShared<FDisplayClusterConfiguratorNodeSelection>(FDisplayClusterConfiguratorNodeSelection::EOperationMode::Viewports, FindRootActor(), FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(EditingObject.Get()));
 
 	FText ElementTooltip = FText::GetEmpty();
 
@@ -1549,7 +1579,7 @@ void FDisplayClusterConfiguratorPerNodeColorGradingCustomization::CustomizeHeade
 	FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
 	FDisplayClusterConfiguratorTypeCustomization::CustomizeHeader(PropertyHandle, HeaderRow, CustomizationUtils);
-	NodeSelection = MakeShared<FDisplayClusterConfiguratorNodeSelection>(FDisplayClusterConfiguratorNodeSelection::EOperationMode::ClusterNodes, FindRootActor(), FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(EditingObject));
+	NodeSelection = MakeShared<FDisplayClusterConfiguratorNodeSelection>(FDisplayClusterConfiguratorNodeSelection::EOperationMode::ClusterNodes, FindRootActor(), FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(EditingObject.Get()));
 
 	HeaderRow.NameContent()
 		[

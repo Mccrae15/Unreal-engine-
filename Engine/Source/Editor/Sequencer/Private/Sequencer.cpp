@@ -597,6 +597,14 @@ FSequencer::~FSequencer()
 
 void FSequencer::Close()
 {
+	for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
+	{
+		if (LevelVC != nullptr)
+		{
+			LevelVC->ViewModifiers.RemoveAll(this);
+		}
+	}
+
 	if (OldMaxTickRate.IsSet())
 	{
 		GEngine->SetMaxFPS(OldMaxTickRate.GetValue());
@@ -5023,17 +5031,6 @@ void FSequencer::SetLocalTimeLooped(FFrameTime NewLocalTime)
 		if (bReachedEnd)
 		{
 			NewGlobalTime = (PlaybackSpeed > 0 ? MaxInclusiveTime : MinInclusiveTime) * LocalToRootTransform;
-			NewPlaybackStatus = EMovieScenePlayerStatus::Stopped;
-		}
-		// Ensure the time is within the working range
-		else if (!WorkingRange.Contains(NewLocalTime / LocalTickResolution))
-		{
-			FFrameTime WorkingMin = (WorkingRange.GetLowerBoundValue() * LocalTickResolution).CeilToFrame();
-			FFrameTime WorkingMax = (WorkingRange.GetUpperBoundValue() * LocalTickResolution).FloorToFrame();
-
-			NewGlobalTime = FMath::Clamp(NewLocalTime, WorkingMin, WorkingMax) * LocalToRootTransform;
-
-			bResetPosition = true;
 			NewPlaybackStatus = EMovieScenePlayerStatus::Stopped;
 		}
 	}
@@ -11060,25 +11057,33 @@ void FSequencer::ShuttleForward()
 	float CurrentSpeed = GetPlaybackSpeed();
 
 	int32 Sign = 0;
-	// if we are at positive speed, increase the positive speed
-	if (CurrentSpeed > 0)
+	if(PlaybackState == EMovieScenePlayerStatus::Playing)
 	{
-		CurrentSpeedIndex = FMath::Min(PlaybackSpeeds.Num() - 1, ++CurrentSpeedIndex);
-		Sign = 1;
-	}
-	else if (CurrentSpeed < 0)
-	{
-		// if we are at the negative slowest speed, turn to positive slowest speed
-		if (CurrentSpeedIndex == 0)
+		// if we are at positive speed, increase the positive speed
+		if (CurrentSpeed > 0)
 		{
+			CurrentSpeedIndex = FMath::Min(PlaybackSpeeds.Num() - 1, ++CurrentSpeedIndex);
 			Sign = 1;
 		}
-		// otherwise, just reduce negative speed
-		else
+		else if (CurrentSpeed < 0)
 		{
-			CurrentSpeedIndex = FMath::Max(0, --CurrentSpeedIndex);
-			Sign = -1;
-		}
+			// if we are at the negative slowest speed, turn to positive slowest speed
+			if (CurrentSpeedIndex == 0)
+			{
+				Sign = 1;
+			}
+			// otherwise, just reduce negative speed
+			else
+			{
+				CurrentSpeedIndex = FMath::Max(0, --CurrentSpeedIndex);
+				Sign = -1;
+			}
+		}		
+	}
+	else
+	{
+		Sign = 1;
+		CurrentSpeedIndex = PlaybackSpeeds.Find(1);
 	}
 
 	PlaybackSpeed = PlaybackSpeeds[CurrentSpeedIndex] * Sign;
@@ -11096,25 +11101,33 @@ void FSequencer::ShuttleBackward()
 	float CurrentSpeed = GetPlaybackSpeed();
 
 	int32 Sign = 0;
-	if (CurrentSpeed > 0)
+	if(PlaybackState == EMovieScenePlayerStatus::Playing)
 	{
-		// if we are at the positive slowest speed, turn to negative slowest speed
-		if (CurrentSpeedIndex == 0)
+		if (CurrentSpeed > 0)
 		{
+			// if we are at the positive slowest speed, turn to negative slowest speed
+			if (CurrentSpeedIndex == 0)
+			{
+				Sign = -1;
+			}
+			// otherwise, just reduce positive speed
+			else
+			{
+				CurrentSpeedIndex = FMath::Max(0, --CurrentSpeedIndex);
+				Sign = 1;
+			}
+		}
+		// if we are at negative speed, increase the negative speed
+		else if (CurrentSpeed < 0)
+		{
+			CurrentSpeedIndex = FMath::Min(PlaybackSpeeds.Num() - 1, ++CurrentSpeedIndex);
 			Sign = -1;
 		}
-		// otherwise, just reduce positive speed
-		else
-		{
-			CurrentSpeedIndex = FMath::Max(0, --CurrentSpeedIndex);
-			Sign = 1;
-		}
 	}
-	// if we are at negative speed, increase the negative speed
-	else if (CurrentSpeed < 0)
+	else
 	{
-		CurrentSpeedIndex = FMath::Min(PlaybackSpeeds.Num() - 1, ++CurrentSpeedIndex);
 		Sign = -1;
+		CurrentSpeedIndex = PlaybackSpeeds.Find(1);
 	}
 
 	PlaybackSpeed = PlaybackSpeeds[CurrentSpeedIndex] * Sign;
@@ -11174,6 +11187,13 @@ void FSequencer::Pause()
 		EvaluateInternal(Range);
 	}
 
+	// reset the speed to 1. We have to update the speed index as well.
+	TArray<float> PlaybackSpeeds = GetPlaybackSpeeds.Execute();
+
+	CurrentSpeedIndex = PlaybackSpeeds.Find(1.f);
+	check(CurrentSpeedIndex != INDEX_NONE);
+	PlaybackSpeed = PlaybackSpeeds[CurrentSpeedIndex];
+	
 	OnStopDelegate.Broadcast();
 }
 

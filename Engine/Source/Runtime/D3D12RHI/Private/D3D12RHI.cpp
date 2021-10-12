@@ -336,6 +336,8 @@ void FD3D12DynamicRHI::UpdateBuffer(FD3D12Resource* Dest, uint32 DestOffset, FD3
 	hCommandList->CopyBufferRegion(Dest->GetResource(), DestOffset, Source->GetResource(), SourceOffset, NumBytes);
 	hCommandList.UpdateResidency(Dest);
 	hCommandList.UpdateResidency(Source);
+	
+	DefaultContext.ConditionalFlushCommandList();
 
 	DEBUG_RHI_EXECUTE_COMMAND_LIST(this);
 }
@@ -390,7 +392,11 @@ void FD3D12DynamicRHI::RHIGetSupportedResolution(uint32& Width, uint32& Height)
 	{
 		HRESULT HResult = S_OK;
 		TRefCountPtr<IDXGIAdapter> Adapter;
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+		HResult = GetAdapter().GetDesc().EnumAdapters(GetAdapter().GetDXGIFactory(), GetAdapter().GetDXGIFactory6(), Adapter.GetInitReference());
+#else
 		HResult = GetAdapter().GetDXGIFactory()->EnumAdapters(GetAdapter().GetAdapterIndex(), Adapter.GetInitReference());
+#endif
 		if (DXGI_ERROR_NOT_FOUND == HResult)
 		{
 			return;

@@ -195,6 +195,16 @@ namespace DatasmithRuntime
 					{
 						AddAsset(SceneElement->GetTexture(Index), TexturePrefix, EDataType::Texture);
 					}
+					else
+					{
+						EDatasmithTextureFormat TextureFormat;
+						uint32                  ByteCount;
+
+						if (TextureElement->GetData(ByteCount, TextureFormat) != nullptr && ByteCount > 0)
+						{
+							AddAsset(SceneElement->GetTexture(Index), TexturePrefix, EDataType::Texture);
+						}
+					}
 				}
 				// #ueent_datasmithruntime: Inform user resource file does not exist
 			}
@@ -380,7 +390,7 @@ namespace DatasmithRuntime
 		if (bContinue && EnumHasAnyFlags(TasksToComplete, EWorkerTask::DeleteComponent))
 		{
 #ifdef LIVEUPDATE_TIME_LOGGING
-			Timer(GlobalStartTime, "DeleteComponent");
+			Timer __Timer(GlobalStartTime, "DeleteComponent");
 #endif
 
 			FActionTask ActionTask;
@@ -411,7 +421,7 @@ namespace DatasmithRuntime
 			}
 
 #ifdef LIVEUPDATE_TIME_LOGGING
-			Timer(GlobalStartTime, "GarbageCollect");
+			Timer __Timer(GlobalStartTime, "GarbageCollect");
 #endif
 
 			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
@@ -423,7 +433,7 @@ namespace DatasmithRuntime
 		if (bContinue && EnumHasAnyFlags(TasksToComplete, EWorkerTask::DeleteAsset))
 		{
 #ifdef LIVEUPDATE_TIME_LOGGING
-			Timer(GlobalStartTime, "DeleteAsset");
+			Timer __Timer(GlobalStartTime, "DeleteAsset");
 #endif
 
 			FActionTask ActionTask;
@@ -452,7 +462,7 @@ namespace DatasmithRuntime
 		if (bContinue && EnumHasAnyFlags(TasksToComplete, EWorkerTask::UpdateElement))
 		{
 #ifdef LIVEUPDATE_TIME_LOGGING
-			Timer(GlobalStartTime, "UpdateElement");
+			Timer __Timer(GlobalStartTime, "UpdateElement");
 #endif
 
 			ProcessQueue(EQueueTask::UpdateQueue, EndTime, EWorkerTask::UpdateElement, EWorkerTask::SetupTasks);
@@ -477,7 +487,7 @@ namespace DatasmithRuntime
 		if (bContinue && EnumHasAnyFlags(TasksToComplete, EWorkerTask::MeshCreate))
 		{
 #ifdef LIVEUPDATE_TIME_LOGGING
-			Timer(GlobalStartTime, "MeshCreate");
+			Timer __Timer(GlobalStartTime, "MeshCreate");
 #endif
 
 			ProcessQueue(EQueueTask::MeshQueue, EndTime, EWorkerTask::MeshCreate);
@@ -488,7 +498,7 @@ namespace DatasmithRuntime
 		if (bContinue && EnumHasAnyFlags(TasksToComplete, EWorkerTask::MaterialCreate))
 		{
 #ifdef LIVEUPDATE_TIME_LOGGING
-			Timer(GlobalStartTime, "MaterialCreate");
+			Timer __Timer(GlobalStartTime, "MaterialCreate");
 #endif
 
 			FActionTask ActionTask;
@@ -504,7 +514,7 @@ namespace DatasmithRuntime
 					break;
 				}
 
-				ensure(DirectLink::InvalidId == ActionTask.GetAssetId());
+				ensure(DirectLink::InvalidId == ActionTask.GetElementId());
 				ActionTask.Execute(FAssetData::EmptyAsset);
 			}
 		}
@@ -514,7 +524,7 @@ namespace DatasmithRuntime
 		if (bContinue && EnumHasAnyFlags(TasksToComplete, EWorkerTask::TextureLoad))
 		{
 #ifdef LIVEUPDATE_TIME_LOGGING
-			Timer(GlobalStartTime, "TextureLoad");
+			Timer __Timer(GlobalStartTime, "TextureLoad");
 #endif
 
 			ProcessQueue(EQueueTask::TextureQueue, EndTime, EWorkerTask::TextureLoad);
@@ -525,7 +535,7 @@ namespace DatasmithRuntime
 		if (bContinue && EnumHasAnyFlags(TasksToComplete, EWorkerTask::NonAsyncTasks))
 		{
 #ifdef LIVEUPDATE_TIME_LOGGING
-			Timer(GlobalStartTime, "NonAsyncTasks");
+			Timer __Timer(GlobalStartTime, "GameThreadTasks");
 #endif
 
 			FActionTask ActionTask;
@@ -541,13 +551,15 @@ namespace DatasmithRuntime
 					break;
 				}
 
-				if (DirectLink::InvalidId == ActionTask.GetAssetId())
+				const FSceneGraphId ElementId = ActionTask.GetElementId();
+				if (DirectLink::InvalidId == ElementId)
 				{
 					ActionTask.Execute(FAssetData::EmptyAsset);
 				}
 				else
 				{
-					if (ActionTask.Execute(AssetDataList[ActionTask.GetAssetId()]) == EActionResult::Retry)
+					FBaseData& ElementData = AssetDataList.Contains(ElementId) ? (FBaseData&)AssetDataList[ElementId] : (FBaseData&)ActorDataList[ElementId];
+					if (ActionTask.Execute(ElementData) == EActionResult::Retry)
 					{
 						ActionQueues[EQueueTask::NonAsyncQueue].Enqueue(MoveTemp(ActionTask));
 						continue;
@@ -1299,7 +1311,28 @@ namespace DatasmithRuntime
 				}
 				else if (ActorDataList.Contains(AssociatedId))
 				{
-					ActorDataList[AssociatedId].MetadataId = MetadataElement->GetNodeId();
+					FActorData& ActorData = ActorDataList[AssociatedId];
+
+					ActorData.MetadataId = MetadataElement->GetNodeId();
+
+					// Record task to assign metadata if the actor has already been created.
+					// This happens for 'simple' actor, i.e. container of child actors.
+					if (ActorData.HasState(EAssetState::Completed))
+					{
+						FActionTaskFunction ApplyMetadataFunc = [this](UObject* Object, const FReferencer& Referencer) -> EActionResult::Type
+						{
+							if (USceneComponent* SceneComponent = Cast<USceneComponent>(Object))
+							{
+								this->ApplyMetadata(Referencer.GetId(), SceneComponent);
+								return EActionResult::Succeeded;
+							}
+
+							return EActionResult::Failed;
+						};
+
+						AddToQueue(EQueueTask::NonAsyncQueue, { ApplyMetadataFunc, ActorData.ElementId, { EDataType::Metadata, ActorData.MetadataId, 0 } });
+						TasksToComplete |= EWorkerTask::ComponentFinalize;
+					}
 				}
 
 				Elements.Add(MetadataElement->GetNodeId(), MetadataElement);

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ColorCorrectRegion.h"
+#include "ColorCorrectRegionDatabase.h"
 #include "ColorCorrectRegionsSubsystem.h"
 #include "Engine/Classes/Components/MeshComponent.h"
 #include "CoreMinimal.h"
@@ -25,9 +26,9 @@ AColorCorrectRegion::AColorCorrectRegion(const FObjectInitializer& ObjectInitial
 void AColorCorrectRegion::BeginPlay()
 {	
 	Super::BeginPlay();
-	if (this->GetWorld())
+	if (const UWorld* World = GetWorld())
 	{
-		ColorCorrectRegionsSubsystem = Cast<UColorCorrectRegionsSubsystem>(this->GetWorld()->GetSubsystemBase(UColorCorrectRegionsSubsystem::StaticClass()));
+		ColorCorrectRegionsSubsystem = World->GetSubsystem<UColorCorrectRegionsSubsystem>();
 	}
 
 	if (ColorCorrectRegionsSubsystem)
@@ -71,6 +72,11 @@ void AColorCorrectRegion::TickActor(float DeltaTime, ELevelTick TickType, FActor
 		PreviousFrameTransform = CurrentFrameTransform;
 		GetActorBounds(true, BoxOrigin, BoxExtent);
 	}
+
+	if (const UPrimitiveComponent* FirstPrimitiveComponent = FindComponentByClass<UPrimitiveComponent>())
+	{
+		FColorCorrectRegionDatabase::UpdateCCRDatabaseFirstComponentId(this, FirstPrimitiveComponent->ComponentId);
+	}
 }
 
 void AColorCorrectRegion::Cleanup()
@@ -83,8 +89,19 @@ void AColorCorrectRegion::PostEditChangeProperty(struct FPropertyChangedEvent& P
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(AColorCorrectRegion, Priority))
+
+	// Reorder all CCRs after the Priority property has changed.
+	// Also, in context of Multi-User: PropertyChangedEvent can be a stub without the actual property data. 
+	// Therefore we need to refresh priority if PropertyChangedEvent.Property is nullptr. 
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(AColorCorrectRegion, Priority) || PropertyChangedEvent.Property == nullptr)
 	{
+		if (!ColorCorrectRegionsSubsystem)
+		{
+			if (const UWorld* World = GetWorld())
+			{
+				ColorCorrectRegionsSubsystem = World->GetSubsystem<UColorCorrectRegionsSubsystem>();
+			}
+		}
 		if (ColorCorrectRegionsSubsystem)
 		{
 			ColorCorrectRegionsSubsystem->SortRegionsByPriority();

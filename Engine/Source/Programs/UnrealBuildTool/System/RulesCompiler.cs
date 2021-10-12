@@ -603,9 +603,10 @@ namespace UnrealBuildTool
 				Dictionary<FileReference, ModuleRulesContext> ModuleFiles = new Dictionary<FileReference, ModuleRulesContext>();
 				List<FileReference> TargetFiles = new List<FileReference>();
 
-				// Create a list of plugins for this assembly. If it already exists in the parent assembly, just create an empty assembly.
+				// Create a list of plugins for this assembly. We need to override the parent plugin, if it exists, due to overriding the
+				// setting for bClassifyAsGameModuleForUHT below.
 				List<PluginInfo> ForeignPlugins = new List<PluginInfo>();
-				if (Parent == null || !Parent.EnumeratePlugins().Any(x => x.File == PluginFileName))
+				if (!Parent.EnumeratePlugins().Any(x => x.File == PluginFileName && x.Type == PluginType.Engine))
 				{
 					ForeignPlugins.Add(new PluginInfo(PluginFileName, PluginType.External));
 				}

@@ -901,7 +901,7 @@ public:
 	// Temporal AA result for light shafts of last frame
 	FTemporalAAHistory LightShaftOcclusionHistory;
 	// Temporal AA result for light shafts of last frame
-	TMap<const ULightComponent*, FTemporalAAHistory > LightShaftBloomHistoryRTs;
+	TMap<const ULightComponent*, TUniquePtr<FTemporalAAHistory> > LightShaftBloomHistoryRTs;
 
 	FIntRect DistanceFieldAOHistoryViewRect;
 	TRefCountPtr<IPooledRenderTarget> DistanceFieldAOHistoryRT;
@@ -1607,7 +1607,7 @@ public:
 
 	/** The rendering thread's list of visible reflection captures in the scene. */
 	TArray<FReflectionCaptureProxy*> RegisteredReflectionCaptures;
-	TArray<FSphere> RegisteredReflectionCapturePositionAndRadius;
+	TArray<FVector> RegisteredReflectionCapturePositions;
 
 	/** 
 	 * Cubemap array resource which contains the captured scene for each reflection capture.

@@ -76,11 +76,8 @@ namespace SolidworksDatasmith.Engine
         private HashSet<string> MeshNames = new HashSet<string>();
         private List<Tuple<SwLightweightMaterial, SwMaterial>> LightweightMaterials = new List<Tuple<SwLightweightMaterial, SwMaterial>>();
         private Dictionary<int, SwMaterial> SwIDToMat = new Dictionary<int, SwMaterial>();
-        private Dictionary<SwCamera, FDatasmithFacadeActorCamera> SwCamera2Datasmith = new Dictionary<SwCamera, FDatasmithFacadeActorCamera>();
+		private Dictionary<SwCamera, FDatasmithFacadeActorCamera> SwCamera2Datasmith = new Dictionary<SwCamera, FDatasmithFacadeActorCamera>();
         private SwScene Scene;
-
-        private bool _useDirectLink = false;
-        public bool UseDirectLink { get { return _useDirectLink; } }
 
         private class ActorData
         {
@@ -129,8 +126,14 @@ namespace SolidworksDatasmith.Engine
             FDatasmithFacadeUEPbrMaterial dm = null;
             foreach (var mm in SwMat2Datasmith)
             {
-                if (SwMaterial.AreTheSame(mm.Key, mat, true))
-                    return mm.Value;
+                if (SwMaterial.AreTheSame(mm.Key, mat, false))
+				{
+					if (!SwIDToMat.ContainsKey(mat.ID))
+					{
+						SwIDToMat.Add(mat.ID, mm.Key);
+					}
+				    return mm.Value;
+				}
             }
             if (addIfNotExisting)
             {
@@ -149,6 +152,8 @@ namespace SolidworksDatasmith.Engine
 				AddCommand(null);
 				if (!processorThread.Join(2000))
 					KillRenderingThread();
+
+				DatasmithDirectLink = null;
 			}
         }
 
@@ -187,7 +192,6 @@ namespace SolidworksDatasmith.Engine
             string directLinkPath = Path.Combine(Path.GetTempPath(), "sw_dl_" + Guid.NewGuid().ToString());
             if (!Directory.Exists(directLinkPath))
                 Directory.CreateDirectory(directLinkPath);
-            bool bDirectLinkInitOk = FDatasmithFacadeDirectLink.Init(false, directLinkPath);
 
             // datasmith scene setup
             processor._datasmithScene = new FDatasmithFacadeScene("Solidworks", "Solidworks", "Solidworks", "2021");
@@ -229,28 +233,10 @@ namespace SolidworksDatasmith.Engine
 
                     switch (command.Type)
                     {
-                        case CommandType.LIVECONNECT:
-                            {
-                                var cmd = command as LiveConnectCommand;
-                                if (cmd.Active)
-                                {
-                                    processor._useDirectLink = true;
-                                    processor.DatasmithScene.SetOutputPath(directLinkPath);
-                                }
-                                else
-                                {
-                                    processor._useDirectLink = false;
-                                }
-                            }
-                            break;
-
                         case CommandType.LIVEUPDATE:
                             {
-                                if (processor._useDirectLink)
-                                {
-                                    processor.MeshFactory.ExportMeshes(processor, false);
-                                    processor.DatasmithDirectLink.UpdateScene(processor.DatasmithScene);
-                                }
+                            	processor.MeshFactory.ExportMeshes(processor, false);
+                            	processor.DatasmithDirectLink.UpdateScene(processor.DatasmithScene);
                             }
                             break;
 
@@ -258,7 +244,7 @@ namespace SolidworksDatasmith.Engine
                             {
                                 var cmd = command as PartCommand;
                                 SwSingleton.FireProgressEvent("Loading part " + cmd.Name);
-                                processor.MeshFactory.SetMould(processor, cmd.PathName, cmd.Name, cmd.StripGeom);
+                                processor.MeshFactory.SetMould(processor, cmd.PathName, cmd.Name, cmd.StripGeom, processor.Scene.bDirectLinkAutoSync);
                             }
                             break;
 
@@ -297,7 +283,7 @@ namespace SolidworksDatasmith.Engine
 
                                         processor.MeshFactory.GetGeometryFor(processor, cmd.PartPath, ComponentMaterial, out facadeMesh, out facadeMeshElement);
 
-                                        if (facadeMesh != null && facadeMeshElement != null && processor._useDirectLink)
+                                        if (processor.Scene.bDirectLinkAutoSync && facadeMesh != null && facadeMeshElement != null)
                                         {
                                             processor.DatasmithScene.ExportDatasmithMesh(facadeMeshElement, facadeMesh);
                                         }
@@ -311,7 +297,7 @@ namespace SolidworksDatasmith.Engine
                                         }
                                     }
 
-                                    data.Actor = processor.CreateInstance(cmd.Name, facadeMesh, facadeMeshElement, data.ParentActor);
+                                    data.Actor = processor.CreateInstance(cmd.Name, cmd.Label, facadeMesh, facadeMeshElement, data.ParentActor);
 
                                     if (cmd.Visible == false)
                                     {
@@ -332,8 +318,6 @@ namespace SolidworksDatasmith.Engine
                                         var data = processor.Component2DatasmithActor[cmd.Name];
                                         Matrix4 rot = AdjustTransform(cmd.Transform);
                                         data.Actor.SetWorldTransform(rot);
-                                        //if (processor._useDirectLink)
-                                        //    processor.DatasmithDirectLink.UpdateScene(processor.DatasmithScene);
                                     }
                                 }
                             }
@@ -362,8 +346,6 @@ namespace SolidworksDatasmith.Engine
                                     Matrix4 rot = AdjustTransform(tt.Item2);
                                     data.Actor.SetWorldTransform(rot);
                                 }
-                                //if (processor._useDirectLink)
-                                //    processor.DatasmithDirectLink.UpdateScene(processor.DatasmithScene);
                             }
                             break;
 
@@ -402,11 +384,12 @@ namespace SolidworksDatasmith.Engine
 
                                     processor.DatasmithScene.ExportScene(filePath);
 
-                                    if (processor._useDirectLink)
-                                        processor.DatasmithScene.SetOutputPath(directLinkPath);
+                                    processor.DatasmithScene.SetOutputPath(directLinkPath);
                                 }
                                 else
+								{
                                     processor.AddCommand(command); // just put it back, execute only when nothing else is in the queue
+								}
                             }
                             break;
 
@@ -444,7 +427,7 @@ namespace SolidworksDatasmith.Engine
                                         }
                                     }
 
-                                    data.Actor = processor.CreateInstance(cmd.Name, facadeMesh, facadeMeshElement, data.ParentActor);
+                                    data.Actor = processor.CreateInstance(cmd.Name, cmd.Label, facadeMesh, facadeMeshElement, data.ParentActor);
 
                                     if (cmd.Visible == false)
                                     {
@@ -465,52 +448,48 @@ namespace SolidworksDatasmith.Engine
                                         var data = processor.Component2DatasmithActor[cmd.Name];
                                         Matrix4 rot = AdjustTransform(cmd.Transform);
                                         data.Actor.SetWorldTransform(rot);
-                                        //if (processor._useDirectLink)
-                                        //    processor.DatasmithDirectLink.UpdateScene(processor.DatasmithScene);
                                     }
                                 }
                             }
                             break;
 
                         case CommandType.ADD_METADATA:
-                            {
-                                var cmd = command as MetadataCommand;
-                                SwSingleton.FireProgressEvent("Adding Metadata for " + cmd.MetadataOwnerName);
-                                FDatasmithFacadeElement element = null;
-                                if (cmd.MDataType == MetadataCommand.MetadataType.Actor)
-                                {
-                                    if (processor.Component2DatasmithActor.ContainsKey(cmd.MetadataOwnerName))
-                                    {
-                                        element = processor.Component2DatasmithActor[cmd.MetadataOwnerName].Actor;
-                                    }
-                                }
-                                else if (cmd.MDataType == MetadataCommand.MetadataType.MeshActor)
-                                {
-                                    element = processor.MeshFactory.GetFacadeElement(cmd.MetadataOwnerName);
-                                }
+						{
+							var cmd = command as MetadataCommand;
+							SwSingleton.FireProgressEvent("Adding Metadata for " + cmd.MetadataOwnerName);
+							FDatasmithFacadeElement element = null;
+							if (cmd.MDataType == MetadataCommand.MetadataType.Actor)
+							{
+								if (processor.Component2DatasmithActor.ContainsKey(cmd.MetadataOwnerName))
+								{
+									element = processor.Component2DatasmithActor[cmd.MetadataOwnerName].Actor;
+								}
+							}
+							else if (cmd.MDataType == MetadataCommand.MetadataType.MeshActor)
+							{
+								element = processor.MeshFactory.GetFacadeElement(cmd.MetadataOwnerName);
+							}
 
-                                if (element != null)
-                                {
-                                    FDatasmithFacadeMetaData metaData = new FDatasmithFacadeMetaData("SolidWorks Document Metadata");
-                                    if (metaData == null)
-                                    {
-                                        break;
-                                    }
-                                    metaData.SetAssociatedElement(element);
-                                    foreach (var pair in cmd.MetadataPairs)
-                                    {
-                                        pair.WriteToDatasmithMetaData(metaData);
-                                    }
-                                    processor.DatasmithScene.AddMetaData(metaData);
-                                }
-                                //else // DEAD LOCK
-                                //{
-                                //    processor.AddCommand(command); // just put it back, as we can only add metadata to existing actor
-                                //}
-                            }
-                            break;
+							if (element != null)
+							{
+								FDatasmithFacadeMetaData MetaData = processor.DatasmithScene.GetMetaData(element);
 
-                        case CommandType.UPDATE_CAMERA:
+								if (MetaData == null)
+								{
+									MetaData = new FDatasmithFacadeMetaData("SolidWorks Document Metadata");
+									MetaData.SetAssociatedElement(element);
+									processor.DatasmithScene.AddMetaData(MetaData);
+								}
+
+								foreach (var pair in cmd.MetadataPairs)
+								{
+									pair.WriteToDatasmithMetaData(MetaData);
+								}
+							}
+						}
+						break;
+
+						case CommandType.UPDATE_CAMERA:
                             {
                                 // todo doesn't really update, keeps adding changed ones
                                 var cmd = command as CameraCommand;
@@ -533,13 +512,6 @@ namespace SolidworksDatasmith.Engine
                     }
                 }
             }
-
-			if (processor.DatasmithDirectLink != null)
-			{
-				// Shut down the DirectLink system before doing Dispose(), otherwise Solidworks may hang on exit
-				FDatasmithFacadeDirectLink.Shutdown();
-				processor.DatasmithDirectLink.Dispose();
-			}
         }
 
         private static void AddTriangle(List<Triangle> triangles, int i0, int i1, int i2, int matID, Dictionary<int, List<Triangle>> dict)
@@ -687,26 +659,26 @@ namespace SolidworksDatasmith.Engine
                 if (t.MaterialID >= 1)
                 {
                     bool found = false;
-                    if (t.MaterialID >= 0X000DEAD)
+
+					// Check for material remapping first (fixes duplicate materials)
+                    if (SwIDToMat.ContainsKey(t.MaterialID))
                     {
-                        if (SwIDToMat.ContainsKey(t.MaterialID))
+                        var mat = SwIDToMat[t.MaterialID];
+						matID = mat.ID;
+                        if (!Scene.AddedMaterials.Contains(matID))
                         {
-                            var mat = SwIDToMat[t.MaterialID];
-                            if (!Scene.AddedMaterials.Contains(t.MaterialID))
-                            {
-                                Scene.AddedMaterials.Add(t.MaterialID);
-                                DatasmithScene.AddMaterial(SwMat2Datasmith[mat]);
-                            }
-                            if (!MeshAddedMaterials.Contains(t.MaterialID))
-                            {
-                                MeshAddedMaterials.Add(t.MaterialID);
-                                RPCMeshElement.SetMaterial(mat.Name, t.MaterialID);
-                            }
-                            matID = t.MaterialID;
-                            found = true;
+                            Scene.AddedMaterials.Add(matID);
+                            DatasmithScene.AddMaterial(SwMat2Datasmith[mat]);
                         }
+                        if (!MeshAddedMaterials.Contains(matID))
+                        {
+                            MeshAddedMaterials.Add(matID);
+                            RPCMeshElement.SetMaterial(mat.Name, matID);
+                        }
+                        found = true;
                     }
-                    if (!found)
+
+					if (!found)
                     { 
                         if (Scene.SwMatID2Mat.ContainsKey(t.MaterialID))
                         {
@@ -742,7 +714,7 @@ namespace SolidworksDatasmith.Engine
             return mat;
         }
         
-        private FDatasmithFacadeActor CreateInstance(string name, FDatasmithFacadeMesh mesh, FDatasmithFacadeMeshElement meshElement, FDatasmithFacadeActor parent = null)
+        private FDatasmithFacadeActor CreateInstance(string name, string label, FDatasmithFacadeMesh mesh, FDatasmithFacadeMeshElement meshElement, FDatasmithFacadeActor parent = null)
         {
             FDatasmithFacadeActor FacadeActor = null;
             if (mesh != null && mesh.GetVerticesCount() > 0 && mesh.GetFacesCount() > 0)
@@ -760,6 +732,7 @@ namespace SolidworksDatasmith.Engine
 
 			// ImportBinding uses Tag[0] ('original name') to group parts used in variants
 			FacadeActor.AddTag(name);
+			FacadeActor.SetLabel(label);
 
             if (parent == null)
                 DatasmithScene.AddActor(FacadeActor);

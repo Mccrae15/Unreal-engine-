@@ -125,7 +125,9 @@ void FExportContext::Update()
 	// Update transforms/names for Datasmith Actors and MeshActors, create these actors if needed
 	RootNode->Update(*this);
 
+	Materials.UpdateTextureUsage(); // Update usage of textures by materials before updating textures(to only update used textures)
 	Textures.Update();
+	Materials.Update(); // Update materials after textures are updated - some materials might end up using shared texture(in case it has same contents, which is determined in Textures Update)
 
 	// Wait for mesh export to complete
 	for(TFuture<bool>& Task: MeshExportTasks)
@@ -165,8 +167,6 @@ FDefinition* FExportContext::GetDefinition(FEntityIDType DefinitionEntityId)
 	}
 	return nullptr;
 }
-
-
 
 void FComponentDefinitionCollection::Update()
 {
@@ -496,6 +496,11 @@ void FMaterialCollection::PopulateFromModel(SUModelRef InModelRef)
 
 FMaterialOccurrence* FMaterialCollection::RegisterInstance(FMaterialIDType MaterialID, FNodeOccurence* NodeOccurrence)
 {
+	if (NodeOccurrence->MaterialOverride)
+	{
+		NodeOccurrence->MaterialOverride->UnregisterInstance(NodeOccurrence);
+	}
+
 	if (const TSharedPtr<DatasmithSketchUp::FMaterial>* Ptr = Find(MaterialID))
 	{
 		const TSharedPtr<DatasmithSketchUp::FMaterial>& Material = *Ptr;
@@ -578,7 +583,7 @@ bool FMaterialCollection::InvalidateMaterial(FMaterialIDType MateriadId)
 	{
 		FMaterial& Material = **Ptr;
 
-		Material.Update(Context);
+		Material.Invalidate(Context);
 		return true;
 	}
 	return false;
@@ -594,3 +599,13 @@ bool FMaterialCollection::RemoveMaterial(FEntityIDType EntityId)
 	}
 	return false;
 }
+
+bool FMaterialCollection::InvalidateDefaultMaterial()
+{
+	Context.DatasmithScene->RemoveMaterial(DefaultMaterial->DatasmithElement);
+
+	DefaultMaterial->DatasmithElement = FMaterial::CreateDefaultMaterialElement(Context);
+
+	return false;
+}
+

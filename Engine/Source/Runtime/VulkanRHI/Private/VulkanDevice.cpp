@@ -185,7 +185,14 @@ FVulkanDevice::FVulkanDevice(FVulkanDynamicRHI* InRHI, VkPhysicalDevice InGpu)
 	// First get the VendorId. We'll have to get properties again after finding out which extensions we want to use
 	VulkanRHI::vkGetPhysicalDeviceProperties(Gpu, &GpuProps);
 	VendorId = RHIConvertToGpuVendorId(GpuProps.vendorID);
-	ensure(VendorId != EGpuVendorId::Unknown);
+
+	// Mesa driver on Linux has vendorID 0x10005:
+	//   https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VkVendorId.html
+	// Has been added to UE5, but need this workaround on 4.27.1 since we can't modify enum at this point.
+	if (GpuProps.vendorID != 0x10005)
+	{
+		ensure(VendorId != EGpuVendorId::Unknown);
+	}
 }
 
 FVulkanDevice::~FVulkanDevice()
@@ -1113,6 +1120,17 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 	FenceManager.Init(this);
 
 	StagingManager.Init(this);
+
+	// Update bMemoryless support
+	{
+		bSupportsMemoryless = false;
+		const VkPhysicalDeviceMemoryProperties& MemoryProperties = DeviceMemoryManager.GetMemoryProperties();
+		for (uint32 i = 0; i < MemoryProperties.memoryTypeCount && !bSupportsMemoryless; ++i)
+		{
+			bSupportsMemoryless = ((MemoryProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) == VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT);
+		}
+	}
+
 
 #if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
 	if (GGPUCrashDebuggingEnabled)

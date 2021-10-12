@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PixelStreamingAudioComponent.h"
-#include "PixelStreamingAudioSink.h"
 #include "IPixelStreamingModule.h"
 #include "PixelStreamingPrivate.h"
 #include "CoreMinimal.h"
@@ -111,7 +110,7 @@ bool UPixelStreamingAudioComponent::ListenTo(FString PlayerToListenTo)
 
     if(!IPixelStreamingModule::IsAvailable())
     {
-        UE_LOG(PixelStreamer, Warning, TEXT("Pixel Streaming audio component could not listen to anything because Pixel Streaming module is not loaded. This is expected on dedicated servers."));
+        UE_LOG(PixelStreamer, Verbose, TEXT("Pixel Streaming audio component could not listen to anything because Pixel Streaming module is not loaded. This is expected on dedicated servers."));
         return false;
     }
 
@@ -119,7 +118,7 @@ bool UPixelStreamingAudioComponent::ListenTo(FString PlayerToListenTo)
 
     this->PlayerToHear = PlayerToListenTo;
 
-    FPixelStreamingAudioSink* CandidateSink = this->WillListenToAnyPlayer() ? 
+    IPixelStreamingAudioSink* CandidateSink = this->WillListenToAnyPlayer() ? 
         PixelStreamingModule.GetUnlistenedAudioSink() : PixelStreamingModule.GetPeerAudioSink( FPlayerId(this->PlayerToHear) );
     
     if(CandidateSink == nullptr)

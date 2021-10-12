@@ -374,7 +374,7 @@ void VulkanTrackFillInfo(FVulkanTrackInfo& Track, const char* File, uint32 Line)
 {
 	if (GVulkanMemoryBackTrace > 0)
 	{
-		uint64* Stack = new uint64[GVulkanMemoryBackTrace];
+		uint64* Stack = ((Track.Data != nullptr) && (Track.SizeOrLine < 0)) ? (uint64*)Track.Data : new uint64[GVulkanMemoryBackTrace];
 		int32 Depth = FPlatformStackWalk::CaptureStackBackTrace(Stack, GVulkanMemoryBackTrace);
 		Track.SizeOrLine = -Depth;
 		Track.Data = Stack;
@@ -4849,7 +4849,7 @@ namespace VulkanRHI
 		Queue->GetLastSubmittedInfo(Entry.CmdBuffer, Entry.FenceCounter);
 		Entry.FrameNumber = GVulkanRHIDeletionFrameNumber;
 
-		Entry.Handle = VK_NULL_HANDLE;
+		Entry.Handle = 0;
 		Entry.DeviceMemoryAllocation = DeviceMemoryAllocation;
 		{
 			FScopeLock ScopeLock(&CS);
@@ -4871,7 +4871,7 @@ namespace VulkanRHI
 		Queue->GetLastSubmittedInfo(Entry.CmdBuffer, Entry.FenceCounter);
 		Entry.FrameNumber = GVulkanRHIDeletionFrameNumber;
 
-		Entry.Handle = VK_NULL_HANDLE;
+		Entry.Handle = 0;
 		Entry.Allocation = Allocation;
 		Entry.DeviceMemoryAllocation = 0;
 

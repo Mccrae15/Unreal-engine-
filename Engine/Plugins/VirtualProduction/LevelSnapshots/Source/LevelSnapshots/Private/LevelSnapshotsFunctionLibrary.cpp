@@ -7,7 +7,6 @@
 #include "LevelSnapshot.h"
 #include "LevelSnapshotFilters.h"
 #include "LevelSnapshotsLog.h"
-#include "LevelSnapshotsStats.h"
 
 #include "EngineUtils.h"
 #include "CustomSerialization/CustomObjectSerializationWrapper.h"
@@ -51,8 +50,10 @@ namespace
             if (ensureAlwaysMsgf(WorldActor, TEXT("A path that was previously associated with an actor no longer refers to an actor. Something is wrong.")))
             {
             	TOptional<AActor*> DeserializedSnapshotActor = Snapshot->GetDeserializedActor(OriginalActorPath);
-            	if (!ensureAlwaysMsgf(DeserializedSnapshotActor.Get(nullptr), TEXT("Failed to get TMap value for key %s. Is the snapshot corrupted?"), *OriginalActorPath.ToString()))
+            	if (!ensureMsgf(DeserializedSnapshotActor.Get(nullptr), TEXT("Failed to get TMap value for key %s. Is the snapshot corrupted?"), *OriginalActorPath.ToString()))
             	{
+            		// Engine issue. Take snapshot. Rename actor. Update references. Value is updated correctly in TMap but look ups no longer work.
+            		UE_LOG(LogLevelSnapshots, Error, TEXT("Failed to lookup actor %s OriginalActorPath. The snapshot is corrupted."));
             		return;
             	}
                     
@@ -98,8 +99,6 @@ ULevelSnapshot* ULevelSnapshotsFunctionLibrary::TakeLevelSnapshot(const UObject*
 
 ULevelSnapshot* ULevelSnapshotsFunctionLibrary::TakeLevelSnapshot_Internal(const UObject* WorldContextObject, const FName NewSnapshotName, UPackage* InPackage, const FString Description)
 {
-	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("TakeLevelSnapshot"), STAT_TakeLevelSnapshot, STATGROUP_LevelSnapshots);
-	
 	UWorld* TargetWorld = nullptr;
 	if (WorldContextObject)
 	{
@@ -137,7 +136,6 @@ void ULevelSnapshotsFunctionLibrary::ApplyFilterToFindSelectedProperties(
 	bool bAllowUnchangedProperties,
     bool bAllowNonEditableProperties)
 {
-	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("ApplyFilterToFindSelectedProperties"), STAT_ApplyFilterToFindSelectedProperties, STATGROUP_LevelSnapshots);
 	if (Filter == nullptr)
 	{
 		Filter = GetMutableDefault<UConstantFilter>();

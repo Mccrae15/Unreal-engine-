@@ -138,10 +138,9 @@ typedef FD3D12StateCacheBase FD3D12StateCache;
 #endif
 
 #if EXECUTE_DEBUG_COMMAND_LISTS
-extern bool GIsDoingQuery;
-#define DEBUG_EXECUTE_COMMAND_LIST(scope) if (!GIsDoingQuery) { scope##->FlushCommands(true); }
-#define DEBUG_EXECUTE_COMMAND_CONTEXT(context) if (!GIsDoingQuery) { context##.FlushCommands(true); }
-#define DEBUG_RHI_EXECUTE_COMMAND_LIST(scope) if (!GIsDoingQuery) { scope##->GetRHIDevice()->GetDefaultCommandContext().FlushCommands(true); }
+#define DEBUG_EXECUTE_COMMAND_LIST(scope) if (!scope##->bIsDoingQuery) { scope##->FlushCommands(true); }
+#define DEBUG_EXECUTE_COMMAND_CONTEXT(context) if (!context.bIsDoingQuery) { context##.FlushCommands(true); }
+#define DEBUG_RHI_EXECUTE_COMMAND_LIST(scope) if (!scope##->GetRHIDevice(0)->GetDefaultCommandContext().bIsDoingQuery) { scope##->GetRHIDevice(0)->GetDefaultCommandContext().FlushCommands(true); }
 #else
 #define DEBUG_EXECUTE_COMMAND_LIST(scope) 
 #define DEBUG_EXECUTE_COMMAND_CONTEXT(context) 
@@ -886,6 +885,10 @@ public:
 			{
 				for (uint32 SubresourceIndex = it.StartSubresource(); SubresourceIndex < it.EndSubresource(); SubresourceIndex++)
 				{
+					// IsTransitionNeeded can change the after state if it's read-only and the current state already contains other read-only bits. We don't want to propagate
+					// those bits to other subresources, so we'll save the original value.
+					D3D12_RESOURCE_STATES ActualAfter = after;
+
 					before = ResourceState.GetSubresourceState(SubresourceIndex);
 					if (before == D3D12_RESOURCE_STATE_TBD)
 					{
@@ -893,10 +896,16 @@ public:
 						hCommandList.AddPendingResourceBarrier(pResource, after, SubresourceIndex);
 						ResourceState.SetSubresourceState(SubresourceIndex, after);
 					}
-					else if (IsTransitionNeeded(before, after))
+					else if (IsTransitionNeeded(before, ActualAfter))
 					{
-						hCommandList.AddTransitionBarrier(pResource, before, after, SubresourceIndex);
-						ResourceState.SetSubresourceState(SubresourceIndex, after);
+						hCommandList.AddTransitionBarrier(pResource, before, ActualAfter, SubresourceIndex);
+						ResourceState.SetSubresourceState(SubresourceIndex, ActualAfter);
+						// If IsTransitionNeeded() changed the destination state, this subresource will be in a different state compared to the previous subresources,
+						// so bWholeResourceWasTransitionedToSameState cannot be true.
+						if (ActualAfter != after)
+						{
+							bWholeResourceWasTransitionedToSameState = false;
+						}
 					}
 					else
 					{

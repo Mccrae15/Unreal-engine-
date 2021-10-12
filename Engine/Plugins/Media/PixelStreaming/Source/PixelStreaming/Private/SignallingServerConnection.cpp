@@ -37,9 +37,20 @@ DEFINE_LOG_CATEGORY(LogPixelStreamingSS);
 	}\
 	while(false);
 
-FSignallingServerConnection::FSignallingServerConnection(const FString& Url, FSignallingServerConnectionObserver& InObserver, const FString& InStreamerId)
+FSignallingServerConnection::FSignallingServerConnection(FSignallingServerConnectionObserver& InObserver, const FString& InStreamerId)
 	: Observer(InObserver), StreamerId(InStreamerId)
 {
+	
+}
+
+void FSignallingServerConnection::Connect(const FString& Url)
+{
+	// Already have a websocket connection, no need to make another one
+	if(WS)
+	{
+		return;
+	}
+
 	WS = FWebSocketsModule::Get().CreateWebSocket(Url, TEXT(""));
 
 	OnConnectedHandle = WS->OnConnected().AddLambda([this]() { OnConnected(); });
@@ -51,7 +62,7 @@ FSignallingServerConnection::FSignallingServerConnection(const FString& Url, FSi
 	WS->Connect();
 }
 
-FSignallingServerConnection::~FSignallingServerConnection()
+void FSignallingServerConnection::Disconnect()
 {
 	if (!WS)
 	{
@@ -70,6 +81,11 @@ FSignallingServerConnection::~FSignallingServerConnection()
 
 	WS->Close();
 	WS = nullptr;
+}
+
+FSignallingServerConnection::~FSignallingServerConnection()
+{
+	this->Disconnect();
 }
 
 void FSignallingServerConnection::SendOffer(const webrtc::SessionDescriptionInterface& SDP)
@@ -104,23 +120,23 @@ void FSignallingServerConnection::SetPlayerIdJson(FJsonObjectPtr& JsonObject, FP
 
 bool FSignallingServerConnection::GetPlayerIdJson(const FJsonObjectPtr& Json, FPlayerId& OutPlayerId)
 {
-	// we support player id being sent as a string or a number
-
-	uint32 PlayerIdInt;
-	if(Json->TryGetNumberField(TEXT("playerId"), PlayerIdInt))
+	bool bSendAsInteger = PixelStreamingSettings::CVarSendPlayerIdAsInteger.GetValueOnAnyThread();
+	if(bSendAsInteger)
 	{
-		OutPlayerId = ToPlayerId(PlayerIdInt);
-		return true;
+		uint32 PlayerIdInt;
+		if(Json->TryGetNumberField(TEXT("playerId"), PlayerIdInt))
+		{
+			OutPlayerId = ToPlayerId(PlayerIdInt);
+			return true;
+		}
 	}
 	else if(Json->TryGetStringField(TEXT("playerId"), OutPlayerId))
 	{
 		return true;
 	}
-	else
-	{
-		UE_LOG(LogPixelStreamingSS, Error, TEXT("Failed to extracted player id offer json: %s"), *ToString(Json));
-		return false;
-	}
+
+	UE_LOG(LogPixelStreamingSS, Error, TEXT("Failed to extracted player id offer json: %s"), *ToString(Json));
+	return false;
 }
 
 void FSignallingServerConnection::SendAnswer(FPlayerId PlayerId, const webrtc::SessionDescriptionInterface& SDP)
@@ -493,14 +509,7 @@ void FSignallingServerConnection::OnPlayerIceCandidate(const FJsonObjectPtr& Jso
 		HANDLE_PLAYER_SS_ERROR(PlayerId, TEXT("Failed to get `candidate` from remote `iceCandidate` message\n%s"), *ToString(Json));
 	}
 
-	webrtc::SdpParseError Error;
-	std::unique_ptr<webrtc::IceCandidateInterface> Candidate(webrtc::CreateIceCandidate(to_string(SdpMid), SdpMLineIndex, to_string(CandidateStr), &Error));
-	if (!Candidate)
-	{
-		HANDLE_PLAYER_SS_ERROR(PlayerId, TEXT("Failed to parse remote `iceCandidate` message\n%s"), *ToString(Json));
-	}
-
-	Observer.OnRemoteIceCandidate(PlayerId, TUniquePtr<webrtc::IceCandidateInterface>{Candidate.release()});
+	Observer.OnRemoteIceCandidate(PlayerId, to_string(SdpMid), SdpMLineIndex, to_string(CandidateStr));
 }
 
 void FSignallingServerConnection::OnPlayerCount(const FJsonObjectPtr& Json)

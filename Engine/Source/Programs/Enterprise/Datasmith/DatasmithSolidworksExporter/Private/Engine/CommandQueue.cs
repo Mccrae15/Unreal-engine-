@@ -38,6 +38,7 @@ namespace SolidworksDatasmith.Engine
         public string Name { get; set; } = "";
         public string PathName { get; set; } = "";
         public Geometry.StripGeometry StripGeom { get; set; } = null;
+		
         public PartCommand()
         {
             Type = CommandType.UPDATE_PART;
@@ -68,12 +69,14 @@ namespace SolidworksDatasmith.Engine
     [ComVisible(false)]
     public class ComponentCommand : Command
     {
+		public string Label { get; set; } = "";
         public string Name { get; set; } = "";
         public string PartName { get; set; } = "";
         public string PartPath { get; set; } = "";
         public string ParentName { get; set; } = "";
         public float[] Transform { get; set; } = null;
         public bool Visible { get; set; } = true;
+
         public ComponentCommand()
         {
             Type = CommandType.UPDATE_COMPONENT;
@@ -93,6 +96,7 @@ namespace SolidworksDatasmith.Engine
     [ComVisible(false)]
     public class LightweightComponentCommand : Command
     {
+		public string Label { get; set; } = "";
         public string Name { get; set; } = "";
         public string ParentName { get; set; } = "";
         public float[] Transform { get; set; } = null;
@@ -110,6 +114,7 @@ namespace SolidworksDatasmith.Engine
     public class ComponentTransformMultiCommand : Command
     {
         public List<Tuple<string, float[]>> Transforms = new List<Tuple<string, float[]>>();
+
         public ComponentTransformMultiCommand()
         {
             Type = CommandType.UPDATE_COMPONENT_TRANSFORM_MULTI;
@@ -174,16 +179,6 @@ namespace SolidworksDatasmith.Engine
         public void AddPair(string name, bool value)
         {
             MetadataPairs.Add(new SwObjects.SwMetaDataManager.MetadataBoolPair(name, value));
-        }
-    }
-
-    [ComVisible(false)]
-    public class LiveConnectCommand : Command
-    {
-        public bool Active = false;
-        public LiveConnectCommand()
-        {
-            Type = CommandType.LIVECONNECT;
         }
     }
 

@@ -222,6 +222,17 @@ namespace MoviePipeline
 
 					Node->EvaluationType = Node->MovieScene->GetEvaluationType();
 				}
+
+				// Unlock the movie scene so we can make changes to sections below, it'll get re-locked later if needed.
+				// This has to be done each iteration of the loop because we iterate through leaves, so the first leaf 
+				// can end up re-locking a MovieScene higher up in the hierarchy, and then when subsequent leaves try
+				// to restore their hierarchy the now-locked MovieScene prevents full restoration.
+#if WITH_EDITOR
+				if (!bInSave)
+				{
+					Node->MovieScene->SetReadOnly(false);
+				}
+#endif
 			}
 
 			if (Node->Section.IsValid())
@@ -235,8 +246,8 @@ namespace MoviePipeline
 				else
 				{
 					Node->Section->SetRange(Node->OriginalShotSectionRange);
-					Node->Section->SetIsLocked(Node->bOriginalShotSectionIsLocked);
 					Node->Section->SetIsActive(Node->bOriginalShotSectionIsActive);
+					Node->Section->SetIsLocked(Node->bOriginalShotSectionIsLocked);
 					Node->Section->MarkAsChanged();
 				}
 			}
@@ -273,11 +284,11 @@ namespace MoviePipeline
 				if (!bInSave)
 				{
 					Node->MovieScene->SetPlaybackRange(Node->OriginalMovieScenePlaybackRange);
+					Node->MovieScene->SetEvaluationType(Node->EvaluationType);
 #if WITH_EDITOR
 					Node->MovieScene->SetReadOnly(Node->bOriginalMovieSceneReadOnly);
 					Node->MovieScene->SetPlaybackRangeLocked(Node->bOriginalMovieScenePlaybackRangeLocked);
 #endif
-					Node->MovieScene->SetEvaluationType(Node->EvaluationType);
 					Node->MovieScene->MarkAsChanged();
 
 					if (UPackage* OwningPackage = Node->MovieScene->GetTypedOuter<UPackage>())
