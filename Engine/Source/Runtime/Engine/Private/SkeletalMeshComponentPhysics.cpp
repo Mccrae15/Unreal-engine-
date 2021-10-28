@@ -3462,8 +3462,15 @@ void USkeletalMeshComponent::TickClothing(float DeltaTime, FTickFunction& ThisTi
 	}
 
 	// Use the component update flag to gate simulation to respect the always tick options
-	bool bShouldTick = ((VisibilityBasedAnimTickOption < EVisibilityBasedAnimTickOption::OnlyTickPoseWhenRendered) || bRecentlyRendered);
-
+	bool bShouldTick;
+	if(bTickClothingOnlyWhenRendered)
+	{
+		bShouldTick = bRecentlyRendered;
+	}
+	else
+	{
+		bShouldTick = ((VisibilityBasedAnimTickOption < EVisibilityBasedAnimTickOption::OnlyTickPoseWhenRendered) || bRecentlyRendered);
+	}
 	if (bShouldTick)
 	{
 		UpdateClothStateAndSimulate(DeltaTime, ThisTickFunction);

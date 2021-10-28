@@ -589,6 +589,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Clothing)
 	uint8 bDisableClothSimulation:1;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite,Category=Clothing)
+	uint8 bTickClothingOnlyWhenRendered:1;
+	
 	/** Indicates that this SkeletalMeshComponent has deferred kinematic bone updates until next physics sim if not INDEX_NONE. */
 	int32 DeferredKinematicUpdateIndex;
 #if PHYSICS_INTERFACE_PHYSX

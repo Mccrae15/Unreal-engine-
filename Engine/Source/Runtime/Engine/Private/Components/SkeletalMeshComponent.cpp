@@ -257,7 +257,8 @@ USkeletalMeshComponent::USkeletalMeshComponent(const FObjectInitializer& ObjectI
 	ClothingSimulation = nullptr;
 	ClothingSimulationContext = nullptr;
 	ClothingInteractor = nullptr;
-
+	bTickClothingOnlyWhenRendered = true;
+	
 	bPostEvaluatingAnimation = false;
 	bAllowAnimCurveEvaluation = true;
 	bDisablePostProcessBlueprint = false;
