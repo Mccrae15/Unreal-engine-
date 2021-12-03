@@ -494,6 +494,7 @@ public:
 
 	virtual ~FAudioDevice()
 	{
+		UE_LOG(LogTemp, Error, TEXT("AudioDeviceBeingDestroyed"))
 	}
 
 	/** Returns an array of available audio devices names for the platform */
