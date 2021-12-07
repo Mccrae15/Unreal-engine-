@@ -357,6 +357,12 @@ bool FHLMediaPlayer::InitializePlayer(const TSharedPtr<FArchive, ESPMode::Thread
 {
     UE_LOG(LogHLMediaPlayer, Verbose, TEXT("HLMediaPlayer %p: Initializing %s (archive = %s, adaptive streaming = %s)"), this, *Url, Archive.IsValid() ? TEXT("yes") : TEXT("no"), IsAdaptiveStreaming ? TEXT("yes") : TEXT("no"));
 
+	if (!GIsRunning)
+	{
+		UE_LOG(LogHLMediaPlayer, Warning, L"Attempting to start FHLMediaPlayer before engine is fully initialized.");
+		return false;
+	}
+	
     MediaUrl = Url;
 
     // initialize presentation on a separate thread
@@ -368,6 +374,27 @@ bool FHLMediaPlayer::InitializePlayer(const TSharedPtr<FArchive, ESPMode::Thread
         UE_LOG(LogHLMediaPlayer, Verbose, TEXT("HLMediaPlayer %p: FHLMediaPlayer::InitializePlayer::Async()"), this);
 
         ID3D11Device* Device = static_cast<ID3D11Device*>(GDynamicRHI->RHIGetNativeDevice());
+
+		FString RHIString = FApp::GetGraphicsRHI();
+		if (RHIString == TEXT("DirectX 12"))
+		{
+			ID3D12Device* m_d3d12Device = static_cast<ID3D12Device*>(GDynamicRHI->RHIGetNativeDevice());
+			void* m_commandQueue = GDynamicRHI->RHIGetNativeGraphicsQueue();
+
+			ID3D11DeviceContext* m_d3d11DeviceContext;
+			D3D11On12CreateDevice(
+				m_d3d12Device,
+				D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+				nullptr,
+				0,
+				reinterpret_cast<IUnknown**>(&m_commandQueue),
+				1,
+				0,
+				&Device,
+				&m_d3d11DeviceContext,
+				nullptr
+			);
+		}
 
         TComPtr<IPlaybackEngine> PlaybackEngineIn = nullptr;
         if (SUCCEEDED(CreatePlaybackEngine(Device, &PlaybackEngineIn)))

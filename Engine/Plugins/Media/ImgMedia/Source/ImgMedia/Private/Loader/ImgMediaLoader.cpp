@@ -261,12 +261,6 @@ IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTi
 			// Modulo with sequence duration to take care of looping.
 			StartTime = ModuloTime(StartTime);
 			EndTime = ModuloTime(EndTime);
-
-			// If we get an EndTime before the StartTime, the end was precisely on the end of the media data -> we adjust this for simpler code below
-			if (EndTime < StartTime)
-			{
-				EndTime += SequenceDuration;
-			}
 		}
 
 		// Get start and end frame indices for this time range.
@@ -328,6 +322,8 @@ IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTi
 
 			// Request data for the frame we would like... (in case it's not in, yet)
 			RequestFrame(FrameNumberToTime(MaxIdx), PlayRate, bIsLoopingEnabled);
+
+			FScopeLock Lock(&CriticalSection);
 
 			// If playback is not blocking, we expect less expectancy of precision on the users side, but more need for speedy return of "some ok frame"
 			// So: if we detect non-blocking playback we return a "as good sample as we can", but not always the "perfect" one we calculated

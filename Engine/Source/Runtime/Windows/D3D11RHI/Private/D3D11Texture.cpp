@@ -6,7 +6,7 @@
 
 #include "D3D11RHIPrivate.h"
 
-#if PLATFORM_DESKTOP && !PLATFORM_HOLOLENS
+#if !PLATFORM_HOLOLENS
 // For Depth Bounds Test interface
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "nvapi.h"
@@ -1923,7 +1923,9 @@ void FD3D11DynamicRHI::UpdateTexture2D_RenderThread(
 	}
 	else
 	{
-		const SIZE_T SourceDataSize = static_cast<SIZE_T>(SourcePitch) * UpdateRegion.Height;
+		const FPixelFormatInfo& FormatInfo = GPixelFormats[Texture->GetFormat()];
+		const size_t UpdateHeightInTiles = FMath::DivideAndRoundUp(UpdateRegion.Height, (uint32)FormatInfo.BlockSizeY);
+		const size_t SourceDataSize = static_cast<size_t>(SourcePitch) * UpdateHeightInTiles;
 		uint8* SourceDataCopy = (uint8*)FMemory::Malloc(SourceDataSize);
 		FMemory::Memcpy(SourceDataCopy, SourceData, SourceDataSize);
 		RunOnRHIThread([this, Texture, MipIndex, UpdateRegion, SourcePitch, SourceDataCopy]()

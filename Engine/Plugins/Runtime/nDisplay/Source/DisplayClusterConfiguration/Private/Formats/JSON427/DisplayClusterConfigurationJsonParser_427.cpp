@@ -232,9 +232,22 @@ namespace JSON427
 					Viewport->Region = FDisplayClusterConfigurationRectangle(CfgViewport.Value.Region.X, CfgViewport.Value.Region.Y, CfgViewport.Value.Region.W, CfgViewport.Value.Region.H);
 					Viewport->GPUIndex = CfgViewport.Value.GPUIndex;
 
+					// TextureShare
+					Viewport->TextureShare.bIsEnabled = CfgViewport.Value.TextureShare.bIsEnabled;
+					Viewport->TextureShare.SyncSettings.Connection = (ETextureShareSyncConnectDisplayCluster)((uint8)CfgViewport.Value.TextureShare.SyncPolicy_Connection);
+					Viewport->TextureShare.SyncSettings.Frame      = (ETextureShareSyncFrameDisplayCluster)((uint8)CfgViewport.Value.TextureShare.SyncPolicy_Frame);
+					Viewport->TextureShare.SyncSettings.Texture    = (ETextureShareSyncSurfaceDisplayCluster)((uint8)CfgViewport.Value.TextureShare.SyncPolicy_Texture);
+
 					// Projection policy
 					Viewport->ProjectionPolicy.Type = CfgViewport.Value.ProjectionPolicy.Type;
 					Viewport->ProjectionPolicy.Parameters = CfgViewport.Value.ProjectionPolicy.Parameters;
+
+					Viewport->RenderSettings.Overscan.Mode = DisplayClusterConfigurationJsonHelpers::FromString<EDisplayClusterConfigurationViewportOverscanMode>(CfgViewport.Value.Overscan.Mode);
+					Viewport->RenderSettings.Overscan.bOversize = CfgViewport.Value.Overscan.Oversize;
+					Viewport->RenderSettings.Overscan.Left = CfgViewport.Value.Overscan.Left;
+					Viewport->RenderSettings.Overscan.Right = CfgViewport.Value.Overscan.Right;
+					Viewport->RenderSettings.Overscan.Top = CfgViewport.Value.Overscan.Top;
+					Viewport->RenderSettings.Overscan.Bottom = CfgViewport.Value.Overscan.Bottom;
 
 					// Add this viewport
 					Node->Viewports.Emplace(CfgViewport.Key, Viewport);
@@ -409,10 +422,24 @@ namespace JSON427
 					Viewport.GPUIndex = CfgViewport.Value->GPUIndex;
 					Viewport.BufferRatio = CfgViewport.Value->RenderSettings.BufferRatio;
 
+					// TextureShare
+					Viewport.TextureShare.bIsEnabled = CfgViewport.Value->TextureShare.bIsEnabled;
+					Viewport.TextureShare.SyncPolicy_Connection = (uint8)(CfgViewport.Value->TextureShare.SyncSettings.Connection);
+					Viewport.TextureShare.SyncPolicy_Frame      = (uint8)(CfgViewport.Value->TextureShare.SyncSettings.Frame);
+					Viewport.TextureShare.SyncPolicy_Texture    = (uint8)(CfgViewport.Value->TextureShare.SyncSettings.Texture);
+
 					// Projection policy
 					Viewport.ProjectionPolicy.Type = CfgViewport.Value->ProjectionPolicy.Type;
 					Viewport.ProjectionPolicy.Parameters = CfgViewport.Value->ProjectionPolicy.Parameters;
 
+					// Overscan
+					Viewport.Overscan.Mode = DisplayClusterConfigurationJsonHelpers::ToString(CfgViewport.Value->RenderSettings.Overscan.Mode);
+					Viewport.Overscan.Oversize = CfgViewport.Value->RenderSettings.Overscan.bOversize;
+					Viewport.Overscan.Left = CfgViewport.Value->RenderSettings.Overscan.Left;
+					Viewport.Overscan.Right = CfgViewport.Value->RenderSettings.Overscan.Right;
+					Viewport.Overscan.Top = CfgViewport.Value->RenderSettings.Overscan.Top;
+					Viewport.Overscan.Bottom = CfgViewport.Value->RenderSettings.Overscan.Bottom;
+					
 					// Save this viewport
 					Node.Viewports.Emplace(CfgViewport.Key, Viewport);
 				}

@@ -3,9 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
 using Autodesk.Revit.DB;
@@ -578,7 +576,7 @@ namespace DatasmithRevitExporter
 			{
 				// Create a new Datasmith light actor.
 				// Hash the Datasmith light actor name to shorten it.
-				string HashedActorName = FDatasmithFacadeElement.GetStringHash("L:" + GetActorName());
+				string HashedActorName = FDatasmithFacadeElement.GetStringHash("L:" + GetActorName(true));
 				FDatasmithFacadeActorLight LightActor = FDatasmithRevitLight.CreateLightActor(CurrentElement, HashedActorName);
 				LightActor.SetLabel(GetActorLabel());
 
@@ -612,7 +610,7 @@ namespace DatasmithRevitExporter
 			{
 				// Create a new Datasmith RPC mesh.
 				// Hash the Datasmith RPC mesh name to shorten it.
-				string HashedName = FDatasmithFacadeElement.GetStringHash("RPCM:" + GetActorName());
+				string HashedName = FDatasmithFacadeElement.GetStringHash("RPCM:" + GetActorName(false));
 				FDatasmithFacadeMesh RPCMesh = new FDatasmithFacadeMesh();
 				RPCMesh.SetName(HashedName);
 				Transform AffineTransform = Transform.Identity;
@@ -703,7 +701,7 @@ namespace DatasmithRevitExporter
 
 				// Create a new Datasmith RPC mesh actor.
 				// Hash the Datasmith RPC mesh actor name to shorten it.
-				string HashedActorName = FDatasmithFacadeElement.GetStringHash("RPC:" + GetActorName());
+				string HashedActorName = FDatasmithFacadeElement.GetStringHash("RPC:" + GetActorName(true));
 				FDatasmithFacadeActor FacadeActor;
 				if (RPCMesh.GetVerticesCount() > 0 && RPCMesh.GetFacesCount() > 0)
 				{
@@ -803,7 +801,7 @@ namespace DatasmithRevitExporter
 				{
 					// Create a new Datasmith mesh actor.
 					// Hash the Datasmith mesh actor name to shorten it.
-					string HashedActorName = FDatasmithFacadeElement.GetStringHash("A:" + GetActorName());
+					string HashedActorName = FDatasmithFacadeElement.GetStringHash("A:" + GetActorName(true));
 					InElement.ElementActor = new FDatasmithFacadeActorMesh(HashedActorName);
 					InElement.ElementActor.SetLabel(GetActorLabel());
 				}
@@ -885,18 +883,25 @@ namespace DatasmithRevitExporter
 				}
 			}
 
-			private string GetActorName()
+			private string GetActorName(bool bEnsureUnique)
 			{
-				string DocumentName = Path.GetFileNameWithoutExtension(CurrentElement.Document.PathName);
+				string ActorName;
 
 				if (InstanceDataStack.Count == 0)
 				{
-					return $"{DocumentName}:{CurrentElement.UniqueId}";
+					ActorName = $"{DocumentData.DocumentId}:{CurrentElement.UniqueId}";
 				}
 				else
 				{
-					return GenerateUniqueInstanceName();
+					ActorName = GenerateUniqueInstanceName();
 				}
+
+				if (bEnsureUnique && DocumentData.DirectLink != null)
+				{
+					ActorName = DocumentData.DirectLink.EnsureUniqueActorName(ActorName);
+				}
+
+				return ActorName;
 			}
 
 			private string GenerateUniqueInstanceName()
@@ -911,8 +916,6 @@ namespace DatasmithRevitExporter
 				// However, this is not enough because elsewhere we might encounter the same sequence in terms of child counts, 
 				// but adding the CurrentElement unique id ensures we get unique name string in the end.
 
-				string DocumentName = Path.GetFileNameWithoutExtension(CurrentElement.Document.PathName);
-
 				StringBuilder ChildCounts = new StringBuilder();
 
 				for (int ElemIndex = 1; ElemIndex < InstanceDataStack.Count; ++ElemIndex)
@@ -925,16 +928,14 @@ namespace DatasmithRevitExporter
 				ChildCounts.AppendFormat(":{0}", ChildElements.Count);
 
 				FBaseElementData Instance = InstanceDataStack.Peek();
-				return $"{DocumentName}:{CurrentElement.UniqueId}:{Instance.BaseElementType.UniqueId}{ChildCounts.ToString()}";
+				return $"{DocumentData.DocumentId}:{CurrentElement.UniqueId}:{Instance.BaseElementType.UniqueId}{ChildCounts.ToString()}";
 			}
 
 			private string GetMeshName()
 			{
-				string DocumentName = Path.GetFileNameWithoutExtension(CurrentElement.Document.PathName);
-
 				if (InstanceDataStack.Count == 0)
 				{
-					return $"{DocumentName}:{CurrentElement.UniqueId}";
+					return $"{DocumentData.DocumentId}:{CurrentElement.UniqueId}";
 				}
 				else
 				{
@@ -947,7 +948,7 @@ namespace DatasmithRevitExporter
 					else
 					{
 						// Generate instanced mesh name
-						return $"{DocumentName}:{Instance.BaseElementType.UniqueId}";
+						return $"{DocumentData.DocumentId}:{Instance.BaseElementType.UniqueId}";
 					}
 				}
 			}
@@ -1046,7 +1047,6 @@ namespace DatasmithRevitExporter
 			}
 		}
 
-
 		public Dictionary<string, Tuple<FDatasmithFacadeMeshElement, Task<bool>>> 
 														MeshMap = new Dictionary<string, Tuple<FDatasmithFacadeMeshElement, Task<bool>>>();
 		public Dictionary<ElementId, FBaseElementData>	ActorMap = new Dictionary<ElementId, FDocumentData.FBaseElementData>();
@@ -1057,6 +1057,8 @@ namespace DatasmithRevitExporter
 		private string									CurrentMaterialName = null;
 		private List<string>							MessageList = null;
 
+		public  string									DocumentId { get; private set; } = "";
+
 		public bool										bSkipMetadataExport { get; private set; } = false;
 		public Document									CurrentDocument { get; private set; } = null;
 		public FDirectLink								DirectLink { get; private set; } = null;
@@ -1066,7 +1068,8 @@ namespace DatasmithRevitExporter
 		public FDocumentData(
 			Document InDocument,
 			ref List<string> InMessageList,
-			FDirectLink InDirectLink
+			FDirectLink InDirectLink,
+			string InLinkedDocumentId
 		)
 		{
 			DirectLink = InDirectLink;
@@ -1095,6 +1098,11 @@ namespace DatasmithRevitExporter
 					BoundingBoxXYZ BBox = SectionBox.get_BoundingBox(CurrentDocument.ActiveView);
 					SectionBoxOutlines.Add(GetOutline(BBox.Transform, BBox));
 				}
+			}
+
+			if (InLinkedDocumentId != null)
+			{
+				DocumentId = InLinkedDocumentId;
 			}
 		}
 

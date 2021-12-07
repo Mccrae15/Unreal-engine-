@@ -9,12 +9,13 @@
 #include "Render/Viewport/DisplayClusterViewportProxy.h"
 #include "Render/Viewport/Containers/DisplayClusterViewport_Enums.h"
 #include "Render/Viewport/RenderFrame/DisplayClusterRenderFrameSettings.h"
+#include "Render/Viewport/Containers/DisplayClusterTextureShareSettings.h"
 
 class FDisplayClusterRenderTargetManager;
 class FDisplayClusterViewportPostProcessManager;
 class FDisplayClusterViewportManager;
 class IDisplayClusterProjectionPolicy;
-
+class FDisplayClusterViewportConfiguration;
 class FViewport;
 
 
@@ -65,17 +66,19 @@ public:
 
 	void ImplCreateViewport(FDisplayClusterViewportProxy* InViewportProxy);
 	void ImplDeleteViewport(FDisplayClusterViewportProxy* InViewportProxy);
-	void ImplUpdateRenderFrameSettings(const FDisplayClusterRenderFrameSettings& InRenderFrameSettings);
+	void ImplUpdateSettings(const FDisplayClusterViewportConfiguration& InConfiguration);
 	void ImplUpdateViewports(const TArray<FDisplayClusterViewport*>& InViewports);
 	void ImplSafeRelease();
 
 	void ImplRenderFrame(FViewport* InViewport);
+	void ImplClearFrameTargets_RenderThread(FRHICommandListImmediate& RHICmdList) const;
 
 private:
 	TSharedPtr<FDisplayClusterRenderTargetManager, ESPMode::ThreadSafe>        RenderTargetManager;
 	TSharedPtr<FDisplayClusterViewportPostProcessManager, ESPMode::ThreadSafe> PostProcessManager;
 
 	FDisplayClusterRenderFrameSettings RenderFrameSettings;
+	FDisplayClusterTextureShareSettings TextureShareSettings;
 
 	TArray<FDisplayClusterViewportProxy*> ViewportProxies;
 };

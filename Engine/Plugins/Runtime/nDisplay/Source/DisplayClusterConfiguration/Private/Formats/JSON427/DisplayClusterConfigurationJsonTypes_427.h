@@ -377,6 +377,50 @@ struct FDisplayClusterConfigurationJsonProjectionPolicy_427
 };
 
 USTRUCT()
+struct FDisplayClusterConfigurationJsonOverscan_427
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY()
+	FString Mode = "";
+
+	UPROPERTY()
+	int32 Left = 0;
+
+	UPROPERTY()
+	int32 Right = 0;
+
+	UPROPERTY()
+	int32 Top = 0;
+
+	UPROPERTY()
+	int32 Bottom = 0;
+
+	UPROPERTY()
+	bool Oversize = 0;
+};
+
+USTRUCT()
+struct FDisplayClusterConfigurationJsonTextureShare_427
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY()
+	bool bIsEnabled = false;
+
+	UPROPERTY()
+	int SyncPolicy_Connection;
+
+	UPROPERTY()
+	int SyncPolicy_Frame;
+
+	UPROPERTY()
+	int SyncPolicy_Texture;
+};
+
+USTRUCT()
 struct FDisplayClusterConfigurationJsonViewport_427
 {
 	GENERATED_BODY()
@@ -392,10 +436,10 @@ public:
 	int GPUIndex;
 
 	UPROPERTY()
-	bool AllowCrossGPUTransfer;
+	FDisplayClusterConfigurationJsonTextureShare_427 TextureShare;
 
 	UPROPERTY()
-	bool IsShared;
+	FDisplayClusterConfigurationJsonOverscan_427 Overscan;
 
 	UPROPERTY()
 	FDisplayClusterConfigurationJsonRectangle_427 Region;

@@ -2,17 +2,15 @@
 
 #include "Amf_EncoderH264.h"
 #include "HAL/Platform.h"
-
 #include "VideoEncoderCommon.h"
 #include "CodecPacket.h"
 #include "AVEncoderDebug.h"
 #include "VulkanRHIBridge.h"
-
 #include "VideoEncoderInput.h"
-
 #include "RHI.h"
-
 #include <stdio.h>
+#include "Misc/ScopedEvent.h"
+#include "Async/Async.h"
 
 #define MAX_GPU_INDEXES 50
 #define DEFAULT_BITRATE 1000000u
@@ -52,6 +50,60 @@ namespace
 
 namespace AVEncoder
 {
+
+	TAutoConsoleVariable<int32>  CVarAMFKeyframeInterval(
+	TEXT("AMF.KeyframeInterval"),
+	300,
+	TEXT("Every N frames an IDR frame is sent. Default: 300. Note: A value <= 0 will disable sending of IDR frames on an interval."),
+	ECVF_Default);
+
+	template<typename T>
+	void AMFCommandLineParseValue(const TCHAR* Match, TAutoConsoleVariable<T>& CVar)
+	{
+		T Value;
+		if (FParse::Value(FCommandLine::Get(), Match, Value))
+		{
+			CVar->Set(Value, ECVF_SetByCommandline);
+		}
+	};
+
+	void AMFCommandLineParseOption(const TCHAR* Match, TAutoConsoleVariable<bool>& CVar)
+	{
+		FString ValueMatch(Match);
+		ValueMatch.Append(TEXT("="));
+		FString Value;
+		if (FParse::Value(FCommandLine::Get(), *ValueMatch, Value)) {
+			if (Value.Equals(FString(TEXT("true")), ESearchCase::IgnoreCase)) {
+				CVar->Set(true, ECVF_SetByCommandline);
+			}
+			else if (Value.Equals(FString(TEXT("false")), ESearchCase::IgnoreCase)) {
+				CVar->Set(false, ECVF_SetByCommandline);
+			}
+		}
+		else if (FParse::Param(FCommandLine::Get(), Match))
+		{
+			CVar->Set(true, ECVF_SetByCommandline);
+		}
+	}
+
+	void AMFParseCommandLineFlags()
+	{
+		// CVar changes can only be triggered from the game thread
+		{
+			// We block on our current thread until these CVars are set on the game thread, the settings of these CVars needs to happen before we can proceed.
+            FScopedEvent ThreadBlocker;
+
+			AsyncTask(ENamedThreads::GameThread, [&ThreadBlocker]()
+			{ 
+				AMFCommandLineParseValue(TEXT("-AMFKeyframeInterval="), CVarAMFKeyframeInterval);
+
+				// Unblocks the thread
+                ThreadBlocker.Trigger();
+			});
+            // Blocks current thread until game thread calls trigger (indicating it is done)
+        }
+	}
+
 	static bool GetEncoderInfo(FAmfCommon& Amf, FVideoEncoderInfo& EncoderInfo);
 
 	bool FVideoEncoderAmf_H264::GetIsAvailable(FVideoEncoderInputImpl& InInput, FVideoEncoderInfo& OutEncoderInfo)
@@ -151,9 +203,13 @@ namespace AVEncoder
 			}
 		}
 
-		FLayerConfig mutableConfig = config;
-		if (mutableConfig.MaxFramerate == 0)
-			mutableConfig.MaxFramerate = 60;
+		AMFParseCommandLineFlags();
+
+		FLayerConfig MutableConfig = config;
+		if (MutableConfig.MaxFramerate == 0)
+		{
+			MutableConfig.MaxFramerate = 60;
+		}
 
 		return AddLayer(config);
 	}
@@ -165,11 +221,6 @@ namespace AVEncoder
 		{
 			delete layer;
 			return nullptr;
-		}
-
-		if (ProcessFrameThread == nullptr)
-		{
-			ProcessFrameThread = MakeUnique<FThread>(TEXT("AmfFrameProcessingThread"), [this]() { ProcessFrameThreadFunc(); });
 		}
 
 		return layer;
@@ -184,14 +235,14 @@ namespace AVEncoder
 	{
 		// todo: reconfigure encoder
 		auto const amfFrame = static_cast<const FVideoEncoderInputFrameImpl*>(frame);
-		for (auto&& layer : Layers)
+		for (auto& layer : Layers)
 		{
-			auto const amfLayer = static_cast<FAMFLayer*>(layer);
+			FAMFLayer* amfLayer = static_cast<FAMFLayer*>(layer);
 			AMF_RESULT Res = amfLayer->Encode(amfFrame, options);
 
 			if (Res == AMF_OK)
 			{
-				FramesPending->Trigger();
+				amfLayer->FramesPending->Trigger();
 			}
 		}
 	}
@@ -215,15 +266,7 @@ namespace AVEncoder
 		}
 
 		Layers.Reset();
-
-		if (ProcessFrameThread != nullptr)
-		{
-			bShouldRunProcessingThread = false;
-			FramesPending->Trigger();
-			ProcessFrameThread->Join();
-			ProcessFrameThread = nullptr;
 		}
-	}
 
 	// --- Amf_EncoderH264::FLayer ------------------------------------------------------------
 	FVideoEncoderAmf_H264::FAMFLayer::FAMFLayer(uint32 layerIdx, FLayerConfig const& config, FVideoEncoderAmf_H264& encoder)
@@ -248,6 +291,11 @@ namespace AVEncoder
 		if (AmfEncoder == NULL)
 		{
 			Amf.CreateEncoder(AmfEncoder);
+		}
+
+		if (ProcessFrameThread == nullptr)
+		{
+			ProcessFrameThread = MakeUnique<FThread>(TEXT("AmfFrameProcessingThread"), [this]() { ProcessFrameThreadFunc(); });
 		}
 
 		return AmfEncoder != NULL;
@@ -285,7 +333,12 @@ namespace AVEncoder
 		Result = AmfEncoder->SetProperty(AMF_VIDEO_ENCODER_MAX_QP, CurrentConfig.QPMax > -1 ? FMath::Clamp<amf_int64>(CurrentConfig.QPMax, 0, 51) : 51);
 
 		Result = AmfEncoder->SetProperty(AMF_VIDEO_ENCODER_QUERY_TIMEOUT, 16);
-		Result = AmfEncoder->SetProperty(AMF_VIDEO_ENCODER_IDR_PERIOD, 60);
+
+		int32 IdrPeriod = CVarAMFKeyframeInterval.GetValueOnAnyThread();
+		if(IdrPeriod > 0)
+		{
+			Result = AmfEncoder->SetProperty(AMF_VIDEO_ENCODER_IDR_PERIOD, IdrPeriod);
+		}
 
 		Result = AmfEncoder->Init(AMF_SURFACE_BGRA, CurrentConfig.Width, CurrentConfig.Height);
 		CurrentWidth = CurrentConfig.Width;
@@ -308,6 +361,7 @@ namespace AVEncoder
 				Result = AmfEncoder->SetProperty(AMF_VIDEO_ENCODER_FRAMERATE, frameRate);
 				CurrentFrameRate = CurrentConfig.MaxFramerate;
 
+				AmfEncoder->Flush();
 				Result = AmfEncoder->ReInit(CurrentConfig.Width, CurrentConfig.Height);
 				CurrentWidth = CurrentConfig.Width;
 				CurrentHeight = CurrentConfig.Height;
@@ -428,6 +482,14 @@ namespace AVEncoder
 		Flush();
 		CreatedSurfaces.Empty();
 
+		if (ProcessFrameThread != nullptr)
+		{
+			bShouldRunProcessingThread = false;
+			FramesPending->Trigger();
+			ProcessFrameThread->Join();
+			ProcessFrameThread = nullptr;
+		}
+
 		if (AmfEncoder != NULL)
 		{
 			AmfEncoder->Terminate();
@@ -435,7 +497,7 @@ namespace AVEncoder
 		}
 	}
 
-	void FVideoEncoderAmf_H264::ProcessFrameThreadFunc()
+	void FVideoEncoderAmf_H264::FAMFLayer::ProcessFrameThreadFunc()
 	{
 		bool bHasProcessedFrame = false;
 		while (bShouldRunProcessingThread)
@@ -444,17 +506,14 @@ namespace AVEncoder
 				FramesPending->Wait();
 			}
 
-			for (auto&& Layer : Layers)
+			if (PendingFrames.GetValue() > 0)
 			{
-				FAMFLayer* AmfLayer = static_cast<FAMFLayer*>(Layer);
-				if (AmfLayer->PendingFrames.GetValue() > 0)
-				{
-					AmfLayer->PendingFrames.Decrement();
+				PendingFrames.Decrement();
 
 					amf::AMFDataPtr data;
-					AMF_RESULT Result = AmfLayer->AmfEncoder->QueryOutput(&data);
+				AMF_RESULT Result = AmfEncoder->QueryOutput(&data);
 
-					if (Result == AMF_OK && data != NULL)
+				if (Result == AMF_OK)
 					{
 						AMFBufferPtr OutBuffer(data);
 
@@ -490,7 +549,7 @@ namespace AVEncoder
 						Packet.Timings.StartTs = FTimespan(StartTs);
 
 						Packet.Timings.FinishTs = FTimespan::FromSeconds(FPlatformTime::Seconds());
-						Packet.Framerate = AmfLayer->GetConfig().MaxFramerate;
+					Packet.Framerate = GetConfig().MaxFramerate;
 
 						FVideoEncoderInputFrameImpl* SourceFrame;
 						if (OutBuffer->GetProperty(AMF_BUFFER_INPUT_FRAME, (intptr_t*)&SourceFrame) != AMF_OK)
@@ -498,15 +557,13 @@ namespace AVEncoder
 							UE_LOG(LogEncoderAMF, Fatal, TEXT("Amf failed to get buffer input frame."));
 						}
 
-						if (AmfLayer->Encoder.OnEncodedPacket)
+					if (Encoder.OnEncodedPacket)
 						{
-							AmfLayer->Encoder.OnEncodedPacket(AmfLayer->LayerIndex, SourceFrame, Packet);
+						Encoder.OnEncodedPacket(LayerIndex, SourceFrame, Packet);
 						}
 
 						bHasProcessedFrame = true;
 					}
-				}
-			}
 
 			if (!bHasProcessedFrame)
 			{
@@ -515,6 +572,7 @@ namespace AVEncoder
 
 			bHasProcessedFrame = false;
 		}
+	}
 	}
 
 	template<class T>
@@ -758,7 +816,6 @@ namespace AVEncoder
 		bool bSuccess = true;
 
 		AMF.InitializeContext(GDynamicRHI->GetName(), NULL);
-
 		EncoderInfo.CodecType = ECodecType::H264;
 		
 		// Create temp component

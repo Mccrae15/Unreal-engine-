@@ -44,6 +44,7 @@
 	#include "pxr/usd/usdGeom/tokens.h"
 	#include "pxr/usd/usdShade/tokens.h"
 	#include "pxr/usd/usdSkel/animation.h"
+	#include "pxr/usd/usdSkel/animMapper.h"
 	#include "pxr/usd/usdSkel/binding.h"
 	#include "pxr/usd/usdSkel/bindingAPI.h"
 	#include "pxr/usd/usdSkel/blendShape.h"
@@ -1609,6 +1610,9 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 		NumInfluencesPerComponent = MAX_INFLUENCES_PER_STREAM;
 	}
 
+	// We keep track of which influences we added because we combine many Mesh prim (each with potentially a different
+	// explicit joint order) into the same skeletal mesh asset
+	const int32 NumInfluencesBefore = SkelMeshImportData.Influences.Num();
 	if ( JointWeights.size() > ( NumPoints - 1 ) * ( NumInfluencesPerComponent - 1 ) )
 	{
 		uint32 JointIndex = 0;
@@ -1630,6 +1634,45 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 			}
 		}
 	}
+	const int32 NumInfluencesAfter = SkelMeshImportData.Influences.Num();
+
+	// If we have a joint mapper this Mesh has an explicit joint ordering, so we need to map joint indices to the skeleton's bone indices
+	if ( pxr::UsdSkelAnimMapperRefPtr AnimMapper = SkinningQuery.GetJointMapper() )
+	{
+		VtArray<int> SkeletonBoneIndices;
+		if ( pxr::UsdSkelSkeleton BoundSkeleton = SkelBinding.GetInheritedSkeleton() )
+		{
+			if ( pxr::UsdAttribute SkeletonJointsAttr = BoundSkeleton.GetJointsAttr() )
+			{
+				VtArray<TfToken> SkeletonJoints;
+				if ( SkeletonJointsAttr.Get( &SkeletonJoints ) )
+				{
+					// If the skeleton has N bones, this will just contain { 0, 1, 2, ..., N-1 }
+					int NumSkeletonBones = static_cast< int >( SkeletonJoints.size() );
+					for ( int SkeletonBoneIndex = 0; SkeletonBoneIndex < NumSkeletonBones; ++SkeletonBoneIndex )
+					{
+						SkeletonBoneIndices.push_back( SkeletonBoneIndex );
+					}
+
+					// Use the AnimMapper to produce the indices of the Mesh's joints within the Skeleton's list of joints.
+					// Example: Imagine skeleton had { "Root", "Root/Hip", "Root/Hip/Shoulder", "Root/Hip/Shoulder/Arm", "Root/Hip/Shoulder/Arm/Elbow" }, and so
+					// BoneIndexRemapping was { 0, 1, 2, 3, 4 }. Consider a Mesh that specifies the explicit joints { "Root/Hip/Shoulder", "Root/Hip/Shoulder/Arm" },
+					// and so uses the indices 0 and 1 to refer to Shoulder and Arm. After the Remap call SkeletonBoneIndices will hold { 2, 3 }, as those are the
+					// indices of Shoulder and Arm within the skeleton's bones
+					VtArray<int> BoneIndexRemapping;
+					if ( AnimMapper->Remap( SkeletonBoneIndices, &BoneIndexRemapping ) )
+					{
+						for ( int32 AddedInfluenceIndex = NumInfluencesBefore; AddedInfluenceIndex < NumInfluencesAfter; ++AddedInfluenceIndex )
+						{
+							SkeletalMeshImportData::FRawBoneInfluence& Influence = SkelMeshImportData.Influences[ AddedInfluenceIndex ];
+							Influence.BoneIndex = BoneIndexRemapping[ Influence.BoneIndex ];
+						}
+					}
+				}
+			}
+		}
+	}
+
 
 	return true;
 }
@@ -2174,13 +2217,30 @@ USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
 		IMeshUtilities::MeshBuildOptions BuildOptions;
 		BuildOptions.TargetPlatform = GetTargetPlatformManagerRef().GetRunningTargetPlatform();
 		// #ueent_todo: Normals and tangents shouldn't need to be recomputed when they are retrieved from USD
-		//BuildOptions.bComputeNormals = !SkelMeshImportData.bHasNormals;
-		//BuildOptions.bComputeTangents = !SkelMeshImportData.bHasTangents;
+		//BuildOptions.bComputeNormals = !LODImportData.bHasNormals;
+		//BuildOptions.bComputeTangents = !LODImportData.bHasTangents;
+		BuildOptions.bUseMikkTSpace = true;
 
 		TArray<FText> WarningMessages;
 		TArray<FName> WarningNames;
 
 		bool bBuildSuccess = MeshUtilities.BuildSkeletalMesh(LODModel, SkeletalMesh->GetPathName(), SkeletalMesh->GetRefSkeleton(), LODInfluences, LODWedges, LODFaces, LODPoints, LODPointToRawMap, BuildOptions, &WarningMessages, &WarningNames );
+
+		for ( int32 WarningIndex = 0; WarningIndex < FMath::Max( WarningMessages.Num(), WarningNames.Num() ); ++WarningIndex )
+		{
+			const FText& Text = WarningMessages.IsValidIndex( WarningIndex ) ? WarningMessages[ WarningIndex ] : FText::GetEmpty();
+			const FName& Name = WarningNames.IsValidIndex( WarningIndex ) ? WarningNames[ WarningIndex ] : NAME_None;
+
+			if ( bBuildSuccess )
+			{
+				UE_LOG( LogUsd, Warning, TEXT( "Warning when trying to build skeletal mesh from USD: '%s': '%s'" ), *Name.ToString(), *Text.ToString() );
+			}
+			else
+			{
+				UE_LOG( LogUsd, Error, TEXT( "Error when trying to build skeletal mesh from USD: '%s': '%s'" ), *Name.ToString(), *Text.ToString() );
+			}
+		}
+
 		if ( !bBuildSuccess )
 		{
 			SkeletalMesh->MarkPendingKill();

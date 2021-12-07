@@ -113,6 +113,7 @@ public:
 };
 
 const FVector2D FInputDevice::UnfocusedPos(-1.0f, -1.0f);
+const size_t FInputDevice::MessageHeaderOffset = 3;
 
 FInputDevice::FInputDevice(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler)
 	: PixelStreamerApplicationWrapper(MakeShareable(new FApplicationWrapper(FSlateApplication::Get().GetPlatformApplication())))
@@ -666,6 +667,7 @@ namespace
 		uint16 PosY;   // Y position of finger.
 		uint8 TouchIndex;   // Index of finger for tracking multi-touch events.
 		uint8 Force;   // Amount of pressure being applied by the finger.
+		uint8 Valid;	// 1 if the touch was within bounds.
 	};
 
 	using FKeyCodeType = uint8;
@@ -701,7 +703,8 @@ namespace
 			UnquantizeAndDenormalize(PosX, PosY);
 			GET(uint8, TouchIndex);
 			GET(uint8, Force);
-			Touches.Add({ PosX, PosY, TouchIndex, Force });
+			GET(uint8, Valid);
+			Touches.Add({ PosX, PosY, TouchIndex, Force, Valid });
 		}
 
 		return Touches;
@@ -726,9 +729,12 @@ namespace
 	enum class MouseButtonState	{ Left = 1 << 0, Right = 1 << 1, Middle = 1 << 2, Button4 = 1 << 3, Button5 = 1 << 4, Button6 = 1 << 5, Button7 = 1 << 6, Button8 = 1 << 7 };
 }
 
-void FInputDevice::OnMessage(const uint8* Data, uint32 Size)
+void FInputDevice::OnMessage(const webrtc::DataBuffer& Buffer)
 {
 	using namespace PixelStreamingProtocol;
+
+	const uint8* Data = Buffer.data.data();
+	uint32 Size = (uint32)Buffer.data.size();
 
 	GET(EToStreamerMsg, MsgType);
 
@@ -736,16 +742,14 @@ void FInputDevice::OnMessage(const uint8* Data, uint32 Size)
 	{
 	case EToStreamerMsg::UIInteraction:
 	{
-		FString Descriptor = PixelStreamingProtocol::ParseString(Data, Size);
-		checkf(Size == 0, TEXT("%d, %d"), Size, Descriptor.Len());
+		FString Descriptor = PixelStreamingProtocol::ParseString(Buffer, FInputDevice::GetMessageHeaderOffset());
 		UE_LOG(PixelStreamerInput, Verbose, TEXT("UIInteraction: %s"), *Descriptor);
 		ProcessUIInteraction(Descriptor);
 		break;
 	}
 	case EToStreamerMsg::Command:
 	{
-		FString Descriptor = PixelStreamingProtocol::ParseString(Data, Size);
-		checkf(Size == 0, TEXT("%d, %d"), Size, Descriptor.Len());
+		FString Descriptor = PixelStreamingProtocol::ParseString(Buffer, FInputDevice::GetMessageHeaderOffset());
 		UE_LOG(PixelStreamerInput, Verbose, TEXT("Command: %s"), *Descriptor);
 		ProcessCommand(Descriptor);
 		break;
@@ -868,9 +872,12 @@ void FInputDevice::OnMessage(const uint8* Data, uint32 Size)
 
 		for (const FTouch& Touch : Touches)
 		{
-			FEvent TouchStartEvent(EventType::TOUCH_START);
-			TouchStartEvent.SetTouch(Touch.TouchIndex, Touch.PosX, Touch.PosY, Touch.Force);
-			ProcessEvent(TouchStartEvent);
+			if (Touch.Valid)
+			{
+				FEvent TouchStartEvent(EventType::TOUCH_START);
+				TouchStartEvent.SetTouch(Touch.TouchIndex, Touch.PosX, Touch.PosY, Touch.Force);
+				ProcessEvent(TouchStartEvent);
+			}
 		}
 		break;
 	}
@@ -882,9 +889,14 @@ void FInputDevice::OnMessage(const uint8* Data, uint32 Size)
 
 		for (const FTouch& Touch : Touches)
 		{
-			FEvent TouchEndEvent(EventType::TOUCH_END);
-			TouchEndEvent.SetTouch(Touch.TouchIndex, Touch.PosX, Touch.PosY, Touch.Force);
-			ProcessEvent(TouchEndEvent);
+			// Always allowing the "up" events regardless of in or outside the valid region so
+			// states aren't stuck "down". Might want to uncomment this if it causes other issues.
+			//if (Touch.Valid)
+			{
+				FEvent TouchEndEvent(EventType::TOUCH_END);
+				TouchEndEvent.SetTouch(Touch.TouchIndex, Touch.PosX, Touch.PosY, Touch.Force);
+				ProcessEvent(TouchEndEvent);
+			}
 		}
 		break;
 	}
@@ -896,9 +908,12 @@ void FInputDevice::OnMessage(const uint8* Data, uint32 Size)
 
 		for (const FTouch& Touch : Touches)
 		{
-			FEvent TouchMoveEvent(EventType::TOUCH_MOVE);
-			TouchMoveEvent.SetTouch(Touch.TouchIndex, Touch.PosX, Touch.PosY, Touch.Force);
-			ProcessEvent(TouchMoveEvent);
+			if (Touch.Valid)
+			{
+				FEvent TouchMoveEvent(EventType::TOUCH_MOVE);
+				TouchMoveEvent.SetTouch(Touch.TouchIndex, Touch.PosX, Touch.PosY, Touch.Force);
+				ProcessEvent(TouchMoveEvent);
+			}
 		}
 		break;
 	}

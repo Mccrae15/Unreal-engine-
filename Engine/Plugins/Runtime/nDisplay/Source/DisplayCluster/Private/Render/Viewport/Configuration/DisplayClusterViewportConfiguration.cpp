@@ -76,6 +76,7 @@ bool FDisplayClusterViewportConfiguration::UpdateConfiguration(EDisplayClusterRe
 			FDisplayClusterViewportConfigurationProjectionPolicy ConfigurationProjectionPolicy(ViewportManager, *RootActor, *ConfigurationData);
 
 			ImplUpdateRenderFrameConfiguration(RootActor->GetRenderFrameSettings());
+			ImplUpdateTextureShareConfiguration();
 
 			// Set current rendering mode
 			RenderFrameSettings.RenderMode = InRenderMode;
@@ -116,10 +117,17 @@ void FDisplayClusterViewportConfiguration::ImplUpdateConfigurationVisibility(ADi
 	}
 }
 
+void FDisplayClusterViewportConfiguration::ImplUpdateTextureShareConfiguration()
+{
+	TextureShareSettings.bIsEnabled = true;
+	TextureShareSettings.bIsGlobalSyncEnabled = false;
+}
+
 void FDisplayClusterViewportConfiguration::ImplUpdateRenderFrameConfiguration(const FDisplayClusterConfigurationRenderFrame& InRenderFrameConfiguration)
 {
 	// Some frame postprocess require additional render targetable resources
 	RenderFrameSettings.bShouldUseAdditionalFrameTargetableResource = ViewportManager.PostProcessManager->ShouldUseAdditionalFrameTargetableResource_PostProcess();
+	RenderFrameSettings.bShouldUseFullSizeFrameTargetableResource = ViewportManager.PostProcessManager->ShouldUseFullSizeFrameTargetableResource();
 
 	// Global RTT sizes mults
 	RenderFrameSettings.ClusterRenderTargetRatioMult = InRenderFrameConfiguration.ClusterRenderTargetRatioMult;
@@ -228,6 +236,7 @@ bool FDisplayClusterViewportConfiguration::UpdatePreviewConfiguration(const FDis
 
 			ImplUpdateConfigurationVisibility(*RootActor, *ConfigurationData);
 			ImplUpdateRenderFrameConfiguration(RootActor->GetRenderFrameSettings());
+			ImplUpdateTextureShareConfiguration();
 
 			// Downscale resources with PreviewDownscaleRatio
 			RenderFrameSettings.PreviewRenderTargetRatioMult = InPreviewConfiguration.PreviewRenderTargetRatioMult;
